@@ -397,15 +397,18 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     },
     {
-      // Here reasoning_effort controls agent count, not reasoning depth.
+      // reasoning_effort controls agent count (4 vs 16), not reasoning depth.
+      // xAI multi-agent does NOT support client-side function calling — only
+      // built-in server tools + remote MCP. supportsToolUse is false so the
+      // UI/catalog do not advertise AgenC LIVE tools for this model.
       provider: "grok",
       model: "grok-4.20-multi-agent-0309",
       displayName: "grok-4.20-multi-agent-0309",
       contextWindow: 2_000_000,
       maxContextWindow: 2_000_000,
       inputModalities: TEXT_IMAGE_MODALITIES,
-      supportsToolUse: true,
-      supportsParallelToolCalls: true,
+      supportsToolUse: false,
+      supportsParallelToolCalls: false,
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: false,

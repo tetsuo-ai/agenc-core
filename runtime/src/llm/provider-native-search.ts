@@ -39,6 +39,25 @@ type ProviderNativeToolConfig = Pick<
 > &
   LLMXaiCapabilitySurface;
 
+/**
+ * xAI multi-agent models do not support client-side function calling — only
+ * built-in server tools and remote MCP. Detect those model IDs (including
+ * aliases and provider-prefixed forms) so adapters can strip LIVE tools.
+ *
+ * @see https://docs.x.ai/developers/model-capabilities/text/multi-agent
+ */
+export function isGrokMultiAgentModel(model: string | undefined): boolean {
+  if (typeof model !== "string") return false;
+  const trimmed = model.trim().toLowerCase();
+  if (trimmed.length === 0) return false;
+  const normalized =
+    normalizeGrokModel(trimmed)?.trim().toLowerCase() ?? trimmed;
+  const unqualified = normalized.slice(
+    Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf(":")) + 1,
+  );
+  return /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified);
+}
+
 export function supportsGrokServerSideTools(model: string | undefined): boolean {
   const normalized = normalizeGrokModel(model)?.trim().toLowerCase();
   if (!normalized) return true;

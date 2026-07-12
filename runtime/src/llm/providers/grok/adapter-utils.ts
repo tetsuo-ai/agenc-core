@@ -87,7 +87,10 @@ export type ToolResolutionStrategy =
   // of those names matched the provider catalog. Returns an empty tool
   // set rather than the full catalog (the previous fail-open behavior
   // shipped under `fallback_full_catalog_no_matches`).
-  | "subset_no_resolved_matches";
+  | "subset_no_resolved_matches"
+  // xAI multi-agent models: client function tools stripped; only server
+  // built-ins / remote MCP payloads remain.
+  | "multi_agent_server_tools_only";
 
 export interface ToolSelectionDiagnostics {
   readonly tools: Record<string, unknown>[];
