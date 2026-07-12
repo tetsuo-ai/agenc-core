@@ -2242,6 +2242,8 @@ describe("model-facing tools", () => {
         taskPrompt: "review game.py",
         agentName: "reviewer",
         runInBackground: true,
+        // todo-106: collab workers stay alive for later assign_task
+        keepAlive: true,
         forkMode: { kind: "full_history" },
       }),
     );
