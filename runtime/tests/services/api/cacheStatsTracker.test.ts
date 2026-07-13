@@ -9,6 +9,11 @@ import {
   resetSessionCacheStats,
 } from '../../../src/services/api/cacheStatsTracker.ts'
 import type { CacheMetrics } from '../../../src/services/api/cacheMetrics.ts'
+import {
+  getSessionId,
+  regenerateSessionId,
+  switchSession,
+} from '../../../src/bootstrap/state.ts'
 
 function makeMetrics(partial: Partial<CacheMetrics>): CacheMetrics {
   return {
@@ -184,6 +189,35 @@ describe('cacheStatsTracker — ring buffer semantics', () => {
     const after = getCacheStatsHistory()
     expect(after.length).toBe(1)
     expect(after[0]!.label).toBe('post-reset')
+  })
+})
+
+describe('cacheStatsTracker — per-session isolation', () => {
+  test("one session's /clear does not wipe another session's aggregate", () => {
+    const sessionA = getSessionId()
+
+    // Session A records some usage.
+    recordRequest(makeMetrics({ read: 200, total: 400 }), 'model-A')
+    expect(getSessionCacheMetrics().read).toBe(200)
+
+    // Become a brand-new session B.
+    const sessionB = regenerateSessionId()
+    expect(sessionB).not.toBe(sessionA)
+
+    // B must start empty — it must NOT inherit A's aggregate.
+    expect(getSessionCacheMetrics().supported).toBe(false)
+    expect(getSessionCacheMetrics().read).toBe(0)
+
+    // B records, then runs its own /clear.
+    recordRequest(makeMetrics({ read: 999, total: 1000 }), 'model-B')
+    expect(getSessionCacheMetrics().read).toBe(999)
+    resetSessionCacheStats()
+    expect(getSessionCacheMetrics().read).toBe(0)
+
+    // Back to A: its aggregate must be intact — B's /clear touched only B.
+    switchSession(sessionA)
+    expect(getSessionCacheMetrics().read).toBe(200)
+    expect(getCacheStatsHistory().map((h) => h.label)).toEqual(['model-A'])
   })
 })
 

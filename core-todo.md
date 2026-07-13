@@ -583,10 +583,14 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/services/MagicDocs/magicDocs.ts:430` — `updateQueue` is one module-level promise chain
   shared across all sessions, so session B's magic-docs update can't start until session A's (a full background
   subagent) finishes. **Fix:** per-session queue keyed like `trackedMagicDocsByScope`.
-- [ ] `[V]` `runtime/src/services/api/cacheStatsTracker.ts:76` — process-global tracker keyed by nothing; a
+- [x] `[V]` `runtime/src/services/api/cacheStatsTracker.ts:76` — process-global tracker keyed by nothing; a
   session's `resetCurrentTurn()`/`/clear` wipes another session's in-flight aggregate, and the provider is derived
   from `process.env.OPENAI_BASE_URL` (which M-LLM-4 shows can belong to another session). Observability only.
   **Fix:** key by sessionId; pass the resolved base URL from request context.
+  **DONE (primary):** state is now a bounded LRU `Map<sessionId, TrackerState>` via `currentState()` keyed on
+  `getSessionId()`; public API unchanged, cap 128 sessions with LRU-on-access eviction. Revert-sensitive
+  two-session test in cacheStatsTracker.test.ts. The base-URL/provider sub-part stays with M-LLM-4 (skipped:
+  threading `process.env.OPENAI_BASE_URL` off the request context is the same risky hot-path env change).
 - [ ] `[V]` `runtime/src/services/api/openaiShim.ts:2242–2254` — GitHub/Copilot 429 retry sleeps a fixed
   exponential ignoring the server's `Retry-After` (only used to decorate the final error). **Fix:** parse
   `retry-after` and use `max(header, backoff)`.

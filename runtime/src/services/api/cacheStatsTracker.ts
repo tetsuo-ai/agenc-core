@@ -26,6 +26,7 @@
  */
 import { addCacheMetrics, extractCacheMetrics, resolveCacheProvider, type CacheMetrics } from './cacheMetrics.js'
 import { getAPIProvider, isGithubNativeproviderMode } from '../../utils/model/providers.js' // branding-scan: allow provider mode identifier
+import { getSessionId } from '../../bootstrap/state.js'
 
 /** One request's cache footprint — what the tracker remembers per turn. */
 export type CacheStatsEntry = {
@@ -73,7 +74,36 @@ function createInitialState(max: number): TrackerState {
   }
 }
 
-const state: TrackerState = createInitialState(DEFAULT_HISTORY_MAX)
+// One daemon process hosts many sessions. A single module-global tracker let
+// one session's resetCurrentTurn()/`/clear` wipe another session's in-flight
+// aggregate, and folded every session's requests into one bucket. Key the
+// state by the active session (STATE.sessionId, updated by switchSession()).
+//
+// The map is bounded and LRU-evicted so an unbounded stream of short-lived
+// sessions cannot leak: each access moves its session to the newest position,
+// and inserting past the cap drops the least-recently-used session (whose
+// stats simply restart fresh — this is observability data, not correctness).
+const MAX_TRACKED_SESSIONS = 128
+const sessionsState = new Map<string, TrackerState>()
+
+function currentState(): TrackerState {
+  const id = getSessionId()
+  const existing = sessionsState.get(id)
+  if (existing !== undefined) {
+    // LRU touch: re-insert so this session becomes most-recently-used.
+    sessionsState.delete(id)
+    sessionsState.set(id, existing)
+    return existing
+  }
+  const fresh = createInitialState(DEFAULT_HISTORY_MAX)
+  sessionsState.set(id, fresh)
+  while (sessionsState.size > MAX_TRACKED_SESSIONS) {
+    const oldest = sessionsState.keys().next().value
+    if (oldest === undefined) break
+    sessionsState.delete(oldest)
+  }
+  return fresh
+}
 
 /**
  * O(1) via ring-buffer write — previously used `splice(0, n)` on overflow
@@ -83,6 +113,7 @@ export function recordRequest(
   metrics: CacheMetrics,
   label: string,
 ): void {
+  const state = currentState()
   state.currentTurn = addCacheMetrics(state.currentTurn, metrics)
   state.session = addCacheMetrics(state.session, metrics)
   const entry: CacheStatsEntry = {
@@ -109,11 +140,13 @@ export function recordUsageCacheStats(usage: unknown, model: string): void {
 
 /** Clear turn-level counters at the start of a new user turn. */
 export function resetCurrentTurn(): void {
+  const state = currentState()
   state.currentTurn = EMPTY_METRICS
 }
 
 /** Clear all session state — used by `/clear`, `/compact`, tests. */
 export function resetSessionCacheStats(): void {
+  const state = currentState()
   state.currentTurn = EMPTY_METRICS
   state.session = EMPTY_METRICS
   // Rebuild the ring so any hold-over references can be GC'd. Slightly
@@ -126,12 +159,12 @@ export function resetSessionCacheStats(): void {
 
 /** Snapshot of the current turn's aggregate. */
 export function getCurrentTurnCacheMetrics(): CacheMetrics {
-  return state.currentTurn
+  return currentState().currentTurn
 }
 
 /** Snapshot of the session-wide aggregate. */
 export function getSessionCacheMetrics(): CacheMetrics {
-  return state.session
+  return currentState().session
 }
 
 /**
@@ -143,6 +176,7 @@ export function getSessionCacheMetrics(): CacheMetrics {
  *   - full / wrapped: oldest is at `writeIdx`, newest at `writeIdx-1`
  */
 export function getCacheStatsHistory(): CacheStatsEntry[] {
+  const state = currentState()
   if (state.historySize < state.historyMax) {
     // Fast path: ring hasn't wrapped yet, entries live at [0..size).
     return state.history.slice(0, state.historySize) as CacheStatsEntry[]
@@ -165,6 +199,7 @@ export function _setHistoryCapForTesting(cap: number): void {
   if (cap < 1) {
     throw new Error(`_setHistoryCapForTesting: cap must be >= 1 (got ${cap})`)
   }
+  const state = currentState()
   const current = getCacheStatsHistory()
   const preserved = cap < current.length ? current.slice(-cap) : current
   state.history = new Array(cap)
