@@ -402,8 +402,13 @@ function parseRetryAfterMs(headers: unknown): number | undefined {
 const TRANSIENT_PROVIDER_SERVER_MESSAGE_RE =
   /\b(?:service\s+temporarily\s+unavailable|temporarily\s+unavailable|server\s+temporarily\s+unavailable|upstream\s+connect\s+error|bad\s+gateway|gateway\s+timeout|server\s+overloaded|temporarily\s+overloaded|temporarily\s+down|backend\s+unavailable)\b/i;
 
+// NOTE: no bare `413` alternative here — it matched any incidental "413"
+// substring (a request/trace id) and misrouted transient 5xx into the
+// non-retryable context-window branch. The real 413 case is handled by the
+// numeric `status === 413` check in mapLLMError, and the textual
+// `payload too large` form is covered below.
 const CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE =
-  /(?:context[_\s-]?length[_\s-]?exceeded|prompt[_\s-]?too[_\s-]?long|maximum\s+context\s+length|context\s+length\s+is|input\s+too\s+long|request\s+too\s+large|tokens?\s+exceeds?\s+(?:the\s+)?(?:model|maximum)|413|payload\s+too\s+large)/i;
+  /(?:context[_\s-]?length[_\s-]?exceeded|prompt[_\s-]?too[_\s-]?long|maximum\s+context\s+length|context\s+length\s+is|input\s+too\s+long|request\s+too\s+large|tokens?\s+exceeds?\s+(?:the\s+)?(?:model|maximum)|payload\s+too\s+large)/i;
 
 /**
  * Map an unknown error from an LLM SDK call into a typed LLM error.

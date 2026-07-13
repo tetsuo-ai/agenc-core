@@ -97,7 +97,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### LLM / providers
 
-- [ ] `[V]` **M-LLM-1 — Bare `413` regex misclassifies transient 5xx as context-overflow.**
+- [x] `[V]` **M-LLM-1 — Bare `413` regex misclassifies transient 5xx as context-overflow.**
   `runtime/src/llm/errors.ts:406` (`CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE`), checked at :462–464 before the
   5xx branch. Any error body containing the substring "413" (a request/trace id like `req_84413`) maps a
   500/503 to the non-retryable `LLMContextWindowExceededError` → drops history / fails the turn instead
