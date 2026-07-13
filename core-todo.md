@@ -541,20 +541,20 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   or don't memoize failure/undefined.
 - [ ] `[V]` `runtime/src/utils/memoize.ts:40` — `memoizeWithTTL` (sync) has no callers (only the async/LRU variants
   are used). **Fix:** delete or document as external API.
-- [ ] `[V]` `runtime/src/utils/model/model.ts:500` — `firstPartyNameToCanonical` canonicalizes by ordered
+- [x] `[V]` `runtime/src/utils/model/model.ts:500` — `firstPartyNameToCanonical` canonicalizes by ordered
   `.includes()`, so a future `claude-opus-4-10`/`-4-11` collapses to `claude-opus-4-1` (wrong tier/caps);
   `getModelPricingTier` (:939) has the same collision. **Fix:** match on a delimited boundary.
 - [ ] `[V]` `runtime/src/utils/swarm/teamHelpers.ts:208` — `readTeamFile*` returns `jsonParse(content) as TeamFile`
   with no shape validation; a config.json lacking a `members` array (version skew / non-atomic partial write)
   makes `teamFile.members.filter(...)` throw — during SIGINT/SIGTERM cleanup this skips worktree/dir cleanup.
   **Fix:** validate `Array.isArray(teamFile.members)` after read.
-- [ ] `[V]` `runtime/src/utils/thinking.ts:216` — `modelSupportsAdaptiveThinking` allowlist omits
+- [x] `[V]` `runtime/src/utils/thinking.ts:216` — `modelSupportsAdaptiveThinking` allowlist omits
   `claude-opus-4-8`, so pinning opus-4-8 silently disables adaptive thinking vs 4.7. (Known WS-F1 family.)
   **Fix:** add opus-4-8, or make the gate version-threshold-based like `modelSupports1M`.
-- [ ] `[V]` `runtime/src/utils/model/model.ts:250` — MiniMax drift: `getDefaultOpusModel()` resolves the flagship
+- [~] `[V]` `runtime/src/utils/model/model.ts:250` — MiniMax drift [SKIPPED: which MiniMax id is the true flagship (M2.5 vs M2.7) is a factual model-string decision; recommend aligning getDefaultOpusModel default to configs.ts]: `getDefaultOpusModel()` resolves the flagship
   to `MiniMax-M2.7` but `configs.ts` sets `minimax: 'MiniMax-M2.5'`; the two paths disagree on which model is
   requested. **Fix:** one flagship id, used consistently.
-- [ ] `[V]` `runtime/src/utils/model/model.ts:808` — `parseUserSpecifiedModel` `case 'best'` returns
+- [x] `[V]` `runtime/src/utils/model/model.ts:808` — `parseUserSpecifiedModel` `case 'best'` returns
   `getBestModel()` without re-appending `[1m]`, so `best[1m]` silently drops the 1M window. **Fix:** append the
   `[1m]` suffix like the sibling cases.
 

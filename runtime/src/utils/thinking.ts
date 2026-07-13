@@ -213,7 +213,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return true
   }
   // Supported by a subset of AgenC 4 models
-  if (canonical.includes('opus-4-7') || canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
+  if (canonical.includes('opus-4-8') || canonical.includes('opus-4-7') || canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
     return true
   }
   // Exclude any other known compatibility models (allowlist above catches 4-6 variants first)
