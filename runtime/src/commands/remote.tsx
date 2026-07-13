@@ -98,4 +98,3 @@ export const remoteCommand: SlashCommand = {
   },
 };
 
-export default remoteCommand;
