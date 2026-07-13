@@ -2674,8 +2674,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         />,
       );
 
-      expect(output).toContain("Welcome");
-      expect(output).toContain("AgenC");
+      // The onboarding header now uses the lowercase "agenc." brand mark
+      // instead of "Welcome to AgenC"; the active step title still proves the
+      // first-run wizard (not the transcript) is on screen.
+      expect(output).toContain("agenc");
       expect(output).toContain("Preflight");
       expect(output).not.toContain("messages:0");
     } finally {

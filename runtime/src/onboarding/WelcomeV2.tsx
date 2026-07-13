@@ -1,6 +1,7 @@
 import React from "react";
 
-import { OnboardingBox as Box, OnboardingText as Text } from "./elements.js";
+import { Box } from "../tui/ink.js";
+import ThemedText from "../tui/components/design-system/ThemedText.js";
 
 export interface WelcomeV2Props {
   readonly compact?: boolean;
@@ -19,12 +20,21 @@ export function WelcomeV2({
       : provider ?? model;
   return (
     <Box flexDirection="column" width="100%">
-      <Text bold>{compact ? "AgenC" : "Welcome to AgenC"}</Text>
+      {/* Brand moment consistent with the cold-start welcome panel, instead of
+          a plain bold "Welcome to AgenC". */}
+      <ThemedText color="agenc" bold>
+        {compact ? "agenc" : "agenc."}
+      </ThemedText>
       {compact ? null : (
-        <Text dimColor>Set up the runtime once, then start working.</Text>
+        <ThemedText color="inactive">
+          set up the runtime once, then start working
+        </ThemedText>
       )}
       {selection !== undefined ? (
-        <Text dimColor>Selected model: {selection}</Text>
+        <Box flexDirection="row">
+          <ThemedText color="inactive">using </ThemedText>
+          <ThemedText color="text2">{selection}</ThemedText>
+        </Box>
       ) : null}
     </Box>
   );
