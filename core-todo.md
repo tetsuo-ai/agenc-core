@@ -212,12 +212,19 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** enforce a rolling byte cap while accumulating (head-tail-collapse past a multiple of
   `maxOutputBytes`, matching `ProcessOutputBuffer.enforceCap`).
 
-- [ ] `[V]` **M-EXEC-3 — `enforceCap` is O(cap) per append under deferred drain.**
+- [x] `[V]` **M-EXEC-3 — `enforceCap` is O(cap) per append under deferred drain.**
   `runtime/src/unified-exec/process-manager.ts:96` (`ProcessOutputBuffer.enforceCap`). Foreground exec and
   empty-input background polls drain once at end of yield (30s / up to 300s), so `consumedIndex` stays 0 and
   the ~1MB pending region is re-collapsed (slice/filter/join/truncateHeadTail) on every 8KB chunk past the
   1MB cap. Pins a core on the shared daemon for a verbose emitter.
   **Fix:** collapse lazily at `drain()` time, or amortize (dirty threshold, re-truncate at most every N appends).
+  **DONE (amortize + collapse-at-drain):** split `enforceCap` into cheap `evictConsumed()` (runs every append) and
+  the expensive `collapsePending()`, which now runs on append ONLY when the pending region overshoots by a full
+  cap (`totalChars > maxChars*2`), collapsing back to the cap — bounding memory at ~2×maxChars and amortizing the
+  O(pending) work to O(1)/char. `drain()` collapses to the cap so a caller never sees more than maxChars. All 6
+  pre-existing head/tail/label/fairness invariant tests still pass unchanged. New revert-sensitive test: under
+  deferred drain, 500 appends past the cap trigger ~30 collapses (a `collapseCountForTest` counter), vs 484 when
+  reverted to per-append collapse; plus a never-drained memory-bound test.
 
 - [x] `[V]` **M-EXEC-4 — Background process evicted before it is polled (lost output + exit code).**
   `runtime/src/unified-exec/process-manager.ts:396` (`pruneExitedProcesses`). Called at the start of every

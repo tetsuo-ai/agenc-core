@@ -156,6 +156,45 @@ describe("ProcessOutputBuffer cap enforcement (audit #9)", () => {
     expect(stderrText).toBe(errSummary);
   });
 
+  test("amortizes the pending collapse instead of re-collapsing on every append (M-EXEC-3)", () => {
+    const buffer = new ProcessOutputBuffer(CAP);
+
+    // Deferred drain (consumedIndex stays 0), the exact hot path: append many
+    // small chunks well past the cap without draining. The expensive
+    // slice/filter/join/truncateHeadTail collapse must NOT run on every append
+    // past the cap — with the 2*cap watermark it runs ~totalChars/cap times.
+    const appends = 500;
+    for (let i = 0; i < appends; i += 1) {
+      buffer.append("stdout", "q".repeat(256));
+    }
+    // 500*256 = 128000 chars over a 4096 cap. Per-append collapse would fire on
+    // essentially every append past the cap (~480); amortized fires ~30 times.
+    expect(buffer.collapseCountForTest).toBeLessThan(appends / 4);
+
+    // Behavior preserved: a drain still returns a capped, head/tail-truncated
+    // window with an omitted marker.
+    const combined = buffer
+      .drain()
+      .map((chunk) => chunk.chunk)
+      .join("");
+    expect(combined.length).toBeLessThanOrEqual(CAP + 128);
+    expect(combined).toMatch(/\[\.\.\. omitted \d+ chars \.\.\.\]/);
+  });
+
+  test("bounds memory under deferred drain even without ever draining", () => {
+    const buffer = new ProcessOutputBuffer(CAP);
+    for (let i = 0; i < 1000; i += 1) {
+      buffer.append("stdout", "m".repeat(256));
+    }
+    // Never drained; the pending region must stay bounded (~2*cap), not grow to
+    // 256000 chars. Drain and confirm the returned window respects the cap.
+    const combined = buffer
+      .drain()
+      .map((chunk) => chunk.chunk)
+      .join("");
+    expect(combined.length).toBeLessThanOrEqual(CAP + 128);
+  });
+
   test("never emits a negative omitted-count marker", () => {
     const buffer = new ProcessOutputBuffer(CAP);
 
