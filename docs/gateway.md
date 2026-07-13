@@ -5,7 +5,7 @@ your local daemon. It is a **daemon client**: it talks to the daemon only
 through the embedding SDK (`@tetsuo-ai/agenc-sdk`), never runtime internals.
 Channels are a client-side addition, not a runtime change.
 
-**Shipped channels (0.4.1):** Telegram, Discord, Slack, WebChat, and stdio.
+**Shipped channels (0.6.0):** Telegram, Discord, Slack, WebChat, and stdio.
 Signal, WhatsApp, and email **channels** are **not** shipped. (The LIVE
 **Browser** tool is a coding-agent capability, not a gateway channel — see
 [browser.md](browser.md).)
@@ -20,6 +20,8 @@ Related: [quickstart](quickstart.md) · [onboarding](onboarding.md) ·
 agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]
 agenc gateway status [--json]
 agenc gateway pairing list [--json]
+agenc gateway pairing pending [--json]
+agenc gateway pairing approve <channel> <peerId>
 agenc gateway pairing revoke <channel> <peerId>
 agenc gateway install-service
 ```
@@ -28,7 +30,10 @@ agenc gateway install-service
 |---|---|
 | `run` | Connect to the daemon (autostart if needed), load `gateway/config.json`, start enabled channels. Runs until Ctrl-C. |
 | `status` | Channels, DM policies, bindings, paired-sender counts |
-| `pairing list` / `revoke` | Inspect or remove paired senders |
+| `pairing list` | Paired senders per channel |
+| `pairing pending` | Pending pairing requests not yet approved |
+| `pairing approve` | Approve a pending peer (`<channel> <peerId>`) |
+| `pairing revoke` | Remove a paired sender |
 | `install-service` | Install + start the always-on user service (systemd on Linux, launchd on macOS); unit reads `gateway/env` |
 
 `run` enables surfaces from flags **and** environment/config:
@@ -209,7 +214,7 @@ Config (`[heartbeat]` / env):
 | `interval_seconds` / `AGENC_HEARTBEAT_INTERVAL` | `1800` | seconds between ticks |
 | `active_hours` / `AGENC_HEARTBEAT_ACTIVE_HOURS` | always | e.g. `8-22` local |
 | `model` / `AGENC_HEARTBEAT_MODEL` | — | optional utility model |
-| `target` / `AGENC_HEARTBEAT_TARGET` | `none` | `none` or `channelId:conversationId` |
+| `target_channel` + `target_conversation` (TOML) / `AGENC_HEARTBEAT_TARGET` (env) | `none` | Env uses combined `channelId:conversationId` or `none`; TOML stores the split fields |
 | `agent` / `AGENC_HEARTBEAT_AGENT` | `default` | budget envelope + session |
 
 Also: `skip_when_busy`. Disabled by default until you opt in (onboarding Act 3
@@ -308,7 +313,7 @@ AGENC_GATEWAY_MEME_ENABLED=1
 AGENC_GATEWAY_MEME_DAILY_LIMIT=20
 AGENC_GATEWAY_VOICE_ENABLED=1
 AGENC_GATEWAY_VOICE_DAILY_LIMIT=20
-# requires XAI_API_KEY
+# Grok credentials: OAuth from /grok-login wins; else XAI_API_KEY / GROK_API_KEY
 ```
 
 Shortcuts and clear natural-language requests (`/image`, `/meme`, `/voice`,

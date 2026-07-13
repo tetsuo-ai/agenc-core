@@ -11,7 +11,7 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.4.1**. Default session provider **grok**, fresh-config session model
+Version: **0.6.0**. Default session provider **grok**, fresh-config session model
 **grok-4.5** (see [providers.md](providers.md)).
 
 ---
@@ -45,7 +45,7 @@ From `formatCliHelpText()`:
 | `--profile <name>` | Named config profile |
 | `--provider <name>` | Override provider for this session |
 | `--model <id\|provider:id>` | Override model for this session |
-| `--permission-mode <mode>` | Override startup permission mode |
+| `--permission-mode <mode>` | Override startup permission mode: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto` (internal-only `unattended` / `bubble` are not CLI addressable) |
 | `--autonomous`, `--proactive` | Enable autonomous tick mode |
 | `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks |
 | `--yolo` | Alias for approval/sandbox bypass |
@@ -210,6 +210,8 @@ agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]
 agenc gateway install-service
 agenc gateway status [--json]
 agenc gateway pairing list [--json]
+agenc gateway pairing pending [--json]
+agenc gateway pairing approve <channel> <peerId>
 agenc gateway pairing revoke <channel> <peerId>
 ```
 
@@ -219,6 +221,8 @@ agenc gateway pairing revoke <channel> <peerId>
 | `install-service` | Install + start the always-on gateway user service (systemd or launchd; reads gateway/env) |
 | `status` | Channels, DM policies, bindings, paired-sender counts |
 | `pairing list` | Paired senders per channel |
+| `pairing pending` | Pending pairing requests (codes not yet approved) |
+| `pairing approve` | Approve a pending peer (`<channel> <peerId>`) |
 | `pairing revoke` | Remove a paired sender |
 
 Config: `<AGENC_HOME>/gateway/config.json` (fail-closed defaults when absent).

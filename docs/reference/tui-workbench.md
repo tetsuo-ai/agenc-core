@@ -1,7 +1,8 @@
 # TUI & workbench
 
-Summary of the fullscreen terminal UI. Durable design notes and implementation
-detail live in the in-tree README:
+Operator-facing summary of the fullscreen terminal UI (not a full keybinding
+manual). Implementer depth, Ink fork notes, and theme details live in the
+in-tree README:
 
 **→ [`runtime/src/tui/README.md`](../../runtime/src/tui/README.md)**
 

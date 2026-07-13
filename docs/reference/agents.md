@@ -70,15 +70,23 @@ See `getLiveCoordinatorSystemPrompt()` for the model-facing instructions.
 ### CLI
 
 ```bash
-agenc agent start <objective> [--unattended-allow …] [--unattended-deny …]
+agenc agent start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>
 agenc agent list
 agenc agent attach <id>
 agenc agent stop <id>
 agenc agent logs <id>
 ```
 
+Unattended flags must come **before** the objective; the first non-flag token
+ends option parsing (flags after the objective become part of the objective
+text).
+
 Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc.ts`).
 See also [cli.md](cli.md).
+
+Related TUI: `/coordinator` (alias `/fleet`) toggles coordinator mode for the
+session when the feature is available (`AGENC_COORDINATOR_MODE` /
+`coordinator_mode`). `/tasks` surfaces live workers and shell tasks.
 
 ### Daemon methods (SDK + JSON-RPC)
 

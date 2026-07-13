@@ -41,6 +41,13 @@ managed / config-home / `.agenc/skills`.
 
 Slash: `/skills` — list roots, manage project skills.
 
+### Bundled skills
+
+| Name | Purpose |
+| --- | --- |
+| `browser-automation` | Snapshot → act → re-snapshot workflow for the LIVE `Browser` tool ([browser.md](../browser.md)) |
+| `agenc-marketplace-kit-installer` | Marketplace kit install helper |
+
 ### `SKILL.md` frontmatter (high level)
 
 Parsed fields include:

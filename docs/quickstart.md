@@ -67,8 +67,10 @@ agenc --no-tui "run the tests"         # headless one-shot
 agenc daemon status                    # daemon owns sessions/agents
 ```
 
-Inside the TUI: `/help` lists slash commands. Background agents:
-`agenc agent start <objective>`. Resume with `--continue` / `--resume`.
+Inside the TUI: `/help` lists slash commands. Background agents (flags before
+the objective):
+`agenc agent start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>`.
+Resume with `--continue` / `--resume`.
 
 ## 5. Act 2 — make it YOUR agent
 
@@ -99,6 +101,8 @@ Hooks: `agenc gateway run --hooks` / `hooks.enabled` → loopback
 `POST /hooks/agent` with header-only bearer auth.
 
 ## 7. Optional: phone remote control
+
+Pair an **iOS or Android** app with the host daemon:
 
 ```bash
 agenc login

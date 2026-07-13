@@ -34,6 +34,7 @@ const client = await connect({
   // socketPath, cookiePath — default ${AGENC_HOME:-~/.agenc}/daemon.{sock,cookie}
   // autostart: true       — run `agenc daemon start` when not running
   // agencCommand: "agenc" — CLI used for autostart (absolute path when embedding)
+  // requestTimeoutMs      — per-RPC timeout (default 30s or AGENC_DAEMON_REQUEST_TIMEOUT_MS)
   onPermissionRequest: async (request) => {
     // request: { sessionId, requestId, toolName?, permissions, input?, reason? }
     return request.toolName === "Read"
@@ -139,7 +140,7 @@ import { promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
 
 const run = promptViaSubprocess("explain the fee split", {
   agencCommand: "agenc",      // or ["/abs/path/agenc"]
-  model: "grok-4",             // optional; also provider/profile/permissionMode
+  model: "grok-4.5",           // optional; also provider/profile/permissionMode
 });
 for await (const event of run) { /* same AgencPromptEvent union */ }
 const result = await run.result(); // exitCode/finalMessage/usage from the CLI's result line

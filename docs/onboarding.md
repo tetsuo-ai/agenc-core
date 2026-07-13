@@ -1,6 +1,6 @@
 # Onboarding AgenC (operator guide)
 
-**Current release: 0.4.1.** This is the live product guide for first-run and
+**Current release: 0.6.0.** This is the live product guide for first-run and
 the multi-act setup path. Historical implementation notes live under
 [archive/onboarding-plan-2026-07.md](archive/onboarding-plan-2026-07.md)
 (archived — not product truth).
@@ -193,8 +193,8 @@ See [deploy/vps.md](deploy/vps.md).
 ## Optional: remote phone control of the coding daemon
 
 Channels (Act 2b) put a **chat bot** on Telegram/Discord/Slack. Separately,
-**remote control** lets the iOS app drive coding sessions on your machine
-through a signed relay:
+**remote control** lets the **iOS or Android** app drive coding sessions on
+your machine through a signed relay:
 
 ```bash
 agenc login

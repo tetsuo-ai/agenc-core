@@ -1,6 +1,6 @@
 # Config reference
 
-Operator config for AgenC **0.4.1**. Sources of truth:
+Operator config for AgenC **0.6.0**. Sources of truth:
 
 | Concern | Path |
 | --- | --- |
@@ -286,23 +286,35 @@ snapshot_max_bytes = 67108864
 
 Default `agent.budget` is empty (no per-run cap).
 
-### `durableTurns` (typed, not a known TOML key today)
+### `[durableTurns]`
 
-`DurableTurnsConfig` is typed on `AgenCConfig` and used by the turn loop
-(`session/run-turn.ts`, `session/durable-turns`), but **`durableTurns` is not
-in `KNOWN_CONFIG_KEYS`**. A `[durableTurns]` block in `config.toml` is currently
-preserved under `_unknown` rather than applied as typed config.
+First-class known key (`KNOWN_CONFIG_KEYS` includes `durableTurns`). Typed as
+`DurableTurnsConfig` and used by the turn loop (`session/run-turn.ts`,
+`session/durable-turns`). Block validation is still shallow (no dedicated
+deep `validateDurableTurns*` pass beyond ordinary load/normalize).
 
-Operational control is primarily via env:
+```toml
+[durableTurns.checkpoint]
+# enabled = false
+# minIntervalMs = 0   # 0 = every boundary
+
+[durableTurns.resume]
+# onRestart = true
+# policy = "safe"     # stage-1 only; re-run read-only/idempotent dangling tools
+# requireLease = true
+# buildPinning = true
+```
+
+Env overrides (still useful for operators):
 
 | Env | Effect |
 | --- | --- |
 | `AGENC_DURABLE_TURNS` | Enable/disable durable-turn checkpointing |
+| `AGENC_DURABLE_TURNS_CHECKPOINT` | Checkpoint-related control |
 | `AGENC_DURABLE_TURNS_RESUME` | Resume-on-restart policy control |
 
 Runtime defaults (when enabled programmatically / via env) treat resume-on-restart
-as **on** unless disabled. Prefer env + tests over inventing TOML until the key
-lands in `KNOWN_CONFIG_KEYS`.
+as **on** unless disabled.
 
 ### `[daemon]`
 

@@ -1,6 +1,6 @@
 # Running AgenC on a VPS
 
-**AgenC 0.4.1.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
+**AgenC 0.6.0.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
 container) runs the daemon fine: providers do the heavy lifting; the daemon is
 orchestration. Two supported shapes.
 
@@ -69,11 +69,11 @@ Pull the published image (no source checkout):
 
 ```bash
 docker run -d --restart unless-stopped -v agenc-data:/data \
-  -e XAI_API_KEY ghcr.io/tetsuo-ai/agenc:0.4.1
+  -e XAI_API_KEY ghcr.io/tetsuo-ai/agenc:0.6.0
 # or :latest when you accept floating tags
 
 # one-shot against the same state:
-docker run --rm -v agenc-data:/data ghcr.io/tetsuo-ai/agenc:0.4.1 security audit
+docker run --rm -v agenc-data:/data ghcr.io/tetsuo-ai/agenc:0.6.0 security audit
 ```
 
 Build from a source checkout:
@@ -118,4 +118,4 @@ Railway/Hostinger/DigitalOcean template listings wrap Shape 2 with the
 `agenc-data` volume and env-var prompts for the provider key. Publishing the
 templates is an owner/release step; this document is the source of truth for
 what they must configure (volume, env passthrough, no published ports, current
-image tag `0.4.1`).
+image tag `0.6.0`).

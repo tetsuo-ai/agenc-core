@@ -28,7 +28,6 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [remote-control.md](remote-control.md) | Pair host with AgenC phone app (`agenc remote`) |
 | [managed-openrouter.md](managed-openrouter.md) | Hosted OpenRouter / managed keys via remote auth |
 | [grok-oauth.md](grok-oauth.md) | Sign in with X — Grok subscription access without an API key |
-| [bug-audit-2026-07-11.md](bug-audit-2026-07-11.md) | Daemon/session lifecycle bug audit: /resume freeze, workspace pinning, global-state family |
 | [deploy/vps.md](deploy/vps.md) | Run the daemon on a VPS (installer or Docker) |
 | [migrate-from-openclaw.md](migrate-from-openclaw.md) | Surface map from OpenClaw |
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
@@ -80,6 +79,7 @@ shipped. See [`archive/README.md`](archive/README.md).
 | [archive/feature-user-stories.csv](archive/feature-user-stories.csv) | Orphan inventory snapshot |
 | [archive/onboarding-plan-2026-07.md](archive/onboarding-plan-2026-07.md) | Superseded by [onboarding.md](onboarding.md) |
 | [archive/parity-roadmap-2026-07.md](archive/parity-roadmap-2026-07.md) | Superseded by [roadmap.md](roadmap.md) |
+| [archive/bug-audit-2026-07-11.md](archive/bug-audit-2026-07-11.md) | Historical RCA (daemon multi-session singletons); all findings fixed |
 
 ---
 

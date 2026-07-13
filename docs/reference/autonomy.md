@@ -1,7 +1,7 @@
 # Autonomy reference
 
 Operator and developer guide for **cost-bounded autonomous surfaces** in
-AgenC **0.4.1**: cumulative budget enforcement, heartbeat, cron delivery, and
+AgenC **0.6.0**: cumulative budget enforcement, heartbeat, cron delivery, and
 hooks HTTP.
 
 Design background: [`../design/budget-enforcement.md`](../design/budget-enforcement.md).
@@ -36,6 +36,18 @@ sanitized/framed as untrusted content before they reach the model.
 
 Defaults: **budget disabled**, **heartbeat disabled**. Enabling either is an
 explicit operator action.
+
+### Session autonomous tick mode (distinct system)
+
+CLI flags `--autonomous` / `--proactive` enable **session keepalive** ticks
+in the interactive/daemon-TUI path (`runtime/src/session/autonomous-mode.ts`).
+This is **not** the same as gateway heartbeat + cumulative budget:
+
+- Keepalive can drive idle re-prompts on a session while you leave the TUI up.
+- It is **not** wired through `BudgetEnforcer.admit` today.
+- Plan mode excludes autonomous keepalive.
+- Gateway operators still use `agenc gateway run --heartbeat` / `--hooks` for
+  channel/webhook autonomy with ledger caps.
 
 ---
 
