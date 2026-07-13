@@ -127,27 +127,32 @@ export class HeartbeatRunner {
       hold = admit.hold;
     }
 
-    // 4. Run the turn.
-    const result = await this.#o.turnRunner.run(
-      prompt,
-      model.length > 0 ? model : undefined,
-    );
-
-    // 6. Reconcile budget from real usage (fall back to nothing if absent).
-    if (this.#o.budget !== undefined && hold !== null) {
-      this.#o.budget.reconcile(
-        hold,
-        result.usage ?? { inputTokens: 0, outputTokens: 0 },
+    // GW-07: after a successful admit, always reconcile exactly once —
+    // success (real/zero usage) or throw (zeros → full hold refund).
+    // Capture usage immediately after the turn so a later deliver throw
+    // still reconciles real spend, not zeros.
+    let usage = { inputTokens: 0, outputTokens: 0 };
+    try {
+      // 4. Run the turn.
+      const result = await this.#o.turnRunner.run(
+        prompt,
+        model.length > 0 ? model : undefined,
       );
-    }
+      usage = result.usage ?? usage;
 
-    // 5. HEARTBEAT_OK suppression.
-    const reply = result.finalMessage.trim();
-    if (reply === HEARTBEAT_OK || reply.length === 0) {
-      return { kind: "ok_suppressed" };
+      // 5. HEARTBEAT_OK suppression / deliver (post-turn side effects).
+      const reply = result.finalMessage.trim();
+      if (reply === HEARTBEAT_OK || reply.length === 0) {
+        return { kind: "ok_suppressed" };
+      }
+      await this.#deliver(reply);
+      return { kind: "delivered", text: reply };
+    } finally {
+      // 6. Reconcile: only path after admit (never also on success path).
+      if (this.#o.budget !== undefined && hold !== null) {
+        this.#o.budget.reconcile(hold, usage);
+      }
     }
-    await this.#deliver(reply);
-    return { kind: "delivered", text: reply };
   }
 
   async #deliver(text: string): Promise<void> {
