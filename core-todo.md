@@ -558,9 +558,14 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/tui/ink/parse-keypress.ts:199` — `inputToString()` mutates the caller-owned Buffer in
   place (`input[0] -= 128`); an aliasing hazard for non-utf8 callers of the exported `parseMultipleKeypresses`
   (production input path is utf8-string, so effectively dead there). **Fix:** build the string without mutating.
-- [ ] `[V]` `runtime/src/tui/components/CustomSelect/use-select-navigation.ts:549–567` — when a parent passes a
+- [x] `[V]` `runtime/src/tui/components/CustomSelect/use-select-navigation.ts:549–567` — when a parent passes a
   fresh-but-equal `options` array each render, `setLastOptions` never runs, so the O(n) `optionsNavigateEqual`
   scan runs every render (incl. every keystroke). **Fix:** update `lastOptions` even on structural equality.
+  **DONE:** extracted exported `optionsUpdatePlan(options, lastOptions)` returning `{ reset, updateLast }`;
+  `updateLast` is true whenever the reference differs (even when structurally equal), so `setLastOptions` refreshes
+  the reference and the next same-reference render short-circuits (no re-scan). `reset` still fires only on a real
+  content change. Behavior-preserving (16 CustomSelect suites pass). Revert-sensitive test (options-update-plan.
+  test.ts): a fresh-but-equal array yields `updateLast: true` vs `false` when reverted to refresh-only-on-reset.
 - [~] `[V]` `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:150` [SKIPPED: no
   front-drain-stable key is available without a non-trivial threading change. The mapped `messages` are derived in
   a `useMemo(..., [queuedCommands])` where `createUserMessage` mints a FRESH uuid per call, so on any queue change
