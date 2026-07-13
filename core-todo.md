@@ -666,7 +666,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ## Dead code / dependencies (knip `--production`; `npm run check:unused` currently EXITS 1 — not enforced in CI)
 
-- [ ] Unused dependency: `vscode-languageserver-types` (`runtime/package.json:146`) — zero references in
+- [x] Unused dependency: `vscode-languageserver-types` (`runtime/package.json:146`) — zero references in
   `runtime/src` and `runtime/tests`. **Fix:** remove.
 - [ ] Production-dead files: `runtime/src/gateway/index.ts`, `runtime/src/gateway/test-channel.ts`,
   `runtime/src/heartbeat/index.ts` (barrels + a test channel referenced only from tests). **Fix:** move under
