@@ -611,7 +611,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   restarts with a changed catalog hides added tools, 404s removed ones, and presents stale schemas for changed
   ones (silent argument mismatch). **Fix:** reconcile the proxy array with `newBridge.tools` on reconnect (mutate
   in place / surface a tool-list-changed hook).
-- [ ] `[V]` `runtime/src/skills/mcpSkills.ts:223` — `fetchMcpSkillsForClient` is `memoizeWithLRU` keyed only on
+- [x] `[V]` `runtime/src/skills/mcpSkills.ts:223` — `fetchMcpSkillsForClient` is `memoizeWithLRU` keyed only on
   server name, so two sessions each configuring a same-named MCP server (e.g. both "github") pointing at different
   servers collide while both live. **Fix:** key by name + config hash / connection identity, or scope per session.
 - [x] `[V]` `runtime/src/gateway/slack-channel.ts:381` — `#editTargets` (Map) grows without bound: every non-edit

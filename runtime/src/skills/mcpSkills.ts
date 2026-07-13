@@ -251,6 +251,11 @@ export const fetchMcpSkillsForClient = memoizeWithLRU(
       return [];
     }
   },
-  (client: MCPServerConnection) => client.name,
+  // Key by name AND server config, not name alone: two sessions may each configure
+  // an MCP server with the same name pointing at DIFFERENT servers, which under a
+  // name-only key collided (the second session got the first's cached skills).
+  // Mirrors getServerCacheKey in services/mcp/client.ts.
+  (client: MCPServerConnection) =>
+    `${client.name} ${JSON.stringify(client.config ?? {})}`,
   MCP_SKILLS_FETCH_CACHE_SIZE,
 );
