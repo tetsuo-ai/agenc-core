@@ -624,7 +624,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Secrets
 
-- [ ] `[V]` `runtime/src/secrets/sanitizer.ts:284–287` — the generic `sk-(?:proj-)?[A-Za-z0-9_-]{20,}` pattern
+- [x] `[V]` `runtime/src/secrets/sanitizer.ts:284–287` — the generic `sk-(?:proj-)?[A-Za-z0-9_-]{20,}` pattern
   runs first and always consumes `sk-ant-…` keys, so the dedicated sk-ant entry never matches (dead). Also
   `runtime/src/transaction-guard/errors.ts:4–14` `TransactionGuardError` is exported but never constructed/thrown
   in production. **Fix:** delete the sk-ant entry (or reorder first); drop `TransactionGuardError` or wire a throw.

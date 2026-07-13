@@ -283,11 +283,9 @@ const SECRET_PATTERNS: ReadonlyArray<{
     replacement: REDACTED_SECRET,
   },
   {
+    // Also matches `sk-ant-…` (the `ant-` chars are in the class), so no separate
+    // sk-ant entry is needed — the generic pattern runs first and shadows it.
     pattern: /(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g,
-    replacement: REDACTED_SECRET,
-  },
-  {
-    pattern: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g,
     replacement: REDACTED_SECRET,
   },
   {
