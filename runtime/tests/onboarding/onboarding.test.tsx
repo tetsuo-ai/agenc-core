@@ -24,6 +24,7 @@ import {
   detectRunningLocalProviders,
   detailLinesForStep,
   submitFirstRunOnboardingInput,
+  wizardThemeToSetting,
 } from "./Onboarding.js";
 import {
   incrementFirstRunOnboardingSeenCount,
@@ -1091,5 +1092,18 @@ describe("first-magic wiring contract (O-1b)", () => {
     expect(source).toContain("guaranteed first magic");
     expect(source).toContain("onboardingWasActiveRef");
     expect(source).toContain("Introduce yourself in a sentence");
+  });
+});
+
+describe("wizard theme mapping", () => {
+  test("maps wizard choices to config ThemeSettings the provider consumes", () => {
+    // The theme step's choice must reach the live theme engine: "system" is
+    // the wizard's word for the engine's "auto"; unknown values no-op so a
+    // stale onboarding state can never corrupt the configured theme.
+    expect(wizardThemeToSetting("dark")).toBe("dark");
+    expect(wizardThemeToSetting("light")).toBe("light");
+    expect(wizardThemeToSetting("system")).toBe("auto");
+    expect(wizardThemeToSetting("neon")).toBeUndefined();
+    expect(wizardThemeToSetting("")).toBeUndefined();
   });
 });
