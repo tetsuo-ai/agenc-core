@@ -11,7 +11,14 @@ const SOLANA_WRITE_SIGNAL_RE =
   /\b(transfer|airdrop|requestAirdrop|deploy|upgrade|send-tx|submit|submitTransaction|execute|confirm|sign|walletSign|sendRawTransaction|sendTransaction|sendAndConfirmTransaction|signTransaction|signAllTransactions|swap|mint|burn|approve|authorize|revoke|close|set-authority|set-buffer-authority|write-buffer|create-account|create-token|create-associated-token-account)\b/iu;
 const SOLANA_PROGRAM_WRITE_RE =
   /\bsolana\s+program\s+(deploy|write-buffer|set-buffer-authority|close|upgrade)\b/iu;
-const DEVNET_RE = /\b(?:devnet|api\.devnet\.solana\.com)\b/iu;
+// DevNet must be asserted from a URL/flag-shaped position, not a bare "devnet"
+// word anywhere in the (attacker-influenced) command/args/payload — otherwise a
+// comment like "# devnet test" on a mainnet transfer made the framework vouch
+// "targeting DevNet." and set devnetRpcExplicit, biasing the benign-leaning judge.
+const DEVNET_RPC_RE =
+  /(?:api\.devnet\.solana\.com|(?:--url|--rpc-url|-u|--network|--cluster)(?:=|\s+)\S*(?:devnet|testnet)|\b(?:network|cluster)\s*[:=]\s*["']?(?:devnet|testnet))/iu;
+const MAINNET_RPC_RE =
+  /(?:api\.mainnet-beta\.solana\.com|\bmainnet-beta\b|(?:--url|--rpc-url|-u|--network|--cluster)(?:=|\s+)\S*mainnet|\b(?:network|cluster)\s*[:=]\s*["']?mainnet)/iu;
 const SENSITIVE_KEY_RE =
   /(api[_-]?key|auth|authorization|bearer|keypairContents|mnemonic|password|private[_-]?key|secret|seed|token)/iu;
 
@@ -123,7 +130,10 @@ export function buildToolTransactionGuardInput(
     return null;
   }
 
-  const isDevnet = DEVNET_RE.test(combined);
+  // Only DevNet when a devnet RPC/flag is present AND no mainnet marker is — a
+  // command that names mainnet (or mixes both) is treated as mainnet, not devnet.
+  const isDevnet =
+    DEVNET_RPC_RE.test(combined) && !MAINNET_RPC_RE.test(combined);
   return {
     source: "tool-dispatch",
     kind: "solana_tool_invocation",

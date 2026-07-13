@@ -449,7 +449,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** case-normalize; treat recognized truthy values as enable and falsy as disable; warn (or fall back to
   config) on unrecognized values instead of silently disabling.
 
-- [ ] `[V]` **M-TXG-2 — Attacker text containing "devnet" makes the framework vouch "targeting DevNet" for a mainnet tx.**
+- [x] `[V]` **M-TXG-2 — Attacker text containing "devnet" makes the framework vouch "targeting DevNet" for a mainnet tx.**
   `runtime/src/transaction-guard/tool-intent.ts:16,127,136–138`. `isDevnet = DEVNET_RE.test(combined)` runs over
   fully attacker-influenced text. A command like `# devnet test only\nsolana transfer ATTACKER 100 --url
   https://api.mainnet-beta.solana.com` makes the framework author `transactionSummary: "… targeting DevNet."` and
