@@ -50,6 +50,7 @@ import picomatch from 'picomatch'
 import {
   getAdditionalDirectoriesForAgenCMd,
   getOriginalCwd,
+  getProjectRoot,
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from './memdir.js'
 import { ALL_PERSONA_FILE_NAMES, getPersonaMemoryFiles } from './persona.js'
@@ -1099,6 +1100,17 @@ export const getMemoryFiles = memoize(
 
     return result
   },
+  // Key the cache on the effective workspace (project root + original cwd), not
+  // just the forceIncludeExternal boolean. A single daemon process serves many
+  // sessions; switchSession()/EnterWorktreeTool mutate STATE.originalCwd and the
+  // project root, and the result depends on both (the Project/Local AGENC.md
+  // walk starts at getOriginalCwd(); durable project memory derives from
+  // getProjectRoot()). Without a cwd-aware key the first session's memory files
+  // were served to every other session. JSON.stringify unambiguously separates
+  // the parts so distinct path pairs cannot collide. Part of the
+  // workspace-pinning family.
+  (forceIncludeExternal: boolean = false): string =>
+    JSON.stringify([getProjectRoot(), getOriginalCwd(), forceIncludeExternal]),
 )
 
 function isInstructionsMemoryType(

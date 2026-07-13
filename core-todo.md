@@ -619,10 +619,12 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/gateway/slack-channel.ts:381` — `#editTargets` (Map) grows without bound: every non-edit
   `send()` inserts a `<id>-out-<n>` handle and nothing deletes; identical in discord-channel.ts:465 and
   telegram-channel.ts:779. Unbounded leak on a busy channel. **Fix:** LRU/ring cap or evict on turn completion.
-- [ ] `[V]` `runtime/src/memory/agencmd.ts:808` — `getMemoryFiles` is `memoize`d with the default resolver so its
+- [x] `[V]` `runtime/src/memory/agencmd.ts:808` — `getMemoryFiles` is `memoize`d with the default resolver so its
   key is only the `forceIncludeExternal` boolean, never the workspace cwd; combined with module-global hook flags
   the first session's memory files are returned to every other session. Part of the known daemon workspace-pinning
   family. **Fix:** key the memoize on the effective workspace cwd (when the memory subsystem is session-scoped).
+  **DONE:** added a memoize resolver keying on `JSON.stringify([getProjectRoot(), getOriginalCwd(), forceIncludeExternal])`.
+  `.cache.clear()` still works (lodash keeps `.cache` a Map). Revert-sensitive two-session test in memdir.test.ts.
 
 ### Secrets
 

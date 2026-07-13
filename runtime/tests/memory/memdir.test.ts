@@ -196,4 +196,38 @@ describe("memory prompt", () => {
     expect(truncated.content).toContain("WARNING: MEMORY.md");
     expect(truncated.content).toContain("index entries are too long");
   });
+
+  // Regression: getMemoryFiles was memoized on the forceIncludeExternal boolean
+  // alone, so a daemon serving a second session with a different cwd received
+  // the first session's project memory. The memoize key now includes the
+  // effective workspace (project root + original cwd).
+  it("does not serve one session's project memory to another session with a different cwd", async () => {
+    const repoA = join(tempRoot, "repoA");
+    const repoB = join(tempRoot, "repoB");
+    mkdirSync(repoA, { recursive: true });
+    mkdirSync(repoB, { recursive: true });
+    writeFileSync(join(repoA, "AGENC.md"), "ALPHA-WORKSPACE-MARKER");
+    writeFileSync(join(repoB, "AGENC.md"), "BRAVO-WORKSPACE-MARKER");
+
+    // Session A: point process state at repoA and load its memory fresh.
+    setProjectRoot(repoA);
+    setOriginalCwd(repoA);
+    getProjectMemoryPath.cache?.clear?.();
+    agencmd.clearMemoryFileCaches();
+    const filesA = await agencmd.getMemoryFiles();
+    expect(filesA.map((file) => file.content).join("\n")).toContain(
+      "ALPHA-WORKSPACE-MARKER",
+    );
+
+    // Session B: switch state to repoB but do NOT clear the getMemoryFiles cache
+    // (only the unrelated path memoize is refreshed). A cwd-blind cache key would
+    // now hand session B the ALPHA result computed for session A.
+    setProjectRoot(repoB);
+    setOriginalCwd(repoB);
+    getProjectMemoryPath.cache?.clear?.();
+    const filesB = await agencmd.getMemoryFiles();
+    const contentB = filesB.map((file) => file.content).join("\n");
+    expect(contentB).toContain("BRAVO-WORKSPACE-MARKER");
+    expect(contentB).not.toContain("ALPHA-WORKSPACE-MARKER");
+  });
 });
