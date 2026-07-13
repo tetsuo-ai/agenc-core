@@ -25,6 +25,7 @@ import type {
   GatewaySessionCreateOptions,
 } from "../../src/gateway/types.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { BudgetLedger } from "../../src/budget/ledger.js";
 
 const TOKEN = "hooks-test-token-0123456789";
 
@@ -52,11 +53,22 @@ class EchoSession implements GatewaySession {
 class FakeClient implements GatewayDaemonClient {
   readonly sessions: EchoSession[] = [];
   readonly labels: (string | undefined)[] = [];
+  /** When set, createSession returns a session whose prompt throws. */
+  throwOnPrompt: Error | null = null;
   #n = 0;
   async createSession(
     options?: GatewaySessionCreateOptions,
   ): Promise<GatewaySession> {
     this.labels.push(options?.label);
+    if (this.throwOnPrompt !== null) {
+      const err = this.throwOnPrompt;
+      return {
+        sessionId: `s-throw-${++this.#n}`,
+        prompt: async () => {
+          throw err;
+        },
+      } as GatewaySession;
+    }
     const s = new EchoSession(`s${++this.#n}`);
     this.sessions.push(s);
     return s;
@@ -240,6 +252,22 @@ describe("HooksServer", () => {
       "budget",
     );
     expect(client.sessions).toHaveLength(0);
+  });
+
+  test("turn throw refunds hold (ledger tokens/usd 0) with exclusive finally", async () => {
+    client.throwOnPrompt = new Error("turn exploded");
+    const url = await startServer({
+      config: {
+        budget: { enabled: true, daily_tokens: 1_000_000 },
+      } as unknown as AgenCConfig,
+    });
+    const res = await post(url, { message: "will explode", name: "ci" });
+    expect(res.status).toBe(500);
+    // Hold fully refunded after throw (zeros reconcile in finally).
+    const ledger = new BudgetLedger({ agencHome: home });
+    const snap = ledger.snapshot("hook:ci");
+    expect(snap.day.tokens).toBe(0);
+    expect(snap.day.usd).toBe(0);
   });
 
   test("non-loopback host is refused without allowNonLoopback", () => {

@@ -61,7 +61,7 @@ export interface StartHeartbeatOptions {
 }
 
 /** Adapt the task-15 BudgetEnforcer to the heartbeat's budget-gate seam. */
-function budgetGate(
+export function budgetGate(
   enforcer: BudgetEnforcer,
 ): HeartbeatBudgetGate {
   return {

@@ -202,8 +202,12 @@ export class BudgetEnforcer {
 
   /**
    * Replace a hold's worst-case estimate with the real usage and refund the
-   * delta, then fire a one-shot soft warning if a window crossed the soft
-   * threshold. Idempotent per hold (call exactly once per admitted call).
+   * delta (ledger applies `actual − estimated`), then fire a one-shot soft
+   * warning if a window crossed the soft threshold.
+   *
+   * **Not idempotent:** each call applies another `(actual − estimated)`
+   * delta. Call **exactly once** per successful admit (prefer exclusive
+   * `try`/`finally`). Zero holds (budget disabled / out of scope) are a no-op.
    */
   reconcile(hold: BudgetHold, usage: BudgetUsage): void {
     if (hold.estimatedTokens === 0 && hold.estimatedUsd === 0) {
