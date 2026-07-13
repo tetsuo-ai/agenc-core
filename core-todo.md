@@ -175,7 +175,16 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** dispatch full-turn `message.stream`/`message.send` off the per-connection FIFO (they have their
   own cancel correlation).
 
-- [ ] `[V]` **M-DAEMON-3 — Empty session routes leak on client disconnect.**
+- [~] `[V]` **M-DAEMON-3 — Empty session routes leak on client disconnect. [SKIPPED: mis-diagnosis — reaping on disconnect breaks intended reconnect-buffer design]**
+  SKIPPED after investigation. Reaping the empty route in `disconnectClient` (the proposed fix) is
+  WRONG: the existing test `client-multiplexer.dead-session-route-leak.test.ts:205` ("only consults the
+  session manager when no route exists yet") proves the route is intentionally KEPT after a transient
+  disconnect so a reconnecting client (TUI closed, session still alive) can replay buffered events
+  without a `getSession` liveness probe. Applying the fix turns that passing test RED. Buffer-only
+  routes for TERMINATED/UNKNOWN sessions are already reaped via the broadcast liveness probe (sibling
+  tests in the same file); a live session's route is reaped by `terminateSession`. A session that is
+  never terminated is a session-lifecycle concern, not a route leak — dropping its route on disconnect
+  would lose events the reconnecting client should receive. Not a bug.
   `runtime/src/app-server/client-multiplexer.ts:480` (`disconnectClient`). Removes the client from each
   route's `clientAttachmentIds` but never calls `deleteRouteIfEmpty()` (every other detach path does). A
   TUI close (removeClient → disconnectClient) leaves an empty `MutableSessionRoute` husk in `state.sessions`
@@ -592,7 +601,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Daemon
 
-- [ ] `[V]` `runtime/src/app-server/client-multiplexer.ts:480` — see **M-DAEMON-3** (empty routes leak on
+- [~] `[V]` `runtime/src/app-server/client-multiplexer.ts:480` — see **M-DAEMON-3** [SKIPPED: mis-diagnosis] (empty routes leak on
   disconnect); verifier rated it minor.
 
 ### MCP / gateway / agents
