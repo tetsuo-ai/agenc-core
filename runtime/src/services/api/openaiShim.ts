@@ -1255,13 +1255,24 @@ async function* openaiStreamToprovider(
         // in `reasoning_content` before the actual reply appears in `content`.
         // Emit reasoning as a thinking block and content as a text block.
         if (delta.reasoning_content != null && delta.reasoning_content !== '') {
-          if (!hasEmittedThinkingStart) {
+          // Reasoning can resume after its block was already closed (providers
+          // like Kimi/Moonshot, MiniMax, Z.AI interleave reasoning around content
+          // and tool calls). Reusing the old index would emit a thinking_delta
+          // against the open text block / an unstarted index and crash the
+          // consumer. Open a FRESH thinking block: if a text block is currently
+          // open, close it first, then start a new thinking block at the new index.
+          const needNewThinkingBlock = !hasEmittedThinkingStart || hasClosedThinking
+          if (needNewThinkingBlock) {
+            if (hasEmittedContentStart) {
+              yield* closeActiveContentBlock()
+            }
             yield {
               type: 'content_block_start',
               index: contentBlockIndex,
               content_block: { type: 'thinking', thinking: '' },
             }
             hasEmittedThinkingStart = true
+            hasClosedThinking = false
           }
           yield {
             type: 'content_block_delta',

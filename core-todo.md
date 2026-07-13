@@ -132,7 +132,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** resolve the Gemini/Bankr mapping into a local `providerOverride` threaded down the request path
   instead of writing `process.env`.
 
-- [ ] `[V]` **M-LLM-5 — Reasoning delta after the thinking block closes throws `RangeError`.**
+- [x] `[V]` **M-LLM-5 — Reasoning delta after the thinking block closes throws `RangeError`.**
   `runtime/src/services/api/openaiShim.ts:1257–1271` (closes at :1277–1281/:1307–1311). `hasEmittedThinkingStart`
   is never reset, so a later `delta.reasoning_content` skips `content_block_start` and emits `thinking_delta`
   at a stale index; the consumer (`services/api/anthropic.ts:2093–2147`) throws
