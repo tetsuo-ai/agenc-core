@@ -29,10 +29,14 @@ import {
   type AgencPromptResult,
 } from "./events.js";
 
+/** Cap on internally buffered, not-yet-consumed prompt events (mirrors client.ts). */
+const MAX_BUFFERED_PROMPT_EVENTS = 1_000;
+
 export interface AgencSubprocessChild {
   readonly stdin: {
     write(chunk: string): unknown;
     end(): unknown;
+    on(event: "error", listener: (error: Error) => void): unknown;
   } | null;
   readonly stdout: {
     setEncoding(encoding: string): unknown;
@@ -154,10 +158,18 @@ export function promptViaSubprocess(
     wake?.();
     wake = null;
   };
+  // Removes the abort listener on completion so a reused long-lived AbortSignal
+  // does not accumulate one dead listener per prompt run.
+  let removeAbortListener: (() => void) | null = null;
+  const runCleanup = () => {
+    removeAbortListener?.();
+    removeAbortListener = null;
+  };
   const finishOk = (value: AgencPromptResult) => {
     if (done) return;
     done = true;
     finalResult = value;
+    runCleanup();
     resolveResult(value);
     notify();
   };
@@ -165,6 +177,7 @@ export function promptViaSubprocess(
     if (done) return;
     done = true;
     failure = error;
+    runCleanup();
     rejectResult(error);
     notify();
   };
@@ -183,6 +196,7 @@ export function promptViaSubprocess(
       const event = promptEventFromNotification(parsed.event);
       if (event !== null && !done) {
         buffered.push(event);
+        while (buffered.length > MAX_BUFFERED_PROMPT_EVENTS) buffered.shift();
         notify();
       }
       return;
@@ -251,14 +265,27 @@ export function promptViaSubprocess(
   });
 
   if (options.signal !== undefined) {
+    const abortSignal = options.signal;
     const onAbort = () => child.kill("SIGTERM");
-    if (options.signal.aborted) onAbort();
-    else options.signal.addEventListener("abort", onAbort, { once: true });
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () =>
+        abortSignal.removeEventListener("abort", onAbort);
+    }
   }
 
   if (child.stdin === null) {
     finishError(new Error("AgenC CLI child has no stdin pipe"));
   } else {
+    // Without an "error" listener a broken stdin pipe (the child exited before
+    // draining stdin — startup crash, bad flag) surfaces as an uncaught EPIPE in
+    // the embedder's process. child.once("error") (above) only covers
+    // ChildProcess spawn errors, not stream errors — route those into finishError.
+    child.stdin.on("error", (error: Error) => {
+      finishError(new Error(`AgenC CLI stdin write failed: ${error.message}`));
+    });
     child.stdin.write(`${JSON.stringify({ type: "prompt", prompt })}\n`);
     child.stdin.end();
   }

@@ -324,7 +324,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   handler exists is unverified.)*
   **Fix:** wrap the awaited parent callbacks in try/catch and attach `.catch` to the floated calls.
 
-- [ ] `[V]` **M-TUI-8 — SDK subprocess transport can crash the embedder on EPIPE.**
+- [x] `[V]` **M-TUI-8 — SDK subprocess transport can crash the embedder on EPIPE.**
   `packages/agenc-sdk/src/subprocess.ts:259–264`. `promptViaSubprocess` writes to `child.stdin` and `end()`s it
   with no `error` listener on the stdin stream. If the spawned `agenc` child exits before draining stdin
   (startup crash, bad flag), the buffered write hits a closed pipe → EPIPE on the stream → no listener →
@@ -518,9 +518,11 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Ink engine
 
-- [ ] `[V]` `packages/agenc-sdk/src/subprocess.ts:253–257` — abort listener added `{once:true}` but never removed
+- [x] `[V]` `packages/agenc-sdk/src/subprocess.ts:253–257` — abort listener added `{once:true}` but never removed
   on normal completion; a reused long-lived `AbortSignal` accumulates listeners. **Fix:** removeEventListener in
   `finishOk`/`finishError`. *(Same file also: unbounded `buffered` array at :136 — cap at 1000 like `client.ts`.)*
+  **DONE:** `removeAbortListener` recorded on registration and invoked from `runCleanup()` in both finish paths;
+  `buffered` capped at `MAX_BUFFERED_PROMPT_EVENTS = 1_000` (mirrors client.ts). Fixed together with M-TUI-8.
 
 ### utils
 
