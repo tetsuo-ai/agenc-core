@@ -736,12 +736,16 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-u': 'none', // --utc - use UTC
       '--utc': 'none',
       '--universal': 'none',
-      // Output format options
-      '-I': 'none', // --iso-8601 (can have optional argument, but none type handles bare flag)
-      '--iso-8601': 'string',
+      // Output format options. --iso-8601 / --rfc-3339 take an OPTIONAL attached
+      // argument (e.g. --iso-8601=hours); 'optional' accepts the bare and =value
+      // forms without consuming a following detached token — a detached token is a
+      // positional operand (date's clock-setting MMDDhhmm), which must stay visible
+      // to the danger callback below.
+      '-I': 'optional', // --iso-8601[=TIMESPEC]
+      '--iso-8601': 'optional',
       '-R': 'none', // --rfc-email
       '--rfc-email': 'none',
-      '--rfc-3339': 'string',
+      '--rfc-3339': 'optional',
       // Debug/help
       '--debug': 'none',
       '--help': 'none',
@@ -757,14 +761,15 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       args: string[],
     ) => {
       // args are already parsed tokens after "date"
-      // Flags that require an argument
+      // Flags that require a DETACHED argument (consume the following token).
+      // --iso-8601 / --rfc-3339 are deliberately NOT here: their argument is
+      // optional and attached-only, so a following token is a positional operand
+      // (e.g. the clock-setting MMDDhhmm) that must reach the danger check below.
       const flagsWithArgs = new Set([
         '-d',
         '--date',
         '-r',
         '--reference',
-        '--iso-8601',
-        '--rfc-3339',
       ])
       let i = 0
       while (i < args.length) {

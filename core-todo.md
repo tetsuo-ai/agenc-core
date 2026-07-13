@@ -428,7 +428,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Bash classification & shell parsing
 
-- [ ] `[V]` **M-BASH-1 — `date --iso-8601 <MMDDhhmm>` misclassified as read-only (can set the system clock).**
+- [x] `[V]` **M-BASH-1 — `date --iso-8601 <MMDDhhmm>` misclassified as read-only (can set the system clock).**
   `runtime/src/tools/BashTool/readOnlyValidation.ts:740–741` (callback :761–767). `-I` is type `none` but its
   long alias `--iso-8601` is type `string` and is in the callback's `flagsWithArgs`; GNU `date` treats
   `--iso-8601` as optional-argument, so `date --iso-8601 12312359` leaves `12312359` as a positional operand
