@@ -334,7 +334,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   the same file: abort listener at :253–257 never removed on completion; `buffered` array at :136 has no cap
   while `client.ts` caps at 1000.)*
 
-- [ ] `[V]` **M-TUI-9 — AgentsRail arrow-nav follows a different order than it renders.**
+- [x] `[V]` **M-TUI-9 — AgentsRail arrow-nav follows a different order than it renders.**
   `runtime/src/tui/workbench/agents/AgentsRail.tsx:24–31`. `selectByDelta`/`selectedIndex` navigate the flat
   `taskList`, but the rail renders two partitioned sections (active, then background). For `[A running,
   B completed, C running]` the UI shows active `[A,C]` then background `[B]`, yet ↓ from A highlights B —
@@ -342,6 +342,10 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   dispatches `selectAgent` with `taskId: undefined`.
   **Fix:** navigate the rendered (partitioned) order — concat `activeTasks` then `backgroundTasks` — and guard
   the undefined id.
+  **DONE:** extracted exported `nextAgentSelectionId(taskList, selectedId, delta)` that partitions then walks
+  `[...activeTasks, ...backgroundTasks]` and returns `null` for an empty list or an unkeyed target (no
+  `taskId: undefined` dispatch); `selectByDelta` uses it (dropped the now-unused `selectedIndex`). Revert-sensitive
+  test (AgentsRail-nav.test.ts) proves rendered-order navigation vs the flat-order bug.
 
 - [ ] `[V]` **M-TUI-10 — Workbench file activity recomputes per candidate path (O(paths×tasks) with JSON.stringify).**
   `runtime/src/tui/workbench/agents/activity.ts:27–38` (`inFlightPathsFromTasks`). Invokes
