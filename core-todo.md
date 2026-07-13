@@ -588,7 +588,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/services/api/openaiShim.ts:2242–2254` — GitHub/Copilot 429 retry sleeps a fixed
   exponential ignoring the server's `Retry-After` (only used to decorate the final error). **Fix:** parse
   `retry-after` and use `max(header, backoff)`.
-- [ ] `[V]` `runtime/src/services/api/openaiShim.ts:2433–2450` — `_convertNonStreamingResponse` dereferences
+- [x] `[V]` `runtime/src/services/api/openaiShim.ts:2433–2450` — `_convertNonStreamingResponse` dereferences
   `tc.function.name`/`.arguments` without a shape check; a malformed provider response (`tool_calls:[{id:"x"}]`)
   throws a bare `TypeError` bypassing `classifyOpenAiHttpFailure`. **Fix:** skip entries where `tc.function?.name`
   isn't a string.

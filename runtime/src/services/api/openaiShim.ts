@@ -2399,7 +2399,9 @@ class OpenAiShimMessages {
           reasoning_content?: string | null
           tool_calls?: Array<{
             id: string
-            function: { name: string; arguments: string }
+            // Optional: external / provider-compatible responses may omit or
+            // malform `function`; the loop below validates before dereferencing.
+            function?: { name?: string; arguments?: string }
             extra_content?: Record<string, unknown>
           }>
         }
@@ -2457,9 +2459,18 @@ class OpenAiShimMessages {
 
     if (choice?.message?.tool_calls) {
       for (const tc of choice.message.tool_calls) {
+        // A malformed provider response (tool_calls: [{ id }] or a non-function
+        // entry) would throw a bare TypeError here, bypassing the shim's error
+        // classification. Skip such entries with a debug log instead.
+        if (typeof tc.function?.name !== 'string') {
+          logForDebugging(
+            `Skipping malformed non-streaming tool_call (id=${tc.id ?? '?'}): missing function.name`,
+          )
+          continue
+        }
         const input = normalizeToolArguments(
           tc.function.name,
-          tc.function.arguments,
+          tc.function.arguments ?? '',
         )
         content.push({
           type: 'tool_use',
