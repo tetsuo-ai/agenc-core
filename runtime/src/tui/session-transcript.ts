@@ -2617,7 +2617,8 @@ interface TranscriptState {
 
 type TranscriptAction =
   | { readonly kind: "reset"; readonly events: readonly SessionTranscriptEvent[] }
-  | { readonly kind: "append"; readonly event: SessionTranscriptEvent };
+  | { readonly kind: "append"; readonly event: SessionTranscriptEvent }
+  | { readonly kind: "appendBatch"; readonly events: readonly SessionTranscriptEvent[] };
 
 /**
  * Fields on raw transcript events that carry tool-result content. These are the
@@ -2778,6 +2779,42 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
       };
     }
+    case "appendBatch": {
+      // Apply a whole coalesced batch of events with ONE array copy and ONE
+      // re-projection (the caller flushes buffered streaming deltas here). Doing
+      // this per-event would be O(n) copy + O(n) projection PER delta — i.e.
+      // O(n²) allocation across a streaming turn, which starved the GC and OOM'd
+      // the TUI on long responses. A reset or an out-of-order event in the batch
+      // is rare and falls back to a full rebuild for correctness.
+      if (action.events.length === 0) return state;
+      if (
+        action.events.some(
+          (event) =>
+            isTranscriptResetEvent(event) ||
+            (() => {
+              const seq = eventSeq(event);
+              return seq !== null && state.maxSeq !== null && seq < state.maxSeq;
+            })(),
+        )
+      ) {
+        return buildTranscriptState([...state.events, ...action.events]);
+      }
+      const keys = state.keys as Set<string>;
+      const pending: SessionTranscriptEvent[] = [];
+      let maxSeq = state.maxSeq;
+      for (const event of action.events) {
+        const key = eventKey(event);
+        if (keys.has(key)) continue;
+        pending.push(clampEventForStorage(event));
+        keys.add(key);
+        const seq = eventSeq(event);
+        maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
+      }
+      if (pending.length === 0) return state;
+      const events = [...state.events, ...pending];
+      evictOldestEvents(events, keys);
+      return { events, keys, maxSeq };
+    }
   }
 }
 
@@ -2797,10 +2834,49 @@ export function appendSessionTranscriptEventForTesting(
   return reducer(state, { kind: "append", event });
 }
 
+export function appendSessionTranscriptBatchForTesting(
+  state: TranscriptState,
+  events: readonly SessionTranscriptEvent[],
+): TranscriptState {
+  return reducer(state, { kind: "appendBatch", events });
+}
+
 function initialEvents(session: AgenCBridgeSession): readonly SessionTranscriptEvent[] {
   const fromGetter = session.getInitialTranscriptEvents?.();
   const fromProperty = session.initialTranscriptEvents;
   return [...((fromGetter ?? fromProperty ?? []) as readonly SessionTranscriptEvent[])];
+}
+
+/**
+ * Coalescing window for streaming events (~30fps). Bounds how often the
+ * transcript re-projects + re-renders during a fast streaming turn regardless
+ * of delta rate; the ~33ms of added latency on streaming text is imperceptible.
+ */
+const TRANSCRIPT_COALESCE_MS = 33;
+
+/**
+ * True for the high-frequency streaming deltas that are safe to batch. Only the
+ * per-token text/thinking deltas coalesce; every structural event (tool calls,
+ * results, turn boundaries, user messages) flushes immediately so the UI never
+ * lags behind a change in shape.
+ */
+const COALESCABLE_STREAMING_TYPES: ReadonlySet<string> = new Set([
+  "agent_message_delta",
+  "assistant_thinking_delta",
+  "assistant_text",
+  "realtime_transcript_delta",
+]);
+
+function isCoalescableStreamingEvent(event: SessionTranscriptEvent): boolean {
+  const record = event as { type?: unknown; msg?: { type?: unknown } };
+  // Event-log shape carries `.type`; phase-event shape nests it under `.msg`.
+  const type =
+    typeof record.type === "string"
+      ? record.type
+      : typeof record.msg?.type === "string"
+        ? record.msg.type
+        : undefined;
+  return type !== undefined && COALESCABLE_STREAMING_TYPES.has(type);
 }
 
 export function useSessionTranscript(
@@ -2818,8 +2894,46 @@ export function useSessionTranscript(
   }, [session]);
 
   useEffect(() => {
+    // Coalesce incoming events into ~30fps batches. High-frequency streaming
+    // deltas (agent_message_delta / assistant_thinking_delta) otherwise dispatch
+    // once each, and every dispatch re-copies the events array AND re-projects
+    // the whole transcript — O(n²) work + garbage across a long streaming turn,
+    // which OOM'd the TUI. Buffering flushes them as one `appendBatch`; a
+    // non-streaming event (tool result, turn boundary, user message) flushes
+    // immediately so the UI stays responsive to structure changes.
+    const buffer: SessionTranscriptEvent[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const flush = (): void => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (buffer.length === 0) return;
+      const batch = buffer.splice(0, buffer.length);
+      dispatch(
+        batch.length === 1
+          ? { kind: "append", event: batch[0]! }
+          : { kind: "appendBatch", events: batch },
+      );
+    };
+
+    const enqueue = (event: SessionTranscriptEvent, immediate: boolean): void => {
+      buffer.push(event);
+      if (immediate) {
+        flush();
+        return;
+      }
+      if (timer === null) {
+        timer = setTimeout(flush, TRANSCRIPT_COALESCE_MS);
+        if (typeof (timer as { unref?: () => void }).unref === "function") {
+          (timer as { unref: () => void }).unref();
+        }
+      }
+    };
+
     const unsubscribeLog = session.eventLog?.subscribe((event) => {
-      dispatch({ kind: "append", event });
+      enqueue(event, !isCoalescableStreamingEvent(event));
     });
     const unsubscribePhase = session.subscribeToEvents?.((event) => {
       if (
@@ -2827,12 +2941,14 @@ export function useSessionTranscript(
         typeof event === "object" &&
         ("type" in event || "msg" in event)
       ) {
-        dispatch({ kind: "append", event: event as SessionTranscriptEvent });
+        const typed = event as SessionTranscriptEvent;
+        enqueue(typed, !isCoalescableStreamingEvent(typed));
       }
     });
     return () => {
       unsubscribeLog?.();
       unsubscribePhase?.();
+      flush();
     };
   }, [session]);
 
