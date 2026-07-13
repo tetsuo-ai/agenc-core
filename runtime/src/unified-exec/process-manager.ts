@@ -16,6 +16,7 @@ import {
 import {
   type ExecCommandRequest,
   type ExecCommandToolOutput,
+  type TerminateProcessRequest,
   type UnifiedExecManagerOptions,
   type UnifiedExecProcessManagerLike,
   type UnifiedExecRuntimeSandbox,
@@ -25,6 +26,7 @@ import {
   type WriteStdinRequest,
   UnifiedExecError,
 } from "./types.js";
+import { assertProcessOwnerAccess } from "./process-ownership.js";
 import {
   loadPty as loadRequiredPty,
   type IPty,
@@ -257,6 +259,8 @@ interface ProcessEntry {
   readonly cwd: string;
   readonly tty: boolean;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
+  /** Conversation/agent that started this process (TOOL-01 isolation). */
+  readonly ownerId?: string;
   readonly startedAt: number;
   readonly output: ProcessOutputBuffer;
   readonly stored: StoredProcess;
@@ -269,6 +273,19 @@ interface ProcessEntry {
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
+}
+
+function enforceOwnerAccess(
+  entry: ProcessEntry,
+  requestOwnerId: string | undefined,
+): void {
+  const decision = assertProcessOwnerAccess({
+    entryOwnerId: entry.ownerId,
+    requestOwnerId,
+  });
+  if (!decision.ok) {
+    throw new UnifiedExecError("owner_denied", decision.reason);
+  }
 }
 
 function makeDeferredExit(): {
@@ -401,6 +418,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const startedAt = Date.now();
     const callId = request.callId ?? `exec-${processId}`;
     const tty = request.tty === true;
+    const ownerId =
+      typeof request.ownerId === "string" && request.ownerId.trim().length > 0
+        ? request.ownerId.trim()
+        : undefined;
     const entry = await this.spawnProcess({
       processId,
       callId,
@@ -415,6 +436,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(spawnCommand.argv0 !== undefined
         ? { argv0: spawnCommand.argv0 }
         : {}),
+      ...(ownerId !== undefined ? { ownerId } : {}),
       tty,
       startedAt,
       signal: request.__abortSignal,
@@ -480,6 +502,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         `Unknown process id ${request.session_id}`,
       );
     }
+    enforceOwnerAccess(entry, request.ownerId);
     const input = request.chars ?? "";
     if (
       request.runtimeSandbox !== undefined &&
@@ -545,12 +568,24 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
    * kill half of the run-in-background / poll / kill trio). Unknown or
    * already-exited ids report `terminated: false` rather than throwing —
    * killing a finished process is a benign race, not an error.
+   * Ownership mismatches throw `owner_denied` (TOOL-01).
    */
-  terminateProcess(processId: number): { terminated: boolean } {
+  terminateProcess(
+    processIdOrRequest: number | TerminateProcessRequest,
+  ): { terminated: boolean } {
+    const processId =
+      typeof processIdOrRequest === "number"
+        ? processIdOrRequest
+        : processIdOrRequest.processId;
+    const ownerId =
+      typeof processIdOrRequest === "number"
+        ? undefined
+        : processIdOrRequest.ownerId;
     const entry = this.processes.get(processId);
     if (!entry || entry.exitState !== null) {
       return { terminated: false };
     }
+    enforceOwnerAccess(entry, ownerId);
     this.forceTerminate(entry);
     return { terminated: true };
   }
@@ -613,6 +648,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly cwd: string;
     readonly env: Record<string, string>;
     readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
+    readonly ownerId?: string;
     readonly argv0?: string;
     readonly tty: boolean;
     readonly startedAt: number;
@@ -632,6 +668,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(params.runtimeSandbox !== undefined
         ? { runtimeSandbox: params.runtimeSandbox }
         : {}),
+      ...(params.ownerId !== undefined ? { ownerId: params.ownerId } : {}),
       startedAt: params.startedAt,
       output,
       callId: params.callId,

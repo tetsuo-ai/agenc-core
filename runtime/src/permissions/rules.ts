@@ -159,6 +159,10 @@ export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
   "exec_command",
   "desktop.bash",
   "shell",
+  // TOOL-02: interactive continuation + kill are shell channels.
+  "write_stdin",
+  "kill_process",
+  "PowerShell",
 ]);
 
 const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =

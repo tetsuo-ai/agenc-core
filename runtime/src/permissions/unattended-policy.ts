@@ -32,6 +32,11 @@ const TOOL_ALIASES = Object.freeze({
   // allowed) in unattended/--autonomous mode.
   exec_command: "system.bash",
   "desktop.bash": "system.bash",
+  // TOOL-02 / SEC-04: stdin/kill/shell aliases collapse onto system.bash.
+  write_stdin: "system.bash",
+  kill_process: "system.bash",
+  shell: "system.bash",
+  powershell: "system.bash",
   fileedit: "Edit",
   filewrite: "Write",
   read: "FileRead",

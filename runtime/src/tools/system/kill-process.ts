@@ -10,6 +10,8 @@ import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { UnifiedExecError } from "../../unified-exec/types.js";
 
 export interface KillProcessToolConfig {
   readonly cwd?: string;
@@ -46,10 +48,11 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       mutating: true,
       deferred: false,
     },
-    requiresApproval: false,
+    // TOOL-02 / TOOL-11: kill is side-effecting and must not opt out of approval.
+    requiresApproval: true,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
-    recoveryCategory: "idempotent",
+    recoveryCategory: "side-effecting",
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
@@ -85,16 +88,36 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           isError: true,
         };
       }
-      const outcome = manager.terminateProcess(sessionId);
-      return {
-        content: safeStringify({
-          session_id: sessionId,
-          terminated: outcome.terminated,
-          ...(outcome.terminated
-            ? {}
-            : { note: "no live process with this id (already exited or unknown)" }),
-        }),
-      };
+      const ownerId = processOwnerIdFromToolArgs(args);
+      try {
+        const outcome = manager.terminateProcess({
+          processId: sessionId,
+          ...(ownerId !== undefined ? { ownerId } : {}),
+        });
+        return {
+          content: safeStringify({
+            session_id: sessionId,
+            terminated: outcome.terminated,
+            ...(outcome.terminated
+              ? {}
+              : {
+                  note: "no live process with this id (already exited or unknown)",
+                }),
+          }),
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        return {
+          content: safeStringify({
+            error: message,
+            ...(error instanceof UnifiedExecError
+              ? { code: error.code }
+              : {}),
+          }),
+          isError: true,
+        };
+      }
     },
   };
 }

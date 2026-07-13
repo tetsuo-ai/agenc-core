@@ -80,6 +80,8 @@ export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
   readonly timeoutMs?: number;
   readonly observer?: UnifiedExecObserver;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
+  /** Conversation/agent owner id for multi-agent process isolation (TOOL-01). */
+  readonly ownerId?: string;
 }
 
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
@@ -89,6 +91,13 @@ export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
   readonly yield_time_ms?: number;
   readonly max_output_tokens?: number;
   readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
+  /** Must match the owning session when the process was stamped with an owner. */
+  readonly ownerId?: string;
+}
+
+export interface TerminateProcessRequest {
+  readonly processId: number;
+  readonly ownerId?: string;
 }
 
 export interface ExecCommandToolOutput {
@@ -110,8 +119,14 @@ export interface UnifiedExecProcessManagerLike {
   readonly maxTimeoutMs: number;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput>;
-  /** Terminate one live background process by its session/process id. */
-  terminateProcess?(processId: number): { terminated: boolean };
+  /**
+   * Terminate one live background process by its session/process id.
+   * Prefer the request form so ownership can be checked (TOOL-01).
+   * Numeric overload kept for call-site compatibility.
+   */
+  terminateProcess?(
+    processIdOrRequest: number | TerminateProcessRequest,
+  ): { terminated: boolean };
   closeAll(reason?: string): Promise<void>;
 }
 
@@ -122,7 +137,8 @@ export class UnifiedExecError extends Error {
     | "unknown_process"
     | "stdin_closed"
     | "write_stdin"
-    | "process_limit";
+    | "process_limit"
+    | "owner_denied";
 
   constructor(
     code: UnifiedExecError["code"],

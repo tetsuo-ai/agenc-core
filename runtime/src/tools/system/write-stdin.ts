@@ -4,6 +4,7 @@ import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -61,7 +62,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
       mutating: true,
       deferred: false,
     },
-    requiresApproval: false,
+    // TOOL-02: non-empty stdin is a second shell channel; require approval
+    // under on_request (empty poll still hits approval once — safer than opt-out).
+    requiresApproval: true,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
     recoveryCategory: "side-effecting",
@@ -136,6 +139,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           args,
           config?.cwd ?? process.cwd(),
         );
+        const ownerId = processOwnerIdFromToolArgs(
+          args as Record<string, unknown>,
+        );
         const output = await manager.writeStdin({
           session_id: sessionId,
           callId: asString(args.__callId),
@@ -153,6 +159,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             ? { __onProgress: args.__onProgress }
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
+          ...(ownerId !== undefined ? { ownerId } : {}),
         });
         // gaphunt3 #4: mirror exec-command.ts so a signal-killed process
         // (exitCode === null, no process_id) is reported as an error instead
