@@ -615,7 +615,19 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### utils
 
-- [ ] `[V]` `runtime/src/utils/toolResultStorage.ts:836` — the entire aggregate per-message tool-result budget
+- [~] `[V]` `runtime/src/utils/toolResultStorage.ts:836` [SKIPPED: the "~450 LOC dead engine" claim is largely
+  REFUTED by a whole-repo grep, and the safe subset needs surgical helper-tracing that risks the live tool-result
+  path. Evidence: `utils/toolResultStorage.ts` has ~10 live importers; the audit's own named-as-dead symbols
+  `reconstructForSubagentResume` (imported by tools/AgentTool/resumeAgent.ts) and the `ContentReplacementState`
+  type (tools/Tool.ts, tools/AgentTool/runAgent.ts) are LIVE, and many helpers (createContentReplacementState,
+  cloneContentReplacementState, applyToolResultReplacementsToMessages, reconstructContentReplacementState) are used
+  by that live path. Only the four budget functions (enforceToolResultBudget, applyToolResultBudget,
+  getPerMessageBudgetLimit, provisionContentReplacementState) are genuinely superseded — production run-turn.ts
+  imports `applyToolResultBudget` from `session/_deps/tool-result-storage.js`, and NONE of the four are imported
+  from `utils/toolResultStorage` anywhere. Recommend a dedicated pass that removes ONLY those four + their
+  exclusive helpers after tracing that they share no helper with the live exports; NOT the blanket ~450 LOC delete
+  described here. Matches the "verify a file is actually obsolete before deleting" rule.] — the entire aggregate
+  per-message tool-result budget
   engine (`enforceToolResultBudget`, `applyToolResultBudget`, `provisionContentReplacementState` (hard-disabled
   `const enabled=false`), `getPerMessageBudgetLimit` (dead GrowthBook branch) + ~15 helpers, ~450 LOC) is dead —
   superseded by `session/_deps/tool-result-storage.ts`. This is the flagged dead "shed budget" follow-up (stale
