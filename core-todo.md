@@ -351,7 +351,18 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   caught it via this pre-existing test; corrected here. In-dialog error banner UI is still a follow-up (needs new
   component state in the compiled output).
 
-- [ ] `[V]` **M-TUI-7 — PromptInput submit path floats async work with no catch.**
+- [~] `[V]` **M-TUI-7 — PromptInput submit path floats async work with no catch.** [SKIPPED: risky shared hot path
+  + no feasible isolated reproduction. `onSubmit` is THE main prompt-input handler (a huge useCallback deeply wired
+  to the store, teamContext, speculation, suggestions, and parent callbacks). The fix needs surgical try/catch
+  around each awaited parent callback (onAgentSubmit :1425, sendDirectMemberMessage :1375, onSubmitProp) PLUS a
+  `.catch(logError)` on the floated `void onSubmitProp(...)` at :1340 — a broad try/catch around the whole handler
+  would swallow errors that specific sites handle by return value (e.g. sendDirectMemberMessage's { success,
+  error } checked at :1376), changing control flow. A revert-sensitive unhandled-rejection test would have to mock
+  the entire submit environment (store, teamContext, speculation state, suggestions, onAgentSubmit,
+  sendDirectMemberMessage, writeToMailbox). Recommend: `.catch(logError)` on the floated call, and wrap ONLY the
+  awaited callback expressions (not the surrounding control flow) so return-value handling is preserved; verify
+  under the component's render harness. The audit itself notes the process-level unhandledRejection impact is
+  unverified.] —
   `runtime/src/tui/components/PromptInput/PromptInput.tsx:1340` (also :691, :2163 invocation; :1375/:1425/:1519
   awaited callbacks). `onSubmit` is `void`-invoked from the history-search callback and the `chat:submit`
   keybinding; inside it `onSubmitProp` is itself floated on the speculation-accept path while `onAgentSubmit`/
@@ -861,8 +872,15 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **DONE:** extracted `assertTarExtractionSucceeded(res)` — checks `res.error` first and reports "tar not found on
   PATH — install tar …" for ENOENT (and "failed to run tar: …" for other spawn errors) before the status check.
   Revert-sensitive test (update-cli-tar.test.ts) proves the clear message vs the old "status null" text.
-- [ ] 154 total unused exports reported by knip (full list: `scratchpad/knip.txt`) — triage before deleting; many
-  are test-only or public-API surface. Consider wiring `check:unused` into CI once triaged.
+- [~] 154 total unused exports reported by knip [SKIPPED: this is a triage/process meta-task, not a single fix,
+  and the item itself says "triage before deleting; many are test-only or public-API surface." Blanket-deleting
+  154 exports risks breaking the SDK/public surface and test-only helpers, and the referenced `scratchpad/knip.txt`
+  is from a prior session (not present now, and would be stale). The obvious dead exports flagged by their own
+  audit items were already removed this branch (visibleTreePaths, isActiveTaskStatus, gateway/heartbeat barrels).
+  Recommend a dedicated pass: re-run knip, categorize each export (truly-dead → delete with a per-symbol
+  whole-repo grep; test-only → keep or move under tests/; SDK/public-API → keep and annotate why), then wire
+  `check:unused` into CI with an allowlist for the intentional exports.] — full list was `scratchpad/knip.txt`;
+  many are test-only or public-API surface. Consider wiring `check:unused` into CI once triaged.
 
 ---
 
