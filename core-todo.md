@@ -586,9 +586,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `AgentsRail`). **Fix:** delete the component (keep the still-used sibling helpers).
 - [~] `[V]` `runtime/src/tui/components/memory/MemoryUpdateNotification.tsx:16` [SKIPPED: NOT safe to remove — has TEST callers (MemoryUpdateNotification.test.tsx, .runtime-coverage render it). Recommend removing component + its coverage tests together] — dead component, zero importers
   (only the sibling `getRelativeMemoryPath` is imported). **Fix:** delete.
-- [ ] `[V]` `runtime/src/tui/workbench/buffer/render.tsx:168–208` — `renderTerminalCellsToAnsi` rebuilds the
+- [x] `[V]` `runtime/src/tui/workbench/buffer/render.tsx:168–208` — `renderTerminalCellsToAnsi` rebuilds the
   highlight `Map` per row (O(rows×highlights) per Neovim redraw). **Fix:** build the map once in
   `terminalAnsiLines` and pass it down.
+  **DONE:** `terminalAnsiLines` builds the `Map<id, highlight>` once and passes it to `renderTerminalCellsToAnsi`
+  (signature changed from the `highlights` array to a `ReadonlyMap`; sole caller). Behavior-preserving. Revert-
+  sensitive test (render-highlight-map.test.tsx): a 6-row snapshot builds the map once (`highlights.map` spy = 1)
+  vs 6× when reverted to per-row.
 - [ ] `[V]` `runtime/src/tui/workbench/surfaces/ShellSurface.tsx:39–43` — unconditionally blanks the tail on any
   `status` change (running→completed flickers output blank for one cycle); the sibling `AgentSurface` guards this.
   **Fix:** match the guarded pattern.
