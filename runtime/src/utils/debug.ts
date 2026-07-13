@@ -406,18 +406,27 @@ export function getDebugLogPath(): string {
   )
 }
 
-const updateLatestDebugLogSymlink = memoize(async (): Promise<void> => {
+// Last target the `latest` symlink was pointed at. NOT memoized on the empty
+// arg list: the debug log path is session-scoped (getSessionId), and /resume
+// switches the active session id, so a memoized once-per-process updater left the
+// `latest` symlink pointing at the pre-resume session file forever. Re-link only
+// when the resolved target actually changes.
+let lastLinkedDebugLogPath: string | null = null
+
+export async function updateLatestDebugLogSymlink(): Promise<void> {
   try {
     const debugLogPath = getDebugLogPath()
+    if (debugLogPath === lastLinkedDebugLogPath) return
     const debugLogsDir = dirname(debugLogPath)
     const latestSymlinkPath = join(debugLogsDir, 'latest')
 
     await unlink(latestSymlinkPath).catch(() => {})
     await symlink(debugLogPath, latestSymlinkPath)
+    lastLinkedDebugLogPath = debugLogPath
   } catch {
     // Symlink updates are best effort for platforms and filesystems without support.
   }
-})
+}
 
 export function logAntError(_context: string, _error: unknown): void {
   // Internal-only elevated error surfacing is disabled in AgenC.

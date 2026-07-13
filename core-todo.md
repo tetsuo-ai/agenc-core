@@ -532,7 +532,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/utils/toolResultStorage.ts:53` — `getPersistenceThreshold` (live) has a permanently-dead
   per-tool override lookup (`const overrides = {}` → `overrides?.[toolName]` always undefined). **Fix:** remove
   the dead branch.
-- [ ] `[V]` `runtime/src/utils/debug.ts:409` — `updateLatestDebugLogSymlink` is `memoize`d with no args so it runs
+- [x] `[V]` `runtime/src/utils/debug.ts:409` — `updateLatestDebugLogSymlink` is `memoize`d with no args so it runs
   once per process; after `/resume` switches the session id, writes go to the new `<id>.txt` but the `debug/latest`
   symlink still points at the pre-resume file, so `tail -f ~/.agenc/debug/latest` follows the wrong log.
   **Fix:** re-link on target mismatch / session switch; don't memoize.
