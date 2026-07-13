@@ -536,7 +536,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   once per process; after `/resume` switches the session id, writes go to the new `<id>.txt` but the `debug/latest`
   symlink still points at the pre-resume file, so `tail -f ~/.agenc/debug/latest` follows the wrong log.
   **Fix:** re-link on target mismatch / session switch; don't memoize.
-- [ ] `[V]` `runtime/src/utils/ripgrep.ts:567` — `countFilesRoundedRg` + private `ripGrepFileCount` (:326) have
+- [x] `[V]` `runtime/src/utils/ripgrep.ts:567` — `countFilesRoundedRg` + private `ripGrepFileCount` (:326) have
   zero callers; if ever wired, `memoize` would cache a transient-timeout `undefined` permanently. **Fix:** remove,
   or don't memoize failure/undefined.
 - [~] `[V]` `runtime/src/utils/memoize.ts:40` [SKIPPED: keep — the recommended fix for sandbox-runtime.ts:451 (checkDependencies TTL) gives memoizeWithTTL a live caller, so it is not dead once that is wired] — `memoizeWithTTL` (sync) has no callers (only the async/LRU variants
