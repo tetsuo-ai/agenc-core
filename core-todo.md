@@ -545,9 +545,16 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **DONE:** `const keys = new Set(state.keys)` before `add`/`evictOldestEvents` (bounded by ring eviction).
   Revert-sensitive test (session-transcript-reducer-purity.test.ts) proves the prev state is untouched and a
   double-invoke keeps the event.
-- [ ] `[V]` `runtime/src/tui/ink/ink.tsx:1642` — `StylePool` is created once and never reset (unlike CharPool/
+- [x] `[V]` `runtime/src/tui/ink/ink.tsx:1642` — `StylePool` is created once and never reset (unlike CharPool/
   HyperlinkPool rotated every 5 min); `styles`/`ids`/`transitionCache` (worst case O(usedStyles²)) grow unbounded
   over a long truecolor session. **Fix:** rotate StylePool in `resetPools()` or cap `transitionCache`.
+  **DONE (cap transitionCache):** FIFO-capped the `(fromId,toId)` transitionCache at 16_384 — it is the
+  O(usedStyles²) dominant growth, and eviction is behavior-preserving (an evicted pair recomputes on next use).
+  Revert-sensitive test: 200 distinct styles → ~39,800 transition pairs stay capped at 16,384 (vs 39,800 uncapped).
+  NOTE: chose the cap over rotating the pool — `stylePool` is `readonly` and rotating it would require migrating
+  style IDs held by the frames (like `migrateScreenPools` does for CharPool), a riskier change. The linear
+  `ids`/`styles` growth (one entry per DISTINCT interned style) is bounded by the truecolor palette actually used
+  and would need that ID-migrating rotation; left as a follow-up.
 - [x] `[V]` `runtime/src/tui/ink/parse-keypress.ts:199` — `inputToString()` mutates the caller-owned Buffer in
   place (`input[0] -= 128`); an aliasing hazard for non-utf8 callers of the exported `parseMultipleKeypresses`
   (production input path is utf8-string, so effectively dead there). **Fix:** build the string without mutating.
