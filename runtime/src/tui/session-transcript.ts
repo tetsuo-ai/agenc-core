@@ -2763,12 +2763,14 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         return buildTranscriptState([...state.events, action.event]);
       }
 
-      // Append in place to a fresh array + persistent key Set. Mutating a single
-      // Set (rather than `new Set([...state.keys, key])`) keeps per-event work
-      // O(1) instead of O(n); ring-buffer eviction prunes the oldest keys so the
-      // Set stays bounded alongside the events array.
+      // Clone the key Set rather than mutating `state.keys` in place: a reducer
+      // must be pure. Under React StrictMode's dev double-invoke the reducer runs
+      // twice with the same prev state; an in-place `state.keys.add(key)` on the
+      // first invoke made the second invoke see the key as already-present and
+      // drop the event from the committed render. The clone is O(n) in the Set
+      // size, but ring-buffer eviction bounds that Set alongside the events array.
       const events = [...state.events, clampEventForStorage(action.event)];
-      const keys = state.keys as Set<string>;
+      const keys = new Set(state.keys);
       keys.add(key);
       evictOldestEvents(events, keys);
 

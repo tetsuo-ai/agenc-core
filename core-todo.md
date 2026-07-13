@@ -473,9 +473,12 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### TUI
 
-- [ ] `[V]` `runtime/src/tui/session-transcript.ts:2771` — `append` reducer mutates the previous state's `keys`
+- [x] `[V]` `runtime/src/tui/session-transcript.ts:2771` — `append` reducer mutates the previous state's `keys`
   Set in place and returns it (impure reducer). Under StrictMode dev double-invoke, invoke #2 sees the key already
   present and drops the event from the committed render. Prod unaffected. **Fix:** clone before `add`/`evict`.
+  **DONE:** `const keys = new Set(state.keys)` before `add`/`evictOldestEvents` (bounded by ring eviction).
+  Revert-sensitive test (session-transcript-reducer-purity.test.ts) proves the prev state is untouched and a
+  double-invoke keeps the event.
 - [ ] `[V]` `runtime/src/tui/ink/ink.tsx:1642` — `StylePool` is created once and never reset (unlike CharPool/
   HyperlinkPool rotated every 5 min); `styles`/`ids`/`transitionCache` (worst case O(usedStyles²)) grow unbounded
   over a long truecolor session. **Fix:** rotate StylePool in `resetPools()` or cap `transitionCache`.
