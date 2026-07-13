@@ -157,7 +157,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Daemon / concurrency
 
-- [ ] `[V]` **M-DAEMON-1 — `listSessions`/`countSessions` are O(N²) and hold the hot-path session lock.**
+- [~] `[V]` **M-DAEMON-1 [SKIPPED: fix relocates a full thread-store scan out of the shared session AsyncLock and pushes cursor/limit into ListThreads — a change to the daemon hot path (getSession) the goal guardrail says needs approval; recommend scanning outside the lock with an invalidatable cache] — `listSessions`/`countSessions` are O(N²) and hold the hot-path session lock.**
   `runtime/src/app-server/session-lifecycle.ts:218` (`#listPersistedSessions` :266–293). Both run inside the
   shared session `AsyncLock` and scan the ENTIRE thread store (pageSize 500) per page, then slice — so
   paginating K pages is O(N·K) full-store SQLite reads while holding the lock that guards `getSession()`
@@ -166,7 +166,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** scan the thread store outside the lock (or cache with invalidation) and push cursor/limit into
   `ThreadStore.listThreads` so a page reads one page.
 
-- [ ] `[V]` **M-DAEMON-2 — Head-of-line blocking: control RPCs queue behind a full turn.**
+- [~] `[V]` **M-DAEMON-2 [SKIPPED: fix dispatches full-turn message.stream off the per-connection FIFO — an architectural change to connection dispatch (risky shared hot path) needing approval; recommend routing streams off the FIFO given their own cancel correlation] — Head-of-line blocking: control RPCs queue behind a full turn.**
   `runtime/src/app-server/transport/stdio.ts:168` (identical chain in `transport/websocket.ts:469`). The
   per-connection dispatch chain serializes non-preemptive requests FIFO; `message.stream`/`message.send`
   are non-preemptive and await the entire turn. The TUI drives streams AND interactive control RPCs
