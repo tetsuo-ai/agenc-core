@@ -47,6 +47,8 @@ import {
 import { Box } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
+import { useTheme } from "../tui/components/design-system/ThemeProvider.js";
+import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
@@ -180,6 +182,20 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
   });
 
 const THEME_CHOICES = Object.freeze(["dark", "light", "system"] as const);
+
+/**
+ * Map a wizard theme choice to the config `ThemeSetting` the ThemeProvider
+ * consumes. The wizard says "system"; the theme engine calls that "auto".
+ * Returns undefined for anything unknown so callers can no-op safely.
+ */
+export function wizardThemeToSetting(
+  choice: string,
+): ThemeSetting | undefined {
+  if (choice === "dark") return "dark";
+  if (choice === "light") return "light";
+  if (choice === "system") return "auto";
+  return undefined;
+}
 const LOCAL_PROVIDERS = new Set<BuiltInProviderSlug>([
   "ollama",
   "lmstudio",
@@ -1402,6 +1418,26 @@ export function Onboarding({
   currentStep,
   context,
 }: OnboardingProps): React.ReactElement {
+  // Apply the theme choice LIVE (and persist it — the provider's setter saves
+  // to global config). Selecting "light" previously only landed in
+  // onboarding.json, which nothing reads for rendering, so the session stayed
+  // dark and the choice silently evaporated. The seed value on mount is
+  // deliberately NOT applied: re-running the wizard must not overwrite the
+  // user's configured theme until they actually change the selection.
+  const [, setThemeSetting] = useTheme();
+  const appliedThemeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const mapped = wizardThemeToSetting(state.selectedTheme);
+    if (mapped === undefined) return;
+    if (appliedThemeRef.current === null) {
+      appliedThemeRef.current = state.selectedTheme;
+      return;
+    }
+    if (appliedThemeRef.current === state.selectedTheme) return;
+    appliedThemeRef.current = state.selectedTheme;
+    setThemeSetting?.(mapped);
+  }, [state.selectedTheme, setThemeSetting]);
+
   const terminalSize = useContext(TerminalSizeContext);
   const columns =
     terminalSize && Number.isFinite(terminalSize.columns)
