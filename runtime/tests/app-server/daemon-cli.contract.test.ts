@@ -1741,7 +1741,7 @@ backend = "local"
           jsonrpc: "2.0",
           id: "create",
           method: "agent.create",
-          params: { objective: "realtime thread state" },
+          params: {cwd: process.cwd(),  cwd: process.cwd(),  objective: "realtime thread state" },
         })}\n`,
       );
       const created = JSON.parse(await readSocketLine(socket)) as {
@@ -1924,7 +1924,7 @@ backend = "local"
         timeoutMs: 1000,
       });
 
-      const created = await writerClient.request("agent.create", {
+      const created = await writerClient.request("agent.create", { cwd: process.cwd(),
         objective: "health state",
       });
       if (created.sessionId === undefined)
@@ -2026,7 +2026,7 @@ backend = "local"
         timeoutMs: 1000,
       });
 
-      const created = await client.request("agent.create", {
+      const created = await client.request("agent.create", { cwd: process.cwd(),
         objective: "prove dispatcher boot injection",
       });
       expect(created.agentId).toBe("agent_boot_injection");

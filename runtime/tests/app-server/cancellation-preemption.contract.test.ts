@@ -309,7 +309,7 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "run a tool" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "run a tool" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -370,7 +370,7 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "run a tool" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "run a tool" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -434,7 +434,7 @@ describe("AgenC daemon cancellation and preemption", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "wait for cancel" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for cancel" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });

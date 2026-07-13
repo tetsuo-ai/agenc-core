@@ -14,6 +14,10 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
 import { ThreadNotFoundError } from "../thread-store/store.js";
+import {
+  requireAbsoluteWorkspaceCwd,
+  WorkspaceCwdError,
+} from "./workspace-cwd.js";
 import type {
   StoredThread,
   ThreadSource,
@@ -126,20 +130,30 @@ export class AgenCDaemonSessionManager {
   }
 
   async createSession(
-    params: SessionCreateParams = {},
+    params: SessionCreateParams,
   ): Promise<SessionCreateResult> {
     const sessionId = this.#createSessionId();
     const createdAt = this.#now();
     const agentId = nonEmptyString(params.agentId) ?? this.#defaultAgentId;
+    // DAE-02: cwd is required identity for new sessions (absolute workspace).
+    let cwd: string;
+    try {
+      cwd = requireAbsoluteWorkspaceCwd(params.cwd, "session.create");
+    } catch (error) {
+      if (error instanceof WorkspaceCwdError) {
+        throw new AgenCSessionLifecycleError("INVALID_ARGUMENT", error.message);
+      }
+      throw error;
+    }
     const session: MutableSession = {
       sessionId,
       agentId,
       status: "idle",
       createdAt,
       attachments: new Map(),
+      cwd,
     };
 
-    if (params.cwd !== undefined) session.cwd = params.cwd;
     if (params.initialPrompt !== undefined) {
       session.initialPrompt = params.initialPrompt;
     }

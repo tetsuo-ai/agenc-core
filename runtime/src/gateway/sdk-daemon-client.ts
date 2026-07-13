@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 /**
  * Production {@link GatewayDaemonClient} backed by `@tetsuo-ai/agenc-sdk`
  * (TODO task 6; agent provisioning TODO task 34).
@@ -232,11 +234,13 @@ export async function createSdkDaemonClient(
       // Passive agent: empty initialContent suppresses the turn-1 objective
       // submit, so provisioning costs zero LLM calls. The objective string is
       // operator-facing metadata (agent.list) only.
+      // DAE-02: always pass absolute workspace cwd (gateway process workspace).
+      const cwd = resolve(options.cwd ?? process.cwd());
       const created = await client.spawnAgent({
         objective:
           label !== undefined ? `gateway: ${label}` : "gateway session",
         initialContent: [],
-        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+        cwd,
         ...(options.permissionMode !== undefined
           ? { permissionMode: options.permissionMode }
           : {}),

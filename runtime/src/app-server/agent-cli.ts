@@ -10,6 +10,7 @@
 
 import { createConnection } from "node:net";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import {
   ensureAgenCDaemonAutostart,
@@ -811,7 +812,8 @@ async function startAgenCAgent(
     const result = await client.createAgent({
       objective,
       instructions: objective,
-      cwd: options.cwd ?? processCwd(),
+      // DAE-02: absolute workspace identity from the CLI process (never omit).
+      cwd: resolve(options.cwd ?? processCwd()),
       metadata: { source: "agenc agent start" },
       ...(command.unattendedAllow.length > 0
         ? { unattendedAllow: command.unattendedAllow }

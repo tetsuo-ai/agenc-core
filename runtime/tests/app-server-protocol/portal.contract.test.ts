@@ -175,7 +175,7 @@ describe("AgenC portal protocol contract", () => {
       id: "start-1",
       method: "agent.create",
       params: {
-        objective: "Run the background dashboard smoke test",
+        cwd: process.cwd(), objective: "Run the background dashboard smoke test",
         cwd: "/workspace",
         initialContent: "Start from the portal dashboard",
         unattendedAllow: ["FileRead"],

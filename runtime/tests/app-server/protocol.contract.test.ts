@@ -344,7 +344,7 @@ describe("AgenC daemon protocol surface", () => {
         id: 2,
         method: "agent.create",
         params: {
-          objective: "Inspect daemon status",
+          cwd: process.cwd(), objective: "Inspect daemon status",
           cwd: "/workspace",
           model: "grok-4",
           unattendedAllow: ["FileRead", "Grep"],

@@ -1,10 +1,10 @@
 /**
- * DAE-02: Prefer an explicit workspace env over the daemon process cwd so
- * multi-project agents don't inherit the first shell that autostarted the
- * daemon when `cwd` is omitted on create.
+ * Default cwd for *daemon process infrastructure* only (e.g. multi-project
+ * thread-store primary key, snapshot policy default route).
  *
- * Note: clients that omit cwd and do not set these env vars still fall back
- * to process.cwd() (daemon OS cwd). First-party agent-cli always sends cwd.
+ * DAE-02: this must NOT be used for agent.create / session.create — those
+ * require an absolute client-supplied workspace via
+ * `requireAbsoluteWorkspaceCwd` in workspace-cwd.ts.
  */
 export function resolveDaemonDefaultCwd(env: NodeJS.ProcessEnv = process.env): string {
   const workspace =
