@@ -529,7 +529,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `const enabled=false`), `getPerMessageBudgetLimit` (dead GrowthBook branch) + ~15 helpers, ~450 LOC) is dead —
   superseded by `session/_deps/tool-result-storage.ts`. This is the flagged dead "shed budget" follow-up (stale
   `shed ~…` string at :952). **Fix:** delete the dead engine; keep the still-live exports.
-- [ ] `[V]` `runtime/src/utils/toolResultStorage.ts:53` — `getPersistenceThreshold` (live) has a permanently-dead
+- [x] `[V]` `runtime/src/utils/toolResultStorage.ts:53` — `getPersistenceThreshold` (live) has a permanently-dead
   per-tool override lookup (`const overrides = {}` → `overrides?.[toolName]` always undefined). **Fix:** remove
   the dead branch.
 - [ ] `[V]` `runtime/src/utils/debug.ts:409` — `updateLatestDebugLogSymlink` is `memoize`d with no args so it runs

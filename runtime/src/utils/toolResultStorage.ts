@@ -41,7 +41,9 @@ export const TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]'
  * to the hardcoded default instead of throwing on index or returning 0.
  */
 export function getPersistenceThreshold(
-  toolName: string,
+  // Per-tool overrides were feature-flag-stripped to a constant; the threshold is
+  // now tool-independent. Kept in the signature for call-site compatibility.
+  _toolName: string,
   declaredMaxResultSizeChars: number,
 ): number {
   // Infinity = hard opt-out. Read self-bounds via maxTokens; persisting its
@@ -49,15 +51,6 @@ export function getPersistenceThreshold(
   // before the GB override so tengu_satin_quoll can't force it back on.
   if (!Number.isFinite(declaredMaxResultSizeChars)) {
     return declaredMaxResultSizeChars
-  }
-  const overrides: Record<string, number> | null = {}
-  const override = overrides?.[toolName]
-  if (
-    typeof override === 'number' &&
-    Number.isFinite(override) &&
-    override > 0
-  ) {
-    return override
   }
   return Math.min(declaredMaxResultSizeChars, DEFAULT_MAX_RESULT_SIZE_CHARS)
 }
