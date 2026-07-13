@@ -141,7 +141,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** on a reasoning delta when `hasClosedThinking`, open a NEW thinking block at a fresh index (reset
   the flags).
 
-- [ ] `[V]` **M-LLM-6 — Truncated tool call executed (Responses stop-reason precedence).**
+- [x] `[V]` **M-LLM-6 — Truncated tool call executed (Responses stop-reason precedence).**
   `runtime/src/services/api/openAiCodeTransform.ts:667–691` (`determineStopReason`). Returns `tool_use`
   before checking `incomplete_details.reason === 'max_output_tokens'`, so a response cut off mid-function-call
   yields `stop_reason 'tool_use'` and the runtime executes a tool call with truncated/JSON-repaired args.

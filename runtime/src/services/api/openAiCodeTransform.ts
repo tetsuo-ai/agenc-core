@@ -701,18 +701,15 @@ async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGe
   if (trailing) yield trailing
 }
 
-function determineStopReason(
+export function determineStopReason(
   response: Record<string, unknown> | undefined,
   sawToolUse: boolean,
 ): 'end_turn' | 'tool_use' | 'max_tokens' {
-  const output = arrayField(response, 'output')
-  if (
-    sawToolUse ||
-    output.some(item => isRecord(item) && item.type === 'function_call')
-  ) {
-    return 'tool_use'
-  }
-
+  // A response truncated by the output-token limit must report 'max_tokens' even
+  // when a (partial) function_call is present. Checking tool_use first — its old
+  // position — made the runtime EXECUTE a tool call assembled from truncated /
+  // JSON-repaired arguments. The chat-completions path guards the same case; this
+  // mirrors it by testing max_output_tokens before the tool_use signal.
   const incompleteReason = stringField(
     recordField(response, 'incomplete_details'),
     'reason',
@@ -722,6 +719,14 @@ function determineStopReason(
     incompleteReason.includes('max_output_tokens')
   ) {
     return 'max_tokens'
+  }
+
+  const output = arrayField(response, 'output')
+  if (
+    sawToolUse ||
+    output.some(item => isRecord(item) && item.type === 'function_call')
+  ) {
+    return 'tool_use'
   }
 
   return 'end_turn'
