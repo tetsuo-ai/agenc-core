@@ -334,10 +334,15 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   never runs → dialog stuck. (Siblings TeamsDialog/WorktreeExitDialog wrap their awaits.)
   **Fix:** wrap the loop in try/catch and surface the failure in the dialog.
   **DONE:** extracted `importSelectedMcpServers(...)` (a top-level export, no memo-cache change since the file is
-  committed react-compiler output) with the loop wrapped in try/catch — logs and returns the partial count so
-  `done()` always runs and the dialog can't wedge; `onSubmit` calls it. Revert-sensitive test
-  (MCPServerDesktopImport-catch.test.ts): a failing write returns the partial count without throwing vs rejecting.
-  (In-dialog error banner UI left as a follow-up — needs new component state in the compiled output.)
+  committed react-compiler output; it rejects on write failure), and wrapped `onSubmit` in try/catch. On error it
+  catches (SelectMulti calls onSubmit fire-and-forget, so an uncaught rejection would be unhandled), logs, and does
+  NOT complete/shut down — the dialog stays open so the user can retry/cancel (matching the pre-existing
+  MCPServerDesktopImportDialog.test.tsx guard that an import error must not complete or shut down). `done()` only on
+  full success. Revert-sensitive: the pre-existing test asserts onSubmit resolves + logError called + onDone/
+  gracefulShutdown NOT called; MCPServerDesktopImport-catch.test.ts covers the helper (rejects on failure, success,
+  collision, skip). NOTE: an earlier attempt wrongly completed with a partial count on error — the full-suite run
+  caught it via this pre-existing test; corrected here. In-dialog error banner UI is still a follow-up (needs new
+  component state in the compiled output).
 
 - [ ] `[V]` **M-TUI-7 — PromptInput submit path floats async work with no catch.**
   `runtime/src/tui/components/PromptInput/PromptInput.tsx:1340` (also :691, :2163 invocation; :1375/:1425/:1519
