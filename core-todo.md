@@ -49,7 +49,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** evaluate `hasTransactionWriteSignal` first; take the read-only early-exit only when it is
   false. Add the camelCase/hyphenated terms to `SOLANA_WRITE_SIGNAL_RE`.
 
-- [ ] `[x]` **C3 — TOML config parser allows `__proto__` prototype pollution.**
+- [x] `[x]` **C3 — TOML config parser allows `__proto__` prototype pollution.**
   `runtime/src/config/loader.ts` (`setNested` :386/:435, `ensureTablePath` :427, `parseInlineTable` :340).
   `parseToml` walks table/key paths with plain `cur[seg] = …` and never rejects `__proto__`/`constructor`/
   `prototype`. Reproduced: after `parseToml("[__proto__]\nisAdmin = true\n")`, `({}).isAdmin === true` —

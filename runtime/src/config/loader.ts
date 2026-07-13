@@ -142,12 +142,31 @@ function atEol(s: ParseState): boolean {
   return c === "" || c === "\n" || c === "#" || c === "\r";
 }
 
+// Key segments that would walk into the prototype chain when a parsed table is
+// assigned with `cur[seg] = …`. `__proto__` is the concrete pollution vector
+// (`cur["__proto__"]` reads/writes Object.prototype); `constructor`/`prototype`
+// are rejected too so no gadget chain can reach a constructor's prototype. Every
+// path-building site (dotted keys, `[table]` / `[[array]]` headers, inline
+// tables — quoted forms included) funnels through parseKey, so guarding here
+// covers them all.
+const FORBIDDEN_KEY_SEGMENTS: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
 function parseKey(s: ParseState): string[] {
   // Dotted keys → returns path segments.
   const parts: string[] = [];
   while (true) {
     skipWhitespaceInline(s);
     const segment = parseKeySegment(s);
+    if (FORBIDDEN_KEY_SEGMENTS.has(segment)) {
+      throw new TomlParseError(
+        `disallowed key segment "${segment}" (prototype-pollution guard)`,
+        s.line,
+      );
+    }
     parts.push(segment);
     skipWhitespaceInline(s);
     if (peek(s) === ".") {
