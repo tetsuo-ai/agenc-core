@@ -35,12 +35,48 @@ export type BuildProjectTreeOptions = {
 
 const ROOT_ID = "__agenc_workspace_root__";
 
-export function buildProjectTreeRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
+// The expensive part of a tree build — createProjectTree (a full Map build via
+// arrayToTree) + sortTree (O(N log N)) — depends only on (cwd, paths). The
+// cursor, expand/collapse, active/attached/search/in-flight flags are applied
+// cheaply in appendRows. ProjectTreeStore#emit rebuilt the whole tree on every
+// keystroke (move/page/toggle) and twice on cursor normalization; memoize the
+// sorted structure so pure selection changes reuse it.
+//
+// Keyed on the `paths` array by identity (the store reassigns #paths wholesale
+// on a file-list change, and never mutates it in place, so a stable reference
+// means an unchanged file list). A WeakMap bounds memory automatically — a
+// replaced paths array is GC'd with its cached tree — and keeps sessions
+// isolated since each session's paths array is a distinct key.
+const sortedRootCache = new WeakMap<
+  readonly string[],
+  { readonly cwd: string; readonly root: TreeNode | null }
+>();
+
+/** Test-only: counts full structure (Map build + sort) rebuilds. */
+let structureBuildCountForTest = 0;
+export function getStructureBuildCountForTest(): number {
+  return structureBuildCountForTest;
+}
+export function resetStructureBuildCountForTest(): void {
+  structureBuildCountForTest = 0;
+}
+
+function getSortedProjectRoot(options: BuildProjectTreeOptions): TreeNode | null {
+  const cached = sortedRootCache.get(options.paths);
+  if (cached !== undefined && cached.cwd === options.cwd) {
+    return cached.root;
+  }
+  structureBuildCountForTest += 1;
   const root = createProjectTree(options);
+  if (root) sortTree(root);
+  sortedRootCache.set(options.paths, { cwd: options.cwd, root });
+  return root;
+}
+
+export function buildProjectTreeRows(options: BuildProjectTreeOptions): ProjectTreeRow[] {
+  const root = getSortedProjectRoot(options);
 
   if (!root) return emptyRows(options);
-
-  sortTree(root);
 
   const rows: ProjectTreeRow[] = [];
   appendRows(root, 0, true, [], rows, options);

@@ -396,13 +396,20 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   activity tests unchanged). Revert-sensitive test: with 1 task + 21 candidate paths, `JSON.stringify` is called
   once (fixed) vs 21× (reverted, per-path).
 
-- [ ] `[V]` **M-TUI-11 — Project tree rebuilt and re-sorted on every cursor move (doubled on cursor normalization).**
+- [x] `[V]` **M-TUI-11 — Project tree rebuilt and re-sorted on every cursor move (doubled on cursor normalization).**
   `runtime/src/tui/workbench/project-tree/ProjectTreeStore.ts:366–409` (`#emit`). Calls `buildProjectTreeRows`
   (→ `createProjectTree` full Map build + `sortTree` O(N log N)) on every `move`/`page`/`toggle`/`expand`/
   `reveal`/`setActivePath`/`setInFlightPaths`/`refresh`, and twice when `visibleCursorPath` differs from the
   current cursor. On a large repo this is per-keystroke O(N log N).
   **Fix:** memoize the row build against `#paths`/`#expandedPaths` rather than recomputing on pure selection
   changes.
+  **DONE:** the expensive structure build (createProjectTree Map build + sortTree) depends only on (cwd, paths);
+  cursor/expand/flags are applied cheaply in appendRows. Memoized the sorted tree in a `WeakMap<paths, {cwd,root}>`
+  keyed by the paths-array identity (the store reassigns `#paths` wholesale and never mutates it, so a stable
+  reference == unchanged file list; WeakMap auto-GCs replaced arrays and keeps sessions isolated). Now
+  move/page/toggle/cursor-normalization reuse the sorted structure. Behavior-preserving (all 38 existing tree tests
+  pass). Revert-sensitive test: 3 cursor moves over the same paths trigger 1 structure build (a
+  `structureBuildCountForTest` counter) vs 3 when the cache is bypassed; a new paths array rebuilds.
 
 - [ ] `[V]` **M-TUI-12 — MarkdownTable does ~4–5 full O(rows×cols) layout passes per render, unmemoized.**
   `runtime/src/tui/components/markdown/MarkdownTable.tsx:142–217`. `getMinWidth`/`getIdealWidth`/
