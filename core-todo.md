@@ -203,7 +203,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   the description/result text to say only the first ~30s is streamed and the model must poll via
   `write_stdin(session_id, '')`.
 
-- [ ] `[V]` **M-EXEC-2 — Unbounded subprocess buffering in shell mode (OOM risk).**
+- [x] `[V]` **M-EXEC-2 — Unbounded subprocess buffering in shell mode (OOM risk).**
   `runtime/src/tools/system/bash.ts:347` (`runSpawnedCommand`). Shell / shell-wrapper mode pushes every
   chunk into `Buffer[]` with no cap, truncating only at flush (`maxOutputBytes = 100_000`). A fast large
   emitter (`yes`, `cat huge`) buffers the whole stream in daemon heap → OOM takes down all sessions.

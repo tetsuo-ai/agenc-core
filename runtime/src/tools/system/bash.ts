@@ -312,6 +312,15 @@ function runSpawnedCommand(params: {
     // that reads from stdio — bash here, MCP stdio in T9.
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    // Rolling in-memory cap. truncate() keeps only the first maxOutputBytes, so
+    // once we have held ~2x that (matching the direct-mode execFile maxBuffer at
+    // the bottom of this file) every further byte would be discarded at flush
+    // anyway. Stop retaining past the cap so a fast, huge emitter (shell-mode
+    // `yes` / `cat huge`) can't accumulate its entire stream in the daemon heap
+    // and OOM every session. Streaming via onProgress is unaffected.
+    const retentionCapBytes = params.maxOutputBytes * 2;
+    let stdoutRetained = 0;
+    let stderrRetained = 0;
     let timedOut = false;
     let aborted = false;
     let forceKillTimer: NodeJS.Timeout | null = null;
@@ -343,8 +352,11 @@ function runSpawnedCommand(params: {
     child.unref();
 
     child.stdout!.on("data", (chunk: Buffer) => {
-      // I-78: push raw bytes; decode once at flush.
-      stdoutChunks.push(chunk);
+      // I-78: push raw bytes; decode once at flush. Stop retaining past the cap.
+      if (stdoutRetained < retentionCapBytes) {
+        stdoutChunks.push(chunk);
+        stdoutRetained += chunk.length;
+      }
       params.onProgress?.({
         chunk: chunk.toString("utf8"),
         stream: "stdout",
@@ -352,7 +364,10 @@ function runSpawnedCommand(params: {
       });
     });
     child.stderr!.on("data", (chunk: Buffer) => {
-      stderrChunks.push(chunk);
+      if (stderrRetained < retentionCapBytes) {
+        stderrChunks.push(chunk);
+        stderrRetained += chunk.length;
+      }
       params.onProgress?.({
         chunk: chunk.toString("utf8"),
         stream: "stderr",
