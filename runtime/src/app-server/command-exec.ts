@@ -117,6 +117,8 @@ export interface AgenCCommandExecServiceOptions {
   readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
+  /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
+  readonly allowGpu?: boolean;
 }
 
 interface SpawnCommand {
@@ -195,6 +197,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #useLegacyLandlock: boolean;
   readonly #windowsSandboxLevel: WindowsSandboxLevel;
   readonly #windowsSandboxPrivateDesktop: boolean;
+  readonly #allowGpu: boolean;
   #nextGeneratedProcessId = 1;
 
   constructor(options: AgenCCommandExecServiceOptions = {}) {
@@ -204,6 +207,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
+    this.#allowGpu = options.allowGpu ?? false;
   }
 
   async start(
@@ -509,6 +513,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       useLegacyLandlock: this.#useLegacyLandlock,
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
+      ...(this.#allowGpu ? { allowGpu: true } : {}),
     });
     const [transformedProgram, ...transformedArgs] = transformed.command;
     if (transformedProgram === undefined) {

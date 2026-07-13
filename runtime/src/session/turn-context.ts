@@ -342,6 +342,11 @@ export interface SessionConfiguration {
   readonly fileSystemSandboxPolicy: FileSystemSandboxPolicy;
   readonly networkSandboxPolicy: NetworkSandboxPolicy;
   readonly windowsSandboxLevel: WindowsSandboxLevel;
+  /**
+   * Opt-in GPU compute (Metal) inside the platform sandbox (config
+   * `sandbox.allow_gpu`). Kernel attack surface — off by default.
+   */
+  readonly sandboxAllowGpu?: boolean;
   readonly collaborationMode: CollaborationMode;
   readonly personality?: Personality;
   readonly reviewModel?: string;

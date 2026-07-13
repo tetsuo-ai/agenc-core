@@ -133,6 +133,7 @@ export function transformWithRuntimeSandbox(params: {
       windowsSandboxLevel,
       windowsSandboxPrivateDesktop:
         params.runtimeSandbox.windowsSandboxPrivateDesktop ?? false,
+      ...(params.runtimeSandbox.allowGpu === true ? { allowGpu: true } : {}),
     });
     const [program, ...args] = transformed.command;
     if (program === undefined) {

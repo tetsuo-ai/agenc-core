@@ -111,6 +111,7 @@ export class SandboxManager {
             enforceManagedNetwork: request.enforceManagedNetwork,
             network: request.network,
             extraAllowUnixSockets: [],
+            ...(request.allowGpu === true ? { allowGpu: true } : {}),
           }),
         ];
         break;

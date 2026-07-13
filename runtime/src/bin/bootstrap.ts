@@ -813,6 +813,9 @@ export function sessionConfigurationFromAgenCConfig(params: {
     ...(params.config.compact_prompt !== undefined
       ? { compactPrompt: params.config.compact_prompt }
       : {}),
+    ...(params.config.sandbox?.allow_gpu === true
+      ? { sandboxAllowGpu: true }
+      : {}),
   };
 }
 
