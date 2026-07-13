@@ -122,6 +122,8 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { FileThreadStore } from "../thread-store/store.js";
+import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
+import { resolveDaemonDefaultCwd } from "./daemon-workspace.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   createSizeCappedFileLogSink,
@@ -1246,8 +1248,11 @@ async function runAgenCDaemonForeground(
     );
     return 1;
   }
-  const threadStore = new FileThreadStore({
-    cwd: process.cwd(),
+  // DAE-03: union session/thread discovery across all projects under AGENC_HOME
+  // (not only the daemon-start cwd registry).
+  const primaryCwd = resolveDaemonDefaultCwd(host.env);
+  const threadStore = new MultiProjectFileThreadStore({
+    primaryCwd,
     agencHome: authStartup.daemonHome,
   });
   const sessionManager = new AgenCDaemonSessionManager({ threadStore });
@@ -1295,7 +1300,7 @@ async function runAgenCDaemonForeground(
   try {
     snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
       agencHome: authStartup.daemonHome,
-      defaultCwd: process.cwd(),
+      defaultCwd: primaryCwd,
       snapshotRetention: activeConfig.agent?.retention,
       periodicIntervalMs: options.snapshotPeriodicIntervalMs,
       onError: (error) =>
@@ -1313,7 +1318,8 @@ async function runAgenCDaemonForeground(
     runner,
     sessionManager,
     threadStore,
-    defaultCwd: () => process.cwd(),
+    // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
+    defaultCwd: () => resolveDaemonDefaultCwd(host.env),
     snapshotFlush: (snapshot) =>
       writeAgenCDaemonSnapshot(snapshotPath, snapshot),
     broadcastSessionEvent: async (sessionId, event) => {

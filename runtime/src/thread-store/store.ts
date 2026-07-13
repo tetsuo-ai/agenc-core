@@ -835,6 +835,11 @@ export class FileThreadStore implements ThreadStore {
     this.stateDriver.close();
   }
 
+  /** Per-project state directory this store is bound to (DAE-03 multi-project). */
+  getProjectDir(): string {
+    return this.projectDir;
+  }
+
   // ── internal helpers ────────────────────────────────────────────────
 
   private assertOpen(): void {

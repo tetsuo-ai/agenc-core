@@ -677,7 +677,8 @@ function commandExecSandboxRequest(
     };
   }
   if (params.sandboxPolicy !== undefined && params.sandboxPolicy !== null) {
-    const sandboxPolicyCwd = process.cwd();
+    // DAE-08: anchor legacy sandbox policy on the command cwd, not daemon OS cwd.
+    const sandboxPolicyCwd = commandCwd;
     const permissionProfile = permissionProfileForLegacySandboxPolicy(
       params.sandboxPolicy,
       sandboxPolicyCwd,
