@@ -21,7 +21,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ## 🔴 CRITICAL
 
-- [ ] `[x]` **C1 — Secret sanitizer leaks keypairs, PEM keys, the vault passphrase, and uppercase seed phrases.**
+- [x] `[x]` **C1 — Secret sanitizer leaks keypairs, PEM keys, the vault passphrase, and uppercase seed phrases.**
   `runtime/src/secrets/sanitizer.ts` (patterns ~270–351; BIP39 :196; keys :343–357, :425–457).
   Ran `redactSecrets()` against six payloads: it leaves **unchanged** a Solana JSON-array keypair
   (`~/.config/solana/id.json` 64-int format), a `-----BEGIN PRIVATE KEY-----` PEM block,
