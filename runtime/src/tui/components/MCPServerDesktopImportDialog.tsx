@@ -17,6 +17,39 @@ type Props = {
   scope: ConfigScope;
   onDone(): void;
 };
+
+/**
+ * Import the selected desktop MCP servers into the given scope, renaming on
+ * name collisions, and return how many were written. Rejects if a config-file
+ * write fails; the caller (`onSubmit`) catches so it can keep the dialog open
+ * rather than completing as if the import succeeded. `addConfig` is injectable
+ * for tests.
+ */
+export async function importSelectedMcpServers(
+  selectedServers: readonly string[],
+  servers: Record<string, McpServerConfig>,
+  existingServers: Record<string, ScopedMcpServerConfig>,
+  scope: ConfigScope,
+  addConfig: typeof addMcpConfig = addMcpConfig,
+): Promise<number> {
+  let importedCount = 0;
+  for (const serverName of selectedServers) {
+    const serverConfig = servers[serverName];
+    if (!serverConfig) continue;
+    let finalName = serverName;
+    if (existingServers[finalName] !== undefined) {
+      let counter = 1;
+      while (existingServers[`${serverName}_${counter}`] !== undefined) {
+        counter++;
+      }
+      finalName = `${serverName}_${counter}`;
+    }
+    await addConfig(finalName, serverConfig, scope);
+    importedCount++;
+  }
+  return importedCount;
+}
+
 export function MCPServerDesktopImportDialog(t0: Props) {
   const $ = _c(36);
   const {
@@ -112,23 +145,21 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   done;
   const handleEscCancel = t7;
   const onSubmit = useCallback(async function onSubmit(selectedServers: string[]) {
-    let importedCount = 0;
-    for (const serverName of selectedServers) {
-      const serverConfig = servers[serverName];
-      if (serverConfig) {
-        let finalName = serverName;
-        if (existingServers[finalName] !== undefined) {
-          let counter = 1;
-          while (existingServers[`${serverName}_${counter}`] !== undefined) {
-            counter++;
-          }
-          finalName = `${serverName}_${counter}`;
-        }
-        await addMcpConfig(finalName, serverConfig, scope);
-        importedCount++;
-      }
+    try {
+      const importedCount = await importSelectedMcpServers(
+        selectedServers,
+        servers,
+        existingServers,
+        scope,
+      );
+      done(importedCount);
+    } catch (error) {
+      // A config-file write failed (EACCES/EROFS/disk). SelectMulti invokes
+      // onSubmit fire-and-forget, so we MUST catch here or the rejection is
+      // unhandled. Do NOT complete/shut down as if the import succeeded — log
+      // and leave the dialog open so the user can retry or cancel.
+      logError(error);
     }
-    done(importedCount);
   }, [done, existingServers, scope, servers]);
   const t8 = serverNames.length;
   let t9;

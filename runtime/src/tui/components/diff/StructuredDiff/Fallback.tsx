@@ -3,6 +3,7 @@ import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import type { ThemeName } from '../../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { stringWidth } from '../../../ink/stringWidth.js';
+import { maxOf } from '../../../../utils/maxOf.js';
 import { Box, NoSelect, Text, useTheme, wrapText } from '../../../ink.js';
 
 /*
@@ -359,7 +360,7 @@ function formatDiff(lines: string[], startingLineNumber: number, width: number, 
   const ls = numberDiffLines(processedLines, startingLineNumber);
 
   // Find max line number width for alignment
-  const maxLineNumber = Math.max(...ls.map(({
+  const maxLineNumber = maxOf(ls.map(({
     i
   }) => i), 0);
   const maxWidth = Math.max(maxLineNumber.toString().length + 1, 0);

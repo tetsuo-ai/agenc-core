@@ -34,6 +34,25 @@ export function optionsNavigateEqual<T>(
   return true
 }
 
+/**
+ * Decide, on a render, whether to reset navigation state and/or refresh the
+ * cached `lastOptions` reference.
+ *
+ * The key fix: when the reference changed but the contents are structurally
+ * equal (a parent passing a fresh-but-equal `options` array each render),
+ * `updateLast` is still true. Previously `lastOptions` was only refreshed when
+ * a reset happened, so on a fresh-but-equal array it stayed frozen and the O(n)
+ * `optionsNavigateEqual` scan ran on every render (including every keystroke).
+ * Refreshing the reference lets the next same-reference render short-circuit.
+ */
+export function optionsUpdatePlan<T>(
+  options: OptionWithDescription<T>[],
+  lastOptions: OptionWithDescription<T>[],
+): { readonly reset: boolean; readonly updateLast: boolean } {
+  if (options === lastOptions) return { reset: false, updateLast: false }
+  return { reset: !optionsNavigateEqual(options, lastOptions), updateLast: true }
+}
+
 type State<T> = {
   /**
    * Map where key is option's value and value is option's index.
@@ -548,20 +567,23 @@ export function useSelectNavigation<T>({
 
   const [lastOptions, setLastOptions] = useState(options)
 
-  if (options !== lastOptions && !optionsNavigateEqual(options, lastOptions)) {
-    dispatch({
-      type: 'reset',
-      state: createDefaultState({
-        visibleOptionCount,
-        options,
-        initialFocusValue:
-          focusValue ?? state.focusedValue ?? initialFocusValue,
-        currentViewport: {
-          visibleFromIndex: state.visibleFromIndex,
-          visibleToIndex: state.visibleToIndex,
-        },
-      }),
-    })
+  const plan = optionsUpdatePlan(options, lastOptions)
+  if (plan.updateLast) {
+    if (plan.reset) {
+      dispatch({
+        type: 'reset',
+        state: createDefaultState({
+          visibleOptionCount,
+          options,
+          initialFocusValue:
+            focusValue ?? state.focusedValue ?? initialFocusValue,
+          currentViewport: {
+            visibleFromIndex: state.visibleFromIndex,
+            visibleToIndex: state.visibleToIndex,
+          },
+        }),
+      })
+    }
 
     setLastOptions(options)
   }

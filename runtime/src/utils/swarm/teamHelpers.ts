@@ -128,10 +128,28 @@ export function getTeamFilePath(teamName: string): string {
  * Exported for team discovery UI.
  */
 // sync IO: called from sync context
+/**
+ * Validates the parsed team config shape. A config.json that parses to valid
+ * JSON but lacks a `members` array (version skew, hand edit, or a partial/truncated
+ * non-atomic write) would otherwise make downstream `.members.filter/.findIndex`
+ * throw — and those run during SIGINT/SIGTERM cleanup, where a throw skips worktree
+ * cleanup. Mirrors the guard in permissionSync.getLeaderName.
+ */
+function coerceTeamFile(parsed: unknown): TeamFile | null {
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { members?: unknown }).members)
+  ) {
+    return parsed as TeamFile
+  }
+  return null
+}
+
 export function readTeamFile(teamName: string): TeamFile | null {
   try {
     const content = readFileSync(getTeamFilePath(teamName), 'utf-8')
-    return jsonParse(content) as TeamFile
+    return coerceTeamFile(jsonParse(content))
   } catch (e) {
     if (getErrnoCode(e) === 'ENOENT') return null
     logForDebugging(
@@ -149,7 +167,7 @@ export async function readTeamFileAsync(
 ): Promise<TeamFile | null> {
   try {
     const content = await readFile(getTeamFilePath(teamName), 'utf-8')
-    return jsonParse(content) as TeamFile
+    return coerceTeamFile(jsonParse(content))
   } catch (e) {
     if (getErrnoCode(e) === 'ENOENT') return null
     logForDebugging(

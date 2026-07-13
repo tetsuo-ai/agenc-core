@@ -109,6 +109,11 @@ const YELLOW_FG_CODE: AnsiCode = {
   endCode: '\x1b[39m',
 }
 
+// Upper bound on the (fromId,toId) transition cache. The pair space is
+// O(usedStyles²) and the pool is never rotated; capping bounds worst-case memory
+// while keeping the fast path for the styles actually in recent use.
+const STYLE_TRANSITION_CACHE_MAX = 16_384
+
 export class StylePool {
   private ids = new Map<string, number>()
   private styles: AnsiCode[][] = []
@@ -156,9 +161,22 @@ export class StylePool {
     let str = this.transitionCache.get(key)
     if (str === undefined) {
       str = ansiCodesToString(diffAnsiCodes(this.get(fromId), this.get(toId)))
+      // The (fromId,toId) space is O(usedStyles²); the StylePool is never
+      // rotated, so an unbounded transitionCache is the dominant leak over a
+      // long truecolor session. Cap it with FIFO eviction — an evicted pair
+      // simply recomputes on its next use, so this is behavior-preserving.
+      if (this.transitionCache.size >= STYLE_TRANSITION_CACHE_MAX) {
+        const oldest = this.transitionCache.keys().next().value
+        if (oldest !== undefined) this.transitionCache.delete(oldest)
+      }
       this.transitionCache.set(key, str)
     }
     return str
+  }
+
+  /** Test-only: current size of the (fromId,toId) transition cache. */
+  transitionCacheSizeForTest(): number {
+    return this.transitionCache.size
   }
 
   /**

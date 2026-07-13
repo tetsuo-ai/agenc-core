@@ -19,6 +19,10 @@ export type FlagArgType =
   | 'none' // No argument (--color, -n)
   | 'number' // Integer argument (--context=3)
   | 'string' // Any string argument (--relative=path)
+  | 'optional' // Optional argument, ATTACHED only (GNU date --iso-8601[=TIMESPEC]):
+  //            a bare flag is fine and an `=value` is fine, but a following
+  //            detached token is NOT the argument — it is a positional operand
+  //            (e.g. date's clock-setting MMDDhhmm), so it must not be consumed.
   | 'char' // Single character (delimiter)
   | '{}' // Literal "{}" only
   | 'EOF' // Literal "EOF" only
@@ -1837,6 +1841,13 @@ export function validateFlags(
         if (hasEquals) {
           return false // Flag should not have a value
         }
+        i++
+      } else if (flagArgType === 'optional') {
+        // Optional ATTACHED-only argument. Accept `--flag` and `--flag=value`,
+        // but NEVER consume the next token: for GNU optional-arg flags a detached
+        // token is a positional operand, not the flag's value. Consuming it (as
+        // 'string' did) let `date --iso-8601 12312359` — a clock-setting operand —
+        // pass validation instead of reaching the positional danger check.
         i++
       } else {
         let argValue: string

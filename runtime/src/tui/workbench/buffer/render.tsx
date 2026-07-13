@@ -80,10 +80,13 @@ export function terminalAnsiLines(
   width: number,
 ): string[] {
   const maxWidth = Math.max(1, width);
+  // Build the highlight lookup once per snapshot, not once per rendered row
+  // (a Neovim redraw renders every row, so this was O(rows × highlights)).
+  const highlightMap = new Map(terminal.highlights.map((highlight) => [highlight.id, highlight]));
   return terminal.lines.map((_line, row) =>
     renderTerminalCellsToAnsi(
       terminalLineCells(terminal, row),
-      terminal.highlights,
+      highlightMap,
       row,
       terminal.cursor.row,
       terminal.cursor.column,
@@ -167,14 +170,13 @@ function renderCursorText(text: string, displayFrom: number, cursorOffset: numbe
 
 function renderTerminalCellsToAnsi(
   cells: readonly NeovimCell[],
-  highlights: readonly NeovimHighlight[],
+  highlightMap: ReadonlyMap<number, NeovimHighlight>,
   row: number,
   cursorRow: number,
   cursorColumn: number,
   focused: boolean,
   width: number,
 ): string {
-  const highlightMap = new Map(highlights.map((highlight) => [highlight.id, highlight]));
   let output = "";
   let renderedWidth = 0;
   let activeStyleKey = "";

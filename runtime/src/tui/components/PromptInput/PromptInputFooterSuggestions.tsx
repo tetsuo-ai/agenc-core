@@ -6,6 +6,21 @@ import { Box, Text } from '../../ink.js'
 import { truncatePathMiddle, truncateToWidth } from '../../../utils/format.js'
 import type { Theme } from '../../../utils/theme.js'
 
+/**
+ * React key for a suggestion row. Keyed by the item's stable id ONLY — folding
+ * `isSelected` into the key made React unmount/remount the selected and
+ * previously-selected rows on every arrow keypress, defeating the row's `memo`.
+ * `isSelected` is passed to the row as a prop instead. The parameter is kept so
+ * the key's independence from selection is explicit (and testable).
+ */
+export function suggestionRowKey(
+  item: { readonly id: string },
+  isSelected: boolean,
+): string {
+  void isSelected
+  return item.id
+}
+
 export type SuggestionItem = {
   id: string
   displayText: string
@@ -352,7 +367,7 @@ export function PromptInputFooterSuggestions({
         const isSelected = item.id === suggestions[selectedSuggestion]?.id
         return (
           <Box
-            key={`${item.id}:${isSelected ? 'selected' : 'idle'}`}
+            key={suggestionRowKey(item, isSelected)}
             flexDirection="column"
           >
             <SuggestionItemRow

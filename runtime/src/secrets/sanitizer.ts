@@ -193,9 +193,14 @@ const BIP39_MIN_MNEMONIC_LENGTH = 12;
 type Bip39TokenKind = "seed" | "filler" | "other";
 
 function classifyBip39Token(token: string): Bip39TokenKind {
-  const core = token.replace(/^[^a-z]+/, "").replace(/[^a-z]+$/, "");
+  // Case-insensitive: strip leading/trailing non-letters (either case) and
+  // lowercase the core before the wordlist lookup, so Title-Case ("Abandon")
+  // and ALL-CAPS ("ABANDON", the format on Ledger recovery sheets) seed words
+  // are recognized. A run of 12+ consecutive wordlist words does not occur in
+  // ordinary prose regardless of case, so this stays false-positive-safe.
+  const core = token.replace(/^[^a-zA-Z]+/, "").replace(/[^a-zA-Z]+$/, "").toLowerCase();
   if (core.length > 0 && BIP39_WORDLIST.has(core)) return "seed";
-  if (!/[a-z]/.test(token)) return "filler";
+  if (!/[a-zA-Z]/.test(token)) return "filler";
   return "other";
 }
 
@@ -216,7 +221,7 @@ function classifyBip39Token(token: string): Bip39TokenKind {
  * guarantees no seed word survives regardless of where the extra words sit.
  */
 function redactBareMnemonics(input: string): string {
-  if (!/[a-z]/.test(input)) return input;
+  if (!/[a-zA-Z]/.test(input)) return input;
   const parts = input.split(WHITESPACE_TOKEN_PATTERN);
   // `parts` alternates word, separator, word, separator, ... so word tokens are
   // at even indices.
@@ -278,11 +283,9 @@ const SECRET_PATTERNS: ReadonlyArray<{
     replacement: REDACTED_SECRET,
   },
   {
+    // Also matches `sk-ant-…` (the `ant-` chars are in the class), so no separate
+    // sk-ant entry is needed — the generic pattern runs first and shadows it.
     pattern: /(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g,
-    replacement: REDACTED_SECRET,
-  },
-  {
-    pattern: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g,
     replacement: REDACTED_SECRET,
   },
   {
@@ -339,22 +342,41 @@ const SECRET_PATTERNS: ReadonlyArray<{
     replacement: REDACTED_SECRET,
   },
   {
+    // Solana keypairs are also exported as a JSON byte array (the standard
+    // `~/.config/solana/id.json` format): a bracketed run of 32 (secret scalar)
+    // or 64 (full keypair) comma-separated bytes (0-255). Every element must be
+    // a valid byte and the run must be at least 32 long, which excludes ordinary
+    // numeric arrays (embeddings are floats; token-id arrays exceed 255). The
+    // upper bound caps the match and avoids pathological scanning.
     pattern:
-      /(["'])(api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)\1(\s*:\s*)(["']?)[^\s"',}]{8,}/gi,
+      /\[\s*(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\s*,\s*(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){31,199}\s*\]/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
+    // PEM private-key blocks (PKCS#1/PKCS#8/EC/OpenSSH/encrypted). Redact the
+    // whole armored block including the base64 body rather than leaking it as a
+    // bare string when a keyfile is read/cat'd into logs or artifacts.
+    pattern:
+      /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g,
+    replacement: REDACTED_SECRET,
+  },
+  {
+    pattern:
+      /(["'])(api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|passphrase|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)\1(\s*:\s*)(["']?)[^\s"',}]{8,}/gi,
     replacement: `$1$2$1$3$4${REDACTED_SECRET}`,
   },
   {
     pattern:
-      /\b(api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)\b(\s*[:=]\s*)(["']?)[^\s"',}]{8,}/gi,
+      /\b(api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|passphrase|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)\b(\s*[:=]\s*)(["']?)[^\s"',}]{8,}/gi,
     replacement: `$1$2$3${REDACTED_SECRET}`,
   },
 ];
 
 const QUOTED_SECRET_ASSIGNMENT_PATTERN =
-  /(["'])([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)[A-Za-z0-9_-]*)\1(\s*:\s*)(["']?)[^\s"',}]{8,}/gi;
+  /(["'])([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|passphrase|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)[A-Za-z0-9_-]*)\1(\s*:\s*)(["']?)[^\s"',}]{8,}/gi;
 
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)[A-Za-z0-9_-]*)\b(\s*[:=]\s*)(["']?)[^\s"',}]{8,}/gi;
+  /\b([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|passphrase|authorization|private[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)[A-Za-z0-9_-]*)\b(\s*[:=]\s*)(["']?)[^\s"',}]{8,}/gi;
 
 export type RedactableJson =
   | null
@@ -442,6 +464,12 @@ function isSensitiveKey(key: string): boolean {
     normalized === "password" ||
     normalized.endsWith("password") ||
     normalized.endsWith("passwordvalue") ||
+    // Vault/wallet passphrase (e.g. AGENC_WALLET_VAULT_PASSPHRASE). A passphrase
+    // is always a scalar secret, so leaf-redacting it here is safe. `credential`
+    // is deliberately NOT leaf-redacted: it is frequently a container object
+    // (e.g. an AWS credentials block) whose inner fields must be redacted
+    // individually — it is handled by the scalar string-assignment patterns.
+    normalized.endsWith("passphrase") ||
     normalized.includes("authorization") ||
     // Wallet key material: private/signing keys, mnemonics, and seed phrases
     // (snake_case + camelCase both normalize to these). `seedphrase` is matched

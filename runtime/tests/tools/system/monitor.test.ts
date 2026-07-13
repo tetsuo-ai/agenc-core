@@ -88,15 +88,19 @@ describe("Monitor (AgenC port)", () => {
     expect(schema.required.sort()).toEqual(["command", "description"]);
   });
 
-  test("description matches AgenC MonitorTool.prompt() verbatim", async () => {
+  test("description accurately states the ~30s streaming window (M-EXEC-1)", async () => {
     const tool = createMonitorTool({
       cwd: process.cwd(),
       unifiedExecManager: manager,
     });
     expect(tool.description).toContain(
-      "Execute a shell command in the background and stream its stdout line-by-line as notifications.",
+      "Execute a shell command in the background and stream its stdout line-by-line as notifications",
     );
-    expect(tool.description).toContain("(~1s)");
+    // The donor's inaccurate "(~1s)" continuous-polling claim was removed: streaming
+    // is clamped to ~30s and the model must poll afterward via write_stdin.
+    expect(tool.description).not.toContain("(~1s)");
+    expect(tool.description).toContain("30 seconds");
+    expect(tool.description).toContain('write_stdin(session_id, "")');
     expect(tool.description).toContain("monitoring logs");
     // AgenC adapts only the trailing reference: AgenC says
     // "Bash with run_in_background"; AgenC wires to exec_command.

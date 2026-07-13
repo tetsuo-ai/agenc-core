@@ -13,6 +13,9 @@ export { execSyncWithDefaults_DEPRECATED } from './execFileNoThrowPortable.js'
 const MS_IN_SECOND = 1000
 const SECONDS_IN_MINUTE = 60
 const DEFAULT_MAX_BUFFER = 1_000_000
+// Grace period after SIGTERM on timeout before escalating to SIGKILL, so a child
+// that traps/ignores SIGTERM cannot hang the promise indefinitely.
+const SIGKILL_GRACE_MS = 2_000
 
 type ExecFileOptions = {
   abortSignal?: AbortSignal
@@ -282,17 +285,29 @@ export function execFileNoThrowWithCwd(
       finish({ stdout: '', stderr: '', code: 1, error: error.message })
     })
 
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined
     const timeoutId =
       finalTimeout > 0
         ? setTimeout(() => {
             timedOut = true
-            child.kill()
+            child.kill() // SIGTERM
+            // Escalate to SIGKILL if the child traps/ignores SIGTERM or is stuck
+            // in uninterruptible I/O and never emits 'close' — otherwise the
+            // promise never settles and every awaiting caller hangs past the
+            // timeout. Mirrors the SIGTERM->SIGKILL pattern in ripgrep.ts.
+            sigkillTimer = setTimeout(() => {
+              child.kill('SIGKILL')
+            }, SIGKILL_GRACE_MS)
+            sigkillTimer.unref?.()
           }, finalTimeout)
         : undefined
 
     child.once('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
       if (timeoutId) {
         clearTimeout(timeoutId)
+      }
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer)
       }
 
       signal = closeSignal ?? undefined

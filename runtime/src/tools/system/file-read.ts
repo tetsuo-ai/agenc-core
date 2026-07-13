@@ -72,6 +72,7 @@ import {
 } from "../../utils/pdfPageRange.js";
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
+import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -1141,9 +1142,30 @@ async function readImageFile(
     return errorResult(`Image file is empty: ${opts.displayPath}`);
   }
 
-  const buffer = await readFile(resolvedPath.canonical);
-  const mime = IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
-  const base64 = buffer.toString("base64");
+  const rawBuffer = await readFile(resolvedPath.canonical);
+  // Downsample/clamp to the provider image limits (~5MB base64, 1568px) before
+  // encoding — a raw screenshot over ~3.7MB, or a small-but-high-DPI PNG over
+  // 1568px, is otherwise emitted verbatim and rejected by the API with a 400 on
+  // the common "read this screenshot" path. Mirrors BashTool/utils.ts and the MCP
+  // image path. Falls back to the original bytes if the image cannot be processed.
+  const declaredMime = IMAGE_MIME_BY_EXT[opts.ext] ?? "application/octet-stream";
+  let mime = declaredMime;
+  let base64: string;
+  try {
+    const extForResize = declaredMime.startsWith("image/")
+      ? declaredMime.slice("image/".length)
+      : opts.ext || "png";
+    const resized = await maybeResizeAndDownsampleImageBuffer(
+      rawBuffer,
+      rawBuffer.length,
+      extForResize,
+    );
+    mime = `image/${resized.mediaType}`;
+    base64 = resized.buffer.toString("base64");
+  } catch {
+    // Unprocessable image (unknown format, corrupt) — emit the original bytes.
+    base64 = rawBuffer.toString("base64");
+  }
 
   // Record the read with no text content (binary). Use `viewKind: "full"`
   // — there is no "partial image" concept and we want subsequent reads

@@ -244,7 +244,7 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     });
     enqueueShellNotification(taskId, description, wasKilled ? 'killed' : result.code === 0 ? 'completed' : 'failed', result.code, setAppState, toolUseId, kind, agentId);
     void evictTaskOutput(taskId);
-  });
+  }).catch(logError);
   return {
     taskId,
     cleanup: () => {
@@ -365,7 +365,7 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
       enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, kind, agentId);
     }
     void evictTaskOutput(taskId);
-  });
+  }).catch(logError);
   return true;
 }
 
@@ -455,7 +455,7 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     const finalStatus = wasKilled ? 'killed' : result.code === 0 ? 'completed' : 'failed';
     enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId);
     void evictTaskOutput(taskId);
-  });
+  }).catch(logError);
   return true;
 }
 

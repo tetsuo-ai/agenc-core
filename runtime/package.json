@@ -143,7 +143,6 @@
     "undici": "^8.5.0",
     "usehooks-ts": "^3.1.1",
     "vscode-jsonrpc": "9.0.0",
-    "vscode-languageserver-types": "^3.17.5",
     "wrap-ansi": "^10.0.0",
     "ws": "^8.18.0",
     "xss": "1.0.15"

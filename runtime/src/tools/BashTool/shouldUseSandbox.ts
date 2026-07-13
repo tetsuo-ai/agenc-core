@@ -18,46 +18,12 @@ type SandboxInput = {
 // It is not a security bug to be able to bypass excludedCommands — the sandbox permission
 // system (which prompts users) is the actual security control.
 function containsExcludedCommand(command: string): boolean {
-  // Check dynamic config for disabled commands and substrings
-  const raw: { commands: string[]; substrings: string[] } = {
-    commands: [],
-    substrings: [],
-  }
-
-  const disabledCommands =
-    typeof raw === 'object' && raw !== null
-      ? raw
-      : { commands: [], substrings: [] }
-  const substrings = Array.isArray(disabledCommands.substrings)
-    ? disabledCommands.substrings
-    : []
-  const commands = Array.isArray(disabledCommands.commands)
-    ? disabledCommands.commands
-    : []
-
-  // Check if command contains any disabled substrings
-  for (const substring of substrings) {
-    if (command.includes(substring)) {
-      return true
-    }
-  }
-
-  // Check if command starts with any disabled commands
-  try {
-    const commandParts = splitCommand_DEPRECATED(command)
-    for (const part of commandParts) {
-      const baseCommand = part.trim().split(' ')[0]
-      if (baseCommand && commands.includes(baseCommand)) {
-        return true
-      }
-    }
-  } catch {
-    // If we can't parse the command (e.g., malformed bash syntax),
-    // treat it as not excluded to allow other validation checks to handle it
-    // This prevents crashes when rendering tool use messages
-  }
-
-  // Check user-configured excluded commands from settings
+  // Only user-configured excluded commands from settings are consulted. A prior
+  // "dynamic config" scaffold (a hardcoded-empty { commands, substrings } object
+  // and two loops over it) was a refactoring leftover that could never match; it
+  // was removed. This path is a user-facing convenience, not a security boundary
+  // (see NOTE above) — so it must not be re-wired to a source that could exclude
+  // MORE commands from the sandbox.
   const settings = getSettings_DEPRECATED()
   const userExcludedCommands = settings.sandbox?.excludedCommands ?? []
 

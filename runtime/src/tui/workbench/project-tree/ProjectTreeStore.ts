@@ -2,7 +2,7 @@ import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { globby } from "globby";
 
-import { buildProjectTreeRows, visibleTreePaths } from "./buildTree.js";
+import { buildProjectTreeRows } from "./buildTree.js";
 import { collectGitStatus, listGitFiles, type GitStatusByPath } from "./gitStatus.js";
 import { normalizeWorkspacePathForReferences } from "../pathReferences.js";
 import type { ProjectTreeRow, ProjectTreeSnapshot } from "../types.js";

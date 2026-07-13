@@ -5,11 +5,46 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { buildProjectTreeRows } from "../../../src/tui/workbench/project-tree/buildTree.js";
+import {
+  buildProjectTreeRows,
+  getStructureBuildCountForTest,
+  resetStructureBuildCountForTest,
+} from "../../../src/tui/workbench/project-tree/buildTree.js";
 import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
 import { ProjectTreeStore } from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
 
 describe("project tree helpers", () => {
+  it("reuses the sorted structure across cursor moves and rebuilds on a paths change (M-TUI-11)", () => {
+    const paths = ["src/index.ts", "src/tui/App.tsx", "README.md"];
+    const base = {
+      cwd: "/repo",
+      paths, // same array reference across cursor moves
+      expandedPaths: new Set(["src", "src/tui"]),
+      activePath: null,
+      attachedPaths: new Set<string>(),
+      searchHitPaths: new Set<string>(),
+      inFlightPaths: new Set<string>(),
+    };
+
+    resetStructureBuildCountForTest();
+    const a = buildProjectTreeRows({ ...base, cursorPath: "src/index.ts" });
+    const b = buildProjectTreeRows({ ...base, cursorPath: "src/tui/App.tsx" });
+    const c = buildProjectTreeRows({ ...base, cursorPath: "README.md" });
+
+    // The O(N log N) structure build runs ONCE; cursor moves reuse it.
+    expect(getStructureBuildCountForTest()).toBe(1);
+
+    // Correctness preserved: the cursor flag tracks the requested path.
+    expect(a.find((r) => r.path === "src/index.ts")?.selected).toBe(true);
+    expect(b.find((r) => r.path === "src/tui/App.tsx")?.selected).toBe(true);
+    expect(c.find((r) => r.path === "README.md")?.selected).toBe(true);
+    expect(b.find((r) => r.path === "src/index.ts")?.selected).toBe(false);
+
+    // A new paths array (file-list change) forces a rebuild.
+    buildProjectTreeRows({ ...base, paths: [...paths], cursorPath: "README.md" });
+    expect(getStructureBuildCountForTest()).toBe(2);
+  });
+
   it("builds expandable rows from synthetic paths", () => {
     const rows = buildProjectTreeRows({
       cwd: "/repo",

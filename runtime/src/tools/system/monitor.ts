@@ -37,7 +37,7 @@ const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
  * AgenC's `Bash` `run_in_background`, since that's the AgenC
  * primitive the model already knows.
  */
-const MONITOR_DESCRIPTION = `Execute a shell command in the background and stream its stdout line-by-line as notifications. Each polling interval (~1s), new output lines are delivered to you. Use this for monitoring logs, watching build output, or observing long-running processes. For one-shot "wait until done" commands, prefer exec_command with a short yield_time_ms instead.`;
+const MONITOR_DESCRIPTION = `Execute a shell command in the background and stream its stdout line-by-line as notifications for up to ~30 seconds. After that streaming window the command keeps running, but new output is NOT pushed automatically — poll for more with write_stdin(session_id, "") (an empty write) until it exits. Use this for monitoring logs, watching build output, or observing long-running processes. For one-shot "wait until done" commands, prefer exec_command with a short yield_time_ms instead.`;
 
 interface MonitorToolInput extends ToolExecutionInjectedArgs {
   readonly command?: unknown;

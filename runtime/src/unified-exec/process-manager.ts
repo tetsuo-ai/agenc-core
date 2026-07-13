@@ -77,6 +77,11 @@ export class ProcessOutputBuffer {
   private readonly chunks: OutputChunk[] = [];
   private consumedIndex = 0;
   private totalChars = 0;
+  /**
+   * Test-only counter of expensive pending-collapse passes, so a perf test can
+   * assert the O(pending) work is amortized rather than run on every append.
+   */
+  collapseCountForTest = 0;
 
   constructor(private readonly maxChars = DEFAULT_OUTPUT_BUFFER_CHARS) {}
 
@@ -84,19 +89,36 @@ export class ProcessOutputBuffer {
     if (chunk.length === 0) return;
     this.chunks.push({ stream, chunk });
     this.totalChars += chunk.length;
-    this.enforceCap();
+    // Evicting already-consumed chunks is cheap and safe on every append. The
+    // expensive pending collapse (slice/filter/join/truncateHeadTail over the
+    // whole ~1MB pending region) is amortized: under deferred drain
+    // (consumedIndex stays 0) it previously re-ran on every 8KB chunk past the
+    // cap, pinning a core for a verbose emitter. Now it runs only once the
+    // pending region overshoots by a full cap's worth, then collapses back to
+    // the cap — bounding memory at ~2*maxChars and making the collapse amortized
+    // O(1) per appended char. drain() still collapses to the cap so a caller
+    // never sees more than maxChars.
+    this.evictConsumed();
+    if (this.totalChars > this.maxChars * 2) {
+      this.collapsePending();
+    }
   }
 
   drain(): OutputChunk[] {
+    if (this.totalChars > this.maxChars) {
+      this.evictConsumed();
+      if (this.totalChars > this.maxChars) {
+        this.collapsePending();
+      }
+    }
     const drained = this.chunks.slice(this.consumedIndex);
     this.consumedIndex = this.chunks.length;
     return drained;
   }
 
-  private enforceCap(): void {
-    // First, evict already-consumed chunks. These have already been returned to
-    // the caller by a prior drain(), so discarding them costs nothing and never
-    // needs an omitted-count marker.
+  private evictConsumed(): void {
+    // Already-consumed chunks were returned to the caller by a prior drain(), so
+    // discarding them costs nothing and never needs an omitted-count marker.
     while (
       this.totalChars > this.maxChars &&
       this.consumedIndex > 0 &&
@@ -106,8 +128,11 @@ export class ProcessOutputBuffer {
       this.totalChars -= removed.chunk.length;
       this.consumedIndex -= 1;
     }
+  }
 
+  private collapsePending(): void {
     if (this.totalChars <= this.maxChars) return;
+    this.collapseCountForTest += 1;
 
     // The cap is still exceeded by pending (undrained) output. Rather than
     // dropping the most-recent unconsumed bytes wholesale (which previously
@@ -620,10 +645,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private pruneExitedProcesses(): void {
-    for (const [processId, entry] of this.processes) {
-      if (entry.exitState !== null) {
-        this.releaseProcessId(processId);
-      }
+    // Reclaim slots from EXITED processes ONLY when at/over the cap, oldest first.
+    // Do NOT release an exited process just because a new exec_command ran: a
+    // background command that has exited but has not yet been polled must survive
+    // so its final buffered output + exit code can still be retrieved (the
+    // start -> do other exec work -> poll workflow). Unconditional pruning here
+    // silently dropped that output and made the poll throw "unknown_process".
+    // Drained results are already deleted at their delivery point, so this only
+    // affects still-buffered, un-polled exits — and only under slot pressure.
+    if (this.processes.size < this.maxProcesses) return;
+    const exitedOldestFirst = [...this.processes.entries()]
+      .filter(([, entry]) => entry.exitState !== null)
+      .sort((a, b) => a[1].startedAt - b[1].startedAt);
+    for (const [processId] of exitedOldestFirst) {
+      if (this.processes.size < this.maxProcesses) break;
+      this.releaseProcessId(processId);
     }
   }
 

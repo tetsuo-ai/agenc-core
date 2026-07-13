@@ -7,7 +7,7 @@
  * emits it.
  */
 
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import {
   promptViaSubprocess,
@@ -57,6 +57,7 @@ function createFakeSpawn(script: FakeChildScript): {
           capture.stdinChunks.push(chunk);
           return true;
         },
+        on: () => {},
         end: () => {
           capture.stdinEnded = true;
           // Replay the scripted run asynchronously, split mid-line to prove
@@ -257,5 +258,117 @@ describe("agenc-sdk subprocess transport", () => {
         }
       })(),
     ).rejects.toThrow(/exited \(code 1\)/);
+  });
+
+  // M-TUI-8: a child that exits before draining stdin breaks the pipe; without an
+  // "error" listener on child.stdin, Node throws the EPIPE as an uncaught
+  // exception in the embedder's process (child.once("error") only covers spawn
+  // errors, not stream errors). Here the fake stdin is a real EventEmitter, so
+  // emitting "error" with no listener throws exactly as a real Writable would.
+  it("routes a broken stdin pipe (EPIPE) into result() rejection instead of crashing", async () => {
+    const spawn: AgencSubprocessSpawnFn = () => {
+      const emitter = new EventEmitter();
+      const stdin = new EventEmitter() as EventEmitter & {
+        write: (chunk: string) => unknown;
+        end: () => unknown;
+      };
+      stdin.write = () => {
+        stdin.emit(
+          "error",
+          Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+        );
+        return false;
+      };
+      stdin.end = () => undefined;
+      const stdout = new EventEmitter() as EventEmitter & {
+        setEncoding: (encoding: string) => void;
+      };
+      stdout.setEncoding = () => {};
+      const stderr = new EventEmitter() as EventEmitter & {
+        setEncoding: (encoding: string) => void;
+      };
+      stderr.setEncoding = () => {};
+      const child: AgencSubprocessChild = {
+        stdin: stdin as unknown as AgencSubprocessChild["stdin"],
+        stdout: stdout as unknown as AgencSubprocessChild["stdout"],
+        stderr: stderr as unknown as AgencSubprocessChild["stderr"],
+        once: (event: string, listener: (...args: never[]) => void) => {
+          emitter.once(event, listener as (...args: unknown[]) => void);
+          return child;
+        },
+        kill: () => true,
+      };
+      return child;
+    };
+
+    let run: ReturnType<typeof promptViaSubprocess> | undefined;
+    // Without the fix, the synchronous EPIPE with no listener throws right here,
+    // out of promptViaSubprocess — so constructing the run must not throw.
+    expect(() => {
+      run = promptViaSubprocess("hello", { spawn });
+    }).not.toThrow();
+    await expect(run!.result()).rejects.toThrow(/stdin write failed/i);
+  });
+
+  it("removes the abort listener from a reused signal once the run completes", async () => {
+    const controller = new AbortController();
+    const { spawn } = createFakeSpawn({
+      stdoutLines: [
+        {
+          type: "result",
+          sessionId,
+          agentId,
+          exitCode: 0,
+          finalMessage: "ok",
+          deniedPermissionRequestIds: [],
+        },
+      ],
+      exitCode: 0,
+    });
+
+    const run = promptViaSubprocess("hi", {
+      spawn,
+      signal: controller.signal,
+    });
+    // Registered while the run is in flight...
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    await run.result();
+    // ...and removed on completion, so a long-lived signal reused across many
+    // runs does not accumulate one dead listener per run.
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("caps the internal event buffer at 1000 when events are not consumed", async () => {
+    const lines: unknown[] = [];
+    for (let i = 0; i < 1500; i += 1) {
+      lines.push(
+        eventLine({
+          jsonrpc: "2.0",
+          method: "event.message_chunk",
+          params: { sessionId, eventId: `e${i}`, delta: `d${i} ` },
+        }),
+      );
+    }
+    lines.push({
+      type: "result",
+      sessionId,
+      agentId,
+      exitCode: 0,
+      finalMessage: "done",
+      deniedPermissionRequestIds: [],
+    });
+    const { spawn } = createFakeSpawn({ stdoutLines: lines, exitCode: 0 });
+
+    // Await result() first so all 1500 events accumulate before any consumption.
+    const run = promptViaSubprocess("go", { spawn });
+    await run.result();
+
+    const drained: AgencPromptEvent[] = [];
+    for await (const event of run) {
+      drained.push(event);
+    }
+    // Uncapped this would be 1500; the cap holds only the most recent 1000.
+    expect(drained.length).toBeGreaterThan(0);
+    expect(drained.length).toBeLessThanOrEqual(1000);
   });
 });

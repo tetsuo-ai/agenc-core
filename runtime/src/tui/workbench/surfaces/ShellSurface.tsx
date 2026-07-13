@@ -17,6 +17,20 @@ import { parseSourceLocations } from "./outputParsers.js";
 
 const TAIL_BYTES = 24_000;
 
+/**
+ * The tail state to apply when the shell effect (re-)runs for `taskId`. Preserve
+ * the current content when the task is unchanged — the effect also re-runs on a
+ * `status` change (e.g. running -> completed), and blanking there flashed the
+ * output empty for one cycle. Only blank when switching to a different task.
+ * Mirrors AgentSurface's guard.
+ */
+export function nextShellTailState(
+  current: { readonly taskId: string | null; readonly content: string },
+  taskId: string,
+): { readonly taskId: string | null; readonly content: string } {
+  return current.taskId === taskId ? current : { taskId, content: "" };
+}
+
 export function ShellSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
   const tasks = useAppState((state) => state.tasks);
@@ -37,7 +51,7 @@ export function ShellSurface({ focused }: { readonly focused: boolean }): React.
       return;
     }
     const taskId = task.id;
-    setTailState({ taskId, content: "" });
+    setTailState((current) => nextShellTailState(current, taskId));
     let mounted = true;
     const readTail = () => {
       tailFile(getTaskOutputPath(taskId), TAIL_BYTES)

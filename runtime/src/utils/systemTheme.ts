@@ -16,6 +16,11 @@ import type { ThemeName, ThemeSetting } from './theme.js'
 export type SystemTheme = 'dark' | 'light'
 
 let cachedSystemTheme: SystemTheme | undefined
+// Whether `cachedSystemTheme` reflects a real detection ($COLORFGBG parse or an
+// OSC 11 response) rather than the fallback default. Callers that make a
+// directional recommendation (the onboarding theme tip) must not treat a
+// defaulted `dark` as if the terminal was measured.
+let cachedThemeWasDetected = false
 
 /**
  * Get the current terminal theme. Cached after first detection; the watcher
@@ -23,9 +28,29 @@ let cachedSystemTheme: SystemTheme | undefined
  */
 export function getSystemThemeName(): SystemTheme {
   if (cachedSystemTheme === undefined) {
-    cachedSystemTheme = detectFromColorFgBg() ?? 'dark'
+    const detected = detectFromColorFgBg()
+    if (detected !== undefined) {
+      cachedSystemTheme = detected
+      cachedThemeWasDetected = true
+    } else {
+      cachedSystemTheme = 'dark'
+      cachedThemeWasDetected = false
+    }
   }
   return cachedSystemTheme
+}
+
+/**
+ * Whether the current system theme reflects an actual measurement of the
+ * terminal background ($COLORFGBG or an OSC 11 response) rather than the
+ * fallback default. Many terminals (gnome-terminal, Terminal.app, iTerm2,
+ * Windows Terminal, VS Code, Ghostty, kitty, Alacritty) don't export
+ * $COLORFGBG, so on those `getSystemThemeName()` returns a guessed `dark`.
+ */
+export function isSystemThemeDetected(): boolean {
+  // Resolve the cache so $COLORFGBG is consulted at least once.
+  getSystemThemeName()
+  return cachedThemeWasDetected
 }
 
 /**
@@ -34,6 +59,13 @@ export function getSystemThemeName(): SystemTheme {
  */
 export function setCachedSystemTheme(theme: SystemTheme): void {
   cachedSystemTheme = theme
+  cachedThemeWasDetected = true
+}
+
+/** Test-only: clear the module-level detection cache. */
+export function resetSystemThemeCacheForTest(): void {
+  cachedSystemTheme = undefined
+  cachedThemeWasDetected = false
 }
 
 /**

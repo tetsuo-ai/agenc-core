@@ -360,15 +360,19 @@ describe('MCPServerDesktopImportDialog', () => {
     }
   })
 
-  it('propagates import errors without completing or shutting down', async () => {
+  it('catches import errors without completing or shutting down', async () => {
     harness.addMcpConfig.mockRejectedValueOnce(new Error('write failed'))
     const rendered = await renderDialog()
 
     try {
-      await expect(selectProps().onSubmit?.(['filesystem'])).rejects.toThrow(
-        'write failed',
-      )
+      // onSubmit is invoked fire-and-forget by SelectMulti, so it must catch the
+      // failed write (no unhandled rejection) — but it must NOT complete or shut
+      // down as if the import succeeded. The dialog stays open; the error is logged.
+      await expect(selectProps().onSubmit?.(['filesystem'])).resolves.toBeUndefined()
 
+      expect(harness.logError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'write failed' }),
+      )
       expect(harness.writeToStdout).not.toHaveBeenCalled()
       expect(rendered.onDone).not.toHaveBeenCalled()
       expect(harness.gracefulShutdown).not.toHaveBeenCalled()

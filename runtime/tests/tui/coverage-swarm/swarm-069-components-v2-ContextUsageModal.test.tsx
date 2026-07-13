@@ -61,12 +61,13 @@ describe('ContextUsageModal swarm row 069 coverage', () => {
     expect(output).toContain('auto-compact at 92%')
     expect(output).toContain('SYSTEM')
     expect(output).toContain('10,000')
-    expect(output).toContain('FILES (3)')
+    // M-TUI-3: the aggregate FILES row remains, but the fabricated per-file rows
+    // (lib.rs/pool.rs/math.rs split by magic ratios) were removed.
+    expect(output).toContain('FILES')
     expect(output).toContain('8,402')
-    expect(output).toContain('lib.rs')
-    expect(output).toContain('3,841')
-    expect(output).toContain('pool.rs')
-    expect(output).toContain('2,118')
+    expect(output).not.toContain('lib.rs')
+    expect(output).not.toContain('pool.rs')
+    expect(output).not.toContain('math.rs')
     expect(output).toContain('HISTORY')
     expect(output).toContain('154,598')
     expect(output).toContain('AUTO COMPACT')

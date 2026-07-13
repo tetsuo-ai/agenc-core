@@ -243,7 +243,10 @@ export function writeDiffToTerminal(
         }
         break
       case 'clearTerminal':
-        buffer += getClearTerminalSequence()
+        // Only an explicit clear (ctrl+L / forceRedraw, reason 'clear') may erase
+        // scrollback. Engine-internal resets ('resize'/'offscreen') repaint in
+        // place and must preserve the user's scrollback above the app.
+        buffer += getClearTerminalSequence(patch.reason === 'clear')
         break
       case 'cursorHide':
         buffer += HIDE_CURSOR

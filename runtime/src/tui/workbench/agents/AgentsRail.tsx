@@ -23,11 +23,10 @@ export function AgentsRail({
   const dispatch = useWorkbenchDispatch();
   const taskList = useStableAgentTasks(Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash"));
   const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
-  const { selectedId, selectedIndex, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
+  const { selectedId, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
-    if (taskList.length === 0) return;
-    const next = wrapIndex(selectedIndex + delta, taskList.length);
-    dispatch({ type: "selectAgent", taskId: taskList[next].id });
+    const nextId = nextAgentSelectionId(taskList, selectedId, delta);
+    if (nextId !== null) dispatch({ type: "selectAgent", taskId: nextId });
   };
 
   useRegisterKeybindingContext("Agents", focused);
@@ -82,6 +81,27 @@ export function partitionAgentTasks(tasks: readonly any[]): {
     activeTasks: tasks.filter((task: any) => task.status === "running" || task.status === "pending"),
     backgroundTasks: tasks.filter((task: any) => task.status !== "running" && task.status !== "pending"),
   };
+}
+
+/**
+ * The next selection id when arrow-navigating the rail by `delta`. Navigation
+ * MUST follow the rendered order — active section then background section —
+ * not the flat task list, or ↓ jumps between sections and skips rows the eye
+ * expects next. Returns `null` when there is nothing to select or the target
+ * row has no stable id (an unkeyed task must not dispatch `taskId: undefined`).
+ */
+export function nextAgentSelectionId(
+  taskList: readonly any[],
+  selectedId: string | null,
+  delta: number,
+): string | null {
+  const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
+  const renderedOrder = [...activeTasks, ...backgroundTasks];
+  if (renderedOrder.length === 0) return null;
+  const currentIndex = renderedOrder.findIndex((task: any) => taskIdOf(task) === selectedId);
+  const base = currentIndex >= 0 ? currentIndex : 0;
+  const next = renderedOrder[wrapIndex(base + delta, renderedOrder.length)];
+  return taskIdOf(next);
 }
 
 export function orderAgentTasks(
@@ -144,9 +164,6 @@ function taskIdOf(task: any): string | null {
   return typeof task?.id === "string" ? task.id : null;
 }
 
-function isActiveTaskStatus(status: unknown): boolean {
-  return status === "running" || status === "pending";
-}
 
 function AgentRailSection({
   label,

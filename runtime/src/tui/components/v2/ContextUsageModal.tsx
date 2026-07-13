@@ -175,18 +175,12 @@ function StructuredContextUsage({
     (summary.fileTokens ?? 0) +
     (summary.toolsTokens ?? 0)
   ))
-  const libTokens = summary.fileTokens !== undefined
-    ? Math.round(summary.fileTokens * 3841 / 8402)
-    : undefined
-  const poolTokens = summary.fileTokens !== undefined
-    ? Math.round(summary.fileTokens * 2118 / 8402)
-    : undefined
-  const mathTokens = summary.fileTokens !== undefined && libTokens !== undefined && poolTokens !== undefined
-    ? Math.max(0, summary.fileTokens - libTokens - poolTokens)
-    : undefined
-  const compactionPercent = summary.compactionThreshold !== undefined
-    ? Number(((summary.compactionThreshold / summary.hardLimit) * 100).toFixed(1))
-    : 92
+  // Guard against a zero hardLimit (parseContextUsage accepts `0 / 0 tokens`),
+  // which otherwise yields `auto-compact at Infinity%`.
+  const compactionPercent =
+    summary.compactionThreshold !== undefined && summary.hardLimit > 0
+      ? Number(((summary.compactionThreshold / summary.hardLimit) * 100).toFixed(1))
+      : 92
   return (
     <Popup
       title="context"
@@ -217,14 +211,10 @@ function StructuredContextUsage({
         <UsageRow label="system" tokens={summary.systemTokens ?? summary.toolsTokens} total={summary.used} color="subtle" />
         <UsageRow label="plan" tokens={summary.planTokens} total={summary.used} color="agenc" />
         <Box minHeight={1} />
-        <UsageRow label="files (3)" tokens={summary.fileTokens} total={summary.used} color="worker" detail={summary.fileTokens !== undefined ? '3 files' : undefined} />
-        {summary.fileTokens !== undefined ? (
-          <>
-            <UsageRow label="lib.rs" tokens={libTokens} total={summary.used} color="worker" indent />
-            <UsageRow label="pool.rs" tokens={poolTokens} total={summary.used} color="worker" indent />
-            <UsageRow label="math.rs" tokens={mathTokens} total={summary.used} color="worker" indent />
-          </>
-        ) : null}
+        {/* Only the aggregate file-token total is available from /context; the
+            per-file breakdown here was fabricated fixture data (lib.rs/pool.rs/
+            math.rs split by magic ratios) and has been removed. */}
+        <UsageRow label="files" tokens={summary.fileTokens} total={summary.used} color="worker" />
         <UsageRow label="history" tokens={messagesTokens} total={summary.used} color="agenc" />
         <UsageRow label="tool catalog" tokens={summary.toolsTokens} total={summary.used} color="subtle" />
       </Box>

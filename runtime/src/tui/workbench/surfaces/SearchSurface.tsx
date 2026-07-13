@@ -95,7 +95,6 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
   const selectedIndex = clampSurfaceSelection(selected, matches.length);
   const selectedMatch = matches[selectedIndex] ?? null;
   const groups = useMemo(() => groupSearchMatches(matches), [matches]);
-  const rows = useMemo(() => visibleSearchRows(groups), [groups]);
   const disablePendingSelectedMatchRestore = () => {
     if (selectedMatchId) {
       appliedSelectedMatchIdRef.current = selectedMatchId;

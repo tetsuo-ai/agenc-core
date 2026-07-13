@@ -88,7 +88,15 @@ export class EmbeddedNeovimSession {
 
   async isDirty(): Promise<boolean> {
     if (this.#closed) return false;
-    const value = await this.#rpc.request("nvim_buf_get_option", [0, "modified"]);
+    // The transport can close independently of the session (stdin EPIPE before
+    // the child's exit); during that window this request rejects. The quit/close
+    // path awaits isDirty() (BufferSurface's void-invoked :q/:wq and buffer:close
+    // handlers), so an uncaught rejection here escapes as an unhandled rejection.
+    // Treat an unreachable Neovim as not-dirty — mirrors #readCurrentDirtyState's
+    // then(ok, fallback). There is nothing to save once the transport is gone.
+    const value = await this.#rpc
+      .request("nvim_buf_get_option", [0, "modified"])
+      .catch(() => false);
     return value === true;
   }
 

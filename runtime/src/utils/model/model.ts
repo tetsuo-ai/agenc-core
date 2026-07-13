@@ -497,7 +497,7 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-opus-4-5')) {
     return 'claude-opus-4-5'
   }
-  if (name.includes('claude-opus-4-1')) {
+  if (/claude-opus-4-1(?![0-9])/.test(name)) {
     return 'claude-opus-4-1'
   }
   if (name.includes('claude-opus-4')) {
@@ -806,7 +806,7 @@ export function parseUserSpecifiedModel(
       case 'opus':
         return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
       case 'best':
-        return getBestModel()
+        return getBestModel() + (has1mTag ? '[1m]' : '')
       default:
     }
   }
@@ -936,7 +936,7 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-opus-4-5')) {
     return 'Opus 4.5'
   }
-  if (canonical.includes('claude-opus-4-1')) {
+  if (/claude-opus-4-1(?![0-9])/.test(canonical)) {
     return 'Opus 4.1'
   }
   if (canonical.includes('claude-opus-4')) {

@@ -16,8 +16,12 @@ export function formatShellPrefixCommand(
   prefix: string,
   command: string,
 ): string {
-  // Split on the last space before a dash to separate executable from arguments
-  const spaceBeforeDash = prefix.lastIndexOf(' -')
+  // Split on the FIRST space-before-a-dash: the executable is everything up to
+  // the first flag, and the rest are arguments. Using lastIndexOf mis-parsed a
+  // multi-flag prefix like `wsl -e bash -c` (exec became `wsl -e bash`). A
+  // space-containing executable path with no embedded " -" (the common case) is
+  // still handled correctly, since its first " -" is the first flag.
+  const spaceBeforeDash = prefix.indexOf(' -')
   if (spaceBeforeDash > 0) {
     const execPath = prefix.substring(0, spaceBeforeDash)
     const args = prefix.substring(spaceBeforeDash + 1)
