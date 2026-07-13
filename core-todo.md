@@ -239,7 +239,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** wire `clearSessionReadState(sessionId)` into the session-close path; add/call a
   `clearWorkspaceReadState` (or evict entries) on teardown.
 
-- [ ] `[V]` **M-FILE-2 — FileRead emits oversized/high-DPI images the provider rejects.**
+- [x] `[V]` **M-FILE-2 — FileRead emits oversized/high-DPI images the provider rejects.**
   `runtime/src/tools/system/file-read.ts:1146` (`readImageFile`; notebook path `extractNotebookImageOutput`
   ~:705). Base64-encodes up to `maxImageBytes = 10MB` with no downsample/dimension clamp; the wire layer
   (`llm/wire/shared.ts:551`) passes it through. Provider limit is ~3.7MB / 1568px, which is why BashTool
