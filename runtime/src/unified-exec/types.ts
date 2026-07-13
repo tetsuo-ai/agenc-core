@@ -58,6 +58,8 @@ export interface UnifiedExecRuntimeSandbox {
   readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
+  /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
+  readonly allowGpu?: boolean;
 }
 
 export interface UnifiedExecManagerOptions {

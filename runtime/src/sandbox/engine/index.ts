@@ -127,6 +127,8 @@ export interface SandboxTransformRequest {
   readonly windowsSandboxPrivateDesktop: boolean;
   readonly platform?: NodeJS.Platform;
   readonly isWsl1?: boolean;
+  /** Opt-in GPU compute inside the sandbox (macOS seatbelt only for now). */
+  readonly allowGpu?: boolean;
 }
 
 export type WindowsSandboxLevel = "disabled" | "low" | "medium" | "high";

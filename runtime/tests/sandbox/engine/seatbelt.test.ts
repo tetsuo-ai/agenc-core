@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { restrictedFileSystemPolicy, unrestrictedFileSystemPolicy } from "./index.js";
 import {
   MACOS_PATH_TO_SEATBELT_EXECUTABLE,
+  MACOS_SEATBELT_GPU_POLICY,
   createSeatbeltCommandArgs,
   seatbeltRegexForUnreadableGlob,
 } from "./seatbelt.js";
@@ -130,5 +131,33 @@ describe("macOS seatbelt policy generation", () => {
       "^/repo/private(/.*)?$",
     );
     expect(seatbeltRegexForUnreadableGlob("")).toBeNull();
+  });
+});
+
+describe("macOS seatbelt GPU allowance (opt-in)", () => {
+  const baseParams = {
+    command: ["/bin/echo", "ok"],
+    fileSystemSandboxPolicy: restrictedFileSystemPolicy(),
+    networkSandboxPolicy: "disabled",
+    sandboxPolicyCwd: "/repo",
+    enforceManagedNetwork: false,
+  } as const;
+
+  it("denies GPU user clients and the Metal compiler by default", () => {
+    const args = createSeatbeltCommandArgs({ ...baseParams });
+    const policy = args[1] ?? "";
+    expect(policy).not.toContain("AGXDeviceUserClient");
+    expect(policy).not.toContain("MTLCompilerService");
+  });
+
+  it("adds only Metal compute rules when allowGpu is set", () => {
+    const args = createSeatbeltCommandArgs({ ...baseParams, allowGpu: true });
+    const policy = args[1] ?? "";
+    expect(policy).toContain(MACOS_SEATBELT_GPU_POLICY);
+    expect(policy).toContain('(iokit-user-client-class "AGXDeviceUserClient")');
+    expect(policy).toContain('(global-name "com.apple.MTLCompilerService")');
+    // The GPU opt-in must not widen display-adjacent surfaces.
+    expect(policy).not.toContain("WindowServer");
+    expect(policy).not.toContain("IOSurfaceRootUserClient");
   });
 });

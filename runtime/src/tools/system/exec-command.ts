@@ -94,6 +94,7 @@ export function runtimeSandboxForExec(
       readonly permissions?: {
         readonly windowsSandboxPrivateDesktop?: unknown;
       };
+      readonly sandboxAllowGpu?: unknown;
     };
     readonly features?: unknown;
     readonly network?: unknown;
@@ -117,6 +118,9 @@ export function runtimeSandboxForExec(
       : {}),
     sandboxPolicyCwd,
     preference: "require",
+    ...(booleanValue(turn.config?.sandboxAllowGpu) === true
+      ? { allowGpu: true }
+      : {}),
     useLegacyLandlock: useLegacyLandlock(turn.features ?? turn.config?.features),
     windowsSandboxLevel: windowsSandboxLevel(turn.windowsSandboxLevel),
     windowsSandboxPrivateDesktop: booleanValue(

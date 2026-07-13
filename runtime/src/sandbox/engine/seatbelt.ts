@@ -93,6 +93,8 @@ export interface CreateSeatbeltCommandArgsParams {
   readonly enforceManagedNetwork: boolean;
   readonly network?: NetworkProxyConfig;
   readonly extraAllowUnixSockets?: readonly string[];
+  /** Opt-in GPU compute (Metal) — see {@link MACOS_SEATBELT_GPU_POLICY}. */
+  readonly allowGpu?: boolean;
 }
 
 interface ProxyPolicyInputs {
@@ -117,6 +119,28 @@ interface UnixSocketPathParam {
   readonly path: string;
 }
 
+/**
+ * Opt-in GPU compute (Metal) allowance.
+ *
+ * The restricted profile denies all GPU IOKit user clients, so
+ * `MTLCreateSystemDefaultDevice()` returns nil inside the sandbox and GPU
+ * tools fail or crash outright (e.g. Blender 5.0.1 segfaults on the nil
+ * device name during startup backend detection, even in `--background`).
+ *
+ * Measured minimal set (macOS 26 / M4 Pro): `AGXDeviceUserClient` is the
+ * Apple Silicon GPU user client — the only IOKit class Metal needs for
+ * device enumeration and compute dispatch — and `MTLCompilerService` is
+ * the XPC shader compiler required for uncached pipeline compilation.
+ * GPU user clients are kernel attack surface, so this stays opt-in
+ * (config `sandbox.allow_gpu`) and deliberately excludes WindowServer,
+ * IOSurface, and every other display-adjacent service.
+ */
+export const MACOS_SEATBELT_GPU_POLICY = `; GPU compute (Metal) — opt-in via config \`sandbox.allow_gpu\`
+(allow iokit-open
+  (iokit-user-client-class "AGXDeviceUserClient"))
+(allow mach-lookup
+  (global-name "com.apple.MTLCompilerService"))`;
+
 export function createSeatbeltCommandArgs(
   args: CreateSeatbeltCommandArgsParams,
 ): string[] {
@@ -128,6 +152,7 @@ export function createSeatbeltCommandArgs(
     enforceManagedNetwork,
     network,
     extraAllowUnixSockets = [],
+    allowGpu = false,
   } = args;
 
   const unreadableRoots = getUnreadableRootsWithCwd(
@@ -166,6 +191,9 @@ export function createSeatbeltCommandArgs(
   ];
   if (includePlatformDefaults(fileSystemSandboxPolicy)) {
     policySections.push(getMacosRestrictedReadOnlyPlatformDefaults());
+  }
+  if (allowGpu) {
+    policySections.push(MACOS_SEATBELT_GPU_POLICY);
   }
   const fullPolicy = policySections.join("\n");
 

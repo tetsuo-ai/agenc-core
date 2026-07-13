@@ -69,6 +69,54 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
     expect(result.env.SANDBOX).toBe("1");
   });
 
+  it("threads allowGpu through to SandboxManager.transform when set", () => {
+    const transform = vi.fn().mockReturnValue({
+      command: ["/sandbox/wrapper", "/bin/echo", "hi"],
+      cwd: "/sandboxed",
+      env: {},
+    });
+    const manager = {
+      selectInitial: vi.fn().mockReturnValue("macos_seatbelt"),
+      transform,
+    } as never;
+
+    transformWithRuntimeSandbox({
+      program: "/bin/echo",
+      args: ["hi"],
+      cwd: process.cwd(),
+      env: {},
+      runtimeSandbox: { ...fakeRuntimeSandbox("require"), allowGpu: true },
+      sandboxManager: manager,
+    });
+
+    expect(transform).toHaveBeenCalledWith(
+      expect.objectContaining({ allowGpu: true }),
+    );
+  });
+
+  it("omits allowGpu from the transform request when not set", () => {
+    const transform = vi.fn().mockReturnValue({
+      command: ["/sandbox/wrapper", "/bin/echo", "hi"],
+      cwd: "/sandboxed",
+      env: {},
+    });
+    const manager = {
+      selectInitial: vi.fn().mockReturnValue("macos_seatbelt"),
+      transform,
+    } as never;
+
+    transformWithRuntimeSandbox({
+      program: "/bin/echo",
+      args: ["hi"],
+      cwd: process.cwd(),
+      env: {},
+      runtimeSandbox: fakeRuntimeSandbox("require"),
+      sandboxManager: manager,
+    });
+
+    expect(transform.mock.calls[0]?.[0]).not.toHaveProperty("allowGpu");
+  });
+
   it("fails closed when preference is require and no platform sandbox is selected", () => {
     const manager = {
       selectInitial: vi.fn().mockReturnValue("none"),

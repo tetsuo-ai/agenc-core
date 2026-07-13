@@ -93,6 +93,15 @@ export interface SandboxPolicy {
 
 export interface SandboxConfig {
   readonly mode?: SandboxConfigMode;
+  /**
+   * Opt-in GPU compute (Metal) inside the macOS sandbox. GPU IOKit user
+   * clients are kernel attack surface, so this is off by default; when
+   * true, sandboxed commands may open the Apple Silicon GPU
+   * (`AGXDeviceUserClient`) for Metal device enumeration, shader
+   * compilation, and compute dispatch. Display services (WindowServer)
+   * stay denied either way.
+   */
+  readonly allow_gpu?: boolean;
 }
 
 export interface ShellEnvironmentPolicy {
