@@ -48,7 +48,7 @@ import { Box } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { useTheme } from "../tui/components/design-system/ThemeProvider.js";
-import { getSystemThemeName } from "../utils/systemTheme.js";
+import { getSystemThemeName, isSystemThemeDetected } from "../utils/systemTheme.js";
 import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
@@ -1342,13 +1342,20 @@ export function detailLinesForStep(
       // 'auto' mode (COLORFGBG seed + OSC 11 watcher) — surface it here so the
       // user picks with that context instead of discovering the mismatch.
       const terminalBackground = getSystemThemeName();
-      const readable =
-        terminalBackground === "light" ? '"light" or "system"' : '"dark" or "system"';
+      // Only give a directional recommendation when the background was actually
+      // measured. Most terminals don't export $COLORFGBG, so an unmeasured value
+      // is a guessed `dark` — asserting "your terminal looks dark" there is the
+      // exact inverted advice this tip was added to prevent (M-ONB-2).
+      const themeTip = isSystemThemeDetected()
+        ? `Tip: your terminal background looks ${terminalBackground} — ${
+            terminalBackground === "light" ? '"light" or "system"' : '"dark" or "system"'
+          } will read best here.`
+        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "system"; if dark, "dark" or "system".`;
       return [
         ...THEME_CHOICES.map((theme, index) =>
           `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`
         ),
-        `Tip: your terminal background looks ${terminalBackground} — ${readable} will read best here.`,
+        themeTip,
         "Type a number or theme name.",
       ];
     }

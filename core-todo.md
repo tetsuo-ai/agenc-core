@@ -397,7 +397,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** surface the authorize URL in `onAuthorizeUrl` before opening the browser, and catch the open failure
   with a manual-open fallback.
 
-- [ ] `[V]` **M-ONB-2 — Theme "terminal background awareness" tip defaults to dark and can invert its advice.**
+- [x] `[V]` **M-ONB-2 — Theme "terminal background awareness" tip defaults to dark and can invert its advice.**
   `runtime/src/onboarding/Onboarding.tsx:1344`. Calls `getSystemThemeName()`, which resolves the background from
   a `$COLORFGBG`-seeded cache defaulting to `dark`, corrected only by the OSC 11 watcher — which runs only when
   the theme is `auto` (ThemeProvider.tsx:74–94). The wizard default is `dark`, so no OSC 11 query fires; on
@@ -406,6 +406,11 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   looks dark — dark/system will read best," the exact mismatch the feature was added to prevent.
   **Fix:** actively issue the OSC 11 query during onboarding before rendering the tip, or omit the directional
   recommendation when the value is a defaulted (not detected) `dark`.
+  **DONE (option 2):** `systemTheme.ts` now tracks whether the value was measured ($COLORFGBG parse or an OSC 11
+  `setCachedSystemTheme`) via `isSystemThemeDetected()`; the onboarding theme tip gives a directional
+  recommendation only when detected, otherwise "couldn't detect your terminal background — if light … if dark …".
+  Revert-sensitive tests: systemTheme-detected.test.ts (detected vs defaulted) + theme-tip-detection.test.ts (the
+  undetected case no longer asserts the guessed direction).
 
 ### Permissions / agents
 
