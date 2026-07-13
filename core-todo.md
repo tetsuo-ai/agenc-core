@@ -562,9 +562,14 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/tui/workbench/surfaces/ShellSurface.tsx:39–43` — unconditionally blanks the tail on any
   `status` change (running→completed flickers output blank for one cycle); the sibling `AgentSurface` guards this.
   **Fix:** match the guarded pattern.
-- [ ] `[V]` `runtime/src/tui/workbench/project-tree/ProjectTreeStore.ts:5` (unused `visibleTreePaths`),
+- [x] `[V]` `runtime/src/tui/workbench/project-tree/ProjectTreeStore.ts:5` (unused `visibleTreePaths`),
   `agents/AgentsRail.tsx:147–149` (unused `isActiveTaskStatus`), `surfaces/SearchSurface.tsx:98` (a `rows`
   `useMemo` computed and discarded). Dead declarations. **Fix:** remove.
+  **DONE:** removed the unused `visibleTreePaths` import from ProjectTreeStore.ts AND its now-orphaned export in
+  buildTree.ts (grep of src/tests/packages/scripts confirmed zero other callers); removed the dead
+  `isActiveTaskStatus` function; removed the discarded `rows` useMemo in SearchSurface (kept `groups`, still used
+  by groupStep). Behavior-preserving; typecheck confirms zero dangling references; project-tree/search-model/
+  AgentsRail suites green.
 
 ### Ink engine
 
@@ -740,7 +745,8 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/utils/bash/commands.ts:798–817` — an empty redirect target (`>` with `""`) is neither
   captured/validated nor flagged dangerous, violating the module's stated "captured-or-flagged" invariant
   (currently not exploitable). **Fix:** make `hasDangerousExpansion('')` return true.
-- [ ] `[-]` `runtime/src/utils/bash/ParsedCommand.ts:297–317` — `lastCmd`/`lastResult` is a process-global
+- [~] `[-]` `runtime/src/utils/bash/ParsedCommand.ts:297–317` [REFUTED by verifier — NOT a bug; left per the
+  "refuted [-] items are not bugs" guardrail] — `lastCmd`/`lastResult` is a process-global
   single-entry cache shared across sessions, but verified SAFE (pure function of the command string; only cache
   thrash). No fix required; noted for awareness.
 

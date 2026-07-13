@@ -50,12 +50,6 @@ export function buildProjectTreeRows(options: BuildProjectTreeOptions): ProjectT
   return rows;
 }
 
-export function visibleTreePaths(rows: readonly ProjectTreeRow[]): readonly string[] {
-  return rows
-    .filter((row) => row.kind === "file" || row.kind === "directory")
-    .map((row) => row.path);
-}
-
 function createProjectTree(options: BuildProjectTreeOptions): TreeNode | null {
   const items = new Map<string, Omit<TreeNode, "children">>();
   items.set(ROOT_ID, {

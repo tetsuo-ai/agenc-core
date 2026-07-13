@@ -164,9 +164,6 @@ function taskIdOf(task: any): string | null {
   return typeof task?.id === "string" ? task.id : null;
 }
 
-function isActiveTaskStatus(status: unknown): boolean {
-  return status === "running" || status === "pending";
-}
 
 function AgentRailSection({
   label,
