@@ -837,10 +837,24 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
   };
 }
 
+/**
+ * DAE-01: compact temporarily stamps provider override keys onto process.env
+ * (read by compact services). Serialize all compact env installs so concurrent
+ * same-process agents cannot interleave and corrupt each other's credentials.
+ * Full elimination of process.env is a follow-up; this removes the race.
+ */
+let compactEnvGate: Promise<void> = Promise.resolve();
+
 async function withCompactContextGuards<T>(
   fn: () => Promise<T>,
   env: CompactGuardEnv = {},
 ): Promise<T> {
+  let release!: () => void;
+  const previousGate = compactEnvGate;
+  compactEnvGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previousGate;
   const previous = new Map<string, string | undefined>();
   for (const key of Object.keys(env) as Array<keyof CompactGuardEnv>) {
     previous.set(key, process.env[key]);
@@ -861,6 +875,7 @@ async function withCompactContextGuards<T>(
         process.env[key] = value;
       }
     }
+    release();
   }
 }
 
