@@ -657,7 +657,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Uncertain
 
-- [ ] `[?]` `runtime/src/utils/execFileNoThrow.ts:289` — on timeout it calls `child.kill()` (SIGTERM only) with no
+- [x] `[x]` `runtime/src/utils/execFileNoThrow.ts:289` — on timeout it calls `child.kill()` (SIGTERM only) with no
   SIGKILL escalation, so a SIGTERM-ignoring or IO-stuck git/gh/npm child never emits `close` and the promise hangs
   forever past the timeout (ripgrep.ts escalates to SIGKILL; this shared wrapper doesn't). **Fix:** arm a secondary
   timer to `child.kill('SIGKILL')`, mirroring ripgrep.ts.
