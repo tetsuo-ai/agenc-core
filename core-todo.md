@@ -580,9 +580,12 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   are module-level singletons; `checkForLSPDiagnostics()` takes no session arg and drains ALL pending diagnostics
   globally, so with two active sessions the first to assemble attachments consumes the other's diagnostics.
   **Fix:** key pending/delivered by session (or scope the drain to the requesting session's workspace).
-- [ ] `[V]` `runtime/src/services/MagicDocs/magicDocs.ts:430` — `updateQueue` is one module-level promise chain
+- [x] `[V]` `runtime/src/services/MagicDocs/magicDocs.ts:430` — `updateQueue` is one module-level promise chain
   shared across all sessions, so session B's magic-docs update can't start until session A's (a full background
   subagent) finishes. **Fix:** per-session queue keyed like `trackedMagicDocsByScope`.
+  **DONE:** replaced the global `updateQueue` with `updateQueueByScope: Map<scopeId, Promise>` keyed by
+  `scopeIdForContext(context)`; the tail entry is deleted once it settles (bounded to in-flight scopes).
+  Revert-sensitive test (magicDocs-queue-isolation.test.ts): a blocked session A no longer stalls session B.
 - [x] `[V]` `runtime/src/services/api/cacheStatsTracker.ts:76` — process-global tracker keyed by nothing; a
   session's `resetCurrentTurn()`/`/clear` wipes another session's in-flight aggregate, and the provider is derived
   from `process.env.OPENAI_BASE_URL` (which M-LLM-4 shows can belong to another session). Observability only.

@@ -69,7 +69,12 @@ const MAGIC_DOCS_QUERY_SOURCE = "magic_docs";
 const trackedMagicDocsByScope = new Map<string, Map<string, MagicDocInfo>>();
 
 let unregisterReadListener: (() => void) | null = null;
-let updateQueue: Promise<void> = Promise.resolve();
+// One serialized update queue PER scope (session), keyed like
+// trackedMagicDocsByScope. A single module-global chain made session B's
+// magic-docs update wait behind session A's (a full background subagent).
+// The tail entry is deleted once it settles with nothing chained after it, so
+// the map stays bounded to scopes with an in-flight update.
+const updateQueueByScope = new Map<string, Promise<void>>();
 let agentRunnerForTests: MagicDocsAgentRunner | null = null;
 
 function getErrnoCode(error: unknown): string | undefined {
@@ -119,7 +124,7 @@ export function setMagicDocsAgentRunnerForTests(
 
 export function resetMagicDocsForTests(): void {
   trackedMagicDocsByScope.clear();
-  updateQueue = Promise.resolve();
+  updateQueueByScope.clear();
   agentRunnerForTests = null;
   if (unregisterReadListener !== null) {
     unregisterReadListener();
@@ -427,11 +432,24 @@ async function updateMagicDocs(
 export function runMagicDocsPostSamplingHook(
   context: MagicDocsPostSamplingContext,
 ): Promise<void> {
-  updateQueue = updateQueue.then(
+  const scopeId = scopeIdForContext(context);
+  const prev = updateQueueByScope.get(scopeId) ?? Promise.resolve();
+  const next = prev.then(
     () => updateMagicDocs(context),
     () => updateMagicDocs(context),
   );
-  return updateQueue;
+  updateQueueByScope.set(scopeId, next);
+  // Drop the entry once this settles, unless a newer update chained after it —
+  // keeps the map bounded to scopes with a genuinely in-flight update. The
+  // settle handler swallows rejection so an ignored tail cannot surface as an
+  // unhandled rejection; callers still observe it via the returned promise.
+  const settle = (): void => {
+    if (updateQueueByScope.get(scopeId) === next) {
+      updateQueueByScope.delete(scopeId);
+    }
+  };
+  next.then(settle, settle);
+  return next;
 }
 
 export function initMagicDocs(): void {
