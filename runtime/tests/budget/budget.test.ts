@@ -193,6 +193,22 @@ describe("BudgetEnforcer", () => {
     if (r.ok) expect(r.hold.estimatedUsd).toBe(0);
   });
 
+  test("reconcile is NOT idempotent: second call over-refunds the hold", () => {
+    const enf = make({ caps: { dailyTokens: 1_000_000 } });
+    // Token-only path: unpriced model still holds est tokens.
+    const r = enf.admit(
+      autoReq({ model: "unpriced", estInputTokens: 100, maxOutputTokens: 100 }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(sharedLedger.snapshot("a1").day.tokens).toBe(200);
+    enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    expect(sharedLedger.snapshot("a1").day.tokens).toBe(0);
+    // Second call applies (0 − 200) again → negative residual (footgun).
+    enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    expect(sharedLedger.snapshot("a1").day.tokens).toBe(-200);
+  });
+
   test("admit debits worst-case; reconcile refunds the delta to actual", () => {
     const enf = make({ caps: { dailyUsd: 100 } });
     // worst-case for 1000 in + 1000 out at $1/$3 per M = 0.001 + 0.003 = $0.004

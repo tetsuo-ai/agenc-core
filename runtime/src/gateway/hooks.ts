@@ -299,56 +299,47 @@ export class HooksServer {
       return;
     }
 
-    // The payload is untrusted work data — sanitize + frame (task 11)
-    // before it reaches session.prompt, exactly like channel text.
-    const framedText = frameChannelMessage({
-      channelId: HOOKS_CHANNEL_ID,
-      peerId: `hook:${parsed.name}`,
-      text: parsed.message,
-    });
-    const key = SessionRouter.conversationKey({
-      channelId: HOOKS_CHANNEL_ID,
-      agent: parsed.agent,
-      conversationId: parsed.sessionKey,
-    });
-
-    const runTurn = () =>
-      this.#router.runTurn({
-        key,
-        text: framedText,
-        adapter: deliverAdapter ?? NULL_ADAPTER,
-        conversationId: parsed.deliver?.to ?? parsed.sessionKey,
-        // Autonomous, nobody watching → deny permission requests (fail safe).
-        onPermissionRequest: async () => ({
-          behavior: "deny",
-          reason: "hook turns do not grant tool permissions",
-        }),
-      });
-
-    if (deliverAdapter !== undefined) {
-      // Fire-and-deliver: acknowledge now, stream the turn to the channel.
-      this.#json(res, 202, { ok: true, sessionKey: parsed.sessionKey });
-      try {
-        const result = await runTurn();
-        this.#enforcer.reconcile(
-          admit.hold,
-          result.usage ?? { inputTokens: 0, outputTokens: 0 },
-        );
-        this.#log(`hooks: '${parsed.name}' delivered (${result.stopReason})`);
-      } catch (error) {
-        this.#enforcer.reconcile(admit.hold, { inputTokens: 0, outputTokens: 0 });
-        this.#log(`hooks: '${parsed.name}' turn failed: ${String(error)}`);
-      }
-      return;
-    }
-
-    // Synchronous mode: the caller wants the answer in the response.
+    // After successful admit: exactly one reconcile in `finally` (parity with
+    // cron/heartbeat). All post-admit work lives inside try so framing /
+    // turn / response throws cannot leave a sticky hold or double-refund.
+    let usage = { inputTokens: 0, outputTokens: 0 };
     try {
+      // Untrusted work data: sanitize + frame (task 11) before session.prompt.
+      const framedText = frameChannelMessage({
+        channelId: HOOKS_CHANNEL_ID,
+        peerId: `hook:${parsed.name}`,
+        text: parsed.message,
+      });
+      const key = SessionRouter.conversationKey({
+        channelId: HOOKS_CHANNEL_ID,
+        agent: parsed.agent,
+        conversationId: parsed.sessionKey,
+      });
+      const runTurn = () =>
+        this.#router.runTurn({
+          key,
+          text: framedText,
+          adapter: deliverAdapter ?? NULL_ADAPTER,
+          conversationId: parsed.deliver?.to ?? parsed.sessionKey,
+          // Autonomous, nobody watching → deny permission requests (fail safe).
+          onPermissionRequest: async () => ({
+            behavior: "deny",
+            reason: "hook turns do not grant tool permissions",
+          }),
+        });
+
+      if (deliverAdapter !== undefined) {
+        // Fire-and-deliver: 202 first, then await the turn (finally after).
+        this.#json(res, 202, { ok: true, sessionKey: parsed.sessionKey });
+        const result = await runTurn();
+        usage = result.usage ?? usage;
+        this.#log(`hooks: '${parsed.name}' delivered (${result.stopReason})`);
+        return;
+      }
+
+      // Synchronous mode: wait for the turn, then respond.
       const result = await runTurn();
-      this.#enforcer.reconcile(
-        admit.hold,
-        result.usage ?? { inputTokens: 0, outputTokens: 0 },
-      );
+      usage = result.usage ?? usage;
       this.#json(res, 200, {
         ok: true,
         sessionKey: parsed.sessionKey,
@@ -356,8 +347,14 @@ export class HooksServer {
         stopReason: result.stopReason,
       });
     } catch (error) {
-      this.#enforcer.reconcile(admit.hold, { inputTokens: 0, outputTokens: 0 });
-      this.#json(res, 500, { error: `turn failed: ${String(error)}` });
+      // Do not reconcile here — exclusive finally owns money accounting.
+      if (!res.headersSent) {
+        this.#json(res, 500, { error: `turn failed: ${String(error)}` });
+      } else {
+        this.#log(`hooks: '${parsed.name}' turn failed: ${String(error)}`);
+      }
+    } finally {
+      this.#enforcer.reconcile(admit.hold, usage);
     }
   }
 
