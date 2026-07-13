@@ -288,8 +288,8 @@ The only practical **CRITICAL** is same-process multi-agent shell isolation (TOO
 
 | ID | Status | Commit / note |
 | --- | --- | --- |
-| TOOL-01 | **FIXED** | `1aef14be9` process ownership on unified-exec |
-| TOOL-02 | **FIXED** | `1aef14be9` write_stdin/kill shell-family + requiresApproval |
+| TOOL-01 | **FIXED** | `1aef14be9` + `6ed875b26` process ownership; Monitor/PowerShell/workflow stamp owner |
+| TOOL-02 | **FIXED** | `1aef14be9` + `6ed875b26` write_stdin/kill/Monitor shell-family + requiresApproval |
 | SEC-01 | **FIXED** | `0f3f84379` scrub-env for spawn |
 | SEC-02 | **FIXED** | `7aede537e` arbiter evaluator floors after hook allow |
 | LLM-01 | **FIXED** | `6d56044f7` no mid-stream transport retry after yield |
