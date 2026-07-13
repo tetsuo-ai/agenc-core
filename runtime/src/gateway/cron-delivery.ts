@@ -239,46 +239,50 @@ export function startCronDelivery(
       return;
     }
 
-    // Frame scheduled prompts as untrusted work data (parity with hooks/channels, todo-126).
-    const framedPrompt = frameChannelMessage({
-      channelId: "cron",
-      peerId: `cron:${task.id}`,
-      text: task.prompt,
-    });
-    const result = await router.runTurn({
-      key: SessionRouter.conversationKey({
+    // GW-06: after successful admit, exactly one reconcile in `finally`
+    // (success → real/zero usage; throw → zeros refund the worst-case hold).
+    // try starts immediately so no post-admit path can skip reconcile.
+    let usage = { inputTokens: 0, outputTokens: 0 };
+    try {
+      // Frame scheduled prompts as untrusted work data (parity with hooks/channels, todo-126).
+      const framedPrompt = frameChannelMessage({
         channelId: "cron",
-        agent: "default",
-        conversationId: task.id,
-      }),
-      text: framedPrompt,
-      adapter: routeAdapter,
-      conversationId,
-      // Autonomous, no human watching → deny permission requests (fail safe).
-      onPermissionRequest: async () => ({
-        behavior: "deny",
-        reason: "cron delivery turns do not grant tool permissions",
-      }),
-    });
+        peerId: `cron:${task.id}`,
+        text: task.prompt,
+      });
+      const result = await router.runTurn({
+        key: SessionRouter.conversationKey({
+          channelId: "cron",
+          agent: "default",
+          conversationId: task.id,
+        }),
+        text: framedPrompt,
+        adapter: routeAdapter,
+        conversationId,
+        // Autonomous, no human watching → deny permission requests (fail safe).
+        onPermissionRequest: async () => ({
+          behavior: "deny",
+          reason: "cron delivery turns do not grant tool permissions",
+        }),
+      });
+      usage = result.usage ?? usage;
 
-    enforcer.reconcile(
-      admit.hold,
-      result.usage ?? { inputTokens: 0, outputTokens: 0 },
-    );
-
-    if (deliver.webhook !== undefined) {
-      await postWebhook(deliver.webhook, {
-        taskId: task.id,
-        cron: task.cron,
-        prompt: task.prompt,
-        finalMessage: result.finalMessage,
-        stopReason: result.stopReason,
-        firedAt: clock.now().toISOString(),
-      }).catch((error: unknown) =>
-        log(`cron: webhook POST failed for task ${task.id}: ${String(error)}`),
-      );
+      if (deliver.webhook !== undefined) {
+        await postWebhook(deliver.webhook, {
+          taskId: task.id,
+          cron: task.cron,
+          prompt: task.prompt,
+          finalMessage: result.finalMessage,
+          stopReason: result.stopReason,
+          firedAt: clock.now().toISOString(),
+        }).catch((error: unknown) =>
+          log(`cron: webhook POST failed for task ${task.id}: ${String(error)}`),
+        );
+      }
+      log(`cron: task ${task.id} delivered (${result.stopReason})`);
+    } finally {
+      enforcer.reconcile(admit.hold, usage);
     }
-    log(`cron: task ${task.id} delivered (${result.stopReason})`);
   };
 
   const tick = async (): Promise<void> => {

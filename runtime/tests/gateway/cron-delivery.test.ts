@@ -30,6 +30,7 @@ import {
   normalizeDelivery,
 } from "../../src/utils/cronTasks.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { BudgetLedger } from "../../src/budget/ledger.js";
 
 class EchoSession implements GatewaySession {
   readonly sessionId: string;
@@ -59,6 +60,8 @@ class RecordingClient implements GatewayDaemonClient {
   labels: (string | undefined)[] = [];
   readonly sessions: EchoSession[] = [];
   readonly reply: string;
+  /** When set, createSession returns a session whose prompt() throws (GW-06). */
+  throwOnPrompt: Error | null = null;
   constructor(reply = "cron result") {
     this.reply = reply;
   }
@@ -67,6 +70,17 @@ class RecordingClient implements GatewayDaemonClient {
   ): Promise<GatewaySession> {
     this.created += 1;
     this.labels.push(options?.label);
+    if (this.throwOnPrompt !== null) {
+      const err = this.throwOnPrompt;
+      return {
+        sessionId: `cron-sess-throw-${this.created}`,
+        prompt: async (text: string) => {
+          // Prove the turn path was entered before fail.
+          (this as { lastPrompt?: string }).lastPrompt = text;
+          throw err;
+        },
+      } as GatewaySession;
+    }
     const s = new EchoSession(`cron-sess-${this.created}`, this.reply);
     this.sessions.push(s);
     return s;
@@ -328,6 +342,42 @@ describe("startCronDelivery", () => {
     expect(client.created).toBe(0);
     const last = mem.lastText("ops") ?? "";
     expect(last).toContain("paused");
+    await handle.stop();
+  });
+
+  test("GW-06: turn throw refunds hold (ledger tokens/usd back to 0)", async () => {
+    const startMs = Date.parse("2026-07-09T10:00:30Z");
+    writeTasks([
+      {
+        id: "cronch-throw",
+        cron: "* * * * *",
+        prompt: "will explode",
+        createdAt: startMs - 1_000,
+        recurring: true,
+        deliver: { channel: "mem", to: "ops" },
+      },
+    ]);
+    const client = new RecordingClient("unused");
+    client.throwOnPrompt = new Error("turn exploded");
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+    const { clock, advance } = manualClock(startMs);
+    // Cap high enough that admit succeeds (hold is estInput + 2048 tokens).
+    const handle = startCronDelivery({
+      ...baseOptions(client, mem),
+      config: {
+        budget: { enabled: true, daily_tokens: 1_000_000 },
+      } as unknown as AgenCConfig,
+      clock,
+    });
+
+    await advance(90_000);
+    // Turn path was entered (session created / prompt attempted).
+    expect(client.created).toBeGreaterThan(0);
+    // Hold must be fully refunded after throw (zeros reconcile).
+    const ledger = new BudgetLedger({ agencHome: home });
+    const snap = ledger.snapshot("cron:cronch-throw");
+    expect(snap.day.tokens).toBe(0);
+    expect(snap.day.usd).toBe(0);
     await handle.stop();
   });
 
