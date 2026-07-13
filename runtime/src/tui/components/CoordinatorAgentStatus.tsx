@@ -81,6 +81,81 @@ export function shouldShowCoordinatorTaskPanel({
   return viewingAgentTaskId !== undefined && visibleTasks.some(task => task.id === viewingAgentTaskId);
 }
 
+export function CoordinatorTaskPanel(): React.ReactNode {
+  const tasks = useAppState(s => s.tasks);
+  const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
+  const agentNameRegistry = useAppState(s_1 => s_1.agentNameRegistry);
+  const coordinatorTaskIndex = useAppState(s_2 => s_2.coordinatorTaskIndex);
+  const footerSelection = useAppState(s_3 => s_3.footerSelection);
+  const tasksSelected = footerSelection === 'tasks';
+  const setAppState = useSetAppState();
+  const visibleTasks = getVisibleAgentTasks(tasks);
+  const selectedIndex = tasksSelected
+    ? Math.max(0, Math.min(coordinatorTaskIndex, visibleTasks.length))
+    : undefined;
+  const hasTasks = Object.values(tasks).some(isPanelAgentTask);
+  const visibilityKey = getCoordinatorTaskPanelVisibilityKey(visibleTasks);
+  const visibilityKeyRef = React.useRef('');
+  const transientVisibleUntilRef = React.useRef(0);
+  const now = Date.now();
+
+  if (visibleTasks.length === 0) {
+    visibilityKeyRef.current = '';
+    transientVisibleUntilRef.current = 0;
+  } else if (visibilityKeyRef.current !== visibilityKey) {
+    visibilityKeyRef.current = visibilityKey;
+    transientVisibleUntilRef.current = now + AGENT_PANEL_TRANSIENT_MS;
+  }
+
+  // 1s tick: re-render for elapsed time + evict tasks past their deadline.
+  // The eviction deletes from prev.tasks, which makes useCoordinatorTaskCount
+  // (and other consumers) see the updated count without their own tick.
+  const tasksRef = React.useRef(tasks);
+  tasksRef.current = tasks;
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!hasTasks) return;
+    const interval = setInterval((tasksRef_0, setAppState_0, setTick_0) => {
+      const now = Date.now();
+      for (const t of Object.values(tasksRef_0.current)) {
+        if (isPanelAgentTask(t) && isTerminalStatus(t.status) && (t.evictAfter ?? Infinity) <= now) {
+          evictTerminalTask(t.id, setAppState_0);
+        }
+      }
+      setTick_0((prev: number) => prev + 1);
+    }, 1000, tasksRef, setAppState, setTick);
+    return () => clearInterval(interval);
+  }, [hasTasks, setAppState]);
+  const nameByAgentId = React.useMemo(() => {
+    const inv = new Map<string, string>();
+    for (const [n, id] of agentNameRegistry) inv.set(id, n);
+    return inv;
+  }, [agentNameRegistry]);
+  if (!shouldShowCoordinatorTaskPanel({
+    visibleTasks,
+    footerSelection,
+    viewingAgentTaskId,
+    transientVisibleUntil: transientVisibleUntilRef.current,
+    now,
+  })) {
+    return null;
+  }
+  const focusedTask = selectedIndex !== undefined && selectedIndex > 0
+    ? visibleTasks[selectedIndex - 1]
+    : viewingAgentTaskId
+      ? visibleTasks.find(task => task.id === viewingAgentTaskId)
+      : visibleTasks[0];
+  return <ThemedBox flexDirection="column" marginTop={1} borderStyle="single" borderColor="lineSoft" paddingX={1}>
+      <Box justifyContent="space-between">
+        <ThemedText color="muted3" bold={true}>AGENT FLEET</ThemedText>
+        <ThemedText color="text2">{visibleTasks.length} active</ThemedText>
+      </Box>
+      <FleetHeader />
+      <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} tokens={orchestratorTokenLabel(tasks)} onClick={() => exitTeammateView(setAppState)} />
+      {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterTeammateView(task.id, setAppState)} />)}
+      {focusedTask ? <FocusedAgentBlock task={focusedTask} name={nameByAgentId.get(focusedTask.id)} /> : null}
+    </ThemedBox>;
+}
 
 /**
  * Returns the number of visible coordinator tasks (for selection bounds).
