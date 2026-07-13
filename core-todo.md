@@ -230,7 +230,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Tools / file & data
 
-- [ ] `[V]` **M-FILE-1 — Session/workspace read-state maps leak forever.**
+- [!] `[V]` **M-FILE-1 [DEFERRED: session-close hook location + workspace-keyed map eviction policy are design decisions; naive session-close clear is unsafe for the shared workspace map] — Session/workspace read-state maps leak forever.**
   `runtime/src/tools/system/filesystem.ts:614` (state at :184/:206). `sessionReadState` accumulates one Map
   per session (each up to ~25MB content; `boundSessionReadContent` caps bytes within a session, never the
   session count) and `workspaceReadState` one entry per unique path ever read. `clearSessionReadState`/
