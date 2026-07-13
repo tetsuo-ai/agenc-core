@@ -615,7 +615,15 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### MCP / gateway / agents
 
-- [ ] `[V]` `runtime/src/mcp-client/resilient-client.ts:174` — the model-facing `tools` proxy array is built once
+- [~] `[V]` `runtime/src/mcp-client/resilient-client.ts:174` [SKIPPED: no contained fix reaches the model, and the
+  complete fix crosses the guardrail (risky shared MCP catalog surface, >5 files). Evidence: `manager.getTools()`
+  (manager.ts:391) SNAPSHOTS `bridge.tools` (`push(...bridge.tools)`) and the model's tool registry consumes that
+  snapshot, so mutating `this.tools` in place on reconnect does NOT surface added/removed/changed tools to the
+  model — the registry must re-poll. Execution already re-resolves the inner tool by name at call time (:212), so
+  only the ADVERTISED schema is stale. A real fix = add a tool-list-changed event to ResilientMCPBridge, wire the
+  manager to re-run catalog assembly (re-applying catalog policy / SHA pin / approval modes — security-sensitive),
+  and refresh the model tool registry. Recommend: bridge emits `onToolsChanged`; manager re-registers on it.] —
+  the model-facing `tools` proxy array is built once
   in the ctor and never rebuilt on reconnect (`this.inner` swapped at :314 but not `this.tools`). A server that
   restarts with a changed catalog hides added tools, 404s removed ones, and presents stale schemas for changed
   ones (silent argument mismatch). **Fix:** reconcile the proxy array with `newBridge.tools` on reconnect (mutate
