@@ -86,18 +86,23 @@ describe("WorkspaceHeartbeatFileReader", () => {
 class FakeRunner implements HeartbeatTurnRunner {
   reply = HEARTBEAT_OK;
   usage: HeartbeatUsage = { inputTokens: 500, outputTokens: 100 };
+  /** When set, run() throws after recording the prompt (GW-07). */
+  throwOnRun: Error | null = null;
   readonly prompts: string[] = [];
   readonly models: (string | undefined)[] = [];
   async run(prompt: string, model: string | undefined) {
     this.prompts.push(prompt);
     this.models.push(model);
+    if (this.throwOnRun !== null) throw this.throwOnRun;
     return { finalMessage: this.reply, usage: this.usage };
   }
 }
 
 class FakeDelivery implements HeartbeatDelivery {
   readonly sent: { target: unknown; text: string }[] = [];
+  throwOnDeliver: Error | null = null;
   async deliver(target: unknown, text: string) {
+    if (this.throwOnDeliver !== null) throw this.throwOnDeliver;
     this.sent.push({ target, text });
   }
 }
@@ -227,6 +232,45 @@ describe("HeartbeatRunner turn + budget wire-in", () => {
     expect(runner.prompts).toHaveLength(0); // turn never ran (no silent spend)
     expect(delivery.sent).toHaveLength(1);
     expect(delivery.sent[0].text).toContain("heartbeat paused");
+    expect(budget.reconciles).toHaveLength(0); // no admit hold to reconcile
+  });
+
+  test("GW-07: turn throw still reconciles hold once with zeros", async () => {
+    const budget = new FakeBudget();
+    const runner = new FakeRunner();
+    runner.throwOnRun = new Error("turn exploded");
+    const { hb } = makeRunner({}, { budget, runner });
+    const outcome = await hb.tick();
+    expect(outcome).toMatchObject({ kind: "error", message: expect.stringContaining("turn exploded") });
+    expect(budget.admits).toBe(1);
+    expect(budget.reconciles).toHaveLength(1);
+    expect(budget.reconciles[0]).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(runner.prompts).toHaveLength(1); // turn was entered
+  });
+
+  test("GW-07: success still reconciles exactly once with real usage", async () => {
+    const budget = new FakeBudget();
+    const { hb, runner } = makeRunner({}, { budget });
+    runner.reply = HEARTBEAT_OK;
+    await hb.tick();
+    expect(budget.admits).toBe(1);
+    expect(budget.reconciles).toHaveLength(1);
+    expect(budget.reconciles[0]).toEqual({ inputTokens: 500, outputTokens: 100 });
+  });
+
+  test("GW-07: deliver throw after successful turn reconciles real usage", async () => {
+    const budget = new FakeBudget();
+    const delivery = new FakeDelivery();
+    delivery.throwOnDeliver = new Error("channel down");
+    const runner = new FakeRunner();
+    runner.reply = "something needs attention";
+    runner.usage = { inputTokens: 42, outputTokens: 7 };
+    const { hb } = makeRunner({}, { budget, runner, delivery });
+    const outcome = await hb.tick();
+    expect(outcome).toMatchObject({ kind: "error", message: expect.stringContaining("channel down") });
+    expect(budget.admits).toBe(1);
+    expect(budget.reconciles).toHaveLength(1);
+    expect(budget.reconciles[0]).toEqual({ inputTokens: 42, outputTokens: 7 });
   });
 
   test("the utility model flows through to the turn runner", async () => {

@@ -94,7 +94,11 @@ A self-contained subsystem, `runtime/src/budget/`, exposing a
   Returns a hold on success, or a typed `BUDGET_EXCEEDED` refusal.
 - **Reconcile** — `reconcile(hold, actualUsage)` replaces the held estimate with
   the real spend and refunds the delta. The real `usage` from the provider
-  response is authoritative (pre-flight estimates drift; §4).
+  response is authoritative (pre-flight estimates drift; §4). After a successful
+  admit, call sites **always** reconcile exactly once (prefer `try`/`finally`):
+  success uses returned usage (or zeros if missing); throw uses zeros → full
+  hold refund. Unknown usage may under-book real spend; it must not leave a
+  sticky worst-case hold (GW-06/07; hooks/cron/heartbeat parity).
 - **Enforcement policy** — on refusal: pause the agent's autonomy
   (`paused` state), emit a notification once, and surface the typed error; the
   operator raises the cap or resets to resume. Crossing the soft threshold
