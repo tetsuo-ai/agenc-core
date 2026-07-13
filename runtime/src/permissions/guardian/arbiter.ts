@@ -621,6 +621,67 @@ export async function arbitratePermissionMode(
         : {}),
     }));
   if (merged) {
+    // SEC-02: PreToolUse `allow` means "skip the human prompt", not "skip deny
+    // floors". Whole-tool settings deny/ask are already re-checked inside
+    // mergeHookPermissionDecision; content rules, unattended denylist, and
+    // tool safetyCheck still run through the evaluator when available.
+    if (
+      merged.behavior === "allow" &&
+      opts.includeEvaluator !== false &&
+      canUseTool &&
+      permissionContext
+    ) {
+      const floorDecision = await canUseTool(
+        opts.tool,
+        merged.args ?? opts.args,
+        permissionContext,
+      );
+      if (floorDecision.behavior === "deny") {
+        return {
+          kind: "deny",
+          args: opts.args,
+          source: "permission-evaluator",
+          reasonCode:
+            floorDecision.decisionReason?.type === "rule"
+              ? "rule_denied"
+              : "evaluator_denied",
+          message: floorDecision.message,
+          decisionReason: floorDecision.decisionReason,
+          mergedDecision: merged,
+        };
+      }
+      if (
+        floorDecision.behavior === "ask" &&
+        floorDecision.decisionReason?.type === "safetyCheck"
+      ) {
+        return {
+          kind: "ask",
+          args: floorDecision.updatedInput ?? merged.args ?? opts.args,
+          source: "permission-evaluator",
+          reasonCode: "safety_check",
+          message: floorDecision.message,
+          decisionReason: floorDecision.decisionReason,
+          mergedDecision: merged,
+        };
+      }
+      return {
+        kind: "allow",
+        args:
+          floorDecision.behavior === "allow" || floorDecision.behavior === "ask"
+            ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
+            : (merged.args ?? opts.args),
+        source: "pre-tool-use-hook",
+        reasonCode: hookPermissionReasonCode(
+          "allow",
+          merged.decisionReason,
+        ),
+        ...(merged.message !== undefined ? { message: merged.message } : {}),
+        ...(merged.decisionReason !== undefined
+          ? { decisionReason: merged.decisionReason }
+          : {}),
+        mergedDecision: merged,
+      };
+    }
     return {
       kind: merged.behavior,
       args: merged.args,

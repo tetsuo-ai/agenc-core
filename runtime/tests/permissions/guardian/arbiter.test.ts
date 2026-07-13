@@ -329,6 +329,62 @@ describe("guardian arbiter", () => {
     );
   });
 
+  test("SEC-02: hook allow still applies evaluator deny floors", async () => {
+    const canUseTool = vi.fn(async () => ({
+      behavior: "deny" as const,
+      message: "unattended denylist: exec_command",
+      decisionReason: { type: "other" as const, reason: "unattended_denylist" },
+    }));
+    const permissionContext = {
+      getAppState: () => ({
+        toolPermissionContext: createEmptyToolPermissionContext(),
+      }),
+    } as never;
+
+    const result = await arbitratePermissionMode({
+      tool: { name: "exec_command" } as Tool,
+      args: { command: "rm -rf /" },
+      hookPermissionResult: { behavior: "allow", hookName: "PreToolUse:ok" },
+      permissionContext,
+      canUseTool: canUseTool as never,
+      includeEvaluator: true,
+    });
+
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe("deny");
+    expect(result.source).toBe("permission-evaluator");
+    expect(result.message).toMatch(/unattended denylist/i);
+  });
+
+  test("SEC-02: hook allow still surfaces safetyCheck asks", async () => {
+    const canUseTool = vi.fn(async () => ({
+      behavior: "ask" as const,
+      message: "path outside workspace",
+      decisionReason: {
+        type: "safetyCheck" as const,
+        title: "path",
+        description: "outside",
+      },
+    }));
+    const permissionContext = {
+      getAppState: () => ({
+        toolPermissionContext: createEmptyToolPermissionContext(),
+      }),
+    } as never;
+
+    const result = await arbitratePermissionMode({
+      tool: { name: "Write" } as Tool,
+      args: { path: "/etc/passwd" },
+      hookPermissionResult: { behavior: "allow", hookName: "PreToolUse:ok" },
+      permissionContext,
+      canUseTool: canUseTool as never,
+    });
+
+    expect(result.kind).toBe("ask");
+    expect(result.source).toBe("permission-evaluator");
+    expect(result.reasonCode).toBe("safety_check");
+  });
+
   test("permission-mode arbitration ignores array-shaped tool permission context", async () => {
     const spoofedToolPermissionContext = Object.assign(["spoof"], {
       alwaysAskRules: {
