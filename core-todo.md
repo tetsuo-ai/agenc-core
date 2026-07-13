@@ -387,7 +387,16 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Onboarding (new code — commits 699768615 / 6c219902c, today)
 
-- [ ] `[V]` **M-ONB-1 — Grok OAuth sign-in never shows the URL and swallows browser-open failure.**
+- [~] `[V]` **M-ONB-1 — Grok OAuth sign-in never shows the URL and swallows browser-open failure.** [SKIPPED: the
+  URL-display fix is an API-shape change (STOP-and-ask). The wizard's submit handler blocks on a single
+  `await runLogin()` (Onboarding.tsx:1031) and `runGrokOauthLogin` takes NO args, so there is no channel to show
+  the URL while the login is in flight — unlike `/grok-login`, which has a `SlashCommandContext` (`showLoginNotice`).
+  A real fix threads an `onNotice`/React-setState callback into the `runGrokOauthLogin` injection signature so the
+  submit handler can `setState(url)` before/while awaiting (React re-renders independently of the handler's return)
+  and `defaultRunGrokOauthLogin(onNotice)` mirrors /grok-login: notice(url) → openUrlInBrowser → on failure
+  notice(manual-open URL). Also catch the `void openUrlInBrowser(url)` rejection (route to logError) — the child
+  `error` event is currently an unhandled promise; this half is safe to do independently. Recommend confirming the
+  injection-signature change before wiring.]
   `runtime/src/onboarding/Onboarding.tsx:168`. The first-run wizard's grok flow uses
   `onAuthorizeUrl: (url) => { void openUrlInBrowser(url); }` — never displays the URL, and the `void` makes an
   `openUrlInBrowser` rejection (child `error` event) an unhandled promise. On a headless/SSH/no-xdg-open box the
