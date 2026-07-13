@@ -592,7 +592,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `tc.function.name`/`.arguments` without a shape check; a malformed provider response (`tool_calls:[{id:"x"}]`)
   throws a bare `TypeError` bypassing `classifyOpenAiHttpFailure`. **Fix:** skip entries where `tc.function?.name`
   isn't a string.
-- [ ] `[V]` `runtime/src/services/api/promptCacheBreakDetection.ts:287–292` — FIFO eviction at capacity (10)
+- [x] `[V]` `runtime/src/services/api/promptCacheBreakDetection.ts:287–292` — FIFO eviction at capacity (10)
   deletes the oldest-inserted key, typically `repl_main_thread`; ten subagent spawns destroy the main thread's
   cache-break baseline. **Fix:** LRU eviction or pin non-agent keys.
 - [ ] `[V]` `runtime/src/services/api/sessionIngress.ts:20–28,249–257` — `lastUuidMap`/`sequentialAppendBySession`

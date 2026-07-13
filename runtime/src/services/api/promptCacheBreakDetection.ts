@@ -233,6 +233,25 @@ export type PromptStateSnapshot = {
  * Phase 1 (pre-call): Record the current prompt/tool state and detect what changed.
  * Does NOT fire events — just stores pending changes for phase 2 to use.
  */
+/** Tracked source keys in insertion order. Test-only introspection. */
+export function trackedSourceKeysForTest(): string[] {
+  return [...previousStateBySource.keys()]
+}
+
+/**
+ * Accumulated callCount for a tracked source, or 0 if absent. Test-only. A source
+ * that is evicted and later recreated resets to callCount 1 — the real harm of the
+ * FIFO-vs-LRU bug (a destroyed cache-break baseline), which this exposes.
+ */
+export function trackedCallCountForTest(key: string): number {
+  return previousStateBySource.get(key)?.callCount ?? 0
+}
+
+/** Reset the tracker. Test-only. */
+export function clearTrackedSourcesForTest(): void {
+  previousStateBySource.clear()
+}
+
 export function recordPromptState(snapshot: PromptStateSnapshot): void {
   try {
     const {
@@ -315,6 +334,14 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
       })
       return
     }
+
+    // LRU: move the accessed key to the most-recently-used position so the
+    // FIFO eviction above never drops a still-active source. Without this,
+    // `repl_main_thread` (inserted first, never re-inserted) is the first key
+    // evicted after ~MAX_TRACKED_SOURCES subagent spawns, destroying the main
+    // thread's cache-break baseline. Re-setting the same object preserves state.
+    previousStateBySource.delete(key)
+    previousStateBySource.set(key, prev)
 
     prev.callCount++
 
