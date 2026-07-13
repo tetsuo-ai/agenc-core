@@ -763,9 +763,15 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 - [x] Unused dependency: `vscode-languageserver-types` (`runtime/package.json:146`) — zero references in
   `runtime/src` and `runtime/tests`. **Fix:** remove.
-- [ ] Production-dead files: `runtime/src/gateway/index.ts`, `runtime/src/gateway/test-channel.ts`,
+- [x] Production-dead files: `runtime/src/gateway/index.ts`, `runtime/src/gateway/test-channel.ts`,
   `runtime/src/heartbeat/index.ts` (barrels + a test channel referenced only from tests). **Fix:** move under
   `tests/` or delete.
+  **DONE:** deleted the two barrels (`gateway/index.ts`, `heartbeat/index.ts`) — grep confirmed ZERO importers of
+  either (nothing does `from ".../gateway"` or `.../heartbeat`; the only matches were `join(agencHome,"gateway")`
+  path literals), and neither is a package entrypoint; typecheck + gateway/heartbeat suites (252 tests) green.
+  `test-channel.ts` (`InMemoryChannelAdapter`) is NOT deleted — it is imported directly by 7 test files; moving it
+  under `tests/` would rewrite those 7 imports (a >5-file refactor, STOP-and-ask), so it stays in place as a
+  test-only helper. Deleting the barrel that re-exported it did not affect those direct imports.
 - [x] Duplicate export `remoteCommand | default` in `runtime/src/commands/remote.tsx` (harmless).
 - [x] Unlisted binary `tar` spawned by `runtime/src/bin/update-cli.ts:410` (system `tar` assumed; ENOENT throws
   with an unclear "status null" message).
