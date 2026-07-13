@@ -648,7 +648,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/utils/bash/shellPrefix.ts:20–24` — `formatShellPrefixCommand` splits at
   `lastIndexOf(' -')`, so a multi-flag `AGENC_SHELL_PREFIX="wsl -e bash -c"` mis-splits into a non-executable
   quoted word. Trusted config, so correctness not security. **Fix:** tokenize the prefix into exec + args.
-- [ ] `[V]` `runtime/src/utils/bash/commands.ts:798–817` — an empty redirect target (`>` with `""`) is neither
+- [x] `[V]` `runtime/src/utils/bash/commands.ts:798–817` — an empty redirect target (`>` with `""`) is neither
   captured/validated nor flagged dangerous, violating the module's stated "captured-or-flagged" invariant
   (currently not exploitable). **Fix:** make `hasDangerousExpansion('')` return true.
 - [ ] `[-]` `runtime/src/utils/bash/ParsedCommand.ts:297–317` — `lastCmd`/`lastResult` is a process-global

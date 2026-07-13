@@ -825,7 +825,7 @@ function isSimpleTarget(target: ParseEntry | undefined): target is string {
  * (→ flagged dangerous → ask). A target that fails BOTH falls through to
  * {skip:0, dangerous:false} and is NEVER validated. To maintain the
  * invariant, hasDangerousExpansion must cover EVERY case that isSimpleTarget
- * rejects (except the empty string which is handled separately).
+ * rejects — including the empty string (flagged dangerous below).
  */
 function hasDangerousExpansion(target: ParseEntry | undefined): boolean {
   // shell-quote parses unquoted globs as {op:'glob', pattern:'...'} objects,
@@ -836,7 +836,10 @@ function hasDangerousExpansion(target: ParseEntry | undefined): boolean {
     return false
   }
   if (typeof target !== 'string') return false
-  if (target.length === 0) return false
+  // An empty target fails isSimpleTarget too, so leaving it non-dangerous let it
+  // fall through as neither-captured-nor-flagged — a hole in the captured-or-flagged
+  // invariant. Treat empty as dangerous so the invariant holds unconditionally.
+  if (target.length === 0) return true
   return (
     target.includes('$') ||
     target.includes('%') ||
