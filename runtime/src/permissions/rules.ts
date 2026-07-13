@@ -159,14 +159,31 @@ export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
   "exec_command",
   "desktop.bash",
   "shell",
+  // TOOL-02: interactive continuation + kill are shell channels.
+  "write_stdin",
+  "kill_process",
+  "PowerShell",
+  "Monitor",
+]);
+
+/** TOOL-05: file-mutation family for deny/ask/allow collapse. */
+export const FILE_MUTATION_TOOL_FAMILY: readonly string[] = Object.freeze([
+  "Edit",
+  "FileEdit",
+  "MultiEdit",
+  "Write",
+  "FileWrite",
+  "apply_patch",
 ]);
 
 const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
   new Map<string, readonly string[]>([
     ["system.bash", SHELL_TOOL_FAMILY],
     ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
-    ["Edit", Object.freeze(["Edit", "FileEdit"] as const)],
-    ["Write", Object.freeze(["Write", "FileWrite"] as const)],
+    ["Edit", FILE_MUTATION_TOOL_FAMILY],
+    ["Write", FILE_MUTATION_TOOL_FAMILY],
+    ["MultiEdit", FILE_MUTATION_TOOL_FAMILY],
+    ["apply_patch", FILE_MUTATION_TOOL_FAMILY],
     ["Grep", Object.freeze(["Grep", "system.grep"] as const)],
     ["Glob", Object.freeze(["Glob", "system.glob"] as const)],
   ]);

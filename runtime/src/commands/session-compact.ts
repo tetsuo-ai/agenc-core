@@ -30,6 +30,10 @@ import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from "../services/compact/autoCompact.js";
+import {
+  withCompactContextGuards,
+  type CompactGuardEnv,
+} from "../session/compact-env-guard.js";
 import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
 import {
   assembleSystemPrompt,
@@ -606,13 +610,6 @@ function readSessionSurface(session: Session): SessionSurface {
 }
 
 const AGENC_COMPACT_BOUNDARY = "<compact>";
-const COMPACT_CONTEXT_GUARD_ENV = [
-  "AGENC_USE_OPENAI",
-  "OPENAI_MODEL",
-  "OPENAI_BASE_URL",
-  "OPENAI_API_KEY",
-  "AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW",
-] as const;
 
 interface AgenCAutoCompactResult {
   readonly wasCompacted: boolean;
@@ -683,8 +680,6 @@ type AgenCCompactionResult = {
   readonly postCompactTokenCount?: number;
   readonly truePostCompactTokenCount?: number;
 };
-
-type CompactGuardEnv = Partial<Record<(typeof COMPACT_CONTEXT_GUARD_ENV)[number], string>>;
 
 async function runManualCompact(params: {
   readonly session: Session;
@@ -1503,33 +1498,6 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
     ...message,
     content: cloneContent(message.content),
   };
-}
-
-async function withCompactContextGuards<T>(
-  fn: () => Promise<T>,
-  env: CompactGuardEnv = {}
-): Promise<T> {
-  const previous = new Map<string, string | undefined>();
-  for (const key of Object.keys(env) as Array<keyof CompactGuardEnv>) {
-    previous.set(key, process.env[key]);
-    const value = env[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
 }
 
 function envForToolUseContext(

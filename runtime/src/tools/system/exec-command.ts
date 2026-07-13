@@ -7,6 +7,7 @@ import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike, UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
+import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
   WindowsSandboxLevel,
@@ -442,6 +443,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           args,
           config?.cwd ?? process.cwd(),
         );
+        const ownerId = processOwnerIdFromToolArgs(
+          args as Record<string, unknown>,
+        );
         const output = await manager.execCommand({
           cmd,
           callId: asString(args.__callId),
@@ -466,6 +470,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ? { observer: config.execObserver }
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
+          ...(ownerId !== undefined ? { ownerId } : {}),
         });
         // exitCode === null has three meaningful sub-cases. The
         // reliable discriminator is `process_id !== undefined`:

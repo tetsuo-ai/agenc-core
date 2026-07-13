@@ -25,6 +25,7 @@ import type {
   ToolResult,
 } from "../types.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
+import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 
 const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
@@ -120,6 +121,9 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
         // line-by-line tool_progress chunks. The yield ceiling
         // matches AgenC's MONITOR_TIMEOUT_MS so abandoned
         // monitors get reaped by the existing hard-timeout path.
+        const ownerId = processOwnerIdFromToolArgs(
+          rawArgs as Record<string, unknown>,
+        );
         const output = await config.unifiedExecManager.execCommand({
           cmd: command,
           workdir: config.cwd,
@@ -132,6 +136,7 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           ...(args.__onProgress !== undefined
             ? { __onProgress: args.__onProgress }
             : {}),
+          ...(ownerId !== undefined ? { ownerId } : {}),
         });
 
         const taskId =

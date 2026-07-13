@@ -1046,6 +1046,9 @@ export class ProviderHttpClientSession {
       async *[Symbol.asyncIterator](): AsyncIterator<ProviderHttpStreamChunk> {
         let activeAttempt = initialAttempt;
         let index = 0;
+        // LLM-01: once any body bytes have been yielded to the consumer,
+        // never transport-retry into a second SSE body (would splice/corrupt).
+        let yieldedBodyBytes = false;
 
         while (true) {
           const currentAttempt = activeAttempt;
@@ -1061,8 +1064,10 @@ export class ProviderHttpClientSession {
                 currentAttempt.attemptState.abortController.signal,
               );
               if (next.done) return;
-              if (!next.value || next.value.length === 0) continue;
+              // LLM-09: empty chunks still count as body progress for idle
+              // watchdog (providers may send keepalives).
               watchdog.kick();
+              if (!next.value || next.value.length === 0) continue;
               if (prepared.continuation) {
                 const decoded = decoder.decode(next.value, { stream: true });
                 if (decoded.length > 0) {
@@ -1081,6 +1086,7 @@ export class ProviderHttpClientSession {
                 }
               }
               yield { value: next.value, index };
+              yieldedBodyBytes = true;
               index += 1;
             }
           } catch (error) {
@@ -1091,6 +1097,7 @@ export class ProviderHttpClientSession {
             }
             const transport = normalizeTransportError(error);
             if (
+              !yieldedBodyBytes &&
               currentAttempt.attempt < retryBudget.maxRetries &&
               shouldRetryTransportError(transport, retryBudget)
             ) {
@@ -1230,13 +1237,16 @@ export class ProviderHttpClientSession {
     retryBudget: NormalizedRetryBudget,
     initialAttempt: number,
   ): Promise<PreparedStreamAttempt> {
+    // LLM-02: stream open/headers use the same request timeout as non-stream;
+    // body silence is still covered by the idle watchdog after yield.
+    const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options.timeoutMs);
     let consecutiveFallbackFailures = 0;
     for (
       let attempt = initialAttempt;
       attempt <= retryBudget.maxRetries + 1;
       attempt += 1
     ) {
-      const attemptState = createAttemptAbortState(options.signal, undefined);
+      const attemptState = createAttemptAbortState(options.signal, timeoutMs);
       try {
         const response = await this.fetchResponse(
           options,

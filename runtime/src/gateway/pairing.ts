@@ -132,6 +132,16 @@ export class PairingStore {
     });
   }
 
+  /**
+   * GW-02: CLI and live gateway each construct a PairingStore. Always
+   * re-read disk before mutating or answering access checks so host
+   * `pairing approve` is visible and cannot be clobbered by a stale
+   * in-memory `#state` on the next `#save()`.
+   */
+  #reloadFromDisk(): void {
+    this.#state = this.#load();
+  }
+
   #key(channelId: string, peerId: string): string {
     return `${channelId}\u0000${peerId}`;
   }
@@ -157,14 +167,17 @@ export class PairingStore {
   }
 
   isPaired(channelId: string, peerId: string): boolean {
+    this.#reloadFromDisk();
     return (this.#state.paired[channelId] ?? []).includes(peerId);
   }
 
   listPaired(channelId: string): readonly string[] {
+    this.#reloadFromDisk();
     return this.#state.paired[channelId] ?? [];
   }
 
   revoke(channelId: string, peerId: string): boolean {
+    this.#reloadFromDisk();
     const peers = this.#state.paired[channelId] ?? [];
     if (!peers.includes(peerId)) return false;
     this.#state.paired[channelId] = peers.filter((p) => p !== peerId);
@@ -182,6 +195,7 @@ export class PairingStore {
     readonly code: string;
     readonly expiresAt: number;
   }[] {
+    this.#reloadFromDisk();
     this.#pruneExpiredPending();
     const out: {
       channelId: string;
@@ -207,6 +221,7 @@ export class PairingStore {
    * Clears any pending challenge for the peer.
    */
   approve(channelId: string, peerId: string): void {
+    this.#reloadFromDisk();
     const pending = this.#pendingMap();
     delete pending[this.#key(channelId, peerId)];
     const peers = this.#state.paired[channelId] ?? [];
@@ -221,6 +236,7 @@ export class PairingStore {
    * code when one is pending so repeated messages don't rotate it.
    */
   challenge(channelId: string, sender: ChannelSender): string {
+    this.#reloadFromDisk();
     this.#pruneExpiredPending();
     const key = this.#key(channelId, sender.peerId);
     const pending = this.#pendingMap();
@@ -242,6 +258,7 @@ export class PairingStore {
    * in the channel DM (todo-103).
    */
   redeem(channelId: string, sender: ChannelSender, input: string): boolean {
+    this.#reloadFromDisk();
     this.#pruneExpiredPending();
     const key = this.#key(channelId, sender.peerId);
     const pending = this.#pendingMap();

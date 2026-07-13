@@ -727,6 +727,47 @@ describe("ProviderHttpClientSession", () => {
     await assertion;
   });
 
+  test("requestStream applies request timeoutMs on open/headers (LLM-02)", async () => {
+    // Hang forever on fetch so only the attempt timeout can complete the call.
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return;
+          if (signal.aborted) {
+            reject(signal.reason ?? new Error("aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              reject(signal.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      timeoutMs: 40,
+      streamRetry: { maxRetries: 0, retryTransport: false },
+      fetchImpl,
+    });
+
+    const pending = session.requestStream({
+      body: { stream: true },
+      timeoutMs: 40,
+    });
+    const assertion = expect(pending).rejects.toThrow(
+      /timed out after 40ms|provider request timed out/i,
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    await assertion;
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
   test("requestStream rejects HTML responses before stream parsing begins", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(streamFromChunks(["<html>login</html>"]), {
@@ -754,7 +795,46 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test("requestStream retries read-side transport failures within the stream budget", async () => {
+  test("requestStream retries transport failures only before any body bytes yield (LLM-01)", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(streamWithFailure([], new Error("socket hang up")), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(streamFromChunks(["part-2"]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      streamRetry: {
+        maxRetries: 1,
+      },
+      fetchImpl,
+    });
+
+    const stream = await session.requestStream({
+      body: { stream: true },
+    });
+
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for await (const chunk of stream) {
+      chunks.push(decoder.decode(chunk.value));
+    }
+
+    expect(chunks).toEqual(["part-2"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("requestStream does not splice a second body after partial yield (LLM-01)", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -788,12 +868,14 @@ describe("ProviderHttpClientSession", () => {
 
     const decoder = new TextDecoder();
     const chunks: string[] = [];
-    for await (const chunk of stream) {
-      chunks.push(decoder.decode(chunk.value));
-    }
+    await expect(async () => {
+      for await (const chunk of stream) {
+        chunks.push(decoder.decode(chunk.value));
+      }
+    }).rejects.toThrow(/socket hang up|transport|ECONNRESET|network/i);
 
-    expect(chunks).toEqual(["part-1", "part-2"]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(chunks).toEqual(["part-1"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test("requestJson carries prompt_cache_key and previous_response_id through shared continuity state", async () => {

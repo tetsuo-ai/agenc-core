@@ -53,6 +53,7 @@ import { createFileReadTool } from "../tools/system/file-read.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools/system/notebook-edit.js";
 import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
+import { processOwnerIdFromToolArgs } from "../unified-exec/process-ownership.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -3496,9 +3497,13 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         if (!opts.unifiedExecManager) {
           return json({ error: "unified exec manager is not available" }, true);
         }
+        const ownerId = processOwnerIdFromToolArgs(
+          args as Record<string, unknown>,
+        );
         const output = await opts.unifiedExecManager.execCommand({
           cmd: workflow.command,
           workdir: opts.workspaceRoot,
+          ...(ownerId !== undefined ? { ownerId } : {}),
         });
         return {
           content: formatUnifiedExecToolContent(output),
@@ -3550,6 +3555,9 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
       execute: async (args) => {
         const command = stringValue(args.command);
         if (!command) return json({ error: "command is required" }, true);
+        const ownerId = processOwnerIdFromToolArgs(
+          args as Record<string, unknown>,
+        );
         const output = await opts.unifiedExecManager!.execCommand({
           cmd: command,
           shell,
@@ -3557,6 +3565,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
           ...(numberValue(args.timeout_ms) !== undefined
             ? { timeoutMs: numberValue(args.timeout_ms) }
             : {}),
+          ...(ownerId !== undefined ? { ownerId } : {}),
         });
         return {
           content: formatUnifiedExecToolContent(output),
