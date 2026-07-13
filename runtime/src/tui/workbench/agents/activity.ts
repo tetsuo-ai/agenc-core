@@ -21,7 +21,7 @@ export function taskMayReferencePath(task: TaskState, pathValue: string | null |
   if (!pathValue) return false;
   const normalized = normalizePath(pathValue);
   if (normalized.length === 0) return false;
-  return taskSearchStrings(task).some((value) => containsPathReference(normalizePath(value), normalized));
+  return normalizedStringsReferencePath(normalizedTaskSearchStrings(task), normalized);
 }
 
 export function inFlightPathsFromTasks(
@@ -32,9 +32,28 @@ export function inFlightPathsFromTasks(
     task.type !== "local_bash" && (task.status === "pending" || task.status === "running")
   );
   if (activeTasks.length === 0) return [];
-  return candidatePaths.filter((pathValue) =>
-    activeTasks.some((task) => taskMayReferencePath(task, pathValue))
-  );
+  // Serialize each task's search strings ONCE (taskSearchStrings JSON.stringifies
+  // lastActivity.input and every recentActivities[].input). Previously this ran
+  // inside the per-candidate-path filter, re-serializing the same inputs
+  // paths × tasks times — driven over the full expanded tree on every streamed
+  // agent-progress event.
+  const perTaskStrings = activeTasks.map((task) => normalizedTaskSearchStrings(task));
+  return candidatePaths.filter((pathValue) => {
+    const normalized = normalizePath(pathValue);
+    if (normalized.length === 0) return false;
+    return perTaskStrings.some((strings) => normalizedStringsReferencePath(strings, normalized));
+  });
+}
+
+function normalizedTaskSearchStrings(task: TaskState): string[] {
+  return taskSearchStrings(task).map((value) => normalizePath(value));
+}
+
+function normalizedStringsReferencePath(
+  normalizedStrings: readonly string[],
+  normalizedPath: string,
+): boolean {
+  return normalizedStrings.some((value) => containsPathReference(value, normalizedPath));
 }
 
 export function taskPathLabel(task: TaskState): string | null {

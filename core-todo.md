@@ -383,13 +383,18 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `taskId: undefined` dispatch); `selectByDelta` uses it (dropped the now-unused `selectedIndex`). Revert-sensitive
   test (AgentsRail-nav.test.ts) proves rendered-order navigation vs the flat-order bug.
 
-- [ ] `[V]` **M-TUI-10 — Workbench file activity recomputes per candidate path (O(paths×tasks) with JSON.stringify).**
+- [x] `[V]` **M-TUI-10 — Workbench file activity recomputes per candidate path (O(paths×tasks) with JSON.stringify).**
   `runtime/src/tui/workbench/agents/activity.ts:27–38` (`inFlightPathsFromTasks`). Invokes
   `taskMayReferencePath` inside `candidatePaths.filter(activeTasks.some(...))`, so `taskSearchStrings(task)` (which
   `JSON.stringify`s `lastActivity.input` and every `recentActivities[].input`) runs `paths × tasks` times,
   re-serializing the same inputs per path. Driven by `ProjectExplorer.tsx:52–57` over the full expanded tree on
   every streamed agent-progress event.
   **Fix:** compute `taskSearchStrings` once per task, not per path.
+  **DONE:** `inFlightPathsFromTasks` now precomputes `normalizedTaskSearchStrings(task)` once per active task
+  (shared helper also used by `taskMayReferencePath`), then the per-path filter reuses them — so `taskSearchStrings`
+  (and its JSON.stringify of every input) runs O(tasks) not O(paths×tasks). Behavior-preserving (existing
+  activity tests unchanged). Revert-sensitive test: with 1 task + 21 candidate paths, `JSON.stringify` is called
+  once (fixed) vs 21× (reverted, per-path).
 
 - [ ] `[V]` **M-TUI-11 — Project tree rebuilt and re-sorted on every cursor move (doubled on cursor normalization).**
   `runtime/src/tui/workbench/project-tree/ProjectTreeStore.ts:366–409` (`#emit`). Calls `buildProjectTreeRows`

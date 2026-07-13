@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   formatTaskElapsed,
@@ -140,6 +140,32 @@ describe("workbench agents rail model", () => {
 
     expect(taskMayReferencePath(task, "src/app.ts")).toBe(true);
     expect(inFlightPathsFromTasks([task], ["src/app.ts", "src/other.ts"])).toEqual(["src/app.ts"]);
+  });
+
+  it("serializes each task's inputs once, not once per candidate path (M-TUI-10)", () => {
+    const task = {
+      id: "agent-1",
+      type: "local_agent",
+      status: "running",
+      description: "work",
+      startTime: 0,
+      progress: {
+        lastActivity: { input: { file_path: "src/target.ts" } },
+      },
+    } as any;
+    const candidatePaths = Array.from({ length: 20 }, (_, i) => `src/p${i}.ts`);
+    candidatePaths.push("src/target.ts");
+
+    const spy = vi.spyOn(JSON, "stringify");
+    const result = inFlightPathsFromTasks([task], candidatePaths);
+    const stringifyCalls = spy.mock.calls.length;
+    spy.mockRestore();
+
+    // Correctness preserved: the object input's path is still detected.
+    expect(result).toContain("src/target.ts");
+    // Perf invariant: the task input is JSON.stringified ~once (per task), not
+    // once per candidate path (21x) — the per-path re-serialization was the bug.
+    expect(stringifyCalls).toBeLessThan(candidatePaths.length);
   });
 
   it("rejects empty path candidates before searching task activity", () => {
