@@ -79,7 +79,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Cost & budget
 
-- [ ] `[x]` **M-COST-1 — Opus 4.5–4.8 mispriced 3× in the live cost tracker.**
+- [x] `[x]` **M-COST-1 — Opus 4.5–4.8 mispriced 3× in the live cost tracker.**
   `runtime/src/session/cost.ts:554` (`canonicalModel`), tier at :150–156/:276–282. `canonicalModel()`
   collapses every `claude-opus-4*` (incl. flagship 4.5/4.6/4.7/4.8) to `claude-opus-4-7` @
   `COST_TIER_OPUS` = $15/$75 per Mtok, but the canonical `utils/modelCost.ts` prices these at
@@ -89,7 +89,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** give Opus 4.5–4.8 their own $5/$25 entries; keep $15/$75 only for opus-4/opus-4-1; reuse the
   single source of truth in `utils/modelCost.ts`.
 
-- [ ] `[V]` **M-COST-2 — Background-agent `dollar_cap` trips at ~1/3 the configured budget (same root cause).**
+- [x] `[V]` **M-COST-2 — Background-agent `dollar_cap` trips at ~1/3 the configured budget (same root cause).**
   `runtime/src/app-server/background-agent-runner.ts:2772` (`agentCostUsd` → `computeUsdCost(usage,
   DEFAULT_MODEL_COSTS)`; halt at :2681). Same stale Opus registry entry prices an Opus 4.5–4.8 background
   agent at $15/$75, so `budgetHaltForActiveAgent` halts spawned agents far earlier than configured.

@@ -147,11 +147,23 @@ const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   webSearchUsdPerRequest: 0.01,
 });
 
-const COST_TIER_OPUS: Readonly<ModelCostEntry> = Object.freeze({
+// Legacy Opus tier ($15/$75 per Mtok) — applies ONLY to Opus 4.0 / 4.1.
+const COST_TIER_OPUS_LEGACY: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.015,
   outputUsdPer1K: 0.075,
   cachedInputUsdPer1K: 0.0015,
   cacheCreationUsdPer1K: 0.01875,
+  webSearchUsdPerRequest: 0.01,
+});
+
+// Current Opus tier ($5/$25 per Mtok) — Opus dropped to $5/$25 with 4.5, so 4.5
+// through 4.8 (and later) bill here. Mirrors utils/modelCost.ts COST_TIER_5_25
+// (the canonical AgenC pricing source of truth), expressed per-1K.
+const COST_TIER_OPUS_5_25: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.005,
+  outputUsdPer1K: 0.025,
+  cachedInputUsdPer1K: 0.0005,
+  cacheCreationUsdPer1K: 0.00625,
   webSearchUsdPerRequest: 0.01,
 });
 
@@ -272,14 +284,38 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "anthropic:claude-sonnet-4-5": COST_TIER_SONNET,
     // branding-scan: allow documented Anthropic API model identifier
     "claude-sonnet-4-5": COST_TIER_SONNET,
+    // Current Opus generation (4.5-4.8) at $5/$25. canonicalModel routes the
+    // whole modern family to claude-opus-4-8; the explicit slugs below keep the
+    // exact-match lookup (which precedes canonical) on the same tier.
     // branding-scan: allow documented Anthropic API model identifier
-    "anthropic:claude-opus-4-7": COST_TIER_OPUS,
+    "anthropic:claude-opus-4-8": COST_TIER_OPUS_5_25,
     // branding-scan: allow documented Anthropic API model identifier
-    "claude-opus-4-7": COST_TIER_OPUS,
+    "claude-opus-4-8": COST_TIER_OPUS_5_25,
     // branding-scan: allow documented Anthropic API model identifier
-    "anthropic:claude-opus-4-7-1m": COST_TIER_OPUS,
+    "anthropic:claude-opus-4-7": COST_TIER_OPUS_5_25,
     // branding-scan: allow documented Anthropic API model identifier
-    "claude-opus-4-7-1m": COST_TIER_OPUS,
+    "claude-opus-4-7": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-7-1m": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-7-1m": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-6": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-6": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-5": COST_TIER_OPUS_5_25,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-5": COST_TIER_OPUS_5_25,
+    // Legacy Opus (4.0 / 4.1) remain $15/$75.
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4-1": COST_TIER_OPUS_LEGACY,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4-1": COST_TIER_OPUS_LEGACY,
+    // branding-scan: allow documented Anthropic API model identifier
+    "anthropic:claude-opus-4": COST_TIER_OPUS_LEGACY,
+    // branding-scan: allow documented Anthropic API model identifier
+    "claude-opus-4": COST_TIER_OPUS_LEGACY,
     // branding-scan: allow documented Anthropic API model identifier
     "anthropic:claude-haiku-4-5": {
       inputUsdPer1K: 0.001,
@@ -551,7 +587,14 @@ function canonicalModel(model: string): string {
   // branding-scan: allow documented Anthropic API model identifier
   if (unqualified.startsWith("claude-sonnet-4")) return "claude-sonnet-4-6";
   // branding-scan: allow documented Anthropic API model identifier
-  if (unqualified.startsWith("claude-opus-4")) return "claude-opus-4-7";
+  // Opus 4.5+ bills at $5/$25, Opus 4.0/4.1 at $15/$75. Parse the minor version
+  // from a delimited group (not startsWith) so opus-4-1 is not confused with a
+  // future opus-4-10+, and route each family to its representative priced slug.
+  const opusMinor = /^claude-opus-4(?:-(\d+))?/u.exec(unqualified);
+  if (opusMinor) {
+    const minor = opusMinor[1] !== undefined ? Number.parseInt(opusMinor[1], 10) : 0;
+    return minor >= 5 ? "claude-opus-4-8" : "claude-opus-4-1";
+  }
   return normalized;
 }
 
