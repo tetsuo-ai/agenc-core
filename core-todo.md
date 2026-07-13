@@ -104,7 +104,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   of retrying.
   **Fix:** anchor to `\b413\b` or drop the alternative and rely on the numeric `status===413` check at :463.
 
-- [ ] `[V]` **M-LLM-2 — Structured-output parse on a truncated Responses reply fails the whole turn.**
+- [x] `[V]` **M-LLM-2 — Structured-output parse on a truncated Responses reply fails the whole turn.**
   `runtime/src/llm/wire/responses-openai.ts:436` (`parseOpenAIResponsesResponse`). Parses `content` when
   `structuredOutput.enabled !== false` + schema + non-empty, but NOT gated on generation completing. A
   truncated reply (`finishReason 'length'`) holds partial JSON; `parseStructuredOutputText` throws

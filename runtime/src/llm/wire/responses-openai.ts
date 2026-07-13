@@ -418,6 +418,16 @@ export function parseOpenAIResponsesResponse(
     request.options,
   );
 
+  const finishReason = resolveResponsesFinishReason(response, toolCalls);
+  // A truncated/incomplete generation (finishReason 'length', 'error', or
+  // 'content_filter') leaves partial JSON in `content`, which
+  // parseStructuredOutputText would JSON.parse and throw on — failing the whole
+  // turn instead of surfacing the recoverable truncation. Only parse structured
+  // output when the generation completed normally, mirroring the chat-completions
+  // path (chat-completions.ts, gaphunt3 #20).
+  const generationCompleted =
+    finishReason === "stop" || finishReason === "tool_calls";
+
   return {
     content,
     toolCalls,
@@ -431,10 +441,11 @@ export function parseOpenAIResponsesResponse(
     }),
     model:
       typeof response.model === "string" ? response.model : model,
-    finishReason: resolveResponsesFinishReason(response, toolCalls),
+    finishReason,
     requestMetrics: withEndpointMarkers(requestMetrics, "/responses", response),
     structuredOutput:
-      request.options?.structuredOutput?.enabled === false ||
+      !generationCompleted ||
+        request.options?.structuredOutput?.enabled === false ||
         !request.options?.structuredOutput?.schema ||
         content.trim().length === 0
         ? undefined
