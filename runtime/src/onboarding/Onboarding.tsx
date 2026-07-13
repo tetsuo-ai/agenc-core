@@ -1305,47 +1305,95 @@ export interface OnboardingProps {
 }
 
 /**
- * Render one detail line with hierarchy instead of a flat dim list. A terminal
- * can't change font size, so meaning comes from colour + weight:
- *   - Numbered choices ("1. dark (current)") get an accent number; the current
- *     selection is bright + bold with a `▸` marker, the rest stay readable.
- *   - "Type …" / "Tip:" prompts are the quiet hint tone.
- *   - "Label: value" rows dim the label and brighten the value.
- *   - Everything else is plain readable text (not dimmed into the border).
+ * A detail line classified for layout. A terminal can't change font size, so
+ * hierarchy + tidy distribution come from colour, weight, column alignment and
+ * grouping (a blank line between the data/choices and the action hints).
  */
-function OnboardingDetailLine({ line }: { readonly line: string }): React.ReactElement {
+type OnboardingDetailEntry =
+  | { readonly kind: "choice"; readonly num: string; readonly text: string; readonly current: boolean }
+  | { readonly kind: "kv"; readonly label: string; readonly value: string }
+  | { readonly kind: "hint"; readonly text: string }
+  | { readonly kind: "plain"; readonly text: string };
+
+function classifyOnboardingDetail(line: string): OnboardingDetailEntry {
   const choice = /^(\d+)\.\s+(.*)$/u.exec(line);
   if (choice) {
-    const isCurrent = /\(current\)\s*$/u.test(line);
-    return (
-      <Box flexDirection="row">
-        <ThemedText color="agenc" bold>
-          {isCurrent ? "▸ " : "  "}
-        </ThemedText>
-        <ThemedText color="agenc" bold>
-          {choice[1]}.{" "}
-        </ThemedText>
-        <ThemedText color={isCurrent ? "text" : "text2"} bold={isCurrent}>
-          {choice[2]}
-        </ThemedText>
-      </Box>
-    );
+    return {
+      kind: "choice",
+      num: choice[1] ?? "",
+      text: choice[2] ?? "",
+      current: /\(current\)\s*$/u.test(line),
+    };
   }
   if (/^(Type |Tip:|Onboarding input only)/u.test(line)) {
-    return <ThemedText color="inactive">{line}</ThemedText>;
+    return { kind: "hint", text: line };
   }
   const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);
   if (kv) {
-    return (
-      <Box flexDirection="row">
-        <ThemedText color="inactive">{kv[1]}: </ThemedText>
-        <ThemedText color="text2" wrap="truncate-middle">
-          {kv[2]}
-        </ThemedText>
-      </Box>
-    );
+    return { kind: "kv", label: kv[1] ?? "", value: kv[2] ?? "" };
   }
-  return <ThemedText color="text2">{line}</ThemedText>;
+  return { kind: "plain", text: line };
+}
+
+function OnboardingDetailRow({
+  entry,
+  labelWidth,
+}: {
+  readonly entry: OnboardingDetailEntry;
+  readonly labelWidth: number;
+}): React.ReactElement {
+  switch (entry.kind) {
+    case "choice":
+      return (
+        <Box flexDirection="row">
+          <ThemedText color="agenc" bold>
+            {entry.current ? "▸ " : "  "}
+          </ThemedText>
+          <ThemedText color="agenc" bold>
+            {entry.num}.{" "}
+          </ThemedText>
+          <ThemedText color={entry.current ? "text" : "text2"} bold={entry.current}>
+            {entry.text}
+          </ThemedText>
+        </Box>
+      );
+    case "kv":
+      // Two aligned columns (label padded to the widest label), like the cold
+      // welcome panel — values line up instead of hanging off ragged labels.
+      return (
+        <Box flexDirection="row">
+          <ThemedText color="inactive">{`${entry.label.padEnd(labelWidth)}   `}</ThemedText>
+          <ThemedText color="text" wrap="truncate-middle">
+            {entry.value}
+          </ThemedText>
+        </Box>
+      );
+    case "hint":
+      return <ThemedText color="inactive">{entry.text}</ThemedText>;
+    default:
+      return <ThemedText color="text2">{entry.text}</ThemedText>;
+  }
+}
+
+function renderOnboardingDetail(lines: readonly string[]): React.ReactNode[] {
+  const entries = lines.map(classifyOnboardingDetail);
+  const labelWidth = entries.reduce(
+    (max, entry) => (entry.kind === "kv" ? Math.max(max, entry.label.length) : max),
+    0,
+  );
+  const nodes: React.ReactNode[] = [];
+  entries.forEach((entry, index) => {
+    const previous = entries[index - 1];
+    // A blank line before the first hint after any content splits the action
+    // instructions ("Type next…") from the data/choices above them.
+    if (entry.kind === "hint" && previous !== undefined && previous.kind !== "hint") {
+      nodes.push(<Box key={`gap-${index}`} height={1} />);
+    }
+    nodes.push(
+      <OnboardingDetailRow key={lines[index]} entry={entry} labelWidth={labelWidth} />,
+    );
+  });
+  return nodes;
 }
 
 export function Onboarding({
@@ -1359,7 +1407,10 @@ export function Onboarding({
     terminalSize && Number.isFinite(terminalSize.columns)
       ? terminalSize.columns
       : 80;
-  const cardWidth = Math.max(40, Math.min(72, columns - 2));
+  // Cap at 84 so the longest preflight hint ("Onboarding input only. Use
+  // /exit, Ctrl-C twice, or Ctrl-D twice to leave.") fits on one line on a
+  // normal-width terminal instead of wrapping with a ragged hanging indent.
+  const cardWidth = Math.max(40, Math.min(84, columns - 2));
   const detailLines = detailLinesForStep(state, context);
   const showApproval =
     state.currentStepId === "api-key" && state.pendingApiKeyApproval !== null;
@@ -1396,9 +1447,7 @@ export function Onboarding({
             pastePreview={state.pendingApiKeyApproval.pastePreview}
           />
         ) : (
-          detailLines.map((line) => (
-            <OnboardingDetailLine key={line} line={line} />
-          ))
+          renderOnboardingDetail(detailLines)
         )}
         {state.error !== null ? (
           <Box marginTop={1}>
