@@ -754,7 +754,46 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test("requestStream retries read-side transport failures within the stream budget", async () => {
+  test("requestStream retries transport failures only before any body bytes yield (LLM-01)", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(streamWithFailure([], new Error("socket hang up")), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(streamFromChunks(["part-2"]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      streamRetry: {
+        maxRetries: 1,
+      },
+      fetchImpl,
+    });
+
+    const stream = await session.requestStream({
+      body: { stream: true },
+    });
+
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for await (const chunk of stream) {
+      chunks.push(decoder.decode(chunk.value));
+    }
+
+    expect(chunks).toEqual(["part-2"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("requestStream does not splice a second body after partial yield (LLM-01)", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -788,12 +827,14 @@ describe("ProviderHttpClientSession", () => {
 
     const decoder = new TextDecoder();
     const chunks: string[] = [];
-    for await (const chunk of stream) {
-      chunks.push(decoder.decode(chunk.value));
-    }
+    await expect(async () => {
+      for await (const chunk of stream) {
+        chunks.push(decoder.decode(chunk.value));
+      }
+    }).rejects.toThrow(/socket hang up|transport|ECONNRESET|network/i);
 
-    expect(chunks).toEqual(["part-1", "part-2"]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(chunks).toEqual(["part-1"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test("requestJson carries prompt_cache_key and previous_response_id through shared continuity state", async () => {
