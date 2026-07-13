@@ -27,6 +27,7 @@ import {
   UnifiedExecError,
 } from "./types.js";
 import { assertProcessOwnerAccess } from "./process-ownership.js";
+import { buildScrubbedSpawnEnv } from "./scrub-env.js";
 import {
   loadPty as loadRequiredPty,
   type IPty,
@@ -309,11 +310,9 @@ function shellArgs(command: string, login: boolean | undefined): string[] {
   return [login === true ? "-lc" : "-c", command];
 }
 
+/** SEC-01: never pass raw process.env (API keys) into shell children. */
 function buildEnv(env: Record<string, string> | undefined): Record<string, string> {
-  return {
-    ...process.env,
-    ...(env ?? {}),
-  } as Record<string, string>;
+  return buildScrubbedSpawnEnv(env);
 }
 
 function clampExecYield(value: number | undefined): number {

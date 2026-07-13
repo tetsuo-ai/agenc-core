@@ -38,6 +38,10 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { loadPty, type IPty } from "../pty/loadPty.js";
+import {
+  buildScrubbedSpawnEnv,
+  isSecretEnvKey,
+} from "../unified-exec/scrub-env.js";
 import { isRecord } from "../utils/record.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -1145,12 +1149,13 @@ function finalizeSession(session: CommandExecSession, exitCode: number): void {
 function buildEnv(
   overrides: CommandExecStartParams["env"],
 ): Record<string, string> {
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  // SEC-01: scrub secrets from host env before daemon commandExec spawns.
+  const env = buildScrubbedSpawnEnv();
   if (overrides === undefined || overrides === null) return env;
   for (const [key, value] of Object.entries(overrides)) {
     if (value === null) {
       delete env[key];
-    } else {
+    } else if (!isSecretEnvKey(key)) {
       env[key] = value;
     }
   }
