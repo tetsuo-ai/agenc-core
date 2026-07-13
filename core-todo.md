@@ -566,8 +566,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:351–355` — folding `isSelected`
   into the React `key` unmounts/remounts the selected+previous rows on every arrow keypress, defeating the `memo`.
   **Fix:** keep `key` = `item.id`; pass `isSelected` as a prop.
-- [ ] `[?]` `runtime/src/tui/components/design-system/Ratchet.tsx:53` — `useLayoutEffect` with no dep array runs
-  `measureElement` every commit; likely intentional (min-height ratchet), flagged as a perf observation.
+- [~] `[?]` `runtime/src/tui/components/design-system/Ratchet.tsx:53` [SKIPPED: verified INTENTIONAL, not a bug.
+  The Ratchet establishes a min-height that only grows; it must `measureElement` on every commit to catch content
+  growth that happens while `rows` is unchanged — a dep array (e.g. `[rows]`) would MISS that growth and break the
+  ratchet. The work is guarded (`setMinHeight` fires only on `height > maxHeight`, which ratchets up to `rows` then
+  stops), so there is no re-render loop and no behavior-preserving optimization. Leaving as-is.] —
+  `useLayoutEffect` with no dep array runs `measureElement` every commit; likely intentional (min-height ratchet),
+  flagged as a perf observation.
 - [x] `[V]` `runtime/src/tui/components/v2/ContextUsageModal.tsx:187–189` — `compactionThreshold / hardLimit` →
   `auto-compact at Infinity%` when `hardLimit` parses to 0 (regex accepts `0`); plus a hardcoded `92` fallback.
   **Fix:** guard `hardLimit > 0`. *(Same file as M-TUI-3.)*
@@ -593,8 +598,12 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   (signature changed from the `highlights` array to a `ReadonlyMap`; sole caller). Behavior-preserving. Revert-
   sensitive test (render-highlight-map.test.tsx): a 6-row snapshot builds the map once (`highlights.map` spy = 1)
   vs 6× when reverted to per-row.
-- [ ] `[V]` `runtime/src/tui/workbench/surfaces/ShellSurface.tsx:39–43` — unconditionally blanks the tail on any
+- [x] `[V]` `runtime/src/tui/workbench/surfaces/ShellSurface.tsx:39–43` — unconditionally blanks the tail on any
   `status` change (running→completed flickers output blank for one cycle); the sibling `AgentSurface` guards this.
+  **DONE:** extracted exported `nextShellTailState(current, taskId)` = `current.taskId === taskId ? current :
+  { taskId, content: "" }` (the same guard AgentSurface already uses), and the effect calls it via a functional
+  setState. A status-only change (same taskId) now preserves the tail instead of blanking it. Revert-sensitive
+  test (shell-surface-tail-guard.test.ts): same-task returns the current state unchanged vs blanked.
   **Fix:** match the guarded pattern.
 - [x] `[V]` `runtime/src/tui/workbench/project-tree/ProjectTreeStore.ts:5` (unused `visibleTreePaths`),
   `agents/AgentsRail.tsx:147–149` (unused `isActiveTaskStatus`), `surfaces/SearchSurface.tsx:98` (a `rows`
