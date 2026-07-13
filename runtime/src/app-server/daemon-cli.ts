@@ -123,6 +123,7 @@ import {
 } from "../state/sqlite-driver.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
+import { resolveDaemonDefaultCwd } from "./daemon-workspace.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
   createSizeCappedFileLogSink,
@@ -1904,22 +1905,6 @@ function discoverAgenCDaemonStateDatabasePaths(
     ...discoverStateDatabasePaths(daemonHome),
     resolveStateDatabasePaths({ cwd, agencHome: daemonHome }),
   ]);
-}
-
-/**
- * DAE-02: Prefer an explicit workspace env over the daemon process cwd so
- * multi-project agents don't inherit the first shell that autostarted the
- * daemon when `cwd` is omitted on create.
- */
-function resolveDaemonDefaultCwd(env: NodeJS.ProcessEnv): string {
-  const workspace =
-    env.AGENC_WORKSPACE?.trim() ||
-    env.AGENC_PROJECT_DIR?.trim() ||
-    env.PWD?.trim();
-  if (workspace && workspace.length > 0) {
-    return workspace;
-  }
-  return process.cwd();
 }
 
 function uniqueStateDatabasePaths(

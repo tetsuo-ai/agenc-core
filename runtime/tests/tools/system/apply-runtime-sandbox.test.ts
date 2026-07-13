@@ -1,9 +1,30 @@
-import { describe, expect, it } from "vitest";
-import { applyRuntimeSandboxToSpawn } from "../../../src/tools/system/apply-runtime-sandbox.js";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import {
+  applyRuntimeSandboxToSpawn,
+  transformWithRuntimeSandbox,
+} from "../../../src/tools/system/apply-runtime-sandbox.js";
+import { UnifiedExecError } from "../../../src/unified-exec/types.js";
+import type { UnifiedExecRuntimeSandbox } from "../../../src/unified-exec/types.js";
+import type { PermissionProfile } from "../../../src/sandbox/engine/index.js";
 
-describe("applyRuntimeSandboxToSpawn (TOOL-03/04)", () => {
+function fakeProfile(): PermissionProfile {
+  return {
+    fileSystem: { kind: "workspace_write", entries: [] },
+    network: { kind: "enabled" },
+  } as PermissionProfile;
+}
+
+function fakeRuntimeSandbox(
+  preference: "require" | "auto" = "require",
+): UnifiedExecRuntimeSandbox {
+  return {
+    permissionProfile: fakeProfile(),
+    sandboxPolicyCwd: process.cwd(),
+    preference,
+  };
+}
+
+describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
   it("passes through when no runtime sandbox context is attached", () => {
     const result = applyRuntimeSandboxToSpawn({
       toolArgs: { command: "echo hi" },
@@ -18,21 +39,53 @@ describe("applyRuntimeSandboxToSpawn (TOOL-03/04)", () => {
     expect(result.env.PATH).toBe("/usr/bin");
   });
 
-  it("system.bash execute path applies sandbox helper before spawn", () => {
-    const src = readFileSync(
-      join(__dirname, "../../../src/tools/system/bash.ts"),
-      "utf8",
-    );
-    expect(src).toMatch(/applyRuntimeSandboxToSpawn/);
-    expect(src).toMatch(/withSandbox/);
+  it("rewrites program/args via SandboxManager.transform when isolation is applied", () => {
+    const transform = vi.fn().mockReturnValue({
+      command: ["/sandbox/wrapper", "/bin/echo", "hi"],
+      cwd: "/sandboxed",
+      env: { PATH: "/sandbox/bin", SANDBOX: "1" },
+      arg0: "wrapper",
+    });
+    const selectInitial = vi.fn().mockReturnValue("bwrap");
+    const manager = {
+      selectInitial,
+      transform,
+    } as never;
+
+    const result = transformWithRuntimeSandbox({
+      program: "/bin/echo",
+      args: ["hi"],
+      cwd: process.cwd(),
+      env: { PATH: "/usr/bin" },
+      runtimeSandbox: fakeRuntimeSandbox("require"),
+      sandboxManager: manager,
+    });
+
+    expect(selectInitial).toHaveBeenCalled();
+    expect(transform).toHaveBeenCalled();
+    expect(result.program).toBe("/sandbox/wrapper");
+    expect(result.args).toEqual(["/bin/echo", "hi"]);
+    expect(result.cwd).toBe("/sandboxed");
+    expect(result.env.SANDBOX).toBe("1");
   });
 
-  it("PowerShell LIVE tool passes runtimeSandbox into execCommand", () => {
-    const src = readFileSync(
-      join(__dirname, "../../../src/bin/model-facing-tools.ts"),
-      "utf8",
-    );
-    expect(src).toMatch(/runtimeSandboxForExec/);
-    expect(src).toMatch(/runtimeSandbox/);
+  it("fails closed when preference is require and no platform sandbox is selected", () => {
+    const manager = {
+      selectInitial: vi.fn().mockReturnValue("none"),
+      transform: vi.fn(),
+    } as never;
+
+    expect(() =>
+      transformWithRuntimeSandbox({
+        program: "/bin/echo",
+        args: ["hi"],
+        cwd: process.cwd(),
+        env: { PATH: "/usr/bin" },
+        runtimeSandbox: fakeRuntimeSandbox("require"),
+        sandboxManager: manager,
+      }),
+    ).toThrow(UnifiedExecError);
+
+    expect(manager.transform).not.toHaveBeenCalled();
   });
 });

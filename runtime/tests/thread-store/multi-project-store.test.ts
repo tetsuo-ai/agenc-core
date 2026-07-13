@@ -1,64 +1,140 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MultiProjectFileThreadStore } from "../../src/thread-store/multi-project-store.js";
-import { FileThreadStore } from "../../src/thread-store/store.js";
-import { discoverStateDatabasePaths } from "../../src/state/sqlite-driver.js";
+import { resolveDaemonDefaultCwd } from "../../src/app-server/daemon-workspace.js";
+import { RolloutStore } from "../../src/session/rollout-store.js";
 
-describe("MultiProjectFileThreadStore (DAE-03)", () => {
-  let home: string;
+let agencHome = "";
+let originalAgencHome = "";
 
-  afterEach(() => {
-    if (home) rmSync(home, { recursive: true, force: true });
+function openRollout(opts: {
+  cwd: string;
+  sessionId: string;
+}): RolloutStore {
+  const store = new RolloutStore({
+    cwd: opts.cwd,
+    sessionId: opts.sessionId,
+    agencVersion: "0.6.0",
+  });
+  store.open({
+    sessionId: opts.sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: opts.cwd,
+    originator: "multi-project-test",
+    agencVersion: "0.6.0",
+    model: "test-model",
+    modelProvider: "test-provider",
+  });
+  return store;
+}
+
+beforeEach(() => {
+  agencHome = mkdtempSync(join(tmpdir(), "agenc-mp-home-"));
+  originalAgencHome = process.env.AGENC_HOME ?? "";
+  process.env.AGENC_HOME = agencHome;
+});
+
+afterEach(() => {
+  if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
+  else delete process.env.AGENC_HOME;
+  if (agencHome) rmSync(agencHome, { recursive: true, force: true });
+});
+
+describe("MultiProjectFileThreadStore (DAE-03) — behavioral", () => {
+  it("unions listThreads and readThread across two project cwds", () => {
+    const cwdA = mkdtempSync(join(tmpdir(), "agenc-mp-a-"));
+    const cwdB = mkdtempSync(join(tmpdir(), "agenc-mp-b-"));
+    const rolloutA = openRollout({ cwd: cwdA, sessionId: "thread-a" });
+    const rolloutB = openRollout({ cwd: cwdB, sessionId: "thread-b" });
+    try {
+      const multi = new MultiProjectFileThreadStore({
+        primaryCwd: cwdA,
+        agencHome,
+      });
+      multi.createThread({
+        threadId: "thread-a",
+        cwd: cwdA,
+        rolloutStore: rolloutA,
+      });
+      multi.createThread({
+        threadId: "thread-b",
+        cwd: cwdB,
+        rolloutStore: rolloutB,
+      });
+
+      const page = multi.listThreads({
+        pageSize: 50,
+        archived: false,
+      });
+      const ids = page.items.map((t) => t.threadId).sort();
+      expect(ids).toEqual(["thread-a", "thread-b"]);
+
+      const readB = multi.readThread({
+        threadId: "thread-b",
+        includeArchived: false,
+        includeHistory: false,
+      });
+      expect(readB.threadId).toBe("thread-b");
+
+      multi.close();
+    } finally {
+      rolloutA.close();
+      rolloutB.close();
+      rmSync(cwdA, { recursive: true, force: true });
+      rmSync(cwdB, { recursive: true, force: true });
+    }
   });
 
-  it("unions listThreads across discovered projects under AGENC_HOME", () => {
-    home = mkdtempSync(join(tmpdir(), "agenc-mp-"));
-    const projects = join(home, "projects");
-    // Two synthetic project state dirs as discoverStateDatabasePaths expects.
-    const p1 = join(projects, "proj-one");
-    const p2 = join(projects, "proj-two");
-    mkdirSync(p1, { recursive: true });
-    mkdirSync(p2, { recursive: true });
-    // Minimal empty sqlite files so discovery keeps them (existsSync state.db).
-    // FileThreadStore will open and migrate; create threads via stores.
-    const s1 = new FileThreadStore({ projectDir: p1, agencHome: home });
-    const s2 = new FileThreadStore({ projectDir: p2, agencHome: home });
-    // Use in-memory-ish: createThread needs rolloutStore. Skip createThread —
-    // instead verify discovery sees both project dirs and multi-store opens them.
-    s1.close();
-    s2.close();
+  it("paginates the unified list with mp: cursors", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-mp-page-"));
+    const rollouts: RolloutStore[] = [];
+    try {
+      const multi = new MultiProjectFileThreadStore({
+        primaryCwd: cwd,
+        agencHome,
+      });
+      for (const id of ["t1", "t2", "t3"]) {
+        const r = openRollout({ cwd, sessionId: id });
+        rollouts.push(r);
+        multi.createThread({ threadId: id, cwd, rolloutStore: r });
+      }
+      const first = multi.listThreads({ pageSize: 2, archived: false });
+      expect(first.items).toHaveLength(2);
+      expect(first.nextCursor).toMatch(/^mp:/);
 
-    const discovered = discoverStateDatabasePaths(home);
-    // FileThreadStore open creates state.db on construct — re-open to ensure files exist
-    const s1b = new FileThreadStore({ projectDir: p1, agencHome: home });
-    const s2b = new FileThreadStore({ projectDir: p2, agencHome: home });
-    s1b.close();
-    s2b.close();
+      const second = multi.listThreads({
+        pageSize: 2,
+        archived: false,
+        cursor: first.nextCursor,
+      });
+      expect(second.items).toHaveLength(1);
+      multi.close();
+    } finally {
+      for (const r of rollouts) r.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
-    const rediscovered = discoverStateDatabasePaths(home);
-    expect(rediscovered.length).toBeGreaterThanOrEqual(2);
-
-    const multi = new MultiProjectFileThreadStore({
-      primaryCwd: process.cwd(),
-      agencHome: home,
-    });
-    // listThreads should not throw and should scan discovered projects.
-    const page = multi.listThreads({ pageSize: 50, archived: false });
-    expect(Array.isArray(page.items)).toBe(true);
-    multi.close();
-    void discovered;
+describe("resolveDaemonDefaultCwd (DAE-02) — shipped helper", () => {
+  it("prefers AGENC_WORKSPACE then AGENC_PROJECT_DIR then PWD", () => {
+    expect(resolveDaemonDefaultCwd({ AGENC_WORKSPACE: "/ws" })).toBe("/ws");
+    expect(
+      resolveDaemonDefaultCwd({
+        AGENC_PROJECT_DIR: "/proj",
+        PWD: "/pwd",
+      }),
+    ).toBe("/proj");
+    expect(resolveDaemonDefaultCwd({ PWD: "/pwd" })).toBe("/pwd");
   });
 
-  it("resolveDaemonDefaultCwd prefers AGENC_WORKSPACE (source contract)", async () => {
-    const { readFileSync } = await import("node:fs");
-    const src = readFileSync(
-      new URL("../../src/app-server/daemon-cli.ts", import.meta.url),
-      "utf8",
-    );
-    expect(src).toMatch(/function resolveDaemonDefaultCwd/);
-    expect(src).toMatch(/AGENC_WORKSPACE/);
-    expect(src).toMatch(/MultiProjectFileThreadStore/);
+  it("falls back to process.cwd when no workspace env is set", () => {
+    const env = { ...process.env };
+    delete env.AGENC_WORKSPACE;
+    delete env.AGENC_PROJECT_DIR;
+    delete env.PWD;
+    expect(resolveDaemonDefaultCwd(env)).toBe(process.cwd());
   });
 });
