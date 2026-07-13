@@ -595,7 +595,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/services/api/promptCacheBreakDetection.ts:287–292` — FIFO eviction at capacity (10)
   deletes the oldest-inserted key, typically `repl_main_thread`; ten subagent spawns destroy the main thread's
   cache-break baseline. **Fix:** LRU eviction or pin non-agent keys.
-- [ ] `[V]` `runtime/src/services/api/sessionIngress.ts:20–28,249–257` — `lastUuidMap`/`sequentialAppendBySession`
+- [~] `[V]` `runtime/src/services/api/sessionIngress.ts:20 [SKIPPED: an LRU cap is unsafe — sequentialAppendBySession holds a per-session append-ordering closure whose eviction mid-flight would break ordering. Correct fix is wiring clearSession into the session-teardown path (same design dependency as M-FILE-1). Recommend a shared session-close cleanup hook]–28,249–257` — `lastUuidMap`/`sequentialAppendBySession`
   accumulate one entry per remotely-persisted session; `clearSession`/`clearAllSessions` here have zero callers.
   Slow unbounded growth. **Fix:** call `clearSession` from session teardown or make the maps LRU.
 
