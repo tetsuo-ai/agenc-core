@@ -1,41 +1,79 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { withCompactContextGuards } from "../../src/session/compact-env-guard.js";
 
 /**
- * Structural + behavioral smoke for DAE-01: withCompactContextGuards is not
- * exported, so we verify the serialization contract via source + a local
- * reimplementation of the gate pattern that matches the shipped algorithm.
+ * Drives the shipped withCompactContextGuards (DAE-01). Concurrent installs
+ * must not interleave process.env mutations.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+describe("withCompactContextGuards (DAE-01, shipped)", () => {
+  const KEY = "OPENAI_API_KEY" as const;
+  const previous = process.env[KEY];
 
-describe("compact env gate (DAE-01)", () => {
-  it("run-turn serializes compact env installs", () => {
-    const src = readFileSync(
+  afterEach(() => {
+    if (previous === undefined) delete process.env[KEY];
+    else process.env[KEY] = previous;
+  });
+
+  it("installs env for fn duration then restores", async () => {
+    delete process.env[KEY];
+    let seen: string | undefined;
+    await withCompactContextGuards(async () => {
+      seen = process.env[KEY];
+    }, { OPENAI_API_KEY: "temp-secret" });
+    expect(seen).toBe("temp-secret");
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("serializes concurrent callers so env does not interleave", async () => {
+    delete process.env[KEY];
+    const log: string[] = [];
+
+    const a = withCompactContextGuards(async () => {
+      log.push(`a:enter:${process.env[KEY]}`);
+      await new Promise((r) => setTimeout(r, 40));
+      log.push(`a:exit:${process.env[KEY]}`);
+    }, { OPENAI_API_KEY: "key-a" });
+
+    const b = withCompactContextGuards(async () => {
+      log.push(`b:enter:${process.env[KEY]}`);
+      await new Promise((r) => setTimeout(r, 5));
+      log.push(`b:exit:${process.env[KEY]}`);
+    }, { OPENAI_API_KEY: "key-b" });
+
+    await Promise.all([a, b]);
+
+    // Full serialization: A completes before B installs (or vice versa if
+    // scheduling flipped order — both orderings are exclusive).
+    expect(log).toHaveLength(4);
+    const first = log[0]!.startsWith("a:") ? "a" : "b";
+    const second = first === "a" ? "b" : "a";
+    expect(log[0]).toBe(`${first}:enter:key-${first}`);
+    expect(log[1]).toBe(`${first}:exit:key-${first}`);
+    expect(log[2]).toBe(`${second}:enter:key-${second}`);
+    expect(log[3]).toBe(`${second}:exit:key-${second}`);
+    expect(process.env[KEY]).toBeUndefined();
+  });
+
+  it("run-turn and session-compact both import the shared helper", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const runTurn = readFileSync(
       join(__dirname, "../../src/session/run-turn.ts"),
       "utf8",
     );
-    expect(src).toMatch(/compactEnvGate/);
-    expect(src).toMatch(/DAE-01/);
-    // Must await previous gate before mutating process.env.
-    expect(src).toMatch(/await previousGate/);
-  });
-
-  it("serialized gate prevents interleaved env restores", async () => {
-    let gate: Promise<void> = Promise.resolve();
-    const log: string[] = [];
-    const withGate = async (label: string, ms: number) => {
-      let release!: () => void;
-      const prev = gate;
-      gate = new Promise<void>((r) => {
-        release = r;
-      });
-      await prev;
-      log.push(`enter:${label}`);
-      await new Promise((r) => setTimeout(r, ms));
-      log.push(`exit:${label}`);
-      release();
-    };
-    await Promise.all([withGate("a", 30), withGate("b", 5)]);
-    expect(log).toEqual(["enter:a", "exit:a", "enter:b", "exit:b"]);
+    const sessionCompact = readFileSync(
+      join(__dirname, "../../src/commands/session-compact.ts"),
+      "utf8",
+    );
+    expect(runTurn).toMatch(/from ["'].\/compact-env-guard\.js["']/);
+    expect(sessionCompact).toMatch(
+      /from ["']\.\.\/session\/compact-env-guard\.js["']/,
+    );
+    // No local gate reimplementation left in either file.
+    expect(runTurn).not.toMatch(/let compactEnvGate/);
+    expect(sessionCompact).not.toMatch(/let compactEnvGate/);
+    expect(sessionCompact).not.toMatch(
+      /async function withCompactContextGuards/,
+    );
   });
 });

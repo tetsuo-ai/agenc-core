@@ -295,7 +295,7 @@ The only practical **CRITICAL** is same-process multi-agent shell isolation (TOO
 | LLM-01 | **FIXED** | `6d56044f7` no mid-stream transport retry after yield |
 | LLM-02 | **FIXED** | `6d56044f7` stream acquireAttempt uses timeoutMs |
 | GW-02 | **FIXED** | `86a1c560e` PairingStore reload-from-disk |
-| DAE-01 | **FIXED** | `28d61a01e` compact env gate serializes installs (process.env still used, race removed) |
+| DAE-01 | **FIXED** | Shared `session/compact-env-guard.ts` used by run-turn + session-compact; serialized process.env installs (race removed) |
 | TOOL-05 | **FIXED** | `98807aac6` MultiEdit/apply_patch mutation family |
 | TOOL-04 (partial) | **FIXED** (family) / **DEFERRED** (sandbox) | PowerShell in SHELL_TOOL_FAMILY; platform sandbox wire-up deferred — risk: Windows shell without sandbox |
 | TOOL-03 | **DEFERRED** | system.bash platform sandbox honesty — risk: deferred shell escapes isolation; prefer exec_command |

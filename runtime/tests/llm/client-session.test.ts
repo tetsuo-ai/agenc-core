@@ -727,6 +727,47 @@ describe("ProviderHttpClientSession", () => {
     await assertion;
   });
 
+  test("requestStream applies request timeoutMs on open/headers (LLM-02)", async () => {
+    // Hang forever on fetch so only the attempt timeout can complete the call.
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return;
+          if (signal.aborted) {
+            reject(signal.reason ?? new Error("aborted"));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              reject(signal.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      timeoutMs: 40,
+      streamRetry: { maxRetries: 0, retryTransport: false },
+      fetchImpl,
+    });
+
+    const pending = session.requestStream({
+      body: { stream: true },
+      timeoutMs: 40,
+    });
+    const assertion = expect(pending).rejects.toThrow(
+      /timed out after 40ms|provider request timed out/i,
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    await assertion;
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
   test("requestStream rejects HTML responses before stream parsing begins", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(streamFromChunks(["<html>login</html>"]), {
