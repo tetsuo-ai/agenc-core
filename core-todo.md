@@ -282,7 +282,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** use `ESC[2J` + CURSOR_HOME for engine-internal resets; reserve `ESC[3J` for the explicit
   `forceRedraw`/ctrl+L path (or thread `FlickerReason` so resize/offscreen skip the 3J).
 
-- [ ] `[x]` **M-TUI-3 — `/context` fabricates a per-file token breakdown.**
+- [x] `[x]` **M-TUI-3 — `/context` fabricates a per-file token breakdown.**
   `runtime/src/tui/components/v2/ContextUsageModal.tsx:178–186,220–227`. `parseContextUsage` extracts only one
   aggregate `files: N tokens` number, but whenever it's present the modal always renders three hardcoded
   filenames — `lib.rs`, `pool.rs`, `math.rs` — plus a hardcoded `files (3)` / `3 files`, splitting the real
@@ -492,7 +492,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** keep `key` = `item.id`; pass `isSelected` as a prop.
 - [ ] `[?]` `runtime/src/tui/components/design-system/Ratchet.tsx:53` — `useLayoutEffect` with no dep array runs
   `measureElement` every commit; likely intentional (min-height ratchet), flagged as a perf observation.
-- [ ] `[V]` `runtime/src/tui/components/v2/ContextUsageModal.tsx:187–189` — `compactionThreshold / hardLimit` →
+- [x] `[V]` `runtime/src/tui/components/v2/ContextUsageModal.tsx:187–189` — `compactionThreshold / hardLimit` →
   `auto-compact at Infinity%` when `hardLimit` parses to 0 (regex accepts `0`); plus a hardcoded `92` fallback.
   **Fix:** guard `hardLimit > 0`. *(Same file as M-TUI-3.)*
 - [ ] `[V]` `runtime/src/tui/components/markdown/MarkdownTable.tsx:347` & `.../diff/StructuredDiff/Fallback.tsx:362`
