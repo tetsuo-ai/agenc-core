@@ -1,5 +1,6 @@
 import React, {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -43,7 +44,10 @@ import {
   shouldShowFirstRunOnboarding,
   type OnboardingEnv,
 } from "./projectOnboardingState.js";
-import { OnboardingBox as Box, OnboardingText as Text } from "./elements.js";
+import { Box } from "../tui/ink.js";
+import ThemedBox from "../tui/components/design-system/ThemedBox.js";
+import ThemedText from "../tui/components/design-system/ThemedText.js";
+import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
   DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
@@ -1300,22 +1304,90 @@ export interface OnboardingProps {
   readonly context: FirstRunOnboardingContext;
 }
 
+/**
+ * Render one detail line with hierarchy instead of a flat dim list. A terminal
+ * can't change font size, so meaning comes from colour + weight:
+ *   - Numbered choices ("1. dark (current)") get an accent number; the current
+ *     selection is bright + bold with a `▸` marker, the rest stay readable.
+ *   - "Type …" / "Tip:" prompts are the quiet hint tone.
+ *   - "Label: value" rows dim the label and brighten the value.
+ *   - Everything else is plain readable text (not dimmed into the border).
+ */
+function OnboardingDetailLine({ line }: { readonly line: string }): React.ReactElement {
+  const choice = /^(\d+)\.\s+(.*)$/u.exec(line);
+  if (choice) {
+    const isCurrent = /\(current\)\s*$/u.test(line);
+    return (
+      <Box flexDirection="row">
+        <ThemedText color="agenc" bold>
+          {isCurrent ? "▸ " : "  "}
+        </ThemedText>
+        <ThemedText color="agenc" bold>
+          {choice[1]}.{" "}
+        </ThemedText>
+        <ThemedText color={isCurrent ? "text" : "text2"} bold={isCurrent}>
+          {choice[2]}
+        </ThemedText>
+      </Box>
+    );
+  }
+  if (/^(Type |Tip:|Onboarding input only)/u.test(line)) {
+    return <ThemedText color="inactive">{line}</ThemedText>;
+  }
+  const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);
+  if (kv) {
+    return (
+      <Box flexDirection="row">
+        <ThemedText color="inactive">{kv[1]}: </ThemedText>
+        <ThemedText color="text2" wrap="truncate-middle">
+          {kv[2]}
+        </ThemedText>
+      </Box>
+    );
+  }
+  return <ThemedText color="text2">{line}</ThemedText>;
+}
+
 export function Onboarding({
   state,
   steps,
   currentStep,
   context,
 }: OnboardingProps): React.ReactElement {
+  const terminalSize = useContext(TerminalSizeContext);
+  const columns =
+    terminalSize && Number.isFinite(terminalSize.columns)
+      ? terminalSize.columns
+      : 80;
+  const cardWidth = Math.max(40, Math.min(72, columns - 2));
+  const detailLines = detailLinesForStep(state, context);
+  const showApproval =
+    state.currentStepId === "api-key" && state.pendingApiKeyApproval !== null;
+
   return (
     <Box flexDirection="column" width="100%" paddingX={1}>
       <WelcomeV2
         provider={state.selectedProvider}
         model={state.selectedModel}
       />
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold>{currentStep.title}</Text>
-        {state.currentStepId === "api-key" &&
-        state.pendingApiKeyApproval !== null ? (
+
+      {/* The active step is a single accent card (same language as the trust
+          dialog): purple border, the step title as a bright heading, and the
+          detail lines rendered with real hierarchy. */}
+      <ThemedBox
+        flexDirection="column"
+        width={cardWidth}
+        borderStyle="round"
+        borderColor="agenc"
+        paddingX={2}
+        paddingY={1}
+        marginTop={1}
+      >
+        <ThemedText color="agenc" bold>
+          {currentStep.title}
+        </ThemedText>
+        <Box height={1} />
+        {showApproval && state.pendingApiKeyApproval !== null ? (
           <ApproveApiKey
             provider={state.pendingApiKeyApproval.provider}
             maskedTail={state.pendingApiKeyApproval.maskedTail}
@@ -1324,23 +1396,38 @@ export function Onboarding({
             pastePreview={state.pendingApiKeyApproval.pastePreview}
           />
         ) : (
-          detailLinesForStep(state, context).map((line) => (
-            <Text key={line} dimColor>{line}</Text>
+          detailLines.map((line) => (
+            <OnboardingDetailLine key={line} line={line} />
           ))
         )}
-        {state.error !== null ? <Text>{state.error}</Text> : null}
-      </Box>
+        {state.error !== null ? (
+          <Box marginTop={1}>
+            <ThemedText color="warning">{state.error}</ThemedText>
+          </Box>
+        ) : null}
+      </ThemedBox>
+
+      {/* Progress rail: done = green ✓, current = purple ▸ (bright title),
+          pending = dim ·. Replaces the flat [x]/[>]/[ ] ASCII markers. */}
       <Box flexDirection="column" marginTop={1}>
         {steps.map((step) => {
-          const marker = step.isComplete
-            ? "[x]"
-            : step.id === currentStep.id
-              ? "[>]"
-              : "[ ]";
+          const isCurrent = step.id === currentStep.id;
+          const marker = step.isComplete ? "✓" : isCurrent ? "▸" : "·";
+          const markerColor = step.isComplete
+            ? "success"
+            : isCurrent
+              ? "agenc"
+              : "muted3";
+          const titleColor = isCurrent ? "text" : step.isComplete ? "text2" : "inactive";
           return (
-            <Text key={step.id} dimColor={step.id !== currentStep.id}>
-              {marker} {step.title}
-            </Text>
+            <Box key={step.id} flexDirection="row">
+              <ThemedText color={markerColor} bold={isCurrent}>
+                {marker}{" "}
+              </ThemedText>
+              <ThemedText color={titleColor} bold={isCurrent}>
+                {step.title}
+              </ThemedText>
+            </Box>
           );
         })}
       </Box>
