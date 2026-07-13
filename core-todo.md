@@ -292,7 +292,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** remove the fabricated per-file rows (and the hardcoded label/fallbacks), or plumb real per-file data
   into `parseContextUsage`.
 
-- [ ] `[V]` **M-TUI-4 — `Tabs` crashes on empty children.**
+- [~] `[V]` **M-TUI-4 — `Tabs` crashes on empty children. [SKIPPED: unreachable — sole caller HelpV2 always seeds tabs=[general]; file is react-compiler-compiled output]**
   `runtime/src/tui/components/design-system/Tabs.tsx:235`. The context provider indexes `tabs[selectedTabIndex][0]`
   unconditionally; with `children = []`, `tabs[0][0]` throws `TypeError` on mount, and `handleTabChange` does
   `% tabs.length` → NaN → crash next render. Any caller building tab children dynamically (all filtered out)
