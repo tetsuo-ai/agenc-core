@@ -539,7 +539,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/utils/ripgrep.ts:567` — `countFilesRoundedRg` + private `ripGrepFileCount` (:326) have
   zero callers; if ever wired, `memoize` would cache a transient-timeout `undefined` permanently. **Fix:** remove,
   or don't memoize failure/undefined.
-- [ ] `[V]` `runtime/src/utils/memoize.ts:40` — `memoizeWithTTL` (sync) has no callers (only the async/LRU variants
+- [~] `[V]` `runtime/src/utils/memoize.ts:40` [SKIPPED: keep — the recommended fix for sandbox-runtime.ts:451 (checkDependencies TTL) gives memoizeWithTTL a live caller, so it is not dead once that is wired] — `memoizeWithTTL` (sync) has no callers (only the async/LRU variants
   are used). **Fix:** delete or document as external API.
 - [x] `[V]` `runtime/src/utils/model/model.ts:500` — `firstPartyNameToCanonical` canonicalizes by ordered
   `.includes()`, so a future `claude-opus-4-10`/`-4-11` collapses to `claude-opus-4-1` (wrong tier/caps);
@@ -638,7 +638,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/sandbox/engine/bwrap.ts:32` — `systemBwrapWarning()` (missing-bwrap / no-userns / WSL1
   warnings) has zero callers, so those conditions are computed nowhere the user sees. **Fix:** surface from the
   doctor/diagnostic path.
-- [ ] `[V]` `runtime/src/utils/sandbox/sandbox-runtime.ts:451` — `checkDependencies = memoize(...)` caches on the
+- [~] `[V]` `runtime/src/utils/sandbox/sandbox-runtime.ts:451` [SKIPPED: fix is memoize -> a TTL cache so a transient probe failure self-heals; the ideal is to reuse the (otherwise-dead) memoizeWithTTL here, resolving both items. TTL-heal not cheaply revert-sensitive-testable (wraps a static BaseSandboxManager.checkDependencies, needs fake timers + static mock). Recommend memoizeWithTTL(check, 30s)] — `checkDependencies = memoize(...)` caches on the
   single `undefined` key for the process lifetime, so one transient probe failure at startup latches
   "sandbox disabled" for all subsequent sessions until `reset()`. **Fix:** add a short TTL / re-evaluate on
   settings refresh.
