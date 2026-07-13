@@ -561,11 +561,22 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/tui/components/CustomSelect/use-select-navigation.ts:549–567` — when a parent passes a
   fresh-but-equal `options` array each render, `setLastOptions` never runs, so the O(n) `optionsNavigateEqual`
   scan runs every render (incl. every keystroke). **Fix:** update `lastOptions` even on structural equality.
-- [ ] `[V]` `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:150` — index-keyed queue preview
-  over a front-draining queue causes remount churn when the head is removed. **Fix:** key by stable id.
-- [ ] `[V]` `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:351–355` — folding `isSelected`
+- [~] `[V]` `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:150` [SKIPPED: no
+  front-drain-stable key is available without a non-trivial threading change. The mapped `messages` are derived in
+  a `useMemo(..., [queuedCommands])` where `createUserMessage` mints a FRESH uuid per call, so on any queue change
+  (incl. the front-drain) every message gets a new uuid — keying by `message.uuid` would remount just as much as
+  the index. The only id that survives a front-drain is the source `QueuedCommand.uuid`, which is OPTIONAL and
+  would have to be threaded through `processQueuedCommands`/`normalizeMessages` (which don't preserve a 1:1 mapping
+  to queued commands). The churn is also per-drain (when a queued item executes), not per-frame. Recommend:
+  guarantee a stable id on each QueuedCommand at enqueue and carry it onto the derived message, then key by it.] —
+  index-keyed queue preview over a front-draining queue causes remount churn when the head is removed. **Fix:** key
+  by stable id.
+- [x] `[V]` `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:351–355` — folding `isSelected`
   into the React `key` unmounts/remounts the selected+previous rows on every arrow keypress, defeating the `memo`.
   **Fix:** keep `key` = `item.id`; pass `isSelected` as a prop.
+  **DONE:** extracted exported `suggestionRowKey(item, isSelected)` that keys by `item.id` only (isSelected already
+  flows to `SuggestionItemRow` as a prop). Revert-sensitive test (suggestion-row-key.test.ts): the key is invariant
+  to `isSelected` vs the folded key that changes with selection.
 - [~] `[?]` `runtime/src/tui/components/design-system/Ratchet.tsx:53` [SKIPPED: verified INTENTIONAL, not a bug.
   The Ratchet establishes a min-height that only grows; it must `measureElement` on every commit to catch content
   growth that happens while `rows` is unchanged — a dep array (e.g. `[rows]`) would MISS that growth and break the
