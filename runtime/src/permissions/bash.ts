@@ -471,6 +471,18 @@ export async function bashToolHasPermission(
   if (ctx.mode === "bypassPermissions") {
     const hadDeny = subresults.some((s) => s.result.behavior === "deny");
     if (!hadDeny) {
+      // SECURITY: a user-configured content-specific / whole-tool ASK rule must
+      // survive bypass mode (evaluator.ts 1f), exactly as it survives the sandbox
+      // auto-allow below. Aggregate first and, if the result is a rule-based ask,
+      // return it so the configured approval prompt still fires instead of being
+      // silently upgraded to allow.
+      const bypassAggregate = aggregateSubcommandResults(input, subresults);
+      if (
+        bypassAggregate.behavior === "ask" &&
+        aggregateAskCameFromRule(bypassAggregate)
+      ) {
+        return bypassAggregate;
+      }
       return {
         behavior: "allow",
         updatedInput: { ...input },

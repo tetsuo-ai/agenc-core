@@ -382,7 +382,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Permissions / agents
 
-- [ ] `[V]` **M-PERM-1 — `bypassPermissions` (--yolo) silently waives user content-ASK rules.**
+- [x] `[V]` **M-PERM-1 — `bypassPermissions` (--yolo) silently waives user content-ASK rules.**
   `runtime/src/permissions/bash.ts:471`. Under bypass mode, `bashToolHasPermission` short-circuits to `allow`
   for any subcommand set with no explicit deny, so a configured `Bash(git push:*)` / `Bash(rm:*)` ASK guardrail
   is skipped (verified by running the function: `default` mode → `ask`, `bypassPermissions` → `allow`). The
