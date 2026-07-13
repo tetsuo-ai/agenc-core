@@ -53,19 +53,22 @@ function isModernWindowsTerminal(): boolean {
 }
 
 /**
- * Returns the ANSI escape sequence to clear the terminal including scrollback.
- * Automatically detects terminal capabilities.
+ * Returns the ANSI escape sequence to clear the terminal. When `wipeScrollback`
+ * is true (an explicit ctrl+L / forceRedraw), it also erases scrollback (ESC[3J)
+ * on capable terminals. Engine-internal resets (resize / offscreen repaint) must
+ * pass `false`: those repaint the app in place and have no business erasing the
+ * user's scrollback above it. Automatically detects terminal capabilities.
  */
-export function getClearTerminalSequence(): string {
+export function getClearTerminalSequence(wipeScrollback = true): string {
   if (process.platform === 'win32') {
     if (isModernWindowsTerminal()) {
-      return ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
+      return ERASE_SCREEN + (wipeScrollback ? ERASE_SCROLLBACK : '') + CURSOR_HOME
     } else {
       // Compatibility Windows console - can't clear scrollback
       return ERASE_SCREEN + CURSOR_HOME_WINDOWS
     }
   }
-  return ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
+  return ERASE_SCREEN + (wipeScrollback ? ERASE_SCROLLBACK : '') + CURSOR_HOME
 }
 
 /**

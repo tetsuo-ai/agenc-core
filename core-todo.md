@@ -273,7 +273,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** derive each synthetic message's uuid deterministically from its source event key (`eventKey(raw)` +
   block index) so identity is stable across re-derivations.
 
-- [ ] `[V]` **M-TUI-2 — `ESC[3J` wipes terminal scrollback on resize / offscreen repaint.**
+- [x] `[V]` **M-TUI-2 — `ESC[3J` wipes terminal scrollback on resize / offscreen repaint.**
   `runtime/src/tui/ink/clearTerminal.ts:68` (emitted from `log-update.ts` full-reset sites
   :147/:226/:251/:275/:393 → `terminal.ts:246` → `ESC[2J ESC[3J ESC[H`). In the default main-screen (non-
   fullscreen) mode, a resize or an offscreen-row change triggers a full reset whose `ESC[3J` erases the user's
@@ -281,6 +281,11 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   "scrollback preserved."
   **Fix:** use `ESC[2J` + CURSOR_HOME for engine-internal resets; reserve `ESC[3J` for the explicit
   `forceRedraw`/ctrl+L path (or thread `FlickerReason` so resize/offscreen skip the 3J).
+  **DONE:** `getClearTerminalSequence(wipeScrollback = true)` gates the `ERASE_SCROLLBACK` (ESC[3J); the
+  `clearTerminal` patch already carries `reason: FlickerReason`, so `terminal.ts` now emits
+  `getClearTerminalSequence(patch.reason === 'clear')` — 'resize'/'offscreen' skip the 3J, only an explicit
+  'clear' wipes. Revert-sensitive test (clearTerminal-scrollback.test.ts) via `writeDiffToTerminal` with a
+  capturing terminal.
 
 - [x] `[x]` **M-TUI-3 — `/context` fabricates a per-file token breakdown.**
   `runtime/src/tui/components/v2/ContextUsageModal.tsx:178–186,220–227`. `parseContextUsage` extracts only one
