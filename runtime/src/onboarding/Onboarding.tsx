@@ -128,6 +128,10 @@ export interface FirstRunByokAuthBackend {
   }): unknown | Promise<unknown>;
 }
 
+export type GrokOauthLoginResult =
+  | { readonly ok: true; readonly accountLabel: string }
+  | { readonly ok: false; readonly message: string };
+
 export interface FirstRunOnboardingContext {
   readonly agencHome?: string;
   readonly authBackend?: FirstRunByokAuthBackend;
@@ -139,6 +143,53 @@ export interface FirstRunOnboardingContext {
   readonly terminalName?: string;
   readonly fetchImpl?: typeof fetch;
   readonly checkLocalProviders?: boolean;
+  /**
+   * Runs the X / xAI OAuth sign-in for the grok provider (browser PKCE flow —
+   * the same one behind /grok-login). Injectable so wizard tests never open a
+   * browser; the default lazily imports the real flow.
+   */
+  readonly runGrokOauthLogin?: () => Promise<GrokOauthLoginResult>;
+}
+
+/**
+ * Default grok OAuth sign-in used by the api-key step's `login` input: the
+ * browser PKCE loopback flow with tokens persisted exactly like /grok-login.
+ * Lazy imports keep the wizard module light for the non-grok path.
+ */
+async function defaultRunGrokOauthLogin(): Promise<GrokOauthLoginResult> {
+  try {
+    const [{ runXaiBrowserLogin }, { openUrlInBrowser }, creds] =
+      await Promise.all([
+        import("../services/xai/oauth.js"),
+        import("../commands/auth.js"),
+        import("../utils/xaiOauthCredentials.js"),
+      ]);
+    const login = await runXaiBrowserLogin({
+      onAuthorizeUrl: (url) => {
+        void openUrlInBrowser(url);
+      },
+    });
+    const blob = creds.xaiOauthTokensToBlob(login.tokens, {
+      tokenEndpoint: login.tokenEndpoint,
+    });
+    const saved = creds.saveXaiOauthCredentials(blob);
+    if (!saved.success) {
+      return {
+        ok: false,
+        message: `Signed in, but storing tokens failed: ${saved.warning ?? "unknown error"}`,
+      };
+    }
+    return {
+      ok: true,
+      accountLabel: blob.accountLabel ?? login.identity.sub ?? "xAI account",
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      message: `Browser sign-in did not complete (${detail}). Paste XAI_API_KEY instead, or run /grok-login device after setup.`,
+    };
+  }
 }
 
 export interface FirstRunOnboardingSubmitResult {
@@ -965,6 +1016,34 @@ export async function submitFirstRunOnboardingInput(
       }
       {
         const command = lowerCommand(raw);
+        // Grok: `login` runs the X / xAI OAuth sign-in instead of a pasted
+        // key. On success the step advances to the connection test, which
+        // verifies the stored OAuth bearer through the same provider
+        // resolution the session will use (OAuth always wins over env BYOK).
+        if (
+          state.selectedProvider === "grok" &&
+          (command === "login" ||
+            command === "grok-login" ||
+            command === "xai-login")
+        ) {
+          const runLogin =
+            context.runGrokOauthLogin ?? defaultRunGrokOauthLogin;
+          const result = await runLogin();
+          if (!result.ok) {
+            return {
+              state: { ...state, error: result.message },
+              completed: false,
+            };
+          }
+          return {
+            state: withCompletedStep(
+              { ...state, error: null },
+              "api-key",
+              "connection-test",
+            ),
+            completed: false,
+          };
+        }
         if (isSkipApiKeyCommand(command)) {
           const skipError = apiKeySkipError(state.connection);
           if (skipError !== null) {
@@ -1299,16 +1378,28 @@ export function detailLinesForStep(
       if (state.pendingApiKeyApproval !== null) {
         return [];
       }
+      // Grok has a keyless path: the X / xAI OAuth sign-in behind
+      // /grok-login (subscription access; always wins over env BYOK).
+      // Offer it here so first-run users are not funneled into creating a
+      // console.x.ai key they may not need.
+      const grokLoginOffer =
+        state.selectedProvider === "grok"
+          ? [
+              "Or type login to sign in with your X / xAI account — no API key needed.",
+            ]
+          : [];
       const connection = state.connection;
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
           apiKeyInstructionForProvider(state.selectedProvider, context),
+          ...grokLoginOffer,
         ];
       }
       return [
         connection.detail,
         apiKeyInstructionForConnection(connection),
+        ...grokLoginOffer,
         ...(state.pastedContents.length > 0
           ? [`Captured ${state.pastedContents.length} large paste privately.`]
           : []),
@@ -1352,7 +1443,7 @@ function classifyOnboardingDetail(line: string): OnboardingDetailEntry {
       current: /\(current\)\s*$/u.test(line),
     };
   }
-  if (/^(Type |Tip:|Onboarding input only)/u.test(line)) {
+  if (/^(Type |Or type |Tip:|Onboarding input only)/u.test(line)) {
     return { kind: "hint", text: line };
   }
   const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);
