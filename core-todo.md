@@ -412,7 +412,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Sandbox (intended safety mechanisms defined but never wired)
 
-- [ ] `[V]` **M-SBX-1 — `failIfUnavailable` fail-closed switch is dead; legacy sandbox fails OPEN.**
+- [~] `[V]` **M-SBX-1 [SKIPPED: wiring isSandboxRequired into the Bash gate changes security-gate behavior (refuse when unavailable) across tools + orchestrator; the main engine/exec path ALREADY fails closed (enforceRuntimeSandboxAttempt), so this is the legacy settings.sandbox path. Needs care + confirmation it wont block legitimate no-sandbox users] — `failIfUnavailable` fail-closed switch is dead; legacy sandbox fails OPEN.**
   `runtime/src/utils/sandbox/sandbox-runtime.ts:488` (`isSandboxRequired`). Reads `sandbox.enabled &&
   failIfUnavailable` but has zero callers. When bwrap/socat is missing, `isSandboxingEnabled()` → false →
   `shouldUseSandbox()` → false → Bash runs fully unsandboxed. A user who set `failIfUnavailable: true` expecting a
@@ -420,13 +420,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** call `isSandboxRequired()` at startup/print and in the Bash gate; refuse to run when true and
   sandboxing is unavailable.
 
-- [ ] `[V]` **M-SBX-2 — `getSandboxUnavailableReason()` (the missing-confinement warning) is never called.**
+- [~] `[V]` **M-SBX-2 [SKIPPED: additive but needs wiring getSandboxUnavailableReason into the doctor/REPL startup path + a doctor-output test; recommend surfacing it as a startup warning banner] — `getSandboxUnavailableReason()` (the missing-confinement warning) is never called.**
   `runtime/src/utils/sandbox/sandbox-runtime.ts:571`. Its own doc: "Call once at startup … This is a security
   footgun — users configure allowedDomains expecting enforcement, get none." Zero callers, so a user who enabled
   the sandbox but can't run it gets no feedback.
   **Fix:** invoke it during REPL/print startup and surface the reason as a visible warning banner.
 
-- [ ] `[V]` **M-SBX-3 — `environmentLacksSandboxProtections` escalation branch is unreachable.**
+- [~] `[V]` **M-SBX-3 [SKIPPED: populating environmentLacksSandboxProtections enables an approval branch = security-gate behavior change in tools/orchestrator; recommend setting it from runtimePlatformSandboxStatus().available===false with tests] — `environmentLacksSandboxProtections` escalation branch is unreachable.**
   `runtime/src/tools/orchestrator.ts:1052` (dead read at `sandbox/escalation/unix-escalation.ts:277`).
   `renderDecisionForUnmatchedCommand` treats `environmentLacksSandboxProtections === true` as dangerous
   (force prompt / forbid), but the only builder of `UnmatchedCommandContext` never sets the field, so the
