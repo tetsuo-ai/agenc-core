@@ -568,10 +568,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [~] `[V]` `runtime/src/tools/system/bash.ts:1308` [SKIPPED: not reproducible in local Node 25 — a maxBuffer-exceeded execFile error does NOT set error.killed here, so isTimeout already returns false; the audit's premise is Node-version-specific. Defensive guard (exclude ERR_CHILD_PROCESS_STDIO_MAXBUFFER from isTimeout) recommended for older Node] — direct-mode `isTimeout = error.killed || code==='ETIMEDOUT'`
   also fires when the child is killed for exceeding `maxBuffer` (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`), so an
   output-overflow is misreported to the model as a timeout. **Fix:** distinguish the maxBuffer case.
-- [ ] `[V]` `runtime/src/tasks/LocalShellTask/LocalShellTask.tsx:224` (also :333, :431) — background completion
+- [x] `[V]` `runtime/src/tasks/LocalShellTask/LocalShellTask.tsx:224` (also :333, :431) — background completion
   handlers attach `void shellCommand.result.then(async …)` with no `.catch`; a throwing completion callback
   (updateTaskState/enqueueShellNotification in a torn-down state) becomes an unhandled rejection that can crash all
   sessions. **Fix:** add `.catch(logError)` to each.
+  **DONE:** appended `.catch(logError)` to all three floated completion promises. Revert-sensitive test
+  (LocalShellTask-completion-catch.test.ts): mocks `updateTaskState` to throw in the completion callback; with the
+  catch the error goes to `logError`, without it vitest catches an unhandled rejection.
 - [ ] `[V]` `runtime/src/tools/BashTool/shouldUseSandbox.ts:22–53` — `containsExcludedCommand` has a hardcoded
   empty `raw = { commands: [], substrings: [] }` so the `substrings`/`commands` loops can never match (comment
   claims it reads dynamic config); refactoring leftover on the non-security excluded-commands path. **Fix:** wire
