@@ -479,7 +479,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/tui/ink/ink.tsx:1642` — `StylePool` is created once and never reset (unlike CharPool/
   HyperlinkPool rotated every 5 min); `styles`/`ids`/`transitionCache` (worst case O(usedStyles²)) grow unbounded
   over a long truecolor session. **Fix:** rotate StylePool in `resetPools()` or cap `transitionCache`.
-- [ ] `[V]` `runtime/src/tui/ink/parse-keypress.ts:199` — `inputToString()` mutates the caller-owned Buffer in
+- [x] `[V]` `runtime/src/tui/ink/parse-keypress.ts:199` — `inputToString()` mutates the caller-owned Buffer in
   place (`input[0] -= 128`); an aliasing hazard for non-utf8 callers of the exported `parseMultipleKeypresses`
   (production input path is utf8-string, so effectively dead there). **Fix:** build the string without mutating.
 - [ ] `[V]` `runtime/src/tui/components/CustomSelect/use-select-navigation.ts:549–567` — when a parent passes a

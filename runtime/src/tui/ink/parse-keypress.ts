@@ -197,8 +197,11 @@ export const INITIAL_STATE: KeyParseState = {
 function inputToString(input: Buffer | string): string {
   if (Buffer.isBuffer(input)) {
     if (input[0]! > 127 && input[1] === undefined) {
-      ;(input[0] as unknown as number) -= 128
-      return '\x1b' + String(input)
+      // Build the escaped char directly instead of mutating the caller-owned
+      // Buffer in place (`input[0] -= 128`), which corrupts it for any other
+      // reader/logger of the same bytes (an aliasing hazard for non-utf8 callers
+      // of the exported parseMultipleKeypresses).
+      return '\x1b' + String.fromCharCode(input[0]! - 128)
     } else {
       return String(input)
     }
