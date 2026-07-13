@@ -39,6 +39,8 @@ args = ["-y", "some-mcp-server"]
 # default_tools_approval_mode = "ask"
 # enabled_tools = ["search"]
 # disabled_tools = ["delete"]
+# container = "my-desktop-container"  # optional: stdio via desktop sandbox / docker exec
+# pluginSandbox = true                # optional plugin-scoped sandboxing
 ```
 
 Network example:

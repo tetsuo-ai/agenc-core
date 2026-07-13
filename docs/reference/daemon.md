@@ -1,6 +1,6 @@
 # Daemon reference
 
-The local **app-server** control plane for AgenC **0.4.1**. One daemon per
+The local **app-server** control plane for AgenC **0.6.0**. One daemon per
 `AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 
@@ -31,6 +31,12 @@ Ready-wait timeout for clients that start the daemon
 
 ```bash
 AGENC_DAEMON_READY_TIMEOUT_MS=45000
+```
+
+Per-request RPC timeout (SDK / connect options; also used by some client paths):
+
+```bash
+AGENC_DAEMON_REQUEST_TIMEOUT_MS=30000   # optional; connect({ requestTimeoutMs })
 ```
 
 Detached daemon V8 heap cap (MB):
@@ -75,9 +81,20 @@ export AGENC_HOME=/var/lib/agenc
 - **Default transport:** Unix socket at `$AGENC_HOME/daemon.sock`.
 - **Auth:** cookie file `$AGENC_HOME/daemon.cookie` (ensured on start; private
   socket owner identity + peer UID checks on supported platforms).
-- **Optional WebSocket transport** is implemented in
-  `runtime/src/app-server/transport/` for non-Unix topologies; prefer the
-  Unix socket for local use.
+- **Optional WebSocket transport** (remote control, SSH tunnels, VPS operators)
+  defaults to loopback **`ws://127.0.0.1:7766/`** (see
+  `AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT`). Env knobs:
+
+  | Env | Role |
+  | --- | --- |
+  | `AGENC_DAEMON_WEBSOCKET_HOST` | Bind host (default loopback `127.0.0.1`) |
+  | `AGENC_DAEMON_WEBSOCKET_PORT` | Port (default **7766**) |
+  | `AGENC_DAEMON_WEBSOCKET_PATH` | Path (default `/`) |
+  | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | Set `1` to allow a non-loopback host; otherwise non-loopback binds are **refused** |
+
+  Prefer the Unix socket for local TUI/CLI; WebSocket is what remote/phone and
+  tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
+  `runtime/src/app-server/daemon-cli.ts` + `transport/`.
 - Config block `[daemon]` defaults: `transport = "unix"`, `autostart = true`
   (`runtime/src/config/schema.ts`).
 

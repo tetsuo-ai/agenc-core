@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.4.1**). For the
+A current map of how `agenc` is put together (runtime **0.6.0**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -105,11 +105,11 @@ Everything past the launcher lives in the single runtime workspace
 | `eval/` | Agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`) |
 | `tui/` | Terminal UI (custom Ink reconciler fork under `tui/ink`) |
 | `entrypoints/` | Public/SDK type entry surfaces |
-| `protocol/` | Shared protocol helpers |
+| `protocol/` | Marketplace protocol A1/A2 (read-only CLI adapter + types); mutating claim verbs reserved / owner-gated |
 | `bootstrap/` / `lifecycle/` / `conversation/` | Bootstrap state, shutdown/signals, conversation token-budget and realtime |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities |
 | `browser/` | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool |
-| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.4.1`), public barrel |
+| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.6.0`), public barrel |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -325,7 +325,7 @@ npm test
 npm run validate:runtime
 ```
 
-## Current status (0.4.1)
+## Current status (0.6.0)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

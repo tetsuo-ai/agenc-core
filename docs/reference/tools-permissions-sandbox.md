@@ -55,7 +55,7 @@ Do **not** treat the TUI pool (`tools.ts`) as authoritative for this list.
 | `Glob` | Path glob |
 | `Grep` | Content search (prefer over shell `rg`/`grep`) |
 | `Orient` | Workspace orientation helper |
-| `apply_patch` | Multi-file transactional patch |
+| `apply_patch` | Multi-file transactional patch; **deferred** by default (not in `visibleByDefault`) |
 
 ### Filesystem compatibility (`tools/system/filesystem.ts`)
 
@@ -99,12 +99,13 @@ Legacy `system.*` utilities (not the primary edit surface):
 | `system.symbolReferences` | Deferred |
 | `LSP` | Language-server diagnostics / definition / references / symbols |
 | `WebSearch` | Web search (provider-native Grok path when available, else configured endpoint / DuckDuckGo) |
+| `XSearch` | **Grok-gated.** Live X/Twitter search via direct xAI when session provider is `grok` and `[llm.xai] x_search` (or `AGENC_XAI_X_SEARCH`) is on |
 | `web_fetch` | Fetch URL → text/markdown |
 | `WebFetch` | Legacy alias of `web_fetch` |
 
 There is **no** separate LIVE tool named `web_search`; that string is only a
 provider-native server-side tool id used internally by the Grok web-search
-path. Model-facing search is `WebSearch`.
+path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 
 ### Planning / workflow
 
@@ -122,20 +123,30 @@ path. Model-facing search is `WebSearch`.
 
 | Name | Notes |
 | --- | --- |
-| `AskUserQuestion` | Multi-choice questions (TUI picker) |
+| `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** |
 | `request_user_input` | Elicitation / free-form user input |
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `Brief` | Short progress message to the user |
 | `SendUserMessage` | Alias of Brief-style progress message |
-| `Sleep` | Sleep / yield |
-| `Monitor` | Monitor a background command/process |
+| `Sleep` | Sleep / yield; **deferred** by default |
+| `Monitor` | Monitor a background command/process; **deferred** by default |
 
 ### Worktree
 
-| Name |
-| --- |
-| `EnterWorktree` |
-| `ExitWorktree` |
+| Name | Notes |
+| --- | --- |
+| `EnterWorktree` | **Deferred** by default |
+| `ExitWorktree` | **Deferred** by default |
+
+### Media (Grok-gated)
+
+| Name | Notes |
+| --- | --- |
+| `ImagineImage` | Image generation via direct xAI when session provider is `grok` and credentials are available |
+| `ImagineVideo` | Video generation via direct xAI when session provider is `grok` and credentials are available |
+
+These are registered on the LIVE surface but only usable on the Grok/direct-xAI
+path. Other providers do not advertise them as working media tools.
 
 ### Browser
 

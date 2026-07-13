@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-pre--release-orange)
-![version](https://img.shields.io/badge/version-0.4.1-blue)
+![version](https://img.shields.io/badge/version-0.6.0-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A5%2025-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.4.1` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.4.1` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.6.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.6.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -73,9 +73,10 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   `BUFFER` (embedded `nvim --embed` preferred). See
   [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md).
 - **16 built-in providers** — default provider **grok**; fresh-config session
-  model **grok-4.3** (provider-map fallback **grok-4.5**). Selectable
-  **Grok 4.5** adds a 500k context catalog entry with low/medium/high reasoning
-  (high by default for that model), vision, tools, and structured output; also
+  model **grok-4.5** (fresh config and provider-map). Selectable **Grok 4.3**
+  remains in the catalog; **Grok 4.5** is the 500k-context default with
+  low/medium/high reasoning (high by default for that model), vision, tools,
+  and structured output; also
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
   deepseek, gemini, mistral, nvidia-nim, minimax, github, amazon-bedrock, agenc.
   See [`docs/reference/providers.md`](docs/reference/providers.md).
@@ -89,7 +90,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**0.4.1 pre-release.** Runtime and launcher are versioned `0.4.1`; the embedding
+**0.6.0 pre-release.** Runtime and launcher are versioned `0.6.0`; the embedding
 SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is a private monorepo. Type-clean: **0** `@ts-nocheck`. MIT licensed
@@ -105,7 +106,7 @@ onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth, SDK.
 - **npm `11.x`** (`packageManager`).
 - **ripgrep (`rg`)** on `PATH` for file search (`agenc doctor` reports status).
 - **A provider** before real model calls. Default: **xAI** via `XAI_API_KEY`
-  (also accepts `GROK_API_KEY`); default model `grok-4.3` (`AGENC_MODEL`
+  (also accepts `GROK_API_KEY`); default model `grok-4.5` (`AGENC_MODEL`
   overrides). Inspect with `agenc providers`, `agenc login`, `agenc config`.
 
 ## Quick start
@@ -249,7 +250,7 @@ socket, config, sessions, gateway, budget ledger, logs.
 | --- | --- |
 | `AGENC_HOME` | Root for on-disk state (default `~/.agenc`) |
 | `XAI_API_KEY` / `GROK_API_KEY` | Default provider credentials |
-| `AGENC_MODEL` | Override default model (`grok-4.3`) |
+| `AGENC_MODEL` | Override default model (`grok-4.5`) |
 | `AGENC_AUTH_BACKEND` | `local` or `remote` |
 | `AGENC_DAEMON_AUTOSTART=0` | Disable launcher daemon autostart |
 | `AGENC_DAEMON_READY_TIMEOUT_MS` | Launcher daemon-ready timeout |

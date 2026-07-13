@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.4.1**. Source of truth:
+Built-in model providers for AgenC **0.6.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs).
 
@@ -23,11 +23,14 @@ Bare interactive startup with a fresh install uses the **config** default
 (or when managed OpenRouter picks its paid default), the registry uses
 **`grok-4.5`** / **`x-ai/grok-4.5`**.
 
-Grok API key resolution order:
+Grok credential resolution:
 
-1. `XAI_API_KEY`
-2. `GROK_API_KEY`
-3. `AGENC_XAI_API_KEY`
+1. **Stored `/grok-login` OAuth token** (always wins while present — env API
+   keys are ignored). See [grok-oauth.md](../grok-oauth.md).
+2. Explicit session/API key when no OAuth token
+3. `XAI_API_KEY`
+4. `GROK_API_KEY`
+5. `AGENC_XAI_API_KEY`
 
 ### Grok 4.5 catalog entry
 
@@ -54,6 +57,10 @@ Sources checked for this catalog entry on 2026-07-10:
 [pricing](https://docs.x.ai/developers/pricing). Model access can still depend
 on account and region; the runtime reports the provider error without replacing
 the configured model.
+
+**Composer / ACP models** (`grok-composer-*`) are not ordinary chat endpoints —
+they run only through the Grok Build CLI ACP path. See
+[grok-oauth.md](../grok-oauth.md#composer-models-acp).
 
 ## Built-in providers (16)
 

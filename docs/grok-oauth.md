@@ -24,14 +24,18 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
 
 ## How it interacts with API keys
 
-- `XAI_API_KEY` / `GROK_API_KEY` / `AGENC_XAI_API_KEY` **always win** over
-  the sign-in. Unset them to use the subscription.
+- `/grok-login` OAuth **always wins** over `XAI_API_KEY` / `GROK_API_KEY` /
+  `AGENC_XAI_API_KEY`. While a stored OAuth token is present, leftover env
+  API keys are **ignored** for Grok inference.
+- Env BYOK applies only when no OAuth token is available (never signed in, or
+  after `/grok-logout`). Credential order is then:
+  explicit session key → `XAI_API_KEY` → `GROK_API_KEY` → `AGENC_XAI_API_KEY`.
 - Tokens are stored in AgenC secure storage (OS keychain / libsecret, with
   the usual plaintext fallback), refresh automatically (~6 h access tokens,
   rotating refresh tokens), and recover transparently on 401.
 - The OAuth bearer is only ever sent to `api.x.ai` / `*.grok.com`. A custom
   grok base-URL override refuses to start in OAuth mode — set a real API
-  key to use gateways.
+  key (and no OAuth token) to use gateways.
 
 ## Troubleshooting
 

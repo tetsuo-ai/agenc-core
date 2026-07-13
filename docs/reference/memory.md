@@ -90,7 +90,7 @@ Onboarding: `agenc onboard identity` walks the naming ritual for these files.
 
 1. `AGENC_DISABLE_AUTO_MEMORY` — truthy → OFF, falsy → ON
 2. `AGENC_SIMPLE` — OFF
-3. Remote without `AGENC_REMOTE_MEMORY_DIR` — OFF
+3. When `AGENC_REMOTE` is set and `AGENC_REMOTE_MEMORY_DIR` is unset — OFF
 4. `autoMemoryEnabled` in settings.json
 5. Default: **on**
 

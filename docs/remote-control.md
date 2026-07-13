@@ -157,7 +157,7 @@ cannot both receive the same signing request. See
 
 Android keeps the authenticated relay/Core socket alive with a foreground
 `remoteMessaging` service only while all three conditions are true: the app is
-backgrounded, the user is signed in, and a Mac is paired. The Activity remains
+backgrounded, the user is signed in, and a host is paired. The Activity remains
 the owner in the foreground; moving between the two does not deliberately tear
 down the socket. Ticket refreshes reuse the normal single-flight reconnect and
 backoff path.
@@ -240,7 +240,7 @@ events. Deploy Core before relying on Android background status or `@ledger`:
 | Old Core + new phone | Pairing/chat works, but no global status push, typed Ledger action, or all-tools session promotion |
 | New Core + new Android | Full background notification, identity, permission, and Ledger protocol |
 
-Provider credentials and model execution remain on the Mac. The phone does not
+Provider credentials and model execution remain on the host machine. The phone does not
 receive `XAI_API_KEY` or another provider secret.
 
 ## Related

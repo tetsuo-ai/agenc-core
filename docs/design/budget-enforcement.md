@@ -120,7 +120,7 @@ Default `[agent.budget]` is **empty** (no token/dollar/wall-clock caps) so long
 foreground-style sessions are not killed by a hidden ceiling; operators who
 want per-run caps set them explicitly.
 
-## Live wire-up (current as of 0.4.1)
+## Live wire-up (current as of 0.6.0)
 
 The enforcer primitive is **implemented and live** on the autonomous gateway
 surfaces. Callers construct a `BudgetEnforcer` with
