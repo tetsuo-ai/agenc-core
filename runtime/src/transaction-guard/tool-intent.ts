@@ -8,11 +8,9 @@ const SOLANA_SIGNAL_RE =
 const DIRECT_TRANSACTION_TOOL_RE =
   /\b(sendRawTransaction|sendTransaction|sendAndConfirmTransaction|submitTransaction|signTransaction|signAllTransactions|wallet\.sign|walletSign|requestAirdrop)\b/iu;
 const SOLANA_WRITE_SIGNAL_RE =
-  /\b(transfer|airdrop|requestAirdrop|deploy|upgrade|send-tx|submit|execute|confirm|sign|sendRawTransaction|sendTransaction|sendAndConfirmTransaction|signTransaction|signAllTransactions|swap|mint|burn|approve|authorize|revoke|close|set-authority|create-account|create-token|create-associated-token-account)\b/iu;
+  /\b(transfer|airdrop|requestAirdrop|deploy|upgrade|send-tx|submit|submitTransaction|execute|confirm|sign|walletSign|sendRawTransaction|sendTransaction|sendAndConfirmTransaction|signTransaction|signAllTransactions|swap|mint|burn|approve|authorize|revoke|close|set-authority|set-buffer-authority|write-buffer|create-account|create-token|create-associated-token-account)\b/iu;
 const SOLANA_PROGRAM_WRITE_RE =
   /\bsolana\s+program\s+(deploy|write-buffer|set-buffer-authority|close|upgrade)\b/iu;
-const READ_ONLY_SOLANA_RE =
-  /\b(?:solana\s+(?:address|balance|config\s+get|cluster-version|epoch-info|fees|ping|slot|account|logs|validators|block|transaction-history)|solana\s+program\s+show|spl-token\s+(?:accounts|balance|display|supply|address)|anchor\s+(?:--version|idl\s+fetch|keys\s+list))\b/iu;
 const DEVNET_RE = /\b(?:devnet|api\.devnet\.solana\.com)\b/iu;
 const SENSITIVE_KEY_RE =
   /(api[_-]?key|auth|authorization|bearer|keypairContents|mnemonic|password|private[_-]?key|secret|seed|token)/iu;
@@ -95,10 +93,6 @@ function hasTransactionWriteSignal(text: string, tool: Tool): boolean {
   return metadataSolanaHint(tool) && tool.metadata?.mutating === true;
 }
 
-function isReadOnlySolanaLookup(text: string): boolean {
-  return READ_ONLY_SOLANA_RE.test(text) && !SOLANA_WRITE_SIGNAL_RE.test(text);
-}
-
 export function buildToolTransactionGuardInput(
   tool: Tool,
   invocation: ToolInvocation,
@@ -117,9 +111,14 @@ export function buildToolTransactionGuardInput(
     metadataText,
   ].join("\n");
 
-  if (isReadOnlySolanaLookup(combined)) {
-    return null;
-  }
+  // Guard iff there is a write/sign/deploy signal. This deliberately does NOT
+  // short-circuit on a "read-only lookup" first: the previous ordering evaluated
+  // a read-only exit before the write check, and that exit only consulted
+  // SOLANA_WRITE_SIGNAL_RE (missing the direct-signing / program-write regexes),
+  // so an attacker skipped the guard entirely by prefixing a signing/deploy
+  // command with one read-only lookup (e.g. `solana balance && …submitTransaction(…)`).
+  // hasTransactionWriteSignal already returns false for genuine read-only
+  // lookups, so gating on it alone closes the whole bypass class.
   if (!hasTransactionWriteSignal(combined, tool)) {
     return null;
   }

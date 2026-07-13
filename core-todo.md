@@ -35,7 +35,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   pattern; add `passphrase`/`credential` to the key lists and `isSensitiveKey`; lowercase the token
   core before the BIP39 wordlist lookup.
 
-- [ ] `[x]` **C2 — A read-only prefix disables the transaction guard entirely.**
+- [x] `[x]` **C2 — A read-only prefix disables the transaction guard entirely.**
   `runtime/src/transaction-guard/tool-intent.ts:120` (runs before :123). `buildToolTransactionGuardInput`
   checks `isReadOnlySolanaLookup` (returns null = guard skipped) BEFORE `hasTransactionWriteSignal`,
   and the read-only check consults only `SOLANA_WRITE_SIGNAL_RE` — never `DIRECT_TRANSACTION_TOOL_RE`
