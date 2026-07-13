@@ -544,7 +544,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/utils/model/model.ts:500` — `firstPartyNameToCanonical` canonicalizes by ordered
   `.includes()`, so a future `claude-opus-4-10`/`-4-11` collapses to `claude-opus-4-1` (wrong tier/caps);
   `getModelPricingTier` (:939) has the same collision. **Fix:** match on a delimited boundary.
-- [ ] `[V]` `runtime/src/utils/swarm/teamHelpers.ts:208` — `readTeamFile*` returns `jsonParse(content) as TeamFile`
+- [x] `[V]` `runtime/src/utils/swarm/teamHelpers.ts:208` — `readTeamFile*` returns `jsonParse(content) as TeamFile`
   with no shape validation; a config.json lacking a `members` array (version skew / non-atomic partial write)
   makes `teamFile.members.filter(...)` throw — during SIGINT/SIGTERM cleanup this skips worktree/dir cleanup.
   **Fix:** validate `Array.isArray(teamFile.members)` after read.
