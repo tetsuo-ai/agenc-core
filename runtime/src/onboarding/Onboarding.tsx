@@ -48,6 +48,7 @@ import { Box } from "../tui/ink.js";
 import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { useTheme } from "../tui/components/design-system/ThemeProvider.js";
+import { getSystemThemeName } from "../utils/systemTheme.js";
 import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
@@ -1255,13 +1256,23 @@ export function detailLinesForStep(
         "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
         "Type next to continue.",
       ];
-    case "theme":
+    case "theme": {
+      // The TUI colours text but does NOT repaint the terminal's own
+      // background, so a light theme on a dark terminal (or vice versa) reads
+      // as grey-on-black. The terminal background is already detected for the
+      // 'auto' mode (COLORFGBG seed + OSC 11 watcher) — surface it here so the
+      // user picks with that context instead of discovering the mismatch.
+      const terminalBackground = getSystemThemeName();
+      const readable =
+        terminalBackground === "light" ? '"light" or "system"' : '"dark" or "system"';
       return [
         ...THEME_CHOICES.map((theme, index) =>
           `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`
         ),
+        `Tip: your terminal background looks ${terminalBackground} — ${readable} will read best here.`,
         "Type a number or theme name.",
       ];
+    }
     case "provider": {
       const detected = new Set(state.detectedLocalProviders);
       return [
