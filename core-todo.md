@@ -710,8 +710,11 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `runtime/src/heartbeat/index.ts` (barrels + a test channel referenced only from tests). **Fix:** move under
   `tests/` or delete.
 - [x] Duplicate export `remoteCommand | default` in `runtime/src/commands/remote.tsx` (harmless).
-- [ ] Unlisted binary `tar` spawned by `runtime/src/bin/update-cli.ts:410` (system `tar` assumed; ENOENT throws
+- [x] Unlisted binary `tar` spawned by `runtime/src/bin/update-cli.ts:410` (system `tar` assumed; ENOENT throws
   with an unclear "status null" message).
+  **DONE:** extracted `assertTarExtractionSucceeded(res)` — checks `res.error` first and reports "tar not found on
+  PATH — install tar …" for ENOENT (and "failed to run tar: …" for other spawn errors) before the status check.
+  Revert-sensitive test (update-cli-tar.test.ts) proves the clear message vs the old "status null" text.
 - [ ] 154 total unused exports reported by knip (full list: `scratchpad/knip.txt`) — triage before deleting; many
   are test-only or public-API surface. Consider wiring `check:unused` into CI once triaged.
 

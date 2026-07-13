@@ -23,7 +23,7 @@
  * install.sh generation signature are ever rewritten.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -362,6 +362,32 @@ export interface InstallRuntimeResult {
   readonly downloaded: boolean;
 }
 
+/**
+ * Validate the result of the `tar` extraction. When `tar` is not on PATH,
+ * spawnSync never runs the process: it sets `res.error` (ENOENT) and leaves
+ * `res.status` null, which the old `status !== 0` check reported as the opaque
+ * "tar extraction failed (status null)". Surface a clear, actionable message
+ * for the missing-binary case, and keep the extraction-failed message for a
+ * process that ran and exited non-zero.
+ */
+export function assertTarExtractionSucceeded(
+  res: Pick<SpawnSyncReturns<Buffer>, "error" | "status" | "signal" | "stderr">,
+): void {
+  if (res.error) {
+    if ((res.error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        "tar not found on PATH — install tar (GNU or BSD) to extract the runtime",
+      );
+    }
+    throw new Error(`failed to run tar: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(
+      `tar extraction failed (status ${res.status ?? res.signal}): ${res.stderr?.toString() ?? ""}`,
+    );
+  }
+}
+
 export async function installRuntimeFromManifest(options: {
   readonly manifest: RuntimeManifest;
   readonly artifact: RuntimeManifestArtifact;
@@ -410,11 +436,7 @@ export async function installRuntimeFromManifest(options: {
     const res = spawnSync("tar", ["-xzf", tmp, "-C", installDir], {
       stdio: ["ignore", "ignore", "pipe"],
     });
-    if (res.status !== 0) {
-      throw new Error(
-        `tar extraction failed (status ${res.status ?? res.signal}): ${res.stderr?.toString() ?? ""}`,
-      );
-    }
+    assertTarExtractionSucceeded(res);
     if (!existsSync(binPath)) {
       throw new Error(`runtime extracted but entry missing: ${binPath}`);
     }
