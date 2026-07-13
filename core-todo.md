@@ -123,7 +123,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** wire `dispose()` through session/turn teardown, hold via `WeakRef`, or drop the global registry
   (`clearAllResponseIds` has no production caller).
 
-- [ ] `[V]` **M-LLM-4 — OpenAI-shim writes `process.env` per query → cross-session contamination.**
+- [!] `[V]` **M-LLM-4 [DEFERRED: risky hot-path refactor — threads providerOverride through isGeminiMode + 5 call sites + providerConfig; needs approval] — OpenAI-shim writes `process.env` per query → cross-session contamination.**
   `runtime/src/services/api/openaiShim.ts:2508–2533` (`createOpenAiShimClient`, called per-query from
   `client.ts getproviderClient`). Sets `OPENAI_BASE_URL`, `OPENAI_API_KEY = geminiApiKey`, BNKR/BANKR
   mappings. After any Gemini session runs, `isGeminiMode()` (keyed off `OPENAI_BASE_URL` host) is true
@@ -250,7 +250,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Services / context
 
-- [ ] `[V]` **M-SVC-1 — microcompact time-window protection is a complete no-op on the hot path.**
+- [!] `[V]` **M-SVC-1 [DEFERRED: LLMMessage has no timestamp field; fix needs broad timestamp plumbing or a microcompact design decision] — microcompact time-window protection is a complete no-op on the hot path.**
   `runtime/src/services/compact/microCompact.ts:91` (`isWithinTimeWindow`). The live caller
   `run-turn.ts toAgenCRuntimeMessages` stamps every message `new Date(0).toISOString()` (:684/:699), so `now −
   timestamp` is always ~56 years and the "don't clear results younger than `AGENC_MICROCOMPACT_CLEAR_AFTER_MS`
@@ -450,7 +450,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Transaction-guard config (beyond C2)
 
-- [ ] `[V]` **M-TXG-1 — `AGENC_TRANSACTION_GUARD` set to a truthy value silently DISABLES the guard.**
+- [!] `[V]` **M-TXG-1 [DEFERRED: alters documented env-var settings semantics; needs a decision] — `AGENC_TRANSACTION_GUARD` set to a truthy value silently DISABLES the guard.**
   `runtime/src/transaction-guard/config.ts:70–72`. `enabled = envEnabledRaw === "slm"`, so any other non-empty
   value (`1`, `true`, `on`, or even `SLM` — not case-normalized, unlike `fail_mode`) is a kill switch that beats a
   config `enabled: true`, with no warning. An operator setting `=1`/`=true` intending to enable the guard silently
