@@ -400,7 +400,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   rule-based ask (reuse `aggregateAskCameFromRule` from the sandbox-override block :507–511), returning the
   aggregate ask.
 
-- [ ] `[V]` **M-AGENT-1 — Markdown agent roles resolve against the wrong workspace in a multi-session daemon.**
+- [~] `[V]` **M-AGENT-1 [SKIPPED: fix is mechanical (thread session.sessionConfiguration.cwd into requireAgentRole/getAgentRole/listAgentRoles at spawn.ts:511/329/348 and control.ts:357/1437/79 — the role.ts functions ALREADY accept cwd and resolve the right namespace). A revert-sensitive test must exercise the spawn call site, not role.ts (already correct), needing a spawn harness + vi.mock. Security-relevant (wrong disallowlist); recommend doing with a spawn-path test] — Markdown agent roles resolve against the wrong workspace in a multi-session daemon.**
   `runtime/src/agents/v2/spawn.ts:511` (also `listAgentRoles` :329/:348, `control.ts:357/1437/79`).
   `requireAgentRole(role)` is called with no cwd; markdown roles are stored process-globally in
   `markdownRolesByCwd` keyed by cwd (role.ts:357), and the cwd-less lookup falls back to "most recently loaded
