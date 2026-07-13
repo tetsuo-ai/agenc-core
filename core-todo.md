@@ -560,7 +560,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Tools / exec
 
-- [ ] `[V]` `runtime/src/tools/system/bash.ts:1308` — direct-mode `isTimeout = error.killed || code==='ETIMEDOUT'`
+- [~] `[V]` `runtime/src/tools/system/bash.ts:1308` [SKIPPED: not reproducible in local Node 25 — a maxBuffer-exceeded execFile error does NOT set error.killed here, so isTimeout already returns false; the audit's premise is Node-version-specific. Defensive guard (exclude ERR_CHILD_PROCESS_STDIO_MAXBUFFER from isTimeout) recommended for older Node] — direct-mode `isTimeout = error.killed || code==='ETIMEDOUT'`
   also fires when the child is killed for exceeding `maxBuffer` (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`), so an
   output-overflow is misreported to the model as a timeout. **Fix:** distinguish the maxBuffer case.
 - [ ] `[V]` `runtime/src/tasks/LocalShellTask/LocalShellTask.tsx:224` (also :333, :431) — background completion
