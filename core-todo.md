@@ -194,7 +194,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Tools / exec
 
-- [ ] `[V]` **M-EXEC-1 — `Monitor` streams only the first 30s of a 30-min watch.**
+- [x] `[V]` **M-EXEC-1 — `Monitor` streams only the first 30s of a 30-min watch.**
   `runtime/src/tools/system/monitor.ts:131`. Passes `yield_time_ms = MONITOR_TIMEOUT_MS` (30 min) but
   `clampExecYield` caps it at `MAX_YIELD_TIME_MS = 30_000`. After 30s `execCommand` returns with the process
   alive and nothing re-drives it, yet the tool description promises ~1s polling. Output arriving after 30s
