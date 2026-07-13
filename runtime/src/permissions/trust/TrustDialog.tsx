@@ -102,7 +102,9 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     MIN_TRUST_PATH_WIDTH + 8,
     Math.min(64, columns - 2),
   );
-  const pathBudget = cardWidth - 6;
+  // Inner width (card - round border - paddingX 2) minus the 2-col accent bar
+  // prefix ("▎ ") that leads the path row.
+  const pathBudget = cardWidth - 8;
   const [choice, setChoice] = useState<TrustChoice | null>(null);
   const [pending, setPending] = useState(false);
   const choiceRef = useRef<TrustChoice | null>(null);
@@ -166,20 +168,39 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     }
   });
 
-  // One cohesive accent card instead of a bare title + a lonely floating path
-  // box + plain option lines. The purple border frames the whole decision, the
-  // path sits right under the title as the subject of the question, and the
-  // selected option carries the same `❯` pointer + accent the composer uses.
+  // Terminals can't change font SIZE, so hierarchy has to come from weight,
+  // colour intensity, background FILLS and grouping. The card is three tiers:
+  //   1. a loud purple heading + a bright accent-barred path (the subject),
+  //   2. a dim one-line explanation, split off by a whisper divider,
+  //   3. the two choices as real FILLED-PILL buttons — the selected one is a
+  //      solid bar with knockout text (primary = purple, exit = neutral) and a
+  //      ✓ / ✗ marker, so it reads as a pressed button, not another text line.
+  const trustLabel = trustDialogOptionLabel("trust", choice, pending);
+  const exitLabel = trustDialogOptionLabel("exit", choice, pending);
+  const optionTextWidth = Math.max(trustLabel.length, exitLabel.length);
+  const dividerWidth = Math.max(1, cardWidth - 6);
+
   const option = (id: TrustChoice, label: string): React.ReactElement => {
     const selected = choice === id;
+    const isTrust = id === "trust";
+    // "  ✓  <label padded to a common width>  " — the padding makes every
+    // pill the same width so the selected fill reads as an even bar.
+    const content = `  ${isTrust ? "✓" : "✗"}  ${label.padEnd(optionTextWidth)}  `;
+    if (selected) {
+      return (
+        <ThemedText
+          key={id}
+          backgroundColor={isTrust ? "agenc" : "text2"}
+          color="inverseText"
+          bold
+        >
+          {content}
+        </ThemedText>
+      );
+    }
     return (
-      <ThemedText
-        key={id}
-        color={selected ? "agenc" : "inactive"}
-        bold={selected}
-      >
-        {selected ? "❯ " : "  "}
-        {label}
+      <ThemedText key={id} color="text2">
+        {content}
       </ThemedText>
     );
   };
@@ -196,12 +217,17 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       <ThemedText color="agenc" bold>
         Trust this project?
       </ThemedText>
-      {/* The path is the subject of the question — bright, directly under the
-          title, elided in the middle (meaningful tail kept) instead of
+      {/* The path is the subject of the question — a bright accent bar +
+          bold path, elided in the middle (meaningful tail kept) rather than
           hard-wrapping a segment across two lines. */}
-      <ThemedText color="text" bold wrap="truncate-middle">
-        {formatTrustPath(props.workspaceRoot, pathBudget)}
-      </ThemedText>
+      <Box flexDirection="row">
+        <ThemedText color="agenc" bold>
+          ▎{" "}
+        </ThemedText>
+        <ThemedText color="text" bold wrap="truncate-middle">
+          {formatTrustPath(props.workspaceRoot, pathBudget)}
+        </ThemedText>
+      </Box>
 
       <Box height={1} />
 
@@ -224,11 +250,15 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
         </Box>
       ) : null}
 
-      <Box height={1} />
+      {/* Whisper divider (near-invisible) that still splits question from
+          answer, so the buttons read as their own zone. */}
+      <Box marginTop={1}>
+        <ThemedText color="lineSoft">{"─".repeat(dividerWidth)}</ThemedText>
+      </Box>
 
-      <Box flexDirection="column">
-        {option("trust", trustDialogOptionLabel("trust", choice, pending))}
-        {option("exit", trustDialogOptionLabel("exit", choice, pending))}
+      <Box flexDirection="column" marginTop={1}>
+        {option("trust", trustLabel)}
+        {option("exit", exitLabel)}
       </Box>
 
       <Box height={1} />
