@@ -687,7 +687,15 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Sandbox
 
-- [ ] `[V]` `runtime/src/sandbox/engine/bwrap.ts:32` — `systemBwrapWarning()` (missing-bwrap / no-userns / WSL1
+- [~] `[V]` `runtime/src/sandbox/engine/bwrap.ts:32` [SKIPPED: wiring needs a semantic decision I shouldn't guess.
+  `systemBwrapWarning(permissionProfile, platform)` gates on `shouldWarnAboutSystemBwrap(profile)` (whether the
+  profile requires a platform sandbox), but the doctor (`doctorDiagnostic.ts`) resolves NO PermissionProfile and
+  there is no `getPermissionProfile()` accessor; `systemBwrapWarningForPath` (the profile-free variant) is not
+  exported. Substituting `SandboxManager.isSandboxingEnabled()` (already imported in the doctor) as the gate is
+  coarser than the profile check and unverified as equivalent. Recommend: export `systemBwrapWarningForPath`, add a
+  pure `buildSystemBwrapWarning({ sandboxingEnabled, systemBwrapPath, platform })` mirroring `buildRipgrepWarning`,
+  push it into `getDoctorDiagnostic().warnings`, after confirming the correct gate.] — `systemBwrapWarning()`
+  (missing-bwrap / no-userns / WSL1
   warnings) has zero callers, so those conditions are computed nowhere the user sees. **Fix:** surface from the
   doctor/diagnostic path.
 - [~] `[V]` `runtime/src/utils/sandbox/sandbox-runtime.ts:451` [SKIPPED: fix is memoize -> a TTL cache so a transient probe failure self-heals; the ideal is to reuse the (otherwise-dead) memoizeWithTTL here, resolving both items. TTL-heal not cheaply revert-sensitive-testable (wraps a static BaseSandboxManager.checkDependencies, needs fake timers + static mock). Recommend memoizeWithTTL(check, 30s)] — `checkDependencies = memoize(...)` caches on the
