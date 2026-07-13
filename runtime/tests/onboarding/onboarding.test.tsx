@@ -1107,3 +1107,23 @@ describe("wizard theme mapping", () => {
     expect(wizardThemeToSetting("")).toBeUndefined();
   });
 });
+
+describe("theme step terminal-background awareness", () => {
+  test("tells the user which themes read well on the detected terminal background", async () => {
+    const { setCachedSystemTheme } = await import("../utils/systemTheme.js");
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+
+    setCachedSystemTheme("dark");
+    const darkLines = detailLinesForStep(state, context).join("\n");
+    expect(darkLines).toContain("your terminal background looks dark");
+    expect(darkLines).toContain('"dark" or "system" will read best');
+
+    setCachedSystemTheme("light");
+    const lightLines = detailLinesForStep(state, context).join("\n");
+    expect(lightLines).toContain("your terminal background looks light");
+    expect(lightLines).toContain('"light" or "system" will read best');
+  });
+});
