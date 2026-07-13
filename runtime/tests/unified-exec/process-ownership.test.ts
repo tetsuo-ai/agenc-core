@@ -94,15 +94,23 @@ describe("process ownership (TOOL-01)", () => {
 });
 
 describe("shell family covers write_stdin/kill (TOOL-02)", () => {
-  it("includes write_stdin and kill_process in SHELL_TOOL_FAMILY aliases", () => {
+  it("includes write_stdin, kill_process, Monitor, PowerShell in SHELL_TOOL_FAMILY", () => {
     expect(SHELL_TOOL_FAMILY).toContain("write_stdin");
     expect(SHELL_TOOL_FAMILY).toContain("kill_process");
+    expect(SHELL_TOOL_FAMILY).toContain("Monitor");
+    expect(SHELL_TOOL_FAMILY).toContain("PowerShell");
     expect(toolNameAliases("write_stdin")).toContain("exec_command");
     expect(toolNameAliases("kill_process")).toContain("Bash");
+    expect(toolNameAliases("Monitor")).toContain("exec_command");
   });
 
-  it("unattended denylist Bash covers write_stdin and kill_process", () => {
-    const list = normalizeUnattendedToolList(["Bash", "write_stdin", "kill_process"]);
+  it("unattended denylist Bash covers write_stdin, kill_process, and Monitor", () => {
+    const list = normalizeUnattendedToolList([
+      "Bash",
+      "write_stdin",
+      "kill_process",
+      "Monitor",
+    ]);
     // All collapse to system.bash
     expect(list).toContain("system.bash");
     expect(new Set(list).size).toBe(1);

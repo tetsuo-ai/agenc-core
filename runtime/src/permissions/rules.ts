@@ -163,6 +163,7 @@ export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
   "write_stdin",
   "kill_process",
   "PowerShell",
+  "Monitor",
 ]);
 
 /** TOOL-05: file-mutation family for deny/ask/allow collapse. */

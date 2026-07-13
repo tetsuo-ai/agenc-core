@@ -37,6 +37,7 @@ const TOOL_ALIASES = Object.freeze({
   kill_process: "system.bash",
   shell: "system.bash",
   powershell: "system.bash",
+  monitor: "system.bash",
   fileedit: "Edit",
   filewrite: "Write",
   // TOOL-05: mutation family collapses onto Edit for unattended denylist.
