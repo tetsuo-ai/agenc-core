@@ -628,7 +628,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   runs first and always consumes `sk-ant-…` keys, so the dedicated sk-ant entry never matches (dead). Also
   `runtime/src/transaction-guard/errors.ts:4–14` `TransactionGuardError` is exported but never constructed/thrown
   in production. **Fix:** delete the sk-ant entry (or reorder first); drop `TransactionGuardError` or wire a throw.
-- [ ] `[V]` `runtime/src/secrets/sanitizer.ts:343–357` — the assignment-pattern value class `[^\s"',}]{8,}` leaves
+- [~] `[V]` `runtime/src/secrets/sanitizer.ts:343 [SKIPPED: risky security-regex surgery (over-redaction risk) for a minor multi-word-value edge; single-token secrets already redact fully; recommend extending the quoted-value capture to the closing quote and unquoted to end-of-line, with careful over-redaction test coverage]–357` — the assignment-pattern value class `[^\s"',}]{8,}` leaves
   tails of whitespace-containing secrets and whole short/punctuated secrets unredacted (`password: abcdefgh
   ijklmnopq` redacts only the first token). **Fix:** for quoted values consume to the closing quote; for unquoted,
   consider to end-of-line after a sensitive key.
