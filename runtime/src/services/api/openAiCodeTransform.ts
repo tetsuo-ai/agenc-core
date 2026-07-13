@@ -275,7 +275,31 @@ export function convertproviderMessagesToResponsesInput(
 ): ResponsesInputItem[] {
   const items: ResponsesInputItem[] = []
 
+  // Pair function_call ↔ function_call_output on the normalized call_id, exactly
+  // like the chat-completions path (openaiShim.ts convertMessages). The Responses
+  // API (store:false, full replay) 400s on a function_call_output with no matching
+  // function_call — and an ESC-interrupt yields a synthetic tool_result with no
+  // recorded tool_use. Pre-scan the results so an assistant tool_use is only
+  // emitted when a result exists later (or it is the trailing/pending prefill),
+  // and a tool_result is only emitted when its call was actually emitted.
+  const resultCallIds = new Set<string>()
   for (const message of messages) {
+    const inner = message.message ?? message
+    const content = (inner as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if ((block as { type?: string }).type === 'tool_result') {
+          resultCallIds.add(
+            normalizeToolUseId((block as { tool_use_id?: string }).tool_use_id).callId,
+          )
+        }
+      }
+    }
+  }
+  const emittedCallIds = new Set<string>()
+
+  messages.forEach((message, index) => {
+    const isLast = index === messages.length - 1
     const inner = message.message ?? message
     const role = (inner as { role?: string }).role ?? message.role
     const content = (inner as { content?: unknown }).content
@@ -291,6 +315,11 @@ export function convertproviderMessagesToResponsesInput(
 
         for (const toolResult of toolResults) {
           const { callId } = normalizeToolUseId(toolResult.tool_use_id)
+          // Drop an orphan output whose call was never emitted (e.g. a synthetic
+          // ESC-interrupt result) — emitting it would 400 the request.
+          if (!emittedCallIds.has(callId)) {
+            continue
+          }
           items.push({
             type: 'function_call_output',
             call_id: callId,
@@ -309,7 +338,7 @@ export function convertproviderMessagesToResponsesInput(
             content: parts,
           })
         }
-        continue
+        return
       }
 
       items.push({
@@ -317,7 +346,7 @@ export function convertproviderMessagesToResponsesInput(
         role: 'user',
         content: convertContentBlocksToResponsesParts(content, 'user'),
       })
-      continue
+      return
     }
 
     if (role === 'assistant') {
@@ -339,6 +368,14 @@ export function convertproviderMessagesToResponsesInput(
           (block: { type?: string }) => block.type === 'tool_use',
         )) {
           const normalized = normalizeToolUseId(toolUse.id)
+          // Keep the call only if a matching result exists later in history, or
+          // this is the trailing message (a pending call awaiting execution).
+          // A non-trailing orphan tool_use would leave a function_call with no
+          // output and 400 the request.
+          if (!resultCallIds.has(normalized.callId) && !isLast) {
+            continue
+          }
+          emittedCallIds.add(normalized.callId)
           items.push({
             type: 'function_call',
             id: normalized.id,
@@ -352,7 +389,7 @@ export function convertproviderMessagesToResponsesInput(
         }
       }
     }
-  }
+  })
 
   return items.filter(item =>
     item.type !== 'message' || item.content.length > 0,

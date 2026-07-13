@@ -60,7 +60,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** reject/skip `__proto__`/`constructor`/`prototype` segments at the `setNested`/`ensureTablePath`/
   `parseInlineTable` choke point, or build tables with `Object.create(null)`.
 
-- [ ] `[V]` **C4 — Responses-API transport replays unpaired tool items → session repeatedly 400s after an ESC-interrupt.**
+- [x] `[V]` **C4 — Responses-API transport replays unpaired tool items → session repeatedly 400s after an ESC-interrupt.**
   `runtime/src/services/api/openAiCodeTransform.ts:273–360` (`convertproviderMessagesToResponsesInput`).
   Unlike the chat-completions path (`openaiShim.ts convertMessages` ~681–698/763–772, which drops orphan
   tool blocks with a comment explaining that an ESC-interrupt creates a synthetic `tool_result` with no
