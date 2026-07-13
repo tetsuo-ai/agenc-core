@@ -1,6 +1,6 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**Current release: 0.6.0.**
+**Current release: 0.6.1.**
 
 Prerequisites: Node.js ≥ 25, `tar`, and a way to reach a model — BYOK
 (xAI / OpenAI / Anthropic / OpenRouter / …), a local Ollama or LM Studio
@@ -122,6 +122,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channel are not in 0.6.0.
+Signal, WhatsApp, and email channel are not in 0.6.1.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.
