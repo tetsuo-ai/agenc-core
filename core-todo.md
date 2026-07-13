@@ -501,10 +501,10 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/tui/components/teams/TeamsDialog.tsx:116–125` — an unconditional 1s `useInterval` bumps a
   key that forces `getTeammateStatuses` (filesystem discovery) once per second while the dialog is open.
   **Fix:** poll less often or watch the dir.
-- [ ] `[V]` `runtime/src/tui/components/CoordinatorAgentStatus.tsx:84–158` — `CoordinatorTaskPanel` (a ~75-line
+- [x] `[V]` `runtime/src/tui/components/CoordinatorAgentStatus.tsx:84–158` — `CoordinatorTaskPanel` (a ~75-line
   component with a 1s `setInterval` eviction effect) has zero renderers; dead code (the workbench uses
   `AgentsRail`). **Fix:** delete the component (keep the still-used sibling helpers).
-- [ ] `[V]` `runtime/src/tui/components/memory/MemoryUpdateNotification.tsx:16` — dead component, zero importers
+- [x] `[V]` `runtime/src/tui/components/memory/MemoryUpdateNotification.tsx:16` — dead component, zero importers
   (only the sibling `getRelativeMemoryPath` is imported). **Fix:** delete.
 - [ ] `[V]` `runtime/src/tui/workbench/buffer/render.tsx:168–208` — `renderTerminalCellsToAnsi` rebuilds the
   highlight `Map` per row (O(rows×highlights) per Neovim redraw). **Fix:** build the map once in
