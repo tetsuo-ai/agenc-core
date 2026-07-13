@@ -54,6 +54,7 @@ import { createNotebookEditTool as createSystemNotebookEditTool } from "../tools
 import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../unified-exec/process-ownership.js";
+import { runtimeSandboxForExec } from "../tools/system/exec-command.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
@@ -3558,6 +3559,11 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
+        // TOOL-04: same platform sandbox profile as exec_command when isolation is required.
+        const runtimeSandbox = runtimeSandboxForExec(
+          args as Record<string, unknown>,
+          opts.workspaceRoot,
+        );
         const output = await opts.unifiedExecManager!.execCommand({
           cmd: command,
           shell,
@@ -3566,6 +3572,7 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
             ? { timeoutMs: numberValue(args.timeout_ms) }
             : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
         return {
           content: formatUnifiedExecToolContent(output),

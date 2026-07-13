@@ -42,6 +42,7 @@ import {
   extractAgenCCodeHints,
   type AgenCCodeHint,
 } from "../../errors/hints.js";
+import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -1124,6 +1125,42 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const useSpawnedWrapperMode =
         !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
 
+      /** TOOL-03: wrap final spawn program/args when platform isolation is required. */
+      const withSandbox = (
+        program: string,
+        args: readonly string[],
+      ):
+        | { readonly ok: true; readonly program: string; readonly args: readonly string[]; readonly cwd: string; readonly env: Record<string, string> }
+        | { readonly ok: false; readonly error: ToolResult } => {
+        try {
+          const sandboxed = applyRuntimeSandboxToSpawn({
+            toolArgs: rawArgs as Record<string, unknown>,
+            fallbackCwd: defaultCwd,
+            program,
+            args,
+            cwd,
+            env: { ...env },
+          });
+          return {
+            ok: true,
+            program: sandboxed.program,
+            args: sandboxed.args,
+            cwd: sandboxed.cwd,
+            env: sandboxed.env,
+          };
+        } catch (sandboxError) {
+          const message =
+            sandboxError instanceof Error
+              ? sandboxError.message
+              : String(sandboxError);
+          logger.warn(`Bash tool sandbox denied: ${message}`);
+          return {
+            ok: false,
+            error: errorResult(message),
+          };
+        }
+      };
+
       // T6 gap #119: exec_command_begin / _end lifecycle emit.
       // Reuse the LLM tool-call id so the `exec_command_begin/_end`
       // events collide with `tool_call_started/_completed` in
@@ -1194,11 +1231,20 @@ export function createBashTool(config?: BashToolConfig): Tool {
             ),
           );
         }
+        const sandboxed = withSandbox("/bin/bash", [scriptPath]);
+        if (!sandboxed.ok) {
+          try {
+            unlinkSync(scriptPath);
+          } catch {
+            /* best-effort */
+          }
+          return Promise.resolve(emitEnd(sandboxed.error));
+        }
         return runSpawnedCommand({
-          execCommand: "/bin/bash",
-          execArgs: [scriptPath],
-          cwd,
-          env,
+          execCommand: sandboxed.program,
+          execArgs: [...sandboxed.args],
+          cwd: sandboxed.cwd,
+          env: sandboxed.env,
           timeout,
           maxOutputBytes,
           logCmd,
@@ -1214,11 +1260,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
       }
 
       if (useSpawnedWrapperMode) {
+        const sandboxed = withSandbox(execCommand, execArgs);
+        if (!sandboxed.ok) return Promise.resolve(emitEnd(sandboxed.error));
         return runSpawnedCommand({
-          execCommand,
-          execArgs,
-          cwd,
-          env,
+          execCommand: sandboxed.program,
+          execArgs: [...sandboxed.args],
+          cwd: sandboxed.cwd,
+          env: sandboxed.env,
           timeout,
           maxOutputBytes,
           logCmd,
@@ -1233,19 +1281,23 @@ export function createBashTool(config?: BashToolConfig): Tool {
       }
 
       // Direct mode: use execFile (waits for pipes — safe since no backgrounding)
+      const sandboxedDirect = withSandbox(execCommand, execArgs);
+      if (!sandboxedDirect.ok) {
+        return Promise.resolve(emitEnd(sandboxedDirect.error));
+      }
       return new Promise<ToolResult>((outerResolve) => {
         const resolve = (result: ToolResult): void => {
           outerResolve(emitEnd(result));
         };
         execFile(
-          execCommand,
-          execArgs,
+          sandboxedDirect.program,
+          [...sandboxedDirect.args],
           {
-            cwd,
+            cwd: sandboxedDirect.cwd,
             timeout,
             maxBuffer: maxOutputBytes * 2, // Allow headroom, rely on truncate() for user-facing limits
             shell: false,
-            env,
+            env: sandboxedDirect.env,
             ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           },
           (error, stdout, stderr) => {
