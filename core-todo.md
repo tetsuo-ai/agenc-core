@@ -262,7 +262,17 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### TUI
 
-- [ ] `[V]` **M-TUI-1 — Transcript re-mints every message UUID on each streaming delta.**
+- [~] `[V]` **M-TUI-1 — Transcript re-mints every message UUID on each streaming delta.** [SKIPPED: risky
+  hot-path refactor with a subtle correctness invariant. The fix threads a deterministic id (eventKey(raw) + block
+  index) through `adaptTranscriptEvents` into the `make*` helpers (which take no id today — 7 helpers, ~53 refs in
+  session-transcript.ts, plus external callers in session/transcript-replacement.ts). `adaptTranscriptEvents` runs
+  per appended token, so this is the transcript rendering hot path, and the deterministic id MUST be unique per
+  synthetic message: one source event fans out to multiple messages (assistant text + thinking + each tool_use
+  block; tool_result), so the block-index scheme has to be collision-free across every message type or two rows
+  share a key and VirtualMessageList mis-renders/drops them. Recommend: add an optional `uuid` param to each
+  make* helper defaulting to `randomUUID()` (keeps external callers unchanged), thread
+  `${eventKey(raw)}:${blockIndex}` from adaptTranscriptEvents with a per-event block counter, and add a test that
+  the same events derived twice yield identical, unique message uuids before landing it.]
   `runtime/src/tui/session-transcript.ts:430` (`make*` helpers :430/:438/:467/:532/:550). Each mints a fresh
   `randomUUID()`, and `useSessionTranscript`'s `useMemo` (:2839, deps `[state.events]`) re-derives on every
   appended event (one per token during a turn), so every historical message gets a new uuid per delta.
