@@ -713,7 +713,11 @@ export function isAgenCDaemonNotificationMethod(
 
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
-  readonly cwd?: string;
+  /**
+   * Absolute workspace directory. Required (DAE-02): the daemon will not
+   * invent a project root from its own process.cwd().
+   */
+  readonly cwd: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
@@ -796,7 +800,10 @@ export interface AgentLogsParams extends JsonObject {
 
 export interface SessionCreateParams extends JsonObject {
   readonly agentId?: string;
-  readonly cwd?: string;
+  /**
+   * Absolute workspace directory. Required (DAE-02) for new sessions.
+   */
+  readonly cwd: string;
   readonly initialPrompt?: string;
   readonly metadata?: JsonObject;
 }

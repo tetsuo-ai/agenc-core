@@ -42,6 +42,10 @@ import {
 } from "./overload.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
+  requireAbsoluteWorkspaceCwd,
+  WorkspaceCwdError,
+} from "./workspace-cwd.js";
+import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_DAEMON_METHODS,
@@ -1559,6 +1563,16 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     objectFields: ["metadata", "envOverrides"],
     valueFields: ["initialContent"],
   });
+  // DAE-02: absolute existing directory required (no daemon-side invent).
+  let cwd: string;
+  try {
+    cwd = requireAbsoluteWorkspaceCwd(validated.cwd, "agent.create");
+  } catch (error) {
+    if (error instanceof WorkspaceCwdError) {
+      throw invalidParams(error.message);
+    }
+    throw error;
+  }
   if (validated.initialContent !== undefined) {
     validateMessageContent(
       "agent.create",
@@ -1586,7 +1600,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "envOverrides",
     );
   }
-  return validated as AgentCreateParams;
+  return { ...validated, cwd } as AgentCreateParams;
 }
 
 function validateAgentListParams(params: JsonObject): AgentListParams {
@@ -1653,7 +1667,16 @@ function validateSessionCreateParams(params: JsonObject): SessionCreateParams {
     stringFields: ["agentId", "cwd", "initialPrompt"],
     objectFields: ["metadata"],
   });
-  return validated as SessionCreateParams;
+  let cwd: string;
+  try {
+    cwd = requireAbsoluteWorkspaceCwd(validated.cwd, "session.create");
+  } catch (error) {
+    if (error instanceof WorkspaceCwdError) {
+      throw invalidParams(error.message);
+    }
+    throw error;
+  }
+  return { ...validated, cwd } as SessionCreateParams;
 }
 
 function validateSessionAttachParams(params: JsonObject): SessionAttachParams {

@@ -1690,7 +1690,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({ objective: "inspect live termination" }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "inspect live termination" }),
     ).resolves.toMatchObject({
       agentId: "agent-terminate-live",
       sessionId: "session-terminate-live",
@@ -1920,6 +1920,7 @@ describe("AgenC background agent lifecycle", () => {
 
     await expect(
       agents.createAgent({
+        cwd: process.cwd(),
         objective: "  build the parser  ",
         metadata: { ticket: "F-06a" },
       }),
@@ -1931,7 +1932,7 @@ describe("AgenC background agent lifecycle", () => {
       createdAt: "2026-05-01T12:00:00.000Z",
       startedAt: "2026-05-01T12:00:00.500Z",
       lastActiveAt: "2026-05-01T12:00:00.500Z",
-      cwd: "/workspace",
+      cwd: process.cwd(),
       activeSessionIds: ["session_1"],
       metadata: {
         ticket: "F-06a",
@@ -1943,7 +1944,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(starts).toEqual([
       {
         objective: "build the parser",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         metadata: {
           ticket: "F-06a",
           unattendedAllow: [],
@@ -1958,7 +1959,7 @@ describe("AgenC background agent lifecycle", () => {
       agentId: "agent_1",
       status: "idle",
       createdAt: "2026-05-01T12:00:01.000Z",
-      cwd: "/workspace",
+      cwd: process.cwd(),
       metadata: {
         ticket: "F-06a",
         objective: "build the parser",
@@ -1977,7 +1978,7 @@ describe("AgenC background agent lifecycle", () => {
           createdAt: "2026-05-01T12:00:00.000Z",
           startedAt: "2026-05-01T12:00:00.500Z",
           lastActiveAt: "2026-05-01T12:00:00.500Z",
-          cwd: "/workspace",
+          cwd: process.cwd(),
           activeSessionIds: ["session_1"],
           metadata: {
             ticket: "F-06a",
@@ -2000,7 +2001,7 @@ describe("AgenC background agent lifecycle", () => {
           agentId: "agent_1",
           status: "idle",
           createdAt: "2026-05-01T12:00:01.000Z",
-          cwd: "/workspace",
+          cwd: process.cwd(),
           metadata: {
             ticket: "F-06a",
             objective: "build the parser",
@@ -2246,7 +2247,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ objective: "build the parser" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "build the parser" });
     await expect(
       agents.attachAgent({ agentId: "agent_stop", clientId: "tui_1" }),
     ).resolves.toMatchObject({
@@ -2266,7 +2267,7 @@ describe("AgenC background agent lifecycle", () => {
       createdAt: "2026-05-01T12:00:00.000Z",
       startedAt: "2026-05-01T12:00:00.500Z",
       lastActiveAt: "2026-05-01T12:00:02.000Z",
-      cwd: "/workspace",
+      cwd: process.cwd(),
       metadata: {
         unattendedAllow: [],
         unattendedDeny: [],
@@ -2321,8 +2322,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ objective: "one" });
-    await agents.createAgent({ objective: "two" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "one" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).resolves.toBe(2);
 
@@ -2376,8 +2377,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ objective: "one" });
-    await agents.createAgent({ objective: "two" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "one" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).rejects.toThrow(
       "AgenC daemon cleanup failed for 1 agent(s): agent_one",
@@ -2421,7 +2422,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    const create = agents.createAgent({ objective: "late create" });
+    const create = agents.createAgent({ cwd: process.cwd(),  objective: "late create" });
     await Promise.resolve();
     const stopAll = agents.stopAll("daemon_shutdown");
     started.resolve({
@@ -2438,7 +2439,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(stopAgent).toHaveBeenCalledWith("agent_late", "daemon_shutdown");
     await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
     await expect(
-      agents.createAgent({ objective: "after shutdown" }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "after shutdown" }),
     ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       message: "agent.start rejected because the daemon is shutting down",
@@ -2468,7 +2469,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ objective: "snapshot me" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "snapshot me" });
     await agents.stopAll("daemon_shutdown");
 
     await expect(agents.flushSnapshots("daemon_shutdown")).resolves.toBe(1);
@@ -2484,7 +2485,7 @@ describe("AgenC background agent lifecycle", () => {
             createdAt: "2026-05-01T12:00:00.000Z",
             startedAt: "2026-05-01T12:00:00.500Z",
             lastActiveAt: "2026-05-01T12:00:01.000Z",
-            cwd: "/workspace",
+            cwd: process.cwd(),
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
@@ -2529,7 +2530,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ objective: "race stop" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "race stop" });
     const stop = agents.stopAgent({ agentId: "agent_race" });
     await stopStarted.promise;
 
@@ -2581,7 +2582,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ objective: "fail stop" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "fail stop" });
     await expect(
       agents.stopAgent({ agentId: "agent_fail_stop" }),
     ).rejects.toThrow("shutdown failed");
@@ -2594,14 +2595,14 @@ describe("AgenC background agent lifecycle", () => {
       {
         sessionId: "session_fail_stop",
         agentId: "agent_fail_stop",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         status: "running",
         transitionAt: "2026-05-01T12:00:00.500Z",
       },
       {
         sessionId: "session_fail_stop",
         agentId: "agent_fail_stop",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         status: "stopping",
         transitionAt: "2026-05-01T12:00:02.000Z",
         reason: "agent.stop",
@@ -2609,7 +2610,7 @@ describe("AgenC background agent lifecycle", () => {
       {
         sessionId: "session_fail_stop",
         agentId: "agent_fail_stop",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         status: "error",
         transitionAt: "2026-05-01T12:00:02.000Z",
         reason: "agent.stop",
@@ -2644,8 +2645,8 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({ objective: "watch active work" });
-    await agents.createAgent({ objective: "finish quickly" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "watch active work" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "finish quickly" });
     snapshots.set("agent_active", {
       status: "idle",
       lastActiveAt: "2026-05-01T12:00:03.000Z",
@@ -2661,7 +2662,7 @@ describe("AgenC background agent lifecycle", () => {
           createdAt: "2026-05-01T12:00:00.000Z",
           startedAt: "2026-05-01T12:00:00.500Z",
           lastActiveAt: "2026-05-01T12:00:03.000Z",
-          cwd: "/workspace",
+          cwd: process.cwd(),
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
@@ -2674,7 +2675,7 @@ describe("AgenC background agent lifecycle", () => {
           createdAt: "2026-05-01T12:00:01.000Z",
           startedAt: "2026-05-01T12:00:00.500Z",
           lastActiveAt: "2026-05-01T12:00:00.500Z",
-          cwd: "/workspace",
+          cwd: process.cwd(),
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
@@ -2719,9 +2720,9 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({ objective: "first" });
-    await agents.createAgent({ objective: "second" });
-    await agents.createAgent({ objective: "third" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "first" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "second" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "third" });
 
     await expect(agents.listAgents({ limit: 2 })).resolves.toMatchObject({
       agents: [
@@ -2767,6 +2768,7 @@ describe("AgenC background agent lifecycle", () => {
 
     await expect(
       agents.createAgent({
+        cwd: process.cwd(),
         objective: "describe this",
         initialContent: [
           { type: "text", text: "describe this" },
@@ -2821,7 +2823,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "inspect image" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "inspect image" });
 
     await agents.streamAgentMessage({
       sessionId: "session_1",
@@ -2867,7 +2869,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("records snapshot-policy hooks for agent status and message exchanges", async () => {
-    const cwd = "/tmp/agenc-snapshot-policy-cwd";
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-snapshot-policy-cwd-"));
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_snapshot"]),
       now: sequence(["2026-05-01T12:00:00.000Z"]),
@@ -3049,7 +3051,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("records runner-observed status transitions during refresh", async () => {
-    const cwd = "/tmp/agenc-status-refresh";
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-status-refresh-"));
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_status_refresh"]),
       now: sequence(["2026-05-01T12:00:00.000Z"]),
@@ -3077,7 +3079,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ objective: "watch status" });
+    await agents.createAgent({ cwd, objective: "watch status" });
     currentSnapshot = {
       status: "idle",
       lastActiveAt: "2026-05-01T12:00:02.000Z",
@@ -3151,7 +3153,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "watch budget status" });
+      await agents.createAgent({ cwd: process.cwd(),  objective: "watch budget status" });
       currentSnapshot = {
         status: "stopped",
         lastActiveAt: "2026-05-01T12:00:02.000Z",
@@ -3218,7 +3220,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({ objective: "snapshot failures should not block" }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "snapshot failures should not block" }),
     ).resolves.toMatchObject({
       agentId: "agent_snapshot_error",
       sessionId: "session_snapshot_error",
@@ -3275,7 +3277,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.attachAgent({ agentId: "agent_missing" }),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
-    await agents.createAgent({ objective: "closed session" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "closed session" });
     await sessions.terminateSession({
       sessionId: "session_1",
       reason: "test closed",
@@ -3285,7 +3287,7 @@ describe("AgenC background agent lifecycle", () => {
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
     active = false;
-    await agents.createAgent({ objective: "inactive before attach" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "inactive before attach" });
     await expect(
       agents.attachAgent({ agentId: "agent_inactive" }),
     ).resolves.toMatchObject({
@@ -3300,7 +3302,7 @@ describe("AgenC background agent lifecycle", () => {
     const agents = new AgenCDaemonAgentManager();
 
     await expect(
-      agents.createAgent({ objective: "build the parser" }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "build the parser" }),
     ).rejects.toMatchObject({
       code: "BACKGROUND_RUNNER_UNAVAILABLE",
     });
@@ -3326,7 +3328,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({ objective: "build the parser" }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "build the parser" }),
     ).rejects.toThrow("session store unavailable");
     expect(stopAgent).toHaveBeenCalledWith(
       "agent_orphan",
@@ -3344,7 +3346,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     await expect(
-      agents.createAgent({ objective: "   " }),
+      agents.createAgent({ cwd: process.cwd(),  objective: "   " }),
     ).rejects.toBeInstanceOf(AgenCDaemonAgentLifecycleError);
   });
 
@@ -3471,7 +3473,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 1,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: "/repo" },
+        params: { objective: "ship a daemon task", cwd: process.cwd() },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -3551,7 +3553,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 2,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: "/repo" },
+        params: { objective: "ship a daemon task", cwd: process.cwd() },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -3563,7 +3565,7 @@ describe("AgenC background agent lifecycle", () => {
         createdAt: "2026-05-01T12:00:00.000Z",
         startedAt: "2026-05-01T12:00:00.500Z",
         lastActiveAt: "2026-05-01T12:00:00.500Z",
-        cwd: "/repo",
+        cwd: process.cwd(),
         metadata: {
           unattendedAllow: [],
           unattendedDeny: [],
@@ -3590,7 +3592,7 @@ describe("AgenC background agent lifecycle", () => {
             createdAt: "2026-05-01T12:00:00.000Z",
             startedAt: "2026-05-01T12:00:00.500Z",
             lastActiveAt: "2026-05-01T12:00:00.500Z",
-            cwd: "/repo",
+            cwd: process.cwd(),
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
@@ -3693,7 +3695,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 2,
         method: "agent.create",
-        params: { objective: 42 },
+        params: { cwd: process.cwd(), objective: 42 },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -3793,7 +3795,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 3,
         method: "agent.create",
-        params: { objective: "ship", unattendedAllow: "FileRead" },
+        params: { cwd: process.cwd(), objective: "ship", unattendedAllow: "FileRead" },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -3810,7 +3812,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 4,
         method: "agent.create",
-        params: { objective: "ship", metadata: [] },
+        params: { cwd: process.cwd(), objective: "ship", metadata: [] },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -3827,7 +3829,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "bad-env-overrides",
         method: "agent.create",
         params: {
-          objective: "ship",
+          cwd: process.cwd(), objective: "ship",
           envOverrides: { AGENC_MCP_SERVERS: [] },
         },
       }),
@@ -3893,7 +3895,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { objective: "answer from the portal" },
+        params: {cwd: process.cwd(),  objective: "answer from the portal" },
       }),
     ).resolves.toMatchObject({
       result: {
@@ -4035,7 +4037,7 @@ describe("AgenC background agent lifecycle", () => {
         createAgenCPortalAgentCreateRequest(
           {
             objective: "  index queued work  ",
-            cwd: "/workspace",
+            cwd: process.cwd(),
             unattendedAllow: ["FileRead"],
             metadata: { source: "portal.dashboard" },
           },
@@ -4050,7 +4052,7 @@ describe("AgenC background agent lifecycle", () => {
         sessionId: "session_dashboard",
         objective: "index queued work",
         status: "running",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         activeSessionIds: ["session_dashboard"],
         metadata: {
           source: "portal.dashboard",
@@ -4062,7 +4064,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(starts).toEqual([
       {
         objective: "index queued work",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         metadata: {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
@@ -4164,7 +4166,7 @@ describe("AgenC background agent lifecycle", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "create",
       method: "agent.create",
-      params: { objective: "validate portal actions" },
+      params: {cwd: process.cwd(),  objective: "validate portal actions" },
     });
 
     await expect(
@@ -4702,8 +4704,8 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await sessions.createSession({ agentId: "agent_cleanup" });
-    await sessions.createSession({ agentId: "agent_cleanup" });
+    await sessions.createSession({ cwd: process.cwd(), agentId: "agent_cleanup" });
+    await sessions.createSession({ cwd: process.cwd(), agentId: "agent_cleanup" });
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
@@ -4761,7 +4763,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       permissionAuditLogger: auditLogger,
     });
-    await agents.createAgent({ objective: "wait for approval" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "wait for approval" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -4878,7 +4880,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "wait for all-tool approval" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "wait for all-tool approval" });
 
     await expect(
       agents.approveTool({
@@ -4921,7 +4923,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "stale approval" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "stale approval" });
 
     await expect(
       agents.approveTool({
@@ -4955,7 +4957,7 @@ describe("AgenC background agent lifecycle", () => {
       },
       onPermissionAuditError,
     });
-    await agents.createAgent({ objective: "wait for approval" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "wait for approval" });
 
     await expect(
       agents.approveTool({
@@ -4992,7 +4994,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "list permissions" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "list permissions" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: agents,
     });
@@ -5133,7 +5135,7 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { objective: "run background work" },
+        params: {cwd: process.cwd(),  objective: "run background work" },
       }),
     ).resolves.toMatchObject({
       result: { agentId: "agent_dup", sessionId: "session_1" },
@@ -5176,8 +5178,8 @@ describe("AgenC background agent lifecycle", () => {
         "2026-05-01T12:00:02.000Z",
       ]),
     });
-    await sessions.createSession({ agentId: "agent_multi" });
-    await sessions.createSession({ agentId: "agent_multi" });
+    await sessions.createSession({ cwd: process.cwd(), agentId: "agent_multi" });
+    await sessions.createSession({ cwd: process.cwd(), agentId: "agent_multi" });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager: sessions,
     });
@@ -5288,7 +5290,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({ objective: "do work then end" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "do work then end" });
     await expect(agents.listAgents()).resolves.toMatchObject({
       agents: [{ agentId: "agent_reaped", status: "running" }],
     });
@@ -5358,7 +5360,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({ objective: "finish immediately" });
+    await agents.createAgent({ cwd: process.cwd(),  objective: "finish immediately" });
 
     await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
     await expect(sessions.getSession("session_fast_done")).resolves.toMatchObject(

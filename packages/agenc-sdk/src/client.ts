@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 import {
   AGENC_SDK_DAEMON_PROTOCOL_VERSION,
   AGENC_SDK_JSON_RPC_VERSION,
@@ -378,6 +379,12 @@ export class AgencClient {
       typeof (params as { agentId?: unknown }).agentId === "string"
         ? String((params as { agentId: string }).agentId).trim()
         : "";
+    // DAE-02: always send absolute client workspace cwd on the wire.
+    const cwd = resolveClientCwd(
+      typeof (params as { cwd?: unknown }).cwd === "string"
+        ? String((params as { cwd: string }).cwd)
+        : undefined,
+    );
     if (existingAgentId.length === 0) {
       const agent = await this.spawnAgent({
         objective:
@@ -385,9 +392,7 @@ export class AgencClient {
           String((params as { objective: string }).objective).trim().length > 0
             ? String((params as { objective: string }).objective).trim()
             : "Interactive session",
-        ...(typeof (params as { cwd?: unknown }).cwd === "string"
-          ? { cwd: String((params as { cwd: string }).cwd) }
-          : {}),
+        cwd,
         initialContent: [],
       } as AgentCreateParams);
       const attached = await this.attachAgent(agent.agentId);
@@ -395,7 +400,10 @@ export class AgencClient {
         return attached.session;
       }
     }
-    const created = await this.request("session.create", params);
+    const created = await this.request("session.create", {
+      ...params,
+      cwd,
+    });
     await this.#attachSession(created.sessionId);
     return new AgencSession(this, created.sessionId, created.agentId);
   }
@@ -408,7 +416,14 @@ export class AgencClient {
 
   /** Spawn a long-lived background agent (`agent.create`). */
   spawnAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
-    return this.request("agent.create", params);
+    return this.request("agent.create", {
+      ...params,
+      // DAE-02: client fills absolute cwd when callers omit it; daemon still
+      // rejects empty/relative paths.
+      cwd: resolveClientCwd(
+        typeof params.cwd === "string" ? params.cwd : undefined,
+      ),
+    });
   }
 
   /**
@@ -693,4 +708,14 @@ function parseResponse<Method extends AgencDaemonMethod>(
   }
   return (response as AgencDaemonResponse<Method> & { result: AgencResultByMethod[Method] })
     .result;
+}
+
+/** Absolute workspace path for daemon create RPCs (DAE-02 client boundary). */
+function resolveClientCwd(cwd: string | undefined): string {
+  const base = process.cwd();
+  if (typeof cwd === "string" && cwd.trim().length > 0) {
+    const trimmed = cwd.trim();
+    return isAbsolute(trimmed) ? resolve(trimmed) : resolve(base, trimmed);
+  }
+  return resolve(base);
 }

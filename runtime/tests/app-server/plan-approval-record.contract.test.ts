@@ -69,7 +69,7 @@ describe("approveTool records the exit-plan choice before resolving (contract #2
   it("records an approve+acceptEdits choice BEFORE resolving the decision", async () => {
     const resolveCalls: ResolveCall[] = [];
     const { agents } = createAgents(resolveCalls);
-    await agents.createAgent({ objective: "wait for plan approval" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
 
     await expect(
       agents.approveTool({
@@ -96,7 +96,7 @@ describe("approveTool records the exit-plan choice before resolving (contract #2
   it("records a revise choice (with feedback) before resolving", async () => {
     const resolveCalls: ResolveCall[] = [];
     const { agents } = createAgents(resolveCalls);
-    await agents.createAgent({ objective: "wait for plan approval" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
 
     await agents.approveTool({
       sessionId: "session_1",
@@ -113,7 +113,7 @@ describe("approveTool records the exit-plan choice before resolving (contract #2
   it("records nothing when no exitPlan is supplied", async () => {
     const resolveCalls: ResolveCall[] = [];
     const { agents } = createAgents(resolveCalls);
-    await agents.createAgent({ objective: "wait for ordinary approval" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for ordinary approval" });
 
     await agents.approveTool({
       sessionId: "session_1",
@@ -149,7 +149,7 @@ describe("validateToolApproveParams accepts/rejects exitPlan (contract #3)", () 
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({ objective: "validate" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "validate" });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: agents });
     const connection = dispatcher.createConnection();
     await connection.dispatch({

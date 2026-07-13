@@ -299,7 +299,7 @@ The only practical **CRITICAL** is same-process multi-agent shell isolation (TOO
 | TOOL-05 | **FIXED** | `98807aac6` MultiEdit/apply_patch mutation family |
 | TOOL-04 (partial) | **FIXED** (family) / **DEFERRED** (sandbox) | PowerShell in SHELL_TOOL_FAMILY; platform sandbox wire-up deferred — risk: Windows shell without sandbox |
 | TOOL-03 | **DEFERRED** | system.bash platform sandbox honesty — risk: deferred shell escapes isolation; prefer exec_command |
-| DAE-02 | **DEFERRED** | require session cwd / multi-project identity — risk: wrong default workspace when cwd omitted |
+| DAE-02 | **FIXED** | require absolute existing cwd on agent.create/session.create; clients send absolute path; daemon never invents |
 | DAE-03 | **DEFERRED** | multi-project primary FileThreadStore — risk: session.list incomplete across projects |
 | SEC-03 | **DEFERRED** | auto-mode strip Bash-name-only residual (shell family expanded; auto-mode helper not retargeted) |
 | SEC-04 | **FIXED** (via TOOL-02 unattended shell alias) | shell/write_stdin/kill aliases |

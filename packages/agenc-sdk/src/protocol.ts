@@ -135,6 +135,11 @@ export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
+  /**
+   * Absolute workspace directory. Required by the daemon (DAE-02).
+   * SDK `spawnAgent` / `createSession` will fill `process.cwd()` when omitted
+   * at the client boundary — never leave this unset on the wire.
+   */
   readonly cwd?: string;
   readonly model?: string;
   readonly provider?: string;

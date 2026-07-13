@@ -201,7 +201,7 @@ export function createAgenCPortalAgentCreateRequest(
 ): AgenCPortalAgentCreateRequest {
   const params: AgentCreateParams = {
     objective: options.objective,
-    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    cwd: options.cwd,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),

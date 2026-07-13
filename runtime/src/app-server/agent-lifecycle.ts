@@ -8,6 +8,10 @@
  */
 
 import { AsyncLock } from "../utils/async-lock.js";
+import {
+  requireAbsoluteWorkspaceCwd,
+  WorkspaceCwdError,
+} from "./workspace-cwd.js";
 import type {
   AgenCBackgroundAgentSnapshot,
   AgenCBackgroundAgentRunner,
@@ -120,6 +124,10 @@ export class AgenCDaemonAgentLifecycleError extends Error {
 }
 
 export interface AgenCDaemonAgentManagerOptions {
+  /**
+   * @deprecated DAE-02: no longer used for agent.create (cwd is required).
+   * Retained only for optional test/back-compat options objects.
+   */
   readonly defaultCwd?: () => string;
   readonly now?: () => string;
   readonly runner?: AgenCBackgroundAgentRunner;
@@ -268,7 +276,7 @@ interface RunnerTerminationTarget {
 }
 
 export class AgenCDaemonAgentManager {
-  readonly #defaultCwd: () => string;
+
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
@@ -316,7 +324,7 @@ export class AgenCDaemonAgentManager {
   });
 
   constructor(options: AgenCDaemonAgentManagerOptions = {}) {
-    this.#defaultCwd = options.defaultCwd ?? (() => process.cwd());
+    void options.defaultCwd; // DAE-02: ignored — create requires absolute cwd
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#runner = options.runner;
     this.#sessionManager = options.sessionManager;
@@ -346,7 +354,18 @@ export class AgenCDaemonAgentManager {
     try {
       const objective = normalizeObjective(params);
       const createdAt = this.#now();
-      const cwd = normalizeNonEmpty(params.cwd) ?? this.#defaultCwd();
+      let cwd: string;
+      try {
+        cwd = requireAbsoluteWorkspaceCwd(params.cwd, "agent.create");
+      } catch (error) {
+        if (error instanceof WorkspaceCwdError) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "INVALID_ARGUMENT",
+            error.message,
+          );
+        }
+        throw error;
+      }
       const unattendedAllow = normalizeStringList(
         params.unattendedAllow,
         DEFAULT_UNATTENDED_ALLOWLIST,
@@ -408,7 +427,7 @@ export class AgenCDaemonAgentManager {
         if (this.#sessionManager !== undefined) {
           const session = await this.#sessionManager.createSession({
             agentId: agent.agentId,
-            cwd: agent.cwd,
+            cwd,
             initialPrompt: objective,
             metadata: {
               ...(params.metadata ?? {}),

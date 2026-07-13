@@ -55,7 +55,7 @@ describe("approveTool does not leak exit-plan approvals on the non-pending throw
 
   it("removes the recorded approval when the decision is no longer pending", async () => {
     const { agents } = createAgentsWithNonPendingDecision();
-    await agents.createAgent({ objective: "wait for plan approval" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
 
     await expect(
       agents.approveTool({
@@ -79,7 +79,7 @@ describe("approveTool does not leak exit-plan approvals on the non-pending throw
 
   it("does not leak across many distinct non-pending requestIds", async () => {
     const { agents } = createAgentsWithNonPendingDecision();
-    await agents.createAgent({ objective: "wait for plan approval" });
+    await agents.createAgent({ cwd: process.cwd(), objective: "wait for plan approval" });
 
     const ids = ["call_a", "call_b", "call_c", "call_d", "call_e"];
     for (const requestId of ids) {
