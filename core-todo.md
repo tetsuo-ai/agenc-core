@@ -575,10 +575,16 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **DONE:** appended `.catch(logError)` to all three floated completion promises. Revert-sensitive test
   (LocalShellTask-completion-catch.test.ts): mocks `updateTaskState` to throw in the completion callback; with the
   catch the error goes to `logError`, without it vitest catches an unhandled rejection.
-- [ ] `[V]` `runtime/src/tools/BashTool/shouldUseSandbox.ts:22–53` — `containsExcludedCommand` has a hardcoded
+- [x] `[V]` `runtime/src/tools/BashTool/shouldUseSandbox.ts:22–53` — `containsExcludedCommand` has a hardcoded
   empty `raw = { commands: [], substrings: [] }` so the `substrings`/`commands` loops can never match (comment
   claims it reads dynamic config); refactoring leftover on the non-security excluded-commands path. **Fix:** wire
   the intended source or delete the dead block.
+  **DONE:** deleted the dead scaffold (the hardcoded-empty object + both loops over its always-empty lists). Chose
+  DELETE over WIRE deliberately: `containsExcludedCommand === true` takes a command OUT of the sandbox, so wiring a
+  new exclusion source would EXCLUDE MORE commands from the sandbox = weaker (guardrail: security never weaker).
+  Behavior-preserving (the loops never matched); the live `settings.sandbox.excludedCommands` path is unchanged.
+  Not a revert-sensitive bug (no behavior change); characterization test (shouldUseSandbox-excluded.test.ts) pins
+  the surviving live path.
 
 ### Services
 
