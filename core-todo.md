@@ -148,7 +148,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   Chat-completions was hardened against exactly this (:1401–1417).
   **Fix:** check `max_output_tokens` first and return `max_tokens` before the tool_use check.
 
-- [ ] `[V]` **M-LLM-7 — Streaming tool call dropped when id/name arrive in separate chunks.**
+- [x] `[V]` **M-LLM-7 — Streaming tool call dropped when id/name arrive in separate chunks.**
   `runtime/src/services/api/openaiShim.ts:1303–1380`. A call is registered only when one delta has both
   `tc.id` and `tc.function.name` (:1305). Providers that split them (vLLM/LM Studio/OpenRouter passthroughs)
   never register the call; later argument deltas hit `activeToolCalls.get(index)` → undefined and are dropped

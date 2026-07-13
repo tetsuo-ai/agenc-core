@@ -1114,11 +1114,17 @@ async function* openaiStreamToprovider(
   const activeToolCalls = new Map<
     number,
     {
-      id: string
-      name: string
-      index: number
+      // id / name may arrive in separate delta chunks; the block is only
+      // started (content_block_start emitted) once both are known.
+      id?: string
+      name?: string
+      index?: number
       jsonBuffer: string
+      // chars of jsonBuffer already emitted as input_json_delta.
+      emittedLength: number
       normalizeAtStop: boolean
+      started: boolean
+      extraContent?: Record<string, unknown>
     }
   >()
   let hasEmittedContentStart = false
@@ -1310,11 +1316,31 @@ async function* openaiStreamToprovider(
           processStreamChunk(streamState, delta.content)
         }
 
-        // Tool calls
+        // Tool calls — assemble id / name / arguments that a provider may split
+        // across separate delta chunks (vLLM / LM Studio / OpenRouter passthroughs
+        // do not always co-locate id and name the way the OpenAI API does). Track
+        // per-index state and start the tool_use block once BOTH id and name are
+        // known; arguments that arrive before then are buffered and flushed at start.
         if (delta.tool_calls) {
           for (const tc of delta.tool_calls) {
-            if (tc.id && tc.function?.name) {
-              // New tool call starting — close any open thinking block first
+            let active = activeToolCalls.get(tc.index)
+            if (!active) {
+              active = {
+                jsonBuffer: '',
+                emittedLength: 0,
+                normalizeAtStop: false,
+                started: false,
+              }
+              activeToolCalls.set(tc.index, active)
+            }
+
+            if (tc.id) active.id = tc.id
+            if (tc.function?.name) active.name = tc.function.name
+            if (tc.extra_content) active.extraContent = tc.extra_content
+            if (tc.function?.arguments) active.jsonBuffer += tc.function.arguments
+
+            if (!active.started && active.id && active.name) {
+              // New tool call starting — close any open thinking / text block first.
               if (hasEmittedThinkingStart && !hasClosedThinking) {
                 yield { type: 'content_block_stop', index: contentBlockIndex }
                 contentBlockIndex++
@@ -1324,69 +1350,48 @@ async function* openaiStreamToprovider(
                 yield* closeActiveContentBlock()
               }
 
-              const toolBlockIndex = contentBlockIndex
-              const initialArguments = tc.function.arguments ?? ''
-              const normalizeAtStop = hasToolFieldMapping(tc.function.name)
-              processStreamChunk(streamState, tc.function.arguments ?? '')
-              activeToolCalls.set(tc.index, {
-                id: tc.id,
-                name: tc.function.name,
-                index: toolBlockIndex,
-                jsonBuffer: initialArguments,
-                normalizeAtStop,
-              })
+              active.index = contentBlockIndex
+              active.started = true
+              active.normalizeAtStop = hasToolFieldMapping(active.name)
+              // Feed whatever arguments were buffered before the start (mirrors the
+              // original single-chunk call, which fed the initial fragment once).
+              processStreamChunk(streamState, active.jsonBuffer)
 
+              const extra = active.extraContent
+              const thoughtSignature = (extra?.google as any)?.thought_signature
               yield {
                 type: 'content_block_start',
-                index: toolBlockIndex,
+                index: active.index,
                 content_block: {
                   type: 'tool_use',
-                  id: tc.id,
-                  name: tc.function.name,
+                  id: active.id,
+                  name: active.name,
                   input: {},
-                  ...(tc.extra_content ? { extra_content: tc.extra_content } : {}),
+                  ...(extra ? { extra_content: extra } : {}),
                   // Extract Gemini signature from extra_content
-                  ...((tc.extra_content?.google as any)?.thought_signature
-                    ? {
-                        signature: (tc.extra_content?.google as any)
-                          .thought_signature,
-                      }
-                    : {}),
+                  ...(thoughtSignature ? { signature: thoughtSignature } : {}),
                 },
               }
               contentBlockIndex++
+            }
 
-              // Emit any initial arguments
-              if (tc.function.arguments && !normalizeAtStop) {
-                yield {
-                  type: 'content_block_delta',
-                  index: toolBlockIndex,
-                  delta: {
-                    type: 'input_json_delta',
-                    partial_json: tc.function.arguments,
-                  },
-                }
-              }
-            } else if (tc.function?.arguments) {
-              // Continuation of existing tool call
-              const active = activeToolCalls.get(tc.index)
-              if (active) {
-                if (tc.function.arguments) {
-                  active.jsonBuffer += tc.function.arguments
-                }
-
-                if (active.normalizeAtStop) {
-                  continue
-                }
-
-                yield {
-                  type: 'content_block_delta',
-                  index: active.index,
-                  delta: {
-                    type: 'input_json_delta',
-                    partial_json: tc.function.arguments,
-                  },
-                }
+            // Emit any not-yet-emitted buffered arguments as input_json_delta.
+            // normalize-at-stop tools emit their whole buffer once, at finish.
+            if (
+              active.started &&
+              active.index !== undefined &&
+              !active.normalizeAtStop &&
+              active.jsonBuffer.length > active.emittedLength
+            ) {
+              const fragment = active.jsonBuffer.slice(active.emittedLength)
+              active.emittedLength = active.jsonBuffer.length
+              yield {
+                type: 'content_block_delta',
+                index: active.index,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: fragment,
+                },
               }
             }
           }
@@ -1409,6 +1414,15 @@ async function* openaiStreamToprovider(
           }
           // Close active tool calls
           for (const [, tc] of activeToolCalls) {
+            // A call whose id or name never arrived was never started (no
+            // content_block_start), so there is no block to close — drop it
+            // rather than emit a stop for a non-existent index.
+            if (!tc.started || tc.index === undefined || tc.name === undefined) {
+              logForDebugging(
+                `Dropping incomplete streamed tool call (id=${tc.id ?? '?'}, name=${tc.name ?? '?'}): never received both id and name`,
+              )
+              continue
+            }
             if (tc.normalizeAtStop) {
               let partialJson: string
               if (choice.finish_reason === 'length') {
