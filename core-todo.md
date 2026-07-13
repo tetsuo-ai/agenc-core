@@ -114,7 +114,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   **Fix:** gate the parse on a completed finishReason (stop/tool_calls); return `structuredOutput`
   undefined for length/error/content_filter.
 
-- [ ] `[V]` **M-LLM-3 — Grok incremental-tracker leak (no `dispose()` caller).**
+- [x] `[V]` **M-LLM-3 — Grok incremental-tracker leak (no `dispose()` caller).**
   `runtime/src/llm/providers/grok/incremental.ts:234`. `GrokProvider` ctor registers its tracker in a
   module-global Set removed only by `dispose()`, which no production path calls (optional in types.ts:836).
   `permissions/classifier.ts` builds a fresh grok provider per auto-mode classification (fast+thinking) and

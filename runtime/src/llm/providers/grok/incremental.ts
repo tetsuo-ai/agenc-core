@@ -231,13 +231,38 @@ export class IncrementalTracker {
  * owns. Shared ProviderHttpClient-based Responses adapters also clear their
  * per-turn continuation state through the compact runtime context.
  */
-const registered = new Set<IncrementalTracker>();
+// WeakRef-backed so a tracker whose owning provider is dropped (e.g. the fresh
+// grok provider the auto-mode classifier / delegate builds per call, which never
+// calls dispose()) becomes GC-eligible instead of being pinned forever. The Set
+// only holds tiny WeakRefs; collected entries are pruned on the next sweep.
+const registered = new Set<WeakRef<IncrementalTracker>>();
 
 export function registerIncrementalTracker(t: IncrementalTracker): () => void {
-  registered.add(t);
-  return () => registered.delete(t);
+  const ref = new WeakRef(t);
+  registered.add(ref);
+  return () => registered.delete(ref);
 }
 
 export function clearAllResponseIds(): void {
-  for (const t of registered) t.clearResponseId();
+  for (const ref of registered) {
+    const t = ref.deref();
+    if (t) {
+      t.clearResponseId();
+    } else {
+      registered.delete(ref);
+    }
+  }
+}
+
+/** Live (non-collected) tracker count. Test-only introspection. */
+export function registeredIncrementalTrackerCountForTest(): number {
+  let live = 0;
+  for (const ref of registered) {
+    if (ref.deref()) {
+      live += 1;
+    } else {
+      registered.delete(ref);
+    }
+  }
+  return live;
 }
