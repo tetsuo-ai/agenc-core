@@ -421,6 +421,9 @@ export interface TelegramChannelOptions {
 }
 
 /** Maps a Telegram sent-message id back to its chat for later edits. */
+// Upper bound on retained edit-in-place targets (evicted oldest-first).
+const MAX_EDIT_TARGETS = 512;
+
 interface EditTarget {
   readonly chatId: string;
   readonly messageId: number;
@@ -780,6 +783,12 @@ export class TelegramChannelAdapter implements ChannelAdapter {
       chatId: target.chatId,
       messageId: sent.message_id,
     });
+    // Bound the map (see slack-channel.ts): evict oldest edit targets.
+    while (this.#editTargets.size > MAX_EDIT_TARGETS) {
+      const oldest = this.#editTargets.keys().next().value;
+      if (oldest === undefined) break;
+      this.#editTargets.delete(oldest);
+    }
     return handle;
   }
 }

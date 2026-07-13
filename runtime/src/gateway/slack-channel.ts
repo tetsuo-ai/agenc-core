@@ -87,6 +87,10 @@ export class SlackApiError extends Error {}
 
 const SLACK_API = "https://slack.com/api";
 
+// Upper bound on retained edit-in-place targets (edits only ever hit a recent
+// message; older handles are evicted oldest-first so the map cannot grow forever).
+const MAX_EDIT_TARGETS = 512;
+
 /** Production transport: fetch Web API + global WebSocket, zero deps. */
 export class FetchSlackTransport implements SlackTransport {
   readonly #botToken: string;
@@ -379,6 +383,14 @@ export class SlackChannelAdapter implements ChannelAdapter {
     );
     const handle = `${this.id}-out-${++this.#outCounter}`;
     this.#editTargets.set(handle, { channel: parsed.channel, ts: sent.ts });
+    // Bound the map: edit-in-place only ever targets a recent message, so old
+    // handles are dead weight. Without this the map grows one entry per send
+    // forever (a slow unbounded leak on a long-lived gateway).
+    while (this.#editTargets.size > MAX_EDIT_TARGETS) {
+      const oldest = this.#editTargets.keys().next().value;
+      if (oldest === undefined) break;
+      this.#editTargets.delete(oldest);
+    }
     return handle;
   }
 }

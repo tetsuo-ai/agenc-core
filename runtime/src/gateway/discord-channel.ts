@@ -97,6 +97,9 @@ export class DiscordApiError extends Error {}
 
 const DISCORD_API = "https://discord.com/api/v10";
 
+// Upper bound on retained edit-in-place targets (evicted oldest-first).
+const MAX_EDIT_TARGETS = 512;
+
 /** Production transport: fetch REST + global WebSocket, zero dependencies. */
 export class FetchDiscordTransport implements DiscordTransport {
   readonly #token: string;
@@ -466,6 +469,13 @@ export class DiscordChannelAdapter implements ChannelAdapter {
       channelId: message.conversationId,
       messageId: firstId ?? "",
     });
+    // Bound the map (see slack-channel.ts): evict oldest edit targets so it can't
+    // grow one entry per send forever.
+    while (this.#editTargets.size > MAX_EDIT_TARGETS) {
+      const oldest = this.#editTargets.keys().next().value;
+      if (oldest === undefined) break;
+      this.#editTargets.delete(oldest);
+    }
     return handle;
   }
 }

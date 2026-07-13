@@ -614,7 +614,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [ ] `[V]` `runtime/src/skills/mcpSkills.ts:223` — `fetchMcpSkillsForClient` is `memoizeWithLRU` keyed only on
   server name, so two sessions each configuring a same-named MCP server (e.g. both "github") pointing at different
   servers collide while both live. **Fix:** key by name + config hash / connection identity, or scope per session.
-- [ ] `[V]` `runtime/src/gateway/slack-channel.ts:381` — `#editTargets` (Map) grows without bound: every non-edit
+- [x] `[V]` `runtime/src/gateway/slack-channel.ts:381` — `#editTargets` (Map) grows without bound: every non-edit
   `send()` inserts a `<id>-out-<n>` handle and nothing deletes; identical in discord-channel.ts:465 and
   telegram-channel.ts:779. Unbounded leak on a busy channel. **Fix:** LRU/ring cap or evict on turn completion.
 - [ ] `[V]` `runtime/src/memory/agencmd.ts:808` — `getMemoryFiles` is `memoize`d with the default resolver so its
