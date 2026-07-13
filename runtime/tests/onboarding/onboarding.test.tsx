@@ -1127,3 +1127,91 @@ describe("theme step terminal-background awareness", () => {
     expect(lightLines).toContain('"light" or "system" will read best');
   });
 });
+
+describe("grok OAuth sign-in from the api-key step", () => {
+  async function advanceToGrokApiKey(context: Parameters<typeof createInitialFirstRunOnboardingState>[0]) {
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    expect(state.currentStepId).toBe("api-key");
+    expect(state.selectedProvider).toBe("grok");
+    return state;
+  }
+
+  test("offers the keyless X / xAI sign-in for grok only", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    const grokState = await advanceToGrokApiKey(context);
+    expect(detailLinesForStep(grokState, context).join("\n")).toContain(
+      "Or type login to sign in with your X / xAI account",
+    );
+
+    const openaiState = {
+      ...grokState,
+      selectedProvider: "openai" as const,
+      connection: null,
+    };
+    expect(detailLinesForStep(openaiState, context).join("\n")).not.toContain(
+      "Or type login",
+    );
+  });
+
+  test("login runs the injected OAuth flow and advances to the connection test", async () => {
+    const config = defaultConfig();
+    const runGrokOauthLogin = vi
+      .fn<() => Promise<{ ok: true; accountLabel: string }>>()
+      .mockResolvedValue({ ok: true, accountLabel: "tetsuo" });
+    const context = {
+      config,
+      env: {},
+      checkLocalProviders: false,
+      runGrokOauthLogin,
+    };
+    const state = await advanceToGrokApiKey(context);
+
+    const result = await submitFirstRunOnboardingInput(state, "login", context);
+    expect(runGrokOauthLogin).toHaveBeenCalledTimes(1);
+    expect(result.state.currentStepId).toBe("connection-test");
+    expect(result.state.completedStepIds).toContain("api-key");
+    expect(result.state.error).toBeNull();
+  });
+
+  test("a failed sign-in surfaces the message and stays on the api-key step", async () => {
+    const config = defaultConfig();
+    const context = {
+      config,
+      env: {},
+      checkLocalProviders: false,
+      runGrokOauthLogin: async () => ({
+        ok: false as const,
+        message: "Browser sign-in did not complete (timeout).",
+      }),
+    };
+    const state = await advanceToGrokApiKey(context);
+
+    const result = await submitFirstRunOnboardingInput(state, "login", context);
+    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.error).toContain("Browser sign-in did not complete");
+  });
+
+  test("login on a non-grok provider is treated as a key attempt, not a sign-in", async () => {
+    const config = defaultConfig();
+    const runGrokOauthLogin = vi.fn();
+    const context = {
+      config,
+      env: {},
+      checkLocalProviders: false,
+      runGrokOauthLogin,
+      fetchImpl: (async () =>
+        new Response("unauthorized", { status: 401 })) as typeof fetch,
+    };
+    let state = await advanceToGrokApiKey(context);
+    state = { ...state, selectedProvider: "openai" as const };
+
+    const result = await submitFirstRunOnboardingInput(state, "login", context);
+    expect(runGrokOauthLogin).not.toHaveBeenCalled();
+    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.error).not.toBeNull();
+  });
+});
