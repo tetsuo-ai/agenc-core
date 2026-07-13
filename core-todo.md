@@ -645,7 +645,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Bash / shell parsing
 
-- [ ] `[V]` `runtime/src/utils/bash/shellPrefix.ts:20–24` — `formatShellPrefixCommand` splits at
+- [x] `[V]` `runtime/src/utils/bash/shellPrefix.ts:20–24` — `formatShellPrefixCommand` splits at
   `lastIndexOf(' -')`, so a multi-flag `AGENC_SHELL_PREFIX="wsl -e bash -c"` mis-splits into a non-executable
   quoted word. Trusted config, so correctness not security. **Fix:** tokenize the prefix into exec + args.
 - [ ] `[V]` `runtime/src/utils/bash/commands.ts:798–817` — an empty redirect target (`>` with `""`) is neither
