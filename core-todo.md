@@ -312,12 +312,17 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   a rejecting transport makes `isDirty()` resolve false and `quit()` return `{ closed: true }`, vs both rejecting
   without the catch.
 
-- [ ] `[V]` **M-TUI-6 — MCP import dialog floats an uncaught async write.**
+- [x] `[V]` **M-TUI-6 — MCP import dialog floats an uncaught async write.**
   `runtime/src/tui/components/MCPServerDesktopImportDialog.tsx:114–132`. `onSubmit` is async and awaits
   `addMcpConfig` (a config-file write) with no try/catch, but `SelectMulti` types `onSubmit` as `void`-returning
   and invokes it fire-and-forget. An EACCES/EROFS/disk error rejects as an unhandled rejection and `done()`
   never runs → dialog stuck. (Siblings TeamsDialog/WorktreeExitDialog wrap their awaits.)
   **Fix:** wrap the loop in try/catch and surface the failure in the dialog.
+  **DONE:** extracted `importSelectedMcpServers(...)` (a top-level export, no memo-cache change since the file is
+  committed react-compiler output) with the loop wrapped in try/catch — logs and returns the partial count so
+  `done()` always runs and the dialog can't wedge; `onSubmit` calls it. Revert-sensitive test
+  (MCPServerDesktopImport-catch.test.ts): a failing write returns the partial count without throwing vs rejecting.
+  (In-dialog error banner UI left as a follow-up — needs new component state in the compiled output.)
 
 - [ ] `[V]` **M-TUI-7 — PromptInput submit path floats async work with no catch.**
   `runtime/src/tui/components/PromptInput/PromptInput.tsx:1340` (also :691, :2163 invocation; :1375/:1425/:1519

@@ -17,6 +17,44 @@ type Props = {
   scope: ConfigScope;
   onDone(): void;
 };
+
+/**
+ * Import the selected desktop MCP servers into the given scope, renaming on
+ * name collisions, and return how many were written. A config-file write
+ * (EACCES/EROFS/disk) rejecting here previously escaped as an unhandled
+ * rejection AND left the dialog's `done()` uncalled, wedging the dialog. The
+ * loop is wrapped so a failure logs and returns the partial count — the caller
+ * always closes the dialog. `addConfig` is injectable for tests.
+ */
+export async function importSelectedMcpServers(
+  selectedServers: readonly string[],
+  servers: Record<string, McpServerConfig>,
+  existingServers: Record<string, ScopedMcpServerConfig>,
+  scope: ConfigScope,
+  addConfig: typeof addMcpConfig = addMcpConfig,
+): Promise<number> {
+  let importedCount = 0;
+  try {
+    for (const serverName of selectedServers) {
+      const serverConfig = servers[serverName];
+      if (!serverConfig) continue;
+      let finalName = serverName;
+      if (existingServers[finalName] !== undefined) {
+        let counter = 1;
+        while (existingServers[`${serverName}_${counter}`] !== undefined) {
+          counter++;
+        }
+        finalName = `${serverName}_${counter}`;
+      }
+      await addConfig(finalName, serverConfig, scope);
+      importedCount++;
+    }
+  } catch (error) {
+    logError(error);
+  }
+  return importedCount;
+}
+
 export function MCPServerDesktopImportDialog(t0: Props) {
   const $ = _c(36);
   const {
@@ -112,22 +150,12 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   done;
   const handleEscCancel = t7;
   const onSubmit = useCallback(async function onSubmit(selectedServers: string[]) {
-    let importedCount = 0;
-    for (const serverName of selectedServers) {
-      const serverConfig = servers[serverName];
-      if (serverConfig) {
-        let finalName = serverName;
-        if (existingServers[finalName] !== undefined) {
-          let counter = 1;
-          while (existingServers[`${serverName}_${counter}`] !== undefined) {
-            counter++;
-          }
-          finalName = `${serverName}_${counter}`;
-        }
-        await addMcpConfig(finalName, serverConfig, scope);
-        importedCount++;
-      }
-    }
+    const importedCount = await importSelectedMcpServers(
+      selectedServers,
+      servers,
+      existingServers,
+      scope,
+    );
     done(importedCount);
   }, [done, existingServers, scope, servers]);
   const t8 = serverNames.length;
