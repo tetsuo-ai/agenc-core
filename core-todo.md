@@ -594,9 +594,12 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   `getSessionId()`; public API unchanged, cap 128 sessions with LRU-on-access eviction. Revert-sensitive
   two-session test in cacheStatsTracker.test.ts. The base-URL/provider sub-part stays with M-LLM-4 (skipped:
   threading `process.env.OPENAI_BASE_URL` off the request context is the same risky hot-path env change).
-- [ ] `[V]` `runtime/src/services/api/openaiShim.ts:2242–2254` — GitHub/Copilot 429 retry sleeps a fixed
+- [x] `[V]` `runtime/src/services/api/openaiShim.ts:2242–2254` — GitHub/Copilot 429 retry sleeps a fixed
   exponential ignoring the server's `Retry-After` (only used to decorate the final error). **Fix:** parse
   `retry-after` and use `max(header, backoff)`.
+  **DONE:** extracted exported `computeGithub429WaitMs(attempt, retryAfterHeader, nowMs?)` = `max(Retry-After,
+  backoff)` capped at `GITHUB_429_RETRY_AFTER_CAP_MS = 60_000`; `parseRetryAfterMs` handles delta-seconds and
+  HTTP-date. Revert-sensitive test (openaiShim-github429-retry-after.test.ts).
 - [x] `[V]` `runtime/src/services/api/openaiShim.ts:2433–2450` — `_convertNonStreamingResponse` dereferences
   `tc.function.name`/`.arguments` without a shape check; a malformed provider response (`tool_calls:[{id:"x"}]`)
   throws a bare `TypeError` bypassing `classifyOpenAiHttpFailure`. **Fix:** skip entries where `tc.function?.name`

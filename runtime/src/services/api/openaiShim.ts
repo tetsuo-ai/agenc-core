@@ -110,6 +110,9 @@ const DEFAULT_GITHUB_MODEL = 'gpt-4o'
 const GITHUB_429_MAX_RETRIES = 3
 const GITHUB_429_BASE_DELAY_SEC = 1
 const GITHUB_429_MAX_DELAY_SEC = 32
+// Ceiling on how long a server-provided Retry-After can hold a 429 retry, so a
+// pathological or hostile header value cannot stall the request indefinitely.
+const GITHUB_429_RETRY_AFTER_CAP_MS = 60_000
 const GEMINI_API_HOST = 'generativelanguage.googleapis.com'
 const MOONSHOT_API_HOSTS = new Set([
   'api.moonshot.ai',
@@ -402,6 +405,46 @@ function normalizeDeepSeekReasoningEffort(
 function formatRetryAfterHint(response: Response): string {
   const ra = response.headers.get('retry-after')
   return ra ? ` (Retry-After: ${ra})` : ''
+}
+
+/**
+ * Parse an HTTP `Retry-After` header into milliseconds. Supports both RFC 7231
+ * forms: delta-seconds (a non-negative integer) and an HTTP-date. Returns
+ * `undefined` for a missing or unparseable value, and never a negative delay
+ * (a date already in the past yields 0).
+ */
+function parseRetryAfterMs(
+  headerValue: string | null,
+  nowMs: number = Date.now(),
+): number | undefined {
+  const raw = headerValue?.trim()
+  if (!raw) return undefined
+  if (/^\d+$/.test(raw)) {
+    return Number.parseInt(raw, 10) * 1000
+  }
+  const absoluteMs = Date.parse(raw)
+  return Number.isFinite(absoluteMs) ? Math.max(0, absoluteMs - nowMs) : undefined
+}
+
+/**
+ * How long to wait before the next GitHub/Copilot 429 retry. Uses the larger of
+ * the exponential backoff and the server's `Retry-After` hint (so we never
+ * hammer the endpoint before it says it is ready), capped at
+ * `GITHUB_429_RETRY_AFTER_CAP_MS` so a hostile header cannot stall us. Exported
+ * for testing.
+ */
+export function computeGithub429WaitMs(
+  attempt: number,
+  retryAfterHeader: string | null,
+  nowMs: number = Date.now(),
+): number {
+  const backoffMs =
+    Math.min(GITHUB_429_BASE_DELAY_SEC * 2 ** attempt, GITHUB_429_MAX_DELAY_SEC) *
+    1000
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader, nowMs)
+  const waitMs =
+    retryAfterMs !== undefined ? Math.max(retryAfterMs, backoffMs) : backoffMs
+  return Math.min(waitMs, GITHUB_429_RETRY_AFTER_CAP_MS)
 }
 
 function shouldRedactUrlQueryParam(name: string): boolean {
@@ -2270,11 +2313,9 @@ class OpenAiShimMessages {
         attempt < maxAttempts - 1
       ) {
         await response.text().catch(() => {})
-        const delaySec = Math.min(
-          GITHUB_429_BASE_DELAY_SEC * 2 ** attempt,
-          GITHUB_429_MAX_DELAY_SEC,
+        await sleepMs(
+          computeGithub429WaitMs(attempt, response.headers.get('retry-after')),
         )
-        await sleepMs(delaySec * 1000)
         continue
       }
       // Read body exactly once here — Response body is a stream that can only
