@@ -299,7 +299,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   crashes. *(Reachability from a dynamic caller unproven; static callers are non-empty.)*
   **Fix:** guard the empty-tabs case (render nothing / fallback) and skip the modulo when length is 0.
 
-- [ ] `[V]` **M-TUI-5 — Uncaught Neovim RPC rejection on buffer close/quit.**
+- [x] `[V]` **M-TUI-5 — Uncaught Neovim RPC rejection on buffer close/quit.**
   `runtime/src/tui/workbench/buffer/neovim/NeovimLifecycle.ts:89–113`. `isDirty()` and the quit path call
   `#rpc.request(...)` with no catch, and `NeovimRpc.request()` rejects once the transport is closed. The
   transport closes independently of the session (stdin EPIPE before the child's `exit`), so during that window
@@ -307,6 +307,10 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   escape → unhandled rejection can take down the daemon. The sibling `#readCurrentDirtyState` wraps the same
   call in `.then(ok, fallback)`. *(Timing race partially unverified.)*
   **Fix:** catch the RPC rejection on the quit/close path (treat a dead transport as not-dirty/already-closed).
+  **DONE:** `isDirty()` now `.catch(() => false)` on the RPC (the uncaught path the quit/close flow awaits;
+  `#quitOnce`/`#cleanupOnce` already had `.catch`). Revert-sensitive test (NeovimLifecycle-dirty-catch.test.ts):
+  a rejecting transport makes `isDirty()` resolve false and `quit()` return `{ closed: true }`, vs both rejecting
+  without the catch.
 
 - [ ] `[V]` **M-TUI-6 — MCP import dialog floats an uncaught async write.**
   `runtime/src/tui/components/MCPServerDesktopImportDialog.tsx:114–132`. `onSubmit` is async and awaits
