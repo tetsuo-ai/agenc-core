@@ -45,16 +45,7 @@ export async function renderProjectTrustPrompt(
       riskSources={options.riskSources}
       bypassPermissionsRequested={options.bypassPermissionsRequested}
       finish={(value) => {
-        // Defer the resolve to the next macrotask. `finish` is called from
-        // inside TrustDialog's in-flight `await onAccept()` handler; resolving
-        // synchronously lets the outer race below unmount the ink tree while
-        // that handler (and React's pending state commit) is still on the
-        // stack, which intermittently deadlocked the render and left the
-        // dialog frozen on "Accepting…". Deferring lets the dialog's submit
-        // fully unwind before we tear the instance down.
-        setImmediate(() => {
-          settle?.(value);
-        });
+        settle?.(value);
       }}
     />,
     {
