@@ -1,6 +1,9 @@
 import React, { useCallback, useContext, useRef, useState } from "react";
 import useInput from "../../tui/ink/hooks/use-input.js";
 import { TerminalSizeContext } from "../../tui/ink/components/TerminalSizeContext.js";
+import { Box } from "../../tui/ink.js";
+import ThemedBox from "../../tui/components/design-system/ThemedBox.js";
+import ThemedText from "../../tui/components/design-system/ThemedText.js";
 
 /** Floor for the path width budget so a tiny/unknown terminal still truncates. */
 const MIN_TRUST_PATH_WIDTH = 24;
@@ -92,7 +95,14 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     terminalSize && Number.isFinite(terminalSize.columns)
       ? terminalSize.columns
       : DEFAULT_TRUST_PATH_WIDTH;
-  const pathBudget = columns - 6;
+  // The dialog is a single card that never stretches the whole terminal on a
+  // wide window. Width is capped so the copy wraps into a readable column; the
+  // path budget is the card's inner width (card - round border - paddingX 2).
+  const cardWidth = Math.max(
+    MIN_TRUST_PATH_WIDTH + 8,
+    Math.min(64, columns - 2),
+  );
+  const pathBudget = cardWidth - 6;
   const [choice, setChoice] = useState<TrustChoice | null>(null);
   const [pending, setPending] = useState(false);
   const choiceRef = useRef<TrustChoice | null>(null);
@@ -156,81 +166,78 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     }
   });
 
-  const h = React.createElement;
-  const option = (id: TrustChoice, label: string) =>
-    h(
-      "ink-text",
-      {
-        key: id,
-        textStyles: { bold: choice === id },
-      },
-      `${choice === id ? ">" : " "} ${label}`,
+  // One cohesive accent card instead of a bare title + a lonely floating path
+  // box + plain option lines. The purple border frames the whole decision, the
+  // path sits right under the title as the subject of the question, and the
+  // selected option carries the same `❯` pointer + accent the composer uses.
+  const option = (id: TrustChoice, label: string): React.ReactElement => {
+    const selected = choice === id;
+    return (
+      <ThemedText
+        key={id}
+        color={selected ? "agenc" : "inactive"}
+        bold={selected}
+      >
+        {selected ? "❯ " : "  "}
+        {label}
+      </ThemedText>
     );
+  };
 
-  return h(
-    "ink-box",
-    {
-      style: {
-        flexDirection: "column",
-        paddingX: 1,
-        paddingY: 1,
-        gap: 1,
-      },
-    },
-    h("ink-text", { textStyles: { bold: true } }, "Trust this project?"),
-    // Present the project path as a clear, framed element consistent with the
-    // rest of the boxed TUI — and elide the middle (keeping the meaningful tail)
-    // instead of hard-wrapping a path segment across two lines.
-    h(
-      "ink-box",
-      {
-        style: {
-          flexDirection: "column",
-          borderStyle: "round",
-          paddingX: 1,
-          alignSelf: "flex-start",
-        },
-      },
-      h(
-        "ink-text",
-        { style: { textWrap: "truncate-middle" } },
-        formatTrustPath(props.workspaceRoot, pathBudget),
-      ),
-    ),
-    h(
-      "ink-text",
-      null,
-      "AgenC can read files, edit files, and run commands in trusted projects.",
-    ),
-    props.bypassPermissionsRequested
-      ? h(
-          "ink-text",
-          { textStyles: { dimColor: true } },
-          YOLO_TRUST_COPY,
-        )
-      : null,
-    props.riskSources && props.riskSources.length > 0
-      ? h(
-          "ink-box",
-          { style: { flexDirection: "column" } },
-          h("ink-text", { textStyles: { bold: true } }, "Project-local signals:"),
-          ...props.riskSources.map((source) =>
-            h("ink-text", { key: source }, `- ${source}`),
-          ),
-        )
-      : null,
-    h(
-      "ink-box",
-      { style: { flexDirection: "column" } },
-      option("trust", trustDialogOptionLabel("trust", choice, pending)),
-      option("exit", trustDialogOptionLabel("exit", choice, pending)),
-    ),
-    h(
-      "ink-text",
-      { textStyles: { dimColor: true } },
-      choice === null
-        ? "Use ↑ ↓ or y / n to choose, then Enter to confirm."
-        : "Press Enter to confirm, or ↑ ↓ to switch.",
-    ),
+  return (
+    <ThemedBox
+      flexDirection="column"
+      width={cardWidth}
+      borderStyle="round"
+      borderColor="agenc"
+      paddingX={2}
+      paddingY={1}
+    >
+      <ThemedText color="agenc" bold>
+        Trust this project?
+      </ThemedText>
+      {/* The path is the subject of the question — bright, directly under the
+          title, elided in the middle (meaningful tail kept) instead of
+          hard-wrapping a segment across two lines. */}
+      <ThemedText color="text" bold wrap="truncate-middle">
+        {formatTrustPath(props.workspaceRoot, pathBudget)}
+      </ThemedText>
+
+      <Box height={1} />
+
+      <ThemedText color="inactive">
+        AgenC can read files, edit files, and run commands in trusted projects.
+      </ThemedText>
+      {props.bypassPermissionsRequested ? (
+        <ThemedText color="warning">{YOLO_TRUST_COPY}</ThemedText>
+      ) : null}
+      {props.riskSources && props.riskSources.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <ThemedText color="warning" bold>
+            Project-local signals:
+          </ThemedText>
+          {props.riskSources.map((source) => (
+            <ThemedText key={source} color="text2">
+              {`  · ${source}`}
+            </ThemedText>
+          ))}
+        </Box>
+      ) : null}
+
+      <Box height={1} />
+
+      <Box flexDirection="column">
+        {option("trust", trustDialogOptionLabel("trust", choice, pending))}
+        {option("exit", trustDialogOptionLabel("exit", choice, pending))}
+      </Box>
+
+      <Box height={1} />
+
+      <ThemedText color="inactive">
+        {choice === null
+          ? "↑ ↓ or y / n to choose  ·  Enter to confirm"
+          : "Enter to confirm  ·  ↑ ↓ to switch"}
+      </ThemedText>
+    </ThemedBox>
   );
 }
