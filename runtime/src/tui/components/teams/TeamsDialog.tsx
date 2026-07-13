@@ -35,6 +35,14 @@ import {
   getTeammateDetailFooterText,
   getTeamsDialogPromptPreview,
 } from './TeamsDialog.layout.js';
+/**
+ * How often the open dialog re-scans the team directory (getTeammateStatuses is
+ * filesystem discovery) to pick up teammate mode changes. Kept well above one
+ * second: teammate mode changes are human-driven, so a few seconds of latency is
+ * fine and a per-second fs scan while the dialog is open is wasteful.
+ */
+export const TEAMMATE_STATUS_POLL_INTERVAL_MS = 3000;
+
 type Props = {
   initialTeams?: TeamSummary[];
   onDone: () => void;
@@ -122,7 +130,7 @@ export function TeamsDialog({
   // Periodically refresh to pick up mode changes from teammates
   useInterval(() => {
     setRefreshKey(k => k + 1);
-  }, 1000);
+  }, TEAMMATE_STATUS_POLL_INTERVAL_MS);
   const currentTeammate = useMemo(() => {
     if (dialogLevel.type !== 'teammateDetail') return null;
     return teammateStatuses.find(t => t.name === dialogLevel.memberName) ?? null;

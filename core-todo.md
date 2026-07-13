@@ -607,9 +607,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   :132/:236/:347, Fallback :362 — the two-arg `Math.max(x, 0)` at Fallback :363 is not a spread, left as-is).
   Revert-sensitive test (maxOf.test.ts): `Math.max(...200_000)` throws `RangeError`; `maxOf` returns the max.
   Confirmed empirically that 200k-element spread throws.
-- [ ] `[V]` `runtime/src/tui/components/teams/TeamsDialog.tsx:116–125` — an unconditional 1s `useInterval` bumps a
+- [x] `[V]` `runtime/src/tui/components/teams/TeamsDialog.tsx:116–125` — an unconditional 1s `useInterval` bumps a
   key that forces `getTeammateStatuses` (filesystem discovery) once per second while the dialog is open.
   **Fix:** poll less often or watch the dir.
+  **DONE (poll less often):** extracted `TEAMMATE_STATUS_POLL_INTERVAL_MS = 3000` and use it for the refresh
+  interval — 3× less fs discovery, and teammate mode changes are human-driven so a few seconds of latency is fine.
+  Regression-guard test (teams-dialog-poll-interval.test.ts) asserts the interval stays ≥ 3000 (revert to 1000 →
+  RED). Did NOT switch to fs.watch (more responsive but platform-dependent); noted as an option.
 - [~] `[V]` `runtime/src/tui/components/CoordinatorAgentStatus.tsx:84 [SKIPPED: NOT safe to remove — has TEST callers (CoordinatorAgentStatus.render.test.tsx, .runtime-coverage, swarm-117 render the component). Production-dead but test-covered; removing it requires also removing/updating those coverage tests. Recommend a dedicated dead-code+test pass]–158` — `CoordinatorTaskPanel` (a ~75-line
   component with a 1s `setInterval` eviction effect) has zero renderers; dead code (the workbench uses
   `AgentsRail`). **Fix:** delete the component (keep the still-used sibling helpers).
