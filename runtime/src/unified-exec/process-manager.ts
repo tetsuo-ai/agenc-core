@@ -620,10 +620,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   private pruneExitedProcesses(): void {
-    for (const [processId, entry] of this.processes) {
-      if (entry.exitState !== null) {
-        this.releaseProcessId(processId);
-      }
+    // Reclaim slots from EXITED processes ONLY when at/over the cap, oldest first.
+    // Do NOT release an exited process just because a new exec_command ran: a
+    // background command that has exited but has not yet been polled must survive
+    // so its final buffered output + exit code can still be retrieved (the
+    // start -> do other exec work -> poll workflow). Unconditional pruning here
+    // silently dropped that output and made the poll throw "unknown_process".
+    // Drained results are already deleted at their delivery point, so this only
+    // affects still-buffered, un-polled exits — and only under slot pressure.
+    if (this.processes.size < this.maxProcesses) return;
+    const exitedOldestFirst = [...this.processes.entries()]
+      .filter(([, entry]) => entry.exitState !== null)
+      .sort((a, b) => a[1].startedAt - b[1].startedAt);
+    for (const [processId] of exitedOldestFirst) {
+      if (this.processes.size < this.maxProcesses) break;
+      this.releaseProcessId(processId);
     }
   }
 

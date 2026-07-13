@@ -219,7 +219,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   1MB cap. Pins a core on the shared daemon for a verbose emitter.
   **Fix:** collapse lazily at `drain()` time, or amortize (dirty threshold, re-truncate at most every N appends).
 
-- [ ] `[V]` **M-EXEC-4 — Background process evicted before it is polled (lost output + exit code).**
+- [x] `[V]` **M-EXEC-4 — Background process evicted before it is polled (lost output + exit code).**
   `runtime/src/unified-exec/process-manager.ts:396` (`pruneExitedProcesses`). Called at the start of every
   `execCommand`; deletes any process whose `exitState !== null`. A background command that exited but hasn't
   been polled is evicted the moment the model issues any next `exec_command` (the normal start→do-work→poll
