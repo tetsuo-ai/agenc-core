@@ -5,6 +5,7 @@ import { useContentWidth } from '../../context/contentWidthContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { RawAnsi } from '../../ink/components/RawAnsi.js';
 import { stringWidth } from '../../ink/stringWidth.js';
+import { maxOf } from '../../../utils/maxOf.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
 import { useTheme } from '../../ink.js';
 import { resolveAgenCTuiGlyphMode } from '../../glyphs.js';
@@ -129,7 +130,7 @@ export function MarkdownTable({
     const text = getPlainText(tokens_1);
     const words = text.split(/\s+/).filter(w => w.length > 0);
     if (words.length === 0) return MIN_COLUMN_WIDTH;
-    return Math.max(...words.map(w_0 => stringWidth(w_0)), MIN_COLUMN_WIDTH);
+    return maxOf(words.map(w_0 => stringWidth(w_0)), MIN_COLUMN_WIDTH);
   }
 
   // Get ideal width (full content without wrapping)
@@ -233,7 +234,7 @@ export function MarkdownTable({
     });
 
     // Find max number of lines in this row
-    const maxLines_0 = Math.max(...cellLines.map(lines => lines.length), 1);
+    const maxLines_0 = maxOf(cellLines.map(lines => lines.length), 1);
 
     // Calculate vertical offset for each cell (to center vertically)
     const verticalOffsets = cellLines.map(lines_0 => Math.floor((maxLines_0 - lines_0.length) / 2));
@@ -344,7 +345,7 @@ export function MarkdownTable({
   // Safety check: verify no line exceeds terminal width.
   // This catches edge cases during terminal resize where calculations
   // were based on a different width than the current render target.
-  const maxLineWidth = Math.max(...tableLines.map(line_2 => stringWidth(stripAnsi(line_2))));
+  const maxLineWidth = maxOf(tableLines.map(line_2 => stringWidth(stripAnsi(line_2))));
 
   // If we're within SAFETY_MARGIN characters of the edge, use vertical format
   // to account for terminal resize race conditions.

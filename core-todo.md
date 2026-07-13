@@ -552,9 +552,13 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 - [x] `[V]` `runtime/src/tui/components/v2/ContextUsageModal.tsx:187–189` — `compactionThreshold / hardLimit` →
   `auto-compact at Infinity%` when `hardLimit` parses to 0 (regex accepts `0`); plus a hardcoded `92` fallback.
   **Fix:** guard `hardLimit > 0`. *(Same file as M-TUI-3.)*
-- [ ] `[V]` `runtime/src/tui/components/markdown/MarkdownTable.tsx:347` & `.../diff/StructuredDiff/Fallback.tsx:362`
+- [x] `[V]` `runtime/src/tui/components/markdown/MarkdownTable.tsx:347` & `.../diff/StructuredDiff/Fallback.tsx:362`
   — `Math.max(...arr)` spreads each element as a call arg; a ~100k-line table/diff overflows the arg-count limit
   → `RangeError`, crashing the render. **Fix:** use a reduce-based max. *(MarkdownTable also :132/:236/:322.)*
+  **DONE:** added `utils/maxOf.ts` (reduce-based, seed-aware) and replaced all four spread sites (MarkdownTable
+  :132/:236/:347, Fallback :362 — the two-arg `Math.max(x, 0)` at Fallback :363 is not a spread, left as-is).
+  Revert-sensitive test (maxOf.test.ts): `Math.max(...200_000)` throws `RangeError`; `maxOf` returns the max.
+  Confirmed empirically that 200k-element spread throws.
 - [ ] `[V]` `runtime/src/tui/components/teams/TeamsDialog.tsx:116–125` — an unconditional 1s `useInterval` bumps a
   key that forces `getTeammateStatuses` (filesystem discovery) once per second while the dialog is open.
   **Fix:** poll less often or watch the dir.
