@@ -574,7 +574,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Services
 
-- [ ] `[V]` `runtime/src/services/lsp/LSPDiagnosticRegistry.ts:179` — `pendingDiagnostics`/`deliveredDiagnostics`
+- [~] `[V]` `runtime/src/services/lsp/LSPDiagnosticRegistry.ts:179` [SKIPPED: needs a design decision — whether the drain-and-delete should be keyed by session or by file/workspace, plus sessionId threaded through registerPendingLSPDiagnostic (passiveFeedback) + 2 checkForLSPDiagnostics sites where availability is unconfirmed; recommend per-session delivered-tracking] — `pendingDiagnostics`/`deliveredDiagnostics`
   are module-level singletons; `checkForLSPDiagnostics()` takes no session arg and drains ALL pending diagnostics
   globally, so with two active sessions the first to assemble attachments consumes the other's diagnostics.
   **Fix:** key pending/delivered by session (or scope the drain to the requesting session's workspace).
