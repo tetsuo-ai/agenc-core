@@ -115,9 +115,18 @@ export function MarkdownTable({
   const terminalWidth = Math.max(1, Math.floor(forceWidth ?? inheritedContentWidth ?? actualTerminalWidth));
   const tableGlyphs = getMarkdownTableGlyphs();
 
-  // Format cell content to ANSI string
+  // Format cell content to ANSI string. Memoized per render by the cell's
+  // `tokens` reference: the ~4-5 layout passes (getMinWidth, getIdealWidth,
+  // calculateMaxRowLines, renderRowLines) each format every cell, so without a
+  // cache each cell's tokens ran through formatToken + join that many times.
+  // theme/highlight are constant within a render, so the cache is render-scoped.
+  const formatCellCache = new Map<Token[] | undefined, string>();
   function formatCell(tokens: Token[] | undefined): string {
-    return tokens?.map(_ => formatToken(_, theme, 0, null, null, highlight)).join('') ?? '';
+    const cached = formatCellCache.get(tokens);
+    if (cached !== undefined) return cached;
+    const result = tokens?.map(_ => formatToken(_, theme, 0, null, null, highlight)).join('') ?? '';
+    formatCellCache.set(tokens, result);
+    return result;
   }
 
   // Get plain text (stripped of ANSI codes)
@@ -320,7 +329,7 @@ export function MarkdownTable({
   }
 
   function renderPreformattedLines(lines: string[]): React.ReactNode {
-    const width = Math.max(1, ...lines.map(line_2 => stringWidth(stripAnsi(line_2))));
+    const width = maxOf(lines.map(line_2 => stringWidth(stripAnsi(line_2))), 1);
     return <RawAnsi lines={lines} width={Math.min(terminalWidth, width)} />;
   }
 

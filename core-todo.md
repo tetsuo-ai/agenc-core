@@ -411,13 +411,21 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   pass). Revert-sensitive test: 3 cursor moves over the same paths trigger 1 structure build (a
   `structureBuildCountForTest` counter) vs 3 when the cache is bypassed; a new paths array rebuilds.
 
-- [ ] `[V]` **M-TUI-12 — MarkdownTable does ~4–5 full O(rows×cols) layout passes per render, unmemoized.**
+- [x] `[V]` **M-TUI-12 — MarkdownTable does ~4–5 full O(rows×cols) layout passes per render, unmemoized.**
   `runtime/src/tui/components/markdown/MarkdownTable.tsx:142–217`. `getMinWidth`/`getIdealWidth`/
   `calculateMaxRowLines`/`renderRowLines` each call `formatCell → formatToken + stripAnsi` per cell with no
   `useMemo`; re-runs on resize, theme change, and every streaming delta while a table is the growing block
   (StreamingMarkdown re-parses the tail per token). A wide table streamed row-by-row re-lays-out the whole table
   per token.
   **Fix:** memoize the width/line computations against the table token; contrast `Markdown.tsx`'s token cache.
+  **DONE (render-scoped formatCell cache):** `formatCell` is memoized per render by the cell's `tokens` reference
+  (theme/highlight are constant within a render). The ~4-5 layout passes each formatted every cell; now each cell
+  runs through `formatToken` once. Revert-sensitive test (markdown-table-format-cache.test.tsx): a 6-cell table
+  calls `formatToken` 6 times (cached) vs 24 (4× per cell, reverted). Also fixed a missed `Math.max(...spread)` at
+  :323 (`renderPreformattedLines`) — the crash-class site the Math.max item noted as ":322" — now `maxOf`. NOTE:
+  chose the render-scoped cache (the dominant redundant work, and the only reuse available for a STREAMING table
+  whose token changes every delta) over an across-render token-keyed layout cache, which only helps
+  stable-token re-renders (resize/theme) and would be a larger, riskier restructure of this hot-path component.
 
 ### Onboarding (new code — commits 699768615 / 6c219902c, today)
 
