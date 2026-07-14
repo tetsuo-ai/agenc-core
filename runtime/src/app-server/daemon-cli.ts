@@ -130,6 +130,7 @@ import {
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
 import { isRecord } from "../utils/record.js";
+import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
@@ -1215,6 +1216,13 @@ async function runAgenCDaemonForeground(
   if (authStartup === null) {
     return 1;
   }
+  // OOM self-diagnosis: the daemon is the longest-lived agenc process, so a
+  // near-limit heap snapshot here is the difference between a diagnosable
+  // field OOM and a bare V8 abort.
+  startHeapWatchdog({
+    agencHome: authStartup.daemonHome,
+    warn: (message) => io.stderr.write(`${message}\n`),
+  });
   let activeConfig = authStartup.config;
   const reloadableAuthBackend = new AgenCDaemonReloadableAuthBackend(
     authStartup.authBackend,

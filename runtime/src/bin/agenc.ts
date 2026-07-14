@@ -65,6 +65,10 @@ import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgencHome, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
+import {
+  recentOomSnapshotNotice,
+  startHeapWatchdog,
+} from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   loadTieredInstructions,
@@ -3469,6 +3473,13 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   };
   try {
     validateAgencHome();
+    // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
+    // near the limit; point at a fresh capture from a previous crash.
+    startHeapWatchdog({ agencHome: resolveAgencHome(process.env) });
+    const oomNotice = recentOomSnapshotNotice(resolveAgencHome(process.env));
+    if (oomNotice !== null) {
+      process.stderr.write(`${oomNotice}\n`);
+    }
     if (args.resumeId !== undefined) {
       const deps = daemonCliDeps();
       const daemonClient = await deps.createConnectedTuiClient();
