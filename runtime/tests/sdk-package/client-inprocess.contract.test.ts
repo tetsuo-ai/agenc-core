@@ -340,7 +340,6 @@ describe("agenc-sdk client over the in-process transport", () => {
   });
 
   it("routes a permission request through the callback and back over tool.approve", async () => {
-    const cwd = await workspaces.create();
     const seen: AgencPermissionRequest[] = [];
     const daemon = await createFakeDaemon({
       onPermissionRequest: (request) => {
@@ -373,7 +372,9 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     await daemon.client.initialize();
-    const session = await daemon.client.createSession({ cwd });
+    // Preserve the public SDK convenience contract: omitting cwd resolves to
+    // the caller's existing absolute process.cwd() before session.create.
+    const session = await daemon.client.createSession();
     const result = await session.prompt("run ls").result();
 
     expect(seen).toHaveLength(1);
