@@ -266,13 +266,36 @@ cost, or let existing execution paths escape the intended workspace/policy
 boundary. They are higher leverage than new surface area.
 
 [ ] Deliver project instructions to every real model request.
-    - Use `runtime/src/memory/agencmd.ts` and its documented managed -> user ->
-      project -> local cascade as the single precedence implementation; do not
-      create a second closest-file instruction system.
-    - Ensure the resolved content, not merely its filename, reaches the live
-      model request exactly once.
-    - Add a fake-provider capture test with unique markers for precedence,
-      nested working directories, exclusion rules, and custom system prompts.
+    - Inventory every instruction resolver and every model-request assembly
+      call site, then converge `runtime/src/prompts/agenc-md.ts`,
+      `runtime/src/prompts/project-instructions.ts`, and
+      `runtime/src/memory/agencmd.ts` on one shared live-request resolver.
+      Preserve and mechanically define the managed -> user -> project -> local
+      precedence contract; record any intentionally excluded model-call class.
+    - Apply one fail-closed filesystem contract to every repository-influenced
+      instruction source, including entrypoints, fallbacks, overrides,
+      `.agenc/AGENC.md`, rules, and recursive includes. Keep each source within
+      its canonical tier/workspace boundary and require a regular file.
+    - Bind containment, file-type validation, and reading to the same opened
+      file identity; do not validate a pathname and later reopen it. Reject
+      symlink escapes, replacement races, broken links, and special files.
+    - Keep external references disabled in interactive and noninteractive
+      paths. Approval must come from an out-of-repository trusted-operator
+      channel, identify one displayed canonical path plus including source and
+      workspace, be auditable and revocable, and be revalidated at use.
+      Repository content cannot propose, persist, or broaden approval.
+    - Remove or migrate blanket external-include approval flags. Discover an
+      unapproved reference without reading its target content.
+    - Document the filesystem threat model for hard links, bind mounts, and
+      concurrent local mutation; either fail closed for supported platforms or
+      state the isolation boundary that makes each case out of scope.
+    - Ensure resolved content reaches every in-scope live model request exactly
+      once.
+    - Add revert-sensitive fake-provider tests covering every in-scope request
+      surface, precedence, nested workspaces, exclusions, custom system prompts,
+      entrypoint/rule/include symlink escapes, a validation-to-read swap,
+      broken links, special files, exact-path approval scope, noninteractive
+      denial, repository self-approval rejection, and duplicate injection.
 
 [ ] Make provider retries idempotent at the prompt boundary.
     - A retry must contain the assembled system/developer prompt exactly once,
@@ -612,10 +635,12 @@ SOURCE MAP
 ----------
 
 - Public roadmap: `docs/roadmap.md`
-- Local engineering backlog evidence: `TODO.md`
 - Closed audit evidence and skipped residuals: `core-todo.md`
 - Budget behavior: `docs/design/budget-enforcement.md`
 - Evaluation harness: `runtime/eval/`
+- Instruction loader audit surfaces: `runtime/src/prompts/agenc-md.ts`,
+  `runtime/src/prompts/project-instructions.ts`, and
+  `runtime/src/memory/agencmd.ts`
 - Workflow runner: `runtime/src/agents/workflow-runner.ts`
 - Job recovery: `runtime/src/agents/jobs/job-orchestrator.ts`
 - Task store: `runtime/src/bin/task-store.ts`
