@@ -305,5 +305,30 @@ fi
 # --- done --------------------------------------------------------------------
 
 log "install complete"
-printf '\n  AgenC %s installed.\n\n  Next steps:\n    %s onboard              # guided setup: provider, key, theme, first chat\n    %s security audit       # check exposure + permissions (--fix for safe fixes)\n    %s daemon status\n\n' \
-  "$VERSION" "$WRAPPER" "$WRAPPER" "$WRAPPER"
+# Brand "agenc" wordmark — half-block rendering of assets/agenc-wordmark.svg
+# (the letterforms, not the icon). Unicode blocks only on UTF-8 locales, with
+# a plain-text fallback; brand purple only on a color-capable TTY (NO_COLOR
+# respected; empty in pipes/CI so the banner stays plain + testable).
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+  wm_color="$(printf '\033[38;5;99m')"; wm_reset="$(printf '\033[0m')"
+else
+  wm_color=""; wm_reset=""
+fi
+
+printf '\n  AgenC %s installed.\n\n  Welcome to\n\n%s' "$VERSION" "$wm_color"
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]*8*)
+    cat <<'WORDMARK'
+   ▄██▀▀█▄   ▄██▀▀█▄██   ▄█▀▀██▄  ██▄█▀▀█▄     █████
+  ▀█    ▄██ ▄█▀    ▀██ ▄█▀    ▀█▄ ██     ██  ██     ▀█
+    ▄▄█▀▀██ ██      ██ ████████▀▀ ██     ██  ██
+  ██▀    ██ ██      ██ ▀█      ▄▄ ██     ██  ██     ▄▄
+  ▀█▄▄▄▄███  ▀█▄▄▄▄▀██  ▀█▄▄▄▄█▀  ██     ██  ▀▀▄▄▄▄▄▀▀
+     ▀       ▄      ██     ▀▀
+             ▀██▄▄▄█▀
+WORDMARK
+    ;;
+  *) printf '  agenc\n' ;;
+esac
+printf '%s\n  Next steps:\n    %s onboard              # guided setup: provider, key, theme, first chat\n    %s security audit       # check exposure + permissions (--fix for safe fixes)\n    %s daemon status\n\n' \
+  "$wm_reset" "$WRAPPER" "$WRAPPER" "$WRAPPER"
