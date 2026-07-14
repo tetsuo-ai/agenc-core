@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import {
@@ -9,6 +10,14 @@ import {
   AgenCSessionLifecycleError,
   DEFAULT_AGENC_DAEMON_AGENT_ID,
 } from "./session-lifecycle.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-session-lifecycle-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -32,11 +41,14 @@ describe("AgenC daemon session lifecycle", () => {
         "2026-05-01T10:02:00.000Z",
       ]),
     });
+    const firstAgentCwd = await workspaces.create();
+    const secondAgentCwd = await workspaces.create();
+    const thirdAgentCwd = await workspaces.create();
 
     await expect(
       manager.createSession({
         agentId: "agent_1",
-        cwd: "/workspace/a",
+        cwd: firstAgentCwd,
         initialPrompt: "inspect",
         metadata: { origin: "test" },
       }),
@@ -45,11 +57,11 @@ describe("AgenC daemon session lifecycle", () => {
       agentId: "agent_1",
       status: "idle",
       createdAt: "2026-05-01T10:00:00.000Z",
-      cwd: "/workspace/a",
+      cwd: firstAgentCwd,
       metadata: { origin: "test" },
     });
-    await manager.createSession({ agentId: "agent_2" });
-    await manager.createSession({ agentId: "agent_1" });
+    await manager.createSession({ agentId: "agent_2", cwd: secondAgentCwd });
+    await manager.createSession({ agentId: "agent_1", cwd: thirdAgentCwd });
 
     await expect(
       manager.listSessions({ agentId: "agent_1", limit: 1 }),
@@ -60,7 +72,7 @@ describe("AgenC daemon session lifecycle", () => {
           agentId: "agent_1",
           status: "idle",
           createdAt: "2026-05-01T10:00:00.000Z",
-          cwd: "/workspace/a",
+          cwd: firstAgentCwd,
           metadata: { origin: "test" },
         },
       ],
@@ -89,7 +101,10 @@ describe("AgenC daemon session lifecycle", () => {
         "2026-05-01T10:00:02.000Z",
       ]),
     });
-    await manager.createSession({ agentId: "agent_1" });
+    await manager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     await expect(
       manager.attachSession({ sessionId: "session_1", clientId: "tui_1" }),
@@ -151,7 +166,10 @@ describe("AgenC daemon session lifecycle", () => {
         "2026-05-01T10:00:02.000Z",
       ]),
     });
-    await manager.createSession({ agentId: "agent_1" });
+    await manager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
     await manager.attachSession({ sessionId: "session_1", clientId: "tui_1" });
 
     await expect(
@@ -190,7 +208,10 @@ describe("AgenC daemon session lifecycle", () => {
       createSessionId: sequence(["session_1"]),
       now: sequence(["2026-05-01T10:00:00.000Z"]),
     });
-    await manager.createSession({ agentId: "agent_1" });
+    await manager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     await expect(
       manager.attachSession({ sessionId: "session_missing" }),

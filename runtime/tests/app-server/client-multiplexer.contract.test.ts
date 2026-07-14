@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import {
   AgenCClientMultiplexerError,
   AgenCDaemonClientMultiplexer,
@@ -10,6 +11,14 @@ import {
   type AgenCDaemonSessionNotification,
   type JsonObject,
 } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-client-multiplexer-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -45,12 +54,21 @@ function createHarness(): {
   return { sessionManager, multiplexer };
 }
 
+async function createSession(
+  sessionManager: AgenCDaemonSessionManager,
+): Promise<void> {
+  await sessionManager.createSession({
+    agentId: "agent_1",
+    cwd: await workspaces.create(),
+  });
+}
+
 describe("AgenC daemon client multiplexer", () => {
   it("routes Ledger client actions by initialized capability without session attachment", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
     const tui: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "phone",
       capabilities: { "portal.ledger.solana.sign.v1": true },
@@ -81,7 +99,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const olderPhone: JsonObject[] = [];
     const newerPhone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "phone-older",
       capabilities: { "portal.ledger.solana.sign.v1": true },
@@ -108,7 +126,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("buffers a failed sole Ledger delivery for the next capable reconnect", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const replacementPhone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "phone-failing",
       capabilities: { "portal.ledger.solana.sign.v1": true },
@@ -145,7 +163,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("replays a bounded Ledger action when a capable phone initializes later", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     const event = ledgerActionNotification("session_1", "intent-replay");
 
     await expect(
@@ -164,7 +182,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const firstPhone: JsonObject[] = [];
     const secondPhone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     const event = ledgerActionNotification("session_1", "intent-replay-lease");
     await multiplexer.broadcastSessionEvent("session_1", event);
 
@@ -209,7 +227,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("pushes agent status to an opted-in mobile client without session attachment", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "phone-status",
       capabilities: { [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true },
@@ -231,7 +249,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("keeps ordinary session events attachment-only for a status observer", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "phone-status",
       capabilities: { [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true },
@@ -249,7 +267,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const observerFrames: JsonObject[] = [];
     const attachedFrames: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "initialized-socket",
       deliveryKey: "physical-socket",
@@ -281,7 +299,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
     const chat: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     const ordinary = sessionEventNotification("session_1", "ordinary-buffered");
     const status = agentStatusNotification("session_1", "status-buffered");
     await multiplexer.broadcastSessionEvent("session_1", ordinary);
@@ -305,7 +323,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("retains failed live status delivery for the next observer reconnect", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const replacement: JsonObject[] = [];
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "failing-status-phone",
       capabilities: { [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true },
@@ -331,7 +349,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const clientMessages = new Map<string, JsonObject[]>();
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     for (const clientId of ["client_1", "client_2"]) {
       clientMessages.set(clientId, []);
       await multiplexer.registerClient({
@@ -372,7 +390,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const deliveredToClient2: JsonObject[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "client_1",
       send: () => {
@@ -408,7 +426,7 @@ describe("AgenC daemon client multiplexer", () => {
     const client1Messages: JsonObject[] = [];
     const client2Messages: JsonObject[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "client_1",
       send: (message) => client1Messages.push(message),
@@ -446,7 +464,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const client2Messages: JsonObject[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "client_1",
       send: () => {},
@@ -487,7 +505,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("terminates by params and clears route/client memberships", async () => {
     const { sessionManager, multiplexer } = createHarness();
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     for (const clientId of ["client_1", "client_2"]) {
       await multiplexer.registerClient({ clientId, send: () => {} });
       await multiplexer.attachClientToSession("session_1", clientId);
@@ -524,7 +542,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const received: number[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "client_1",
       send: async (message) => {
@@ -554,7 +572,7 @@ describe("AgenC daemon client multiplexer", () => {
     const { sessionManager, multiplexer } = createHarness();
     const received: JsonObject[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     const event: AgenCDaemonSessionNotification = {
       jsonrpc: JSON_RPC_VERSION,
       method: "event.message_chunk",
@@ -584,7 +602,7 @@ describe("AgenC daemon client multiplexer", () => {
   it("rejects typed notifications whose embedded session does not match the route", async () => {
     const { sessionManager, multiplexer } = createHarness();
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await expect(
       multiplexer.broadcastSessionNotification("session_1", {
         jsonrpc: JSON_RPC_VERSION,
@@ -600,7 +618,7 @@ describe("AgenC daemon client multiplexer", () => {
 
   it("rejects unknown and duplicate clients before mutating session routes", async () => {
     const { sessionManager, multiplexer } = createHarness();
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await createSession(sessionManager);
     await multiplexer.registerClient({
       clientId: "client_1",
       send: () => {},

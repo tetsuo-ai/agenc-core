@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
@@ -6,6 +7,14 @@ import {
   type AgenCDaemonSessionNotification,
   type JsonObject,
 } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-disconnect-resilience-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -44,7 +53,8 @@ describe("AgenC daemon disconnect resilience", () => {
     const { sessionManager, multiplexer } = createHarness();
     const replayed: JsonObject[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    const cwd = await workspaces.create();
+    await sessionManager.createSession({ agentId: "agent_1", cwd });
     await multiplexer.registerClient({ clientId: "client_1", send: () => {} });
     await multiplexer.attachClientToSession("session_1", "client_1");
 
@@ -56,6 +66,7 @@ describe("AgenC daemon disconnect resilience", () => {
       agentId: "agent_1",
       status: "idle",
       createdAt: "2026-05-01T10:00:00.000Z",
+      cwd,
     });
 
     const event = {
@@ -95,7 +106,10 @@ describe("AgenC daemon disconnect resilience", () => {
     const { sessionManager, multiplexer } = createHarness(2);
     const replayedSequences: number[] = [];
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
     await multiplexer.registerClient({ clientId: "client_1", send: () => {} });
     await multiplexer.attachClientToSession("session_1", "client_1");
     await multiplexer.disconnectClient("client_1");
