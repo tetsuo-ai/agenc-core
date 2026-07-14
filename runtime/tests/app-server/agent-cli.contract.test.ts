@@ -2,7 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import {
   collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
@@ -34,6 +35,12 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
+
+const workspaces = createTempWorkspaceFixture("agenc-agent-cli-workspace-");
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function createIo(): AgenCAgentCliIo & {
   readonly stdoutText: () => string;
@@ -204,6 +211,7 @@ describe("agenc agent start CLI", () => {
   it("prints only the daemon-returned agent ID", async () => {
     const io = createIo();
     const requests: AgentCreateParams[] = [];
+    const cwd = await workspaces.create();
 
     await expect(
       runAgenCAgentCli(
@@ -214,7 +222,7 @@ describe("agenc agent start CLI", () => {
           unattendedDeny: ["exec_command"],
         },
         {
-          cwd: "/workspace",
+          cwd,
           // Empty env: no allowlisted overrides get collected, so the
           // create params stay exactly minimal.
           env: {},
@@ -248,7 +256,7 @@ describe("agenc agent start CLI", () => {
       {
         objective: "audit the repo",
         instructions: "audit the repo",
-        cwd: "/workspace",
+        cwd,
         metadata: { source: "agenc agent start" },
         unattendedAllow: ["FileRead"],
         unattendedDeny: ["exec_command"],
@@ -259,6 +267,7 @@ describe("agenc agent start CLI", () => {
   it("forwards allowlisted client env overrides with agent start", async () => {
     const io = createIo();
     const requests: AgentCreateParams[] = [];
+    const cwd = await workspaces.create();
 
     await expect(
       runAgenCAgentCli(
@@ -269,7 +278,7 @@ describe("agenc agent start CLI", () => {
           unattendedDeny: [],
         },
         {
-          cwd: "/workspace",
+          cwd,
           env: {
             XAI_API_KEY: "rotated-key",
             PATH: "/project/.venv/bin:/usr/bin",
@@ -723,6 +732,7 @@ autostart = false
 
   it("sends agent.create over the daemon JSON-line socket", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-start-"));
+    const cwd = await workspaces.create();
     const socketPath = join(dir, "daemon.sock");
     const io = createIo();
     const sessionManager = new AgenCDaemonSessionManager({
@@ -844,7 +854,7 @@ autostart = false
           authCookie: "wrong-cookie",
         }).createAgent({
           objective: "should not launch",
-          cwd: "/workspace",
+          cwd,
         }),
       ).rejects.toThrow("daemon connection authentication failed");
       expect(starts).toEqual([]);
@@ -862,7 +872,7 @@ autostart = false
               socketPath,
               authCookie: "socket-cookie",
             }),
-            cwd: "/workspace",
+            cwd,
             ensureDaemonReady: async () => {},
             io,
           },
@@ -1019,7 +1029,7 @@ autostart = false
     expect(starts).toMatchObject([
       {
         objective: "background compile",
-        cwd: "/workspace",
+        cwd,
         unattendedAllow: [],
         unattendedDeny: [],
       },
@@ -1781,6 +1791,7 @@ autostart = false
 
   it("does not retry agent.create after the side-effecting request is sent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-start-reset-"));
+    const cwd = await workspaces.create();
     const socketPath = join(dir, "daemon.sock");
     const io = createIo();
     const starts: AgenCBackgroundAgentStartParams[] = [];
@@ -1841,7 +1852,7 @@ autostart = false
               authCookie: "reset-cookie",
               timeoutMs: 200,
             }),
-            cwd: "/workspace",
+            cwd,
             ensureDaemonReady: async () => {},
             io,
           },

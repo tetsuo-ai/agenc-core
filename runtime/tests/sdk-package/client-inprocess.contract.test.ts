@@ -6,7 +6,8 @@
  * agent runtime is faked.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "../../src/app-server/client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
@@ -23,6 +24,14 @@ import {
   type AgencPromptEvent,
   type AgencTransport,
 } from "../../../packages/agenc-sdk/src/index";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-sdk-in-process-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -85,6 +94,7 @@ async function createFakeDaemon(options: {
         const agentId = "agent_1";
         const session = await sessionManager.createSession({
           agentId,
+          ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
           initialPrompt:
             typeof params.objective === "string"
               ? params.objective
@@ -225,6 +235,7 @@ function statusNotification(
 
 describe("agenc-sdk client over the in-process transport", () => {
   it("initializes, creates a session, and streams a typed prompt event stream", async () => {
+    const cwd = await workspaces.create();
     const daemon = await createFakeDaemon({
       onStreamMessage: async (fake, params) => {
         const sessionId = String(params.sessionId);
@@ -273,6 +284,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     const session = await daemon.client.createSession({
+      cwd,
       metadata: { source: "sdk-inprocess-test" },
     });
     expect(session.sessionId).toBe("session_1");
@@ -360,6 +372,8 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     await daemon.client.initialize();
+    // Preserve the public SDK convenience contract: omitting cwd resolves to
+    // the caller's existing absolute process.cwd() before session.create.
     const session = await daemon.client.createSession();
     const result = await session.prompt("run ls").result();
 
@@ -384,6 +398,7 @@ describe("agenc-sdk client over the in-process transport", () => {
   });
 
   it("denies permission requests when no handler is registered (never hangs)", async () => {
+    const cwd = await workspaces.create();
     const daemon = await createFakeDaemon({
       onStreamMessage: async (fake, params) => {
         const sessionId = String(params.sessionId);
@@ -408,7 +423,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     await daemon.client.initialize();
-    const session = await daemon.client.createSession();
+    const session = await daemon.client.createSession({ cwd });
     const result = await session.prompt("run ls").result();
 
     expect(daemon.calls.approved).toHaveLength(0);
@@ -424,6 +439,7 @@ describe("agenc-sdk client over the in-process transport", () => {
   });
 
   it("resumes an existing session and surfaces turn errors as errored results", async () => {
+    const cwd = await workspaces.create();
     const daemon = await createFakeDaemon({
       onStreamMessage: async (fake, params) => {
         const sessionId = String(params.sessionId);
@@ -436,7 +452,7 @@ describe("agenc-sdk client over the in-process transport", () => {
 
     await daemon.client.initialize();
     // Create the session out of band (as another client would), then resume.
-    const created = await daemon.client.request("session.create", {});
+    const created = await daemon.client.request("session.create", { cwd });
     const session = await daemon.client.resumeSession(created.sessionId);
     const result = await session
       .prompt("hello", { includeUsage: false })

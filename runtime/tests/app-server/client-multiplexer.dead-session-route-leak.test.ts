@@ -13,7 +13,8 @@
  * replays the stale buffered event. With the fix no route is created, so the
  * later attachment replays nothing.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type {
@@ -23,6 +24,14 @@ import type {
   SessionSummary,
   SessionTerminateResult,
 } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-client-multiplexer-route-leak-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -182,7 +191,10 @@ describe("client multiplexer dead-session route leak", () => {
     });
     const multiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
 
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     const liveEvent: JsonObject = {
       type: "session.delta",

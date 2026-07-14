@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { JsonObject } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-client-multiplexer-byte-budget-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -50,7 +59,10 @@ describe("client multiplexer buffered byte budget", () => {
   it("evicts oldest buffered events once the byte budget is exceeded", async () => {
     // Budget fits roughly four ~1KB payloads.
     const { sessionManager, multiplexer } = createHarness(4 * 1100);
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     // No client attached: every event is buffered. Push far more bytes than
     // the budget so eviction must kick in.
@@ -90,7 +102,10 @@ describe("client multiplexer buffered byte budget", () => {
 
   it("always retains at least the most recent event even when it alone exceeds the budget", async () => {
     const { sessionManager, multiplexer } = createHarness(1024);
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     // A single payload far larger than the whole budget.
     await multiplexer.broadcastSessionEvent("session_1", bigEvent(1, 100_000));

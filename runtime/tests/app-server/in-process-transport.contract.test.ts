@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import {
   AgenCInProcessDaemonTransport as PublicAgenCInProcessDaemonTransport,
   AgenCDaemonJsonRpcDispatcher as PublicAgenCDaemonJsonRpcDispatcher,
@@ -22,6 +23,14 @@ import {
   createAgenCDaemonClient as createSdkDaemonClient,
   type AgenCDaemonTransport as SdkAgenCDaemonTransport,
 } from "../../../../agenc-sdk/src/daemon";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-in-process-transport-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -190,7 +199,10 @@ describe("AgenC in-process app-server transport", () => {
       createAttachmentId: sequence(["attachment_1"]),
       now: sequence(["2026-05-01T12:00:00.000Z", "2026-05-01T12:00:01.000Z"]),
     });
-    await sessions.createSession({ agentId: "agent_1" });
+    await sessions.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({
       sessionManager: sessions,
     });

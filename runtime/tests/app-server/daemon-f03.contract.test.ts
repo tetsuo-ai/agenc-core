@@ -1,9 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AGENC_DAEMON_METHODS } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { JsonObject } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture("agenc-daemon-f03-workspace-");
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -61,7 +68,10 @@ describe("AgenC daemon F-03 contract coverage", () => {
       }),
     });
 
-    await sessions.createSession({ agentId: "agent_1" });
+    await sessions.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     const client1Messages: JsonObject[] = [];
     const client2Messages: JsonObject[] = [];

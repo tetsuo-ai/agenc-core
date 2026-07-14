@@ -8,6 +8,7 @@ import {
   resetStateForTests,
   registerHookCallbacks,
   setCwdState,
+  setIsInteractive,
   setMainThreadAgentType,
   setOriginalCwd,
   setSessionTrustAccepted,
@@ -110,6 +111,11 @@ function nodeCommand(script: string): string {
 
 function stdoutCommand(output: string): string {
   return nodeCommand(`process.stdout.write(${JSON.stringify(output)})`);
+}
+
+function acceptInteractiveWorkspaceTrust(): void {
+  setIsInteractive(true);
+  setSessionTrustAccepted(true);
 }
 
 afterEach(async () => {
@@ -308,7 +314,7 @@ test("filters HTTP hooks from startup events during matching", async () => {
 
 test("executes registered callback hooks through the pre-tool generator", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
     PreToolUse: [
@@ -358,7 +364,7 @@ test("executes registered callback hooks through the pre-tool generator", async 
 
 test("executes command hooks through the pre-tool generator", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
     PreToolUse: [
@@ -421,7 +427,7 @@ test("executes command hooks through the pre-tool generator", async () => {
 
 test("executes blocking command hook output through the pre-tool generator", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
     PreToolUse: [
@@ -463,7 +469,7 @@ test("executes blocking command hook output through the pre-tool generator", asy
 
 test("executes outside-REPL wrapper hooks with structured outputs", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   let notificationCalls = 0;
   let instructionsCalls = 0;
   let sessionEndCleared = false;
@@ -696,7 +702,7 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
 
 test("executes session-scoped function hooks through stop hooks", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   const appState = {
     sessionHooks: new Map<string, unknown>([
       [
@@ -759,7 +765,7 @@ test("executes session-scoped function hooks through stop hooks", async () => {
 
 test("executes callback hooks across public generator event wrappers", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   const ctx = toolUseContext(appState);
   registerHookCallbacks({
@@ -1112,7 +1118,7 @@ test("executes callback hooks across public generator event wrappers", async () 
 
 test("executes outside-REPL WorktreeCreate hook variants", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   registerHookCallbacks({
     WorktreeCreate: [
       {
@@ -1147,7 +1153,7 @@ test("executes outside-REPL WorktreeCreate hook variants", async () => {
 
 test("executes HTTP WorktreeCreate hook JSON output", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
 
   const server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -1202,7 +1208,7 @@ test("executes HTTP WorktreeCreate hook JSON output", async () => {
 
 test("reports malformed command hook JSON outside the REPL", async () => {
   await configureHookSession();
-  setSessionTrustAccepted(true);
+  acceptInteractiveWorkspaceTrust();
   registerHookCallbacks({
     WorktreeCreate: [
       {

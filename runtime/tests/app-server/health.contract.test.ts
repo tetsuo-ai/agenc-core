@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonHealthService, toHealthMemoryStats } from "./health.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+
+const workspaces = createTempWorkspaceFixture("agenc-health-workspace-");
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -49,8 +56,14 @@ describe("AgenC daemon health service", () => {
         "2026-05-01T10:00:02.000Z",
       ]),
     });
-    await sessions.createSession({ agentId: "agent_1" });
-    await sessions.createSession({ agentId: "agent_1" });
+    await sessions.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
+    await sessions.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
     await sessions.terminateSession({ sessionId: "session_2" });
 
     const health = new AgenCDaemonHealthService({

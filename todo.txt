@@ -128,7 +128,7 @@ and hosted CI does not run the real gates.
     - Strip ambient provider credentials from default tests before modules load.
     - Fail a test if the default suite attempts non-loopback network access.
 
-[ ] Repair the currently broken stable tests.
+[x] Repair the currently broken stable tests.
     - Update session/client fixtures, including the client-multiplexer contract
       fixtures, to supply the required absolute `cwd`.
     - Fix stale mocks at the contract boundary instead of weakening runtime

@@ -97,11 +97,11 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(execCommand?.recoveryCategory).toBe("side-effecting");
   });
 
-  test("write_stdin gets BackgroundTerminal without a second approval prompt", () => {
+  test("write_stdin keeps approval on the second shell-mutation channel", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const writeStdin = registry.tools.find((t) => t.name === "write_stdin");
     expect(writeStdin?.concurrencyClass?.kind).toBe("background_terminal");
-    expect(writeStdin?.requiresApproval).toBe(false);
+    expect(writeStdin?.requiresApproval).toBe(true);
     expect(writeStdin?.recoveryCategory).toBe("side-effecting");
   });
 

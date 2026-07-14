@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { JsonObject } from "./protocol/index.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-client-multiplexer-slow-consumer-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 // Harness with default (auto-generated) session/attachment ids and a real clock
 // so tests that attach/detach/re-attach many times do not exhaust fixed
@@ -59,7 +68,10 @@ describe("client multiplexer slow-consumer eviction", () => {
     // Budget fits roughly ~8 of the ~1KB payloads below.
     const { sessionManager, multiplexer, evicted } =
       createUnsequencedHarness(8 * 1100);
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     // SLOW client: every send returns a promise that never settles, modelling a
     // backpressured / stuck socket whose OS write callback never fires. Count
@@ -184,7 +196,10 @@ describe("client multiplexer slow-consumer eviction", () => {
         maxPendingDeliveryCountPerClient: 3,
       },
     );
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     // Buffer a contiguous multi-event run whose TOTAL bytes (~12 KB over 12
     // events) far exceed the 2 KB / 3-event live pending cap, while staying well

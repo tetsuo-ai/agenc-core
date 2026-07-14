@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
+import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
@@ -10,6 +11,14 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+
+const workspaces = createTempWorkspaceFixture(
+  "agenc-daemon-dispatcher-workspace-",
+);
+
+afterEach(async () => {
+  await workspaces.cleanup();
+});
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -79,7 +88,10 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const sessionManager = new AgenCDaemonSessionManager({
       createSessionId: () => "session_ledger",
     });
-    await sessionManager.createSession({ agentId: "agent_ledger" });
+    await sessionManager.createSession({
+      agentId: "agent_ledger",
+      cwd: await workspaces.create(),
+    });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
     const notifications: JsonObject[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -134,7 +146,10 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const sessionManager = new AgenCDaemonSessionManager({
       createSessionId: () => "session_mobile_status",
     });
-    await sessionManager.createSession({ agentId: "agent_mobile_status" });
+    await sessionManager.createSession({
+      agentId: "agent_mobile_status",
+      cwd: await workspaces.create(),
+    });
     const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
     const notifications: JsonObject[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -476,7 +491,10 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     // healthy one drains).
     const connection = dispatcher.createConnection({ sendNotification: () => {} });
     connections.set("conn_1", connection);
-    await sessionManager.createSession({ agentId: "agent_1" });
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
 
     let slowSendCount = 0;
     await multiplexer.registerClient({
@@ -663,9 +681,12 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
     const connection = dispatcher.createConnection();
     await initialize(connection);
+    const cwd = await workspaces.create();
 
     await expect(
-      connection.dispatch(request("create-default", "session.create")),
+      connection.dispatch(
+        request("create-default", "session.create", { cwd }),
+      ),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
       id: "create-default",
@@ -674,6 +695,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         agentId: "agent_default",
         status: "idle",
         createdAt: "2026-05-01T09:00:00.000Z",
+        cwd,
       },
     });
   });
@@ -699,12 +721,13 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
     const connection = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(connection);
+    const cwd = await workspaces.create();
 
     await expect(
       connection.dispatch(
         request("create", "session.create", {
           agentId: "agent_1",
-          cwd: "/workspace/project",
+          cwd,
           initialPrompt: "inspect",
           metadata: { source: "dispatcher-test" },
         }),
@@ -713,7 +736,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       result: {
         sessionId: "session_1",
         agentId: "agent_1",
-        cwd: "/workspace/project",
+        cwd,
         metadata: { source: "dispatcher-test" },
       },
     });
@@ -812,7 +835,11 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const connection = dispatcher.createConnection();
     await initialize(connection);
 
-    await connection.dispatch(request("create", "session.create", {}));
+    await connection.dispatch(
+      request("create", "session.create", {
+        cwd: await workspaces.create(),
+      }),
+    );
     await connection.dispatch(
       request("attach", "session.attach", {
         sessionId: "session_1",
@@ -881,7 +908,11 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     });
     await initialize(connection);
 
-    await connection.dispatch(request("create", "session.create", {}));
+    await connection.dispatch(
+      request("create", "session.create", {
+        cwd: await workspaces.create(),
+      }),
+    );
     await connection.dispatch(
       request("attach-one", "session.attach", {
         sessionId: "session_1",
@@ -1169,8 +1200,16 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     const connection = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(connection);
 
-    await connection.dispatch(request("create-one", "session.create", {}));
-    await connection.dispatch(request("create-two", "session.create", {}));
+    await connection.dispatch(
+      request("create-one", "session.create", {
+        cwd: await workspaces.create(),
+      }),
+    );
+    await connection.dispatch(
+      request("create-two", "session.create", {
+        cwd: await workspaces.create(),
+      }),
+    );
     await connection.dispatch(
       request("attach-one", "session.attach", {
         sessionId: "session_1",

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React, { type SetStateAction } from "react";
+import stripAnsi from "strip-ansi";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type {
@@ -355,6 +356,8 @@ vi.mock("../state/AppState.js", async () => {
 vi.mock("../../commands.js", () => ({
   findCommand: (name: string, commands: Array<Record<string, any>> = mockTuiCommandList) =>
     commands.find((command) => command.name === name || command.aliases?.includes(name)) ?? null,
+  getCommands: async () => [],
+  isCommandEnabled: () => true,
   listTuiCommandList: () => mockTuiCommandList,
 }));
 
@@ -627,6 +630,30 @@ type TestStdin = PassThrough & {
   ref: () => void;
   unref: () => void;
 };
+
+const SYNC_START = "\x1B[?2026h";
+const SYNC_END = "\x1B[?2026l";
+
+function extractLastSynchronizedFrame(output: string): string {
+  let lastFrame: string | undefined;
+  let cursor = 0;
+
+  while (cursor < output.length) {
+    const start = output.indexOf(SYNC_START, cursor);
+    if (start === -1) break;
+    const contentStart = start + SYNC_START.length;
+    const end = output.indexOf(SYNC_END, contentStart);
+    if (end === -1) break;
+    const frame = output.slice(contentStart, end);
+    if (frame.trim().length > 0) lastFrame = frame;
+    cursor = end + SYNC_END.length;
+  }
+
+  if (lastFrame === undefined) {
+    throw new Error("Expected at least one complete synchronized terminal frame");
+  }
+  return lastFrame;
+}
 
 function createTestStreams(): {
   stdout: PassThrough;
@@ -3381,8 +3408,17 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("1");
           await submit("xai-app-key");
 
-          expect(output()).toContain("Approve BYOK API key");
-          expect(output()).toContain("...-key");
+          // Ink represents unchanged spaces with cursor-forward controls. Read
+          // one synchronized frame, then normalize those renderer artifacts so
+          // tokens from unrelated historical frames cannot satisfy the check.
+          const approvalFrame = stripAnsi(
+            extractLastSynchronizedFrame(output()),
+          ).replace(/\s+/gu, "");
+          expect(approvalFrame).toContain("ApproveBYOKAPIkey");
+          expect(approvalFrame).toContain("...-key");
+          expect(approvalFrame).not.toContain("xai-app-key");
+          // The full terminal history must also remain secret-free: checking
+          // only the latest frame would miss a transient disclosure.
           expect(output()).not.toContain("xai-app-key");
 
           await submit("yes");
