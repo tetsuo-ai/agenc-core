@@ -440,7 +440,15 @@ describe("first-run onboarding wizard", () => {
 
   test("rejects invalid theme, provider, API-key, and connection-test input", async () => {
     const config = defaultConfig();
-    const context = { config, env: {}, checkLocalProviders: false };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("offline verification fixture"));
+    const context = {
+      config,
+      env: {},
+      checkLocalProviders: false,
+      fetchImpl,
+    };
     let state = createInitialFirstRunOnboardingState(context);
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
@@ -457,6 +465,7 @@ describe("first-run onboarding wizard", () => {
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("api-key");
     expect(result.state.error).toContain("next or skip");
+    expect(fetchImpl).toHaveBeenCalledOnce();
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     result = await submitFirstRunOnboardingInput(state, "later", context);

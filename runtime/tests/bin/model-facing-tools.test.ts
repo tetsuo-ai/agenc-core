@@ -270,14 +270,22 @@ function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
   return result.codeModeResult as T;
 }
 
+function installDeterministicPublicWebFetchDns(): void {
+  __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
+    callback(null, [{ address: '192.0.2.1', family: 4 }]);
+  });
+}
+
 describe("model-facing tools", () => {
   beforeEach(() => {
+    installDeterministicPublicWebFetchDns();
     delegateMock.mockReset();
     resetAllLSPDiagnosticState();
     _resetLspManagerForTesting();
   });
 
   afterEach(async () => {
+    __setLiveWebFetchDnsAllLookupForTests(undefined);
     await shutdownLspServerManager();
     _resetLspManagerForTesting();
     _resetAgentRolesForTesting();
@@ -4628,6 +4636,14 @@ describe("WebSearch real backends (task 4)", () => {
 });
 
 describe("WebFetch prompt extraction (task 4)", () => {
+  beforeEach(() => {
+    installDeterministicPublicWebFetchDns();
+  });
+
+  afterEach(() => {
+    __setLiveWebFetchDnsAllLookupForTests(undefined);
+  });
+
   it("runs the prompt against fetched content instead of echoing it", async () => {
     const paragraph =
       "<p>The current release is version 9.9.9 and it shipped today.</p>";

@@ -1,10 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceUrl } from "../helpers/source-path.ts";
 
-import type { ToolUseContext } from "./Tool.js";
+import type { Tool, ToolUseContext } from "./Tool.js";
 import { applyToolApprovalConfigToPermissionContext } from "../permissions/tool-approval.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -25,6 +26,7 @@ import {
   clearSessionReadState,
   SESSION_ID_ARG,
 } from "./system/filesystem.js";
+import { runWithCwdOverride } from "../utils/cwd.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../tools/ScheduleCronTool/CronCreateTool.js", () => ({
@@ -49,21 +51,47 @@ vi.mock("../tools.js", () => ({
   ALL_AGENT_DISALLOWED_TOOLS: [],
 }));
 
-function toolContext(): ToolUseContext {
+function permissionContextForWorkspace(workspace?: string) {
+  return createEmptyToolPermissionContext({
+    additionalWorkingDirectories: workspace === undefined
+      ? new Map()
+      : new Map([[workspace, { path: workspace, source: "session" }]]),
+  });
+}
+
+function toolContext(workspace?: string): ToolUseContext {
   return {
     abortController: new AbortController(),
     readFileState: new Map(),
     getAppState: () => ({
-      toolPermissionContext: createEmptyToolPermissionContext(),
+      toolPermissionContext: permissionContextForWorkspace(workspace),
     }),
   } as unknown as ToolUseContext;
 }
 
-function attachmentContext(readFileState = new Map()): ToolUseContext {
+function attachmentContext(
+  readFileState = new Map(),
+  workspace?: string,
+): ToolUseContext {
   return {
-    ...toolContext(),
+    ...toolContext(workspace),
     readFileState,
   } as unknown as ToolUseContext;
+}
+
+function callCanonicalInWorkspace(
+  tool: Tool,
+  workspace: string,
+  input: Record<string, unknown>,
+) {
+  return runWithCwdOverride(workspace, () =>
+    tool.call(
+      input,
+      toolContext(workspace),
+      (async () => undefined) as never,
+      {} as never,
+    ),
+  );
 }
 
 async function withMockedCanonicalFileRead<T>(
@@ -219,7 +247,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical Bash and daemon system.bash share execution behavior", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-bash-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-bash-"));
     try {
       const input = {
         command: process.execPath,
@@ -228,7 +256,7 @@ describe("old-stack tool surface consolidation", () => {
       };
       const canonical = await CanonicalBashTool.call(
         input,
-        toolContext(),
+        toolContext(workspace),
         (async () => undefined) as never,
         {} as never,
       );
@@ -351,43 +379,40 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical file wrappers enforce session read-before-edit", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-file-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-file-"));
     const sessionId = "canonical-file-session";
     const unreadSessionId = "canonical-file-unread-session";
     try {
       const filePath = join(workspace, "demo.txt");
       await writeFile(filePath, "old", "utf8");
 
-      const unreadEdit = await CanonicalFileEditTool.call(
+      const unreadEdit = await callCanonicalInWorkspace(
+        CanonicalFileEditTool,
+        workspace,
         {
           file_path: filePath,
           old_string: "old",
           new_string: "bad",
           [SESSION_ID_ARG]: unreadSessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
       expect(unreadEdit.data).toMatchObject({ isError: true });
       expect(resultText(unreadEdit.data)).toContain("File has not been read yet");
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: filePath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      await CanonicalFileEditTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileEditTool,
+        workspace,
         {
           file_path: filePath,
           old_string: "old",
           new_string: "new",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       await expect(readFile(filePath, "utf8")).resolves.toBe("new");
@@ -399,7 +424,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("file attachments read through canonical FileRead implementation", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-attachment-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-attachment-"));
     const filePath = join(workspace, "demo.txt");
     const observedReads: string[] = [];
     const unregister = registerFileReadListener((event) => {
@@ -413,7 +438,7 @@ describe("old-stack tool surface consolidation", () => {
         {
           abortController: new AbortController(),
           getAppState: () => ({
-            toolPermissionContext: createEmptyToolPermissionContext(),
+            toolPermissionContext: permissionContextForWorkspace(workspace),
           }),
           readFileState: new Map(),
           nestedMemoryAttachmentTriggers: new Set(),
@@ -450,7 +475,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical NotebookEdit uses shared session-backed implementation", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-notebook-"));
     const sessionId = "canonical-notebook-session";
     const unreadSessionId = "canonical-notebook-unread-session";
     try {
@@ -475,36 +500,33 @@ describe("old-stack tool surface consolidation", () => {
         "utf8",
       );
 
-      const unreadEdit = await CanonicalNotebookEditTool.call(
+      const unreadEdit = await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "cell-a",
           new_source: "print('bad')",
           [SESSION_ID_ARG]: unreadSessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
       expect(unreadEdit.data).toMatchObject({ isError: true });
       expect(resultText(unreadEdit.data)).toContain("File has not been read yet");
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      await CanonicalNotebookEditTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "cell-a",
           new_source: "print('new')",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       const updated = JSON.parse(await readFile(notebookPath, "utf8"));
@@ -519,7 +541,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical NotebookEdit prefers exact numeric cell IDs over index fallback", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-id-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-notebook-id-"));
     const sessionId = "canonical-notebook-numeric-id-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -547,22 +569,20 @@ describe("old-stack tool surface consolidation", () => {
         "utf8",
       );
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      const result = await CanonicalNotebookEditTool.call(
+      const result = await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "0",
           new_source: "updated numeric id",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       const updated = JSON.parse(await readFile(notebookPath, "utf8"));
@@ -577,7 +597,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical NotebookEdit defaults sparse metadata language to python", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-language-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-notebook-language-"));
     const sessionId = "canonical-notebook-language-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -601,22 +621,20 @@ describe("old-stack tool surface consolidation", () => {
         "utf8",
       );
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      const result = await CanonicalNotebookEditTool.call(
+      const result = await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "cell-a",
           new_source: "print('new')",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       expect(resultText(result.data)).toContain('"language":"python"');
@@ -627,7 +645,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical NotebookEdit defaults empty metadata language to python", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-empty-language-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-notebook-empty-language-"));
     const sessionId = "canonical-notebook-empty-language-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -651,22 +669,20 @@ describe("old-stack tool surface consolidation", () => {
         "utf8",
       );
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      const result = await CanonicalNotebookEditTool.call(
+      const result = await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "cell-a",
           new_source: "print('new')",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       expect(resultText(result.data)).toContain('"language":"python"');
@@ -677,7 +693,7 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical NotebookEdit delete does not require new_source", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-delete-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-notebook-delete-"));
     const sessionId = "canonical-notebook-delete-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -707,22 +723,20 @@ describe("old-stack tool surface consolidation", () => {
         "utf8",
       );
 
-      await CanonicalFileReadTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileReadTool,
+        workspace,
         { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      const result = await CanonicalNotebookEditTool.call(
+      const result = await callCanonicalInWorkspace(
+        CanonicalNotebookEditTool,
+        workspace,
         {
           notebook_path: notebookPath,
           cell_id: "delete-me",
           edit_mode: "delete",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       const updated = JSON.parse(await readFile(notebookPath, "utf8"));
@@ -737,32 +751,29 @@ describe("old-stack tool surface consolidation", () => {
   });
 
   test("canonical Write, Grep, and Glob wrappers execute shared system tools", async () => {
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-search-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-canonical-search-"));
     const sessionId = "canonical-write-search-session";
     try {
       const filePath = join(workspace, "demo.txt");
-      await CanonicalFileWriteTool.call(
+      await callCanonicalInWorkspace(
+        CanonicalFileWriteTool,
+        workspace,
         {
           file_path: filePath,
           content: "needle\n",
           [SESSION_ID_ARG]: sessionId,
         },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
-      const grep = await CanonicalGrepTool.call(
+      const grep = await callCanonicalInWorkspace(
+        CanonicalGrepTool,
+        workspace,
         { pattern: "needle", path: workspace },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
-      const glob = await CanonicalGlobTool.call(
+      const glob = await callCanonicalInWorkspace(
+        CanonicalGlobTool,
+        workspace,
         { pattern: "*.txt", path: workspace },
-        toolContext(),
-        (async () => undefined) as never,
-        {} as never,
       );
 
       expect(resultText(grep.data)).toContain("demo.txt");
@@ -847,7 +858,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("file attachments truncate after canonical FileRead size errors", async () => {
     const { generateFileAttachment } = await import("../utils/attachments.js");
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-size-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attachment-size-"));
     try {
       const filePath = join(workspace, "large.txt");
       await writeFile(filePath, "content\n", "utf8");
@@ -870,7 +881,7 @@ describe("old-stack tool surface consolidation", () => {
         () =>
           generateFileAttachment(
             filePath,
-            attachmentContext(),
+            attachmentContext(new Map(), workspace),
             "attachment_success",
             "attachment_error",
             "at-mention",
@@ -892,7 +903,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("file attachments return null after canonical FileRead non-size errors", async () => {
     const { generateFileAttachment } = await import("../utils/attachments.js");
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-error-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attachment-error-"));
     try {
       const filePath = join(workspace, "denied.txt");
       await writeFile(filePath, "content\n", "utf8");
@@ -907,7 +918,7 @@ describe("old-stack tool surface consolidation", () => {
         () =>
           generateFileAttachment(
             filePath,
-            attachmentContext(),
+            attachmentContext(new Map(), workspace),
             "attachment_success",
             "attachment_error",
             "at-mention",
@@ -922,7 +933,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("changed-file attachments stop after canonical FileRead errors", async () => {
     const { getChangedFiles } = await import("../utils/attachments.js");
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-changed-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attachment-changed-"));
     try {
       const filePath = join(workspace, "changed.txt");
       await writeFile(filePath, "new\n", "utf8");
@@ -946,7 +957,7 @@ describe("old-stack tool surface consolidation", () => {
             isError: true,
           },
         })) as typeof CanonicalFileReadTool.call,
-        () => getChangedFiles(attachmentContext(readFileState)),
+        () => getChangedFiles(attachmentContext(readFileState, workspace)),
       );
 
       expect(result).toEqual([]);
@@ -957,7 +968,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("changed-file attachments skip canonical notebook and PDF media", async () => {
     const { getChangedFiles } = await import("../utils/attachments.js");
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-media-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attachment-media-"));
     try {
       const cases = [
         {
@@ -1004,7 +1015,7 @@ describe("old-stack tool surface consolidation", () => {
 
         const result = await withMockedCanonicalFileRead(
           (async () => ({ data: entry.data })) as typeof CanonicalFileReadTool.call,
-          () => getChangedFiles(attachmentContext(readFileState)),
+          () => getChangedFiles(attachmentContext(readFileState, workspace)),
         );
 
         expect(result).toEqual([]);
@@ -1016,7 +1027,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("changed-file attachments preserve standalone canonical image media", async () => {
     const { getChangedFiles } = await import("../utils/attachments.js");
-    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-image-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-attachment-image-"));
     try {
       const filePath = join(workspace, "image.png");
       await writeFile(filePath, "new\n", "utf8");
@@ -1042,7 +1053,7 @@ describe("old-stack tool surface consolidation", () => {
 
       const result = await withMockedCanonicalFileRead(
         (async () => ({ data: imageData })) as typeof CanonicalFileReadTool.call,
-        () => getChangedFiles(attachmentContext(readFileState)),
+        () => getChangedFiles(attachmentContext(readFileState, workspace)),
       );
 
       expect(result).toEqual([

@@ -137,15 +137,21 @@ The v2 design surface is covered by a numbered design-state smoke suite plus
 focused primitive/modal suites under `tests/tui/components/v2/`. The smoke
 suite (`designStateSmoke.test.tsx`) has optional environment knobs for
 HTML/browser-backed reference checks (`AGENC_TUI_DESIGN_HTML`,
-`AGENC_TUI_DESIGN_BROWSER`, `AGENC_TUI_DESIGN_BROWSER_REPORT`,
-`AGENC_TUI_DESIGN_EXACT_CELLS`); the exact-cells gate is intentionally
-fail-closed.
+`AGENC_TUI_CHROME_PATH`, `AGENC_TUI_DESIGN_BROWSER`,
+`AGENC_TUI_DESIGN_BROWSER_REPORT`, `AGENC_TUI_DESIGN_EXACT_CELLS`,
+`AGENC_TUI_DESIGN_DUMP_STATE`, `AGENC_TUI_DESIGN_DUMP_LIVE`); the exact-cells
+gate is intentionally fail-closed.
 
 Common local checks:
 
 - Focused v2 TUI suite:
-  `cd runtime && npx vitest run tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
+  `cd runtime && node scripts/run-hermetic-vitest.mjs run tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx --reporter=dot`
+- HTML/browser-backed design audit (preserves only the documented design env
+  inputs): `npm run check:tui-v2-design-audit`, or from `runtime/`,
+  `node scripts/run-hermetic-vitest.mjs --design run --config vitest.design.config.ts`
+- Stateful real-PTY command smoke (separate from the hermetic design audit):
+  `npm run check:tui-command-visual-smoke`
 - Slash-command and v2 panel suites:
-  `cd runtime && npx vitest run tests/commands/registry.test.ts tests/commands/command-surface.test.ts tests/commands/tui-command-list.test.ts tests/tui/components/PromptInput/slashCommandSuggestions.test.ts tests/tui/components/tasks/BackgroundTasksPanel.test.tsx tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx tests/tui/components/v2/messagePrimitives.test.tsx --reporter=dot`
+  `cd runtime && node scripts/run-hermetic-vitest.mjs run tests/commands/registry.test.ts tests/commands/command-surface.test.ts tests/commands/tui-command-list.test.ts tests/tui/components/PromptInput/slashCommandSuggestions.test.ts tests/tui/components/tasks/BackgroundTasksPanel.test.tsx tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx tests/tui/components/v2/messagePrimitives.test.tsx --reporter=dot`
 - Typecheck: `cd runtime && npm run typecheck`
 - Repo hygiene: `git diff --check`

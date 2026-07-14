@@ -4,7 +4,7 @@
 // module loads, so no test can observe the developer's real provider keys,
 // live ~/.agenc auth state, or shell-exported AgenC config overrides. See
 // tests/helpers/hermetic-env.mjs for the full rationale and the explicit,
-// documented strip list (no wildcard AGENC_* sweep; passphrases survive).
+// documented strip list (no wildcard AGENC_* sweep).
 //
 // Network guard for auth: since 97f1baf88 the default auth backend is
 // "remote", so an unpinned daemon/CLI test would device-code-login against
@@ -21,11 +21,12 @@
 // never touch the developer's live ~/.agenc. Tests that need their own
 // AGENC_HOME set it inside the test — after this ran — and win.
 
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
-import { sanitizeHermeticEnv } from './tests/helpers/hermetic-env.mjs'
+import {
+  getOrCreateHermeticTestHome,
+  sanitizeHermeticEnv,
+} from './tests/helpers/hermetic-env.mjs'
+import './tests/helpers/hermetic-managed-policy-mocks.js'
+import './tests/helpers/hermetic-secure-storage-mocks.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
 
 // Re-assert at every test-file boundary. The helper also self-installs when
@@ -36,12 +37,8 @@ installNetworkTripwire()
 // the same fork, so reuse the dir already minted for this process instead of
 // littering a new mkdtemp per file. (This also re-asserts the hermetic env
 // at every file boundary, undoing cross-file env leaks.)
-// Stored in its own env var (not AGENC_HOME, which tests legitimately
-// reassign) so a test file that leaks its own AGENC_HOME can never become the
-// next file's baseline.
-const hermeticHome =
-  process.env.AGENC_TEST_HERMETIC_HOME ??
-  mkdtempSync(join(tmpdir(), 'agenc-vitest-hermetic-home-'))
-process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
-
+// The process-global state is created only by this worker; an ambient
+// AGENC_TEST_HERMETIC_HOME is never trusted as an input.
+const hermeticHome = getOrCreateHermeticTestHome()
 sanitizeHermeticEnv(process.env, hermeticHome)
+process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome

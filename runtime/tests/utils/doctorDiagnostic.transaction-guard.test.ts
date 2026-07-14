@@ -170,6 +170,9 @@ describe("probeTransactionGuardEndpoint", () => {
     await expect(
       probeTransactionGuardEndpoint("not-a-url"),
     ).resolves.toBe(false);
+    await expect(
+      probeTransactionGuardEndpoint("data:text/plain,not-an-http-endpoint"),
+    ).resolves.toBe(false);
   });
 });
 

@@ -224,7 +224,8 @@ describe("Secure Storage Platform Implementations", () => {
 
     async function importFreshSecureStorage() {
       vi.resetModules();
-      return import("../../../src/utils/secureStorage/index.ts");
+      vi.doUnmock("../../../src/utils/secureStorage/index.js");
+      return import("../../../src/utils/secureStorage/index.js");
     }
 
     afterEach(() => {

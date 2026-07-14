@@ -39,6 +39,7 @@ obj/
 # Keys (CRITICAL - never commit private keys)
 /.wallet/
 *.json
+!runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json
 !Anchor.toml
 !package.json

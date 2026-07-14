@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -142,7 +143,7 @@ async function withTempWorkspace<T>(
   prefix: string,
   run: (workspace: string) => Promise<T>,
 ): Promise<T> {
-  const workspace = await mkdtemp(join(process.cwd(), prefix));
+  const workspace = await mkdtemp(join(tmpdir(), prefix));
   try {
     return await run(workspace);
   } finally {

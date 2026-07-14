@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { sanitizeHermeticEnv } from '../tests/helpers/hermetic-env.mjs'
+import {
+  createHermeticLaunchEnv,
+  createHermeticRunRoot,
+  sanitizeHermeticEnv,
+} from '../tests/helpers/hermetic-env.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const runtimeRoot = dirname(scriptDir)
@@ -17,11 +26,6 @@ const testsRoot = join(runtimeRoot, 'tests')
 // throwaway temp dir, and pin AGENC_AUTH_BACKEND=local so no child performs
 // a real device-code login against https://id.agenc.ag.
 // See tests/helpers/hermetic-env.mjs for the documented strip list.
-const hermeticEnv = sanitizeHermeticEnv(
-  { ...process.env },
-  mkdtempSync(join(tmpdir(), 'agenc-bun-hermetic-home-')),
-)
-
 function walk(dir) {
   const entries = readdirSync(dir, { withFileTypes: true })
   const files = []
@@ -43,39 +47,56 @@ function isBunTestFile(path) {
   return source.includes("from 'bun:test'") || source.includes('from "bun:test"')
 }
 
-if (!existsSync(testsRoot)) {
-  console.error(`Missing tests directory: ${testsRoot}`)
-  process.exit(1)
-}
+function run() {
+  const runRoot = createHermeticRunRoot('agb-')
+  try {
+    const home = join(runRoot, 'home')
+    mkdirSync(home, { mode: 0o700, recursive: true })
+    const hermeticEnv = sanitizeHermeticEnv(
+      createHermeticLaunchEnv(process.env, runRoot),
+      home,
+    )
 
-const files = walk(testsRoot)
-  .filter(isBunTestFile)
-  .map(path => relative(runtimeRoot, path))
-  .sort()
+    if (!existsSync(testsRoot)) {
+      console.error(`Missing tests directory: ${testsRoot}`)
+      return 1
+    }
 
-let failed = 0
-const failedFiles = []
+    const files = walk(testsRoot)
+      .filter(isBunTestFile)
+      .map(path => relative(runtimeRoot, path))
+      .sort()
 
-for (const file of files) {
-  const result = spawnSync('bun', ['test', file], {
-    cwd: runtimeRoot,
-    encoding: 'utf8',
-    env: hermeticEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+    let failed = 0
+    const failedFiles = []
 
-  if (result.status !== 0) {
-    failed += 1
-    failedFiles.push(file)
-    console.error(`FAIL ${file}`)
-    if (result.stdout) console.error(result.stdout.trimEnd())
-    if (result.stderr) console.error(result.stderr.trimEnd())
+    for (const file of files) {
+      const result = spawnSync('bun', ['test', file], {
+        cwd: runtimeRoot,
+        encoding: 'utf8',
+        env: hermeticEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+
+      if (result.status !== 0) {
+        failed += 1
+        failedFiles.push(file)
+        console.error(`FAIL ${file}`)
+        if (result.stdout) console.error(result.stdout.trimEnd())
+        if (result.stderr) console.error(result.stderr.trimEnd())
+      }
+    }
+
+    console.log(`isolated bun tests: files=${files.length} failed=${failed}`)
+
+    if (failed > 0) {
+      console.error(`failed files:\n${failedFiles.join('\n')}`)
+      return 1
+    }
+    return 0
+  } finally {
+    rmSync(runRoot, { force: true, recursive: true })
   }
 }
 
-console.log(`isolated bun tests: files=${files.length} failed=${failed}`)
-
-if (failed > 0) {
-  console.error(`failed files:\n${failedFiles.join('\n')}`)
-  process.exit(1)
-}
+process.exitCode = run()

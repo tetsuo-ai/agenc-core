@@ -822,6 +822,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
 export interface BootstrapLocalRuntimeSessionOptions {
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
+  readonly fetchImpl?: typeof fetch;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly cwd?: string;
@@ -859,6 +860,7 @@ export async function bootstrapLocalRuntimeSession(
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
   const argv = options.argv ?? process.argv;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const agencHome = resolveAgencHomeFromEnv(env);
   const configStore = new ConfigStore({
     home: agencHome,
@@ -1167,6 +1169,7 @@ export async function bootstrapLocalRuntimeSession(
         emitWarning: emitProviderWarning,
         emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: handleCapabilityDrift,
+        fetchImpl,
         ...(options.authBackend !== undefined
           ? {
             authBackend: options.authBackend,
@@ -1229,7 +1232,7 @@ export async function bootstrapLocalRuntimeSession(
     config: startup.config,
     fallbackProvider: profileProvider,
     metadata: {
-      fetchImpl: globalThis.fetch.bind(globalThis),
+      fetchImpl,
       env,
       onWarn: (message) =>
         emitProviderWarning({

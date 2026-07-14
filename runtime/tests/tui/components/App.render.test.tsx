@@ -780,6 +780,12 @@ async function withRenderedApp(
   }
 }
 
+function mockOfflineOnboardingFetch() {
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("offline onboarding fixture"));
+}
+
 function createSession(opts: {
   readonly permissionContext?: ToolPermissionContext;
   readonly updatePermissionContext?: (next: ToolPermissionContext) => Promise<void> | void;
@@ -2689,6 +2695,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const fetchSpy = mockOfflineOnboardingFetch();
     try {
       const output = await renderApp(
         <AgenCTuiApp
@@ -2708,6 +2715,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect(output).toContain("Preflight");
       expect(output).not.toContain("messages:0");
     } finally {
+      fetchSpy.mockRestore();
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
@@ -3203,6 +3211,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       resetHistory: vi.fn(),
       setCursorOffset: vi.fn(),
     };
+    const fetchSpy = mockOfflineOnboardingFetch();
     resetShellSurfaceProbe();
     providerProbe.promptSubmits.length = 0;
     try {
@@ -3227,6 +3236,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
+      fetchSpy.mockRestore();
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
@@ -3260,6 +3270,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       submit: vi.fn(async () => {}),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const fetchSpy = mockOfflineOnboardingFetch();
     providerProbe.promptSubmits.length = 0;
     const helpers = {
       clearBuffer: vi.fn(),
@@ -3294,6 +3305,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
     } finally {
       dispatchSpy.mockRestore();
+      fetchSpy.mockRestore();
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
@@ -3310,6 +3322,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     // for the hosted-access path, breaking the scripted anonymous flow.
     const previousAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = agencHome;
+    const fetchSpy = mockOfflineOnboardingFetch();
     providerProbe.promptSubmits.length = 0;
     try {
       const helpers = {
@@ -3355,6 +3368,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
+      fetchSpy.mockRestore();
       if (previousAgencHome === undefined) {
         delete process.env.AGENC_HOME;
       } else {

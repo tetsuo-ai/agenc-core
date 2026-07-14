@@ -17,7 +17,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
     // Managed subscription vending is OpenRouter-only (e4a54ec1 "route
     // managed bootstrap through OpenRouter"), so the remote key is vended
     // for the openrouter provider.
-    const fetchImpl = vi.fn(async () =>
+    const remoteFetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
           provider: "openrouter",
@@ -40,7 +40,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
           [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
         },
         remote: {
-          fetchImpl,
+          fetchImpl: remoteFetchImpl,
           subscriptionTierResolver: () => "pro",
         },
       },
@@ -71,6 +71,9 @@ describe("remote AuthBackend bootstrap key vending", () => {
       const boot = await bootstrapLocalRuntimeSession({
         authBackend,
         conversationId: "conv-remote-key",
+        fetchImpl: vi
+          .fn<typeof fetch>()
+          .mockRejectedValue(new Error("offline runtime fixture")),
         env: {
           AGENC_HOME: agencHome,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
@@ -93,7 +96,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
           model: "x-ai/grok-4.3",
         }),
       );
-      expect(fetchImpl).toHaveBeenCalledWith(
+      expect(remoteFetchImpl).toHaveBeenCalledWith(
         "http://127.0.0.1:8787/vend-key",
         expect.objectContaining({
           method: "POST",

@@ -140,10 +140,14 @@ describe("remote subscription gating", () => {
       subscriptionTierResolver: () => "free",
     });
 
+    let shutdown: (() => Promise<void>) | null = null;
     try {
-      await bootstrapLocalRuntimeSession({
+      const boot = await bootstrapLocalRuntimeSession({
         authBackend,
         conversationId: "conv-free-openrouter",
+        fetchImpl: vi
+          .fn<typeof fetch>()
+          .mockRejectedValue(new Error("offline runtime fixture")),
         argv: [
           "node",
           "agenc",
@@ -160,11 +164,15 @@ describe("remote subscription gating", () => {
           OPENROUTER_API_KEY: "",
         },
       });
+      shutdown = boot.shutdown;
       expect(keyVendor).toHaveBeenCalledWith({
         provider: "openrouter",
         sessionId: "conv-free-openrouter",
       });
     } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
       await rm(agencHome, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
