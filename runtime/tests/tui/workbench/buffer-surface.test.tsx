@@ -1215,6 +1215,11 @@ describe("BufferSurface", () => {
 
   it("returns to the transcript when embedded Neovim exits from inside BUFFER", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
+    const transcriptRendered = vi.fn();
+    const TranscriptProbe = () => {
+      transcriptRendered();
+      return <Text>transcript after close</Text>;
+    };
     let providerListener: (() => void) | null = null;
     let providerStatus: "ready" | "closed" = "ready";
     let providerMessage: string | null = null;
@@ -1302,7 +1307,10 @@ describe("BufferSurface", () => {
             }}
           >
             <KeybindingSetup>
-              <WorkbenchLayout transcript={<Text>transcript after close</Text>} composer={<Text>composer</Text>} />
+              <WorkbenchLayout
+                transcript={<TranscriptProbe />}
+                composer={<Text>composer</Text>}
+              />
             </KeybindingSetup>
           </AppStateProvider>,
         );
@@ -1310,6 +1318,7 @@ describe("BufferSurface", () => {
       });
 
       expect(output()).toContain("embedded Neovim test");
+      expect(transcriptRendered).not.toHaveBeenCalled();
 
       providerStatus = "closed";
       providerMessage = "Embedded Neovim exited.";
@@ -1317,7 +1326,7 @@ describe("BufferSurface", () => {
       await sleep();
 
       expect(changes.some((state) => state.workbench.activeSurfaceMode === "transcript")).toBe(true);
-      expect(output()).toContain("transcript after close");
+      expect(transcriptRendered).toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();

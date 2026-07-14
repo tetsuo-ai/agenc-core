@@ -1794,14 +1794,10 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
     expect(order).toEqual(["pre", "gate", "exec"]);
   });
 
-  test("pre-hook allow + canUseTool returns ask → still asks (inc-4788)", async () => {
-    // In inc-4788, hook `allow` does NOT bypass settings.json rules.
-    // mergeHookPermissionDecision returns `allow` when no rule check is
-    // wired, so this case ultimately routes through the evaluator's
-    // native ask-without-prompt path when the evaluator disagrees.
-    // We use a hook `allow` without ruleBasedCheck to confirm the
-    // evaluator is NOT reached (hook allow short-circuits without rule
-    // check, matching AgenC's `resolveHookPermissionDecision`).
+  test("pre-hook allow still traverses the SEC-02 evaluator floor", async () => {
+    // A hook may suppress a human prompt, but it cannot bypass evaluator
+    // deny, unattended-policy, content, or safety floors. Keep this
+    // revert-sensitive to the SEC-02 post-hook re-evaluation.
     let evalRan = 0;
     let execRan = 0;
     const { context } = buildEvaluatorContext("default");
@@ -1834,10 +1830,7 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
     });
     expect(out.isError).toBe(false);
     expect(execRan).toBe(1);
-    // Hook allow short-circuits the evaluator when no ruleBasedCheck
-    // is provided (the evaluator runs only when the hook was ask or
-    // absent).
-    expect(evalRan).toBe(0);
+    expect(evalRan).toBe(1);
   });
 
   test("pre-hook hookPermissionResult.updatedInput threads into tool.execute", async () => {

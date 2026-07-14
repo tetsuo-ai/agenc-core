@@ -355,6 +355,8 @@ vi.mock("../state/AppState.js", async () => {
 vi.mock("../../commands.js", () => ({
   findCommand: (name: string, commands: Array<Record<string, any>> = mockTuiCommandList) =>
     commands.find((command) => command.name === name || command.aliases?.includes(name)) ?? null,
+  getCommands: async () => [],
+  isCommandEnabled: () => true,
   listTuiCommandList: () => mockTuiCommandList,
 }));
 
@@ -3381,7 +3383,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("1");
           await submit("xai-app-key");
 
-          expect(output()).toContain("Approve BYOK API key");
+          // Ink emits unchanged spaces as cursor-forward patches, so assert the
+          // visible words in order instead of treating patch bytes as a frame.
+          expect(output()).toMatch(/Approve[\s\S]*BYOK[\s\S]*API[\s\S]*key/);
           expect(output()).toContain("...-key");
           expect(output()).not.toContain("xai-app-key");
 
