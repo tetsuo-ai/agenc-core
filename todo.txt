@@ -1,0 +1,626 @@
+AgenC MUST-DO TODO
+Updated: 2026-07-14
+
+PURPOSE
+-------
+
+This is the execution queue for making AgenC demonstrably better at autonomous
+software-engineering work than Hermes or OpenClaw.
+
+This is NOT a calendar roadmap. There are deliberately no week, month, or
+headcount estimates. AI agents should execute independent work in parallel, but
+dependencies and acceptance gates still apply. Fast implementation does not
+turn unverified work into finished work.
+
+Scope rule: an item belongs here only if it directly improves trusted coding
+outcomes or removes a blocker to measuring, shipping, or trusting those
+outcomes. Feature-count parity is not a reason to build something.
+
+
+THE WIN CONDITION
+-----------------
+
+Hero workflow:
+
+    real repository + real issue + explicit budget/policy
+        -> isolated implementation
+        -> tests and independent review
+        -> review-ready patch and evidence bundle
+
+The run must survive an injected daemon restart and client disconnect without
+losing events, exceeding its parent budget, or blindly repeating a possibly
+mutating action.
+
+Primary metric: TRUSTED FIX RATE (TFR)
+
+A run counts as trusted only when ALL of the following are true:
+
+1. The patch passes a task-specific verifier that was inaccessible during the
+   run.
+2. The run stays within declared permission, sandbox, concurrency, and budget
+   limits. Unresolved usage either remains fully reserved within the cap or
+   makes the run untrusted.
+3. AgenC does not reissue an uncertain mutating effect. Supported idempotent
+   effects are deduplicated; anything unprovable is reported as
+   `unknown_outcome` and never automatically replayed.
+4. When the task schedules a process kill or disconnect, restart/reconnect
+   behavior is correct and no event loss is hidden.
+5. A machine-validated evidence bundle contains the patch, changed files, test
+   results, independent review, cost/usage, approvals, effects, and unresolved
+   risks. An unresolved review blocker makes the run untrusted.
+6. No undeclared human intervention occurred. Prompt correction, manual retry,
+   workspace repair, or artifact editing counts as intervention; only approvals
+   declared by the task are allowed.
+
+Competitive exit criterion:
+
+- Use 30 pinned real-repository tasks for the pilot, then pre-register the final
+  task/trial count from power analysis. The superiority run uses at least 50
+  independent tasks and at least three fresh trials per system/task.
+- Freeze a private held-out set, verifiers, scoring, exclusions, and comparator
+  configurations before evaluating a candidate. Every attempt, timeout, crash,
+  and in-scope unsupported capability remains in the denominator.
+- Run pinned Hermes and OpenClaw releases on every applicable competitive task
+  under matched model/provider and recommended-product lanes. Both lanes use the
+  same per-task USD, time, permission, repository, and verifier limits.
+- AgenC's paired TFR point estimate must be at least 10 percentage points higher
+  than each comparator and its repository-clustered 95% interval must exclude no
+  improvement. Expand the sample if the result is inconclusive.
+- Independently require zero policy escapes, duplicated uncertain mutations,
+  and hidden event loss in AgenC's deterministic trust-conformance suite.
+- Publish Verified Fix Rate, Trust Recovery Rate, TFR, cost per trusted fix,
+  latency, interventions, and the quality/cost frontier. Do not hide a quality
+  win that consumes materially more of the allowed budget.
+
+
+EXECUTION ORDER
+---------------
+
+Wave A -- start immediately and run in parallel:
+
+    M0 trustworthy gates
+    M1 real-agent scorecard
+    M2 known correctness and security defects
+
+Wave B -- after M0 and the first M1 seed baseline:
+
+    freeze shared run, budget, effect, and event contracts
+    build one CLI/SDK vertical slice spanning M3, M4, and M5
+
+Wave C -- prove that slice with real work and fault injection, then:
+
+    migrate every remaining entry point to M3/M4 or fail it closed
+    complete M5 as the default verified-change workflow
+
+Wave D -- prove and release it:
+
+    M6 productize, dogfood, compare, and gate releases
+
+Do not start a second orchestration engine. Extend and converge the existing
+workflow runner, job orchestrator, task store, worktrees, rollout state, daemon
+protocol, and SDK.
+
+Parallel execution contract:
+
+- Parallel branches start from the same green SHA.
+- Freeze shared schemas/APIs in a small contract PR before implementation fans
+  out.
+- One integration owner serializes merges. Remaining branches rebase and rerun
+  impacted tests plus M0 gates after every shared-contract merge.
+- The implementation agent cannot be the only validator of its checkbox.
+- Benchmark task/verifier authors are separate from the agents tuning the
+  implementation against the development set.
+- Harness/task construction may proceed in parallel, but the published real
+  baseline waits for a merged, green M0 + M2 SHA.
+
+
+M0 -- MAKE THE BASELINE TRUSTWORTHY
+----------------------------------
+
+Why this is mandatory: no benchmark, refactor, or release result is credible
+while the default suite can call live providers, clean installs are not locked,
+and hosted CI does not run the real gates.
+
+[ ] Make `npm test` hermetic and deterministic.
+    - Exclude `runtime/tests/live/**`, `*.live.test.*`, OAuth, media-generation,
+      and real-network/provider tests from the default Vitest configuration.
+    - Add an explicit opt-in script for live/provider tests.
+    - Strip ambient provider credentials from default tests before modules load.
+    - Fail a test if the default suite attempts non-loopback network access.
+
+[ ] Repair the currently broken stable tests.
+    - Update session/client fixtures, including the client-multiplexer contract
+      fixtures, to supply the required absolute `cwd`.
+    - Fix stale mocks at the contract boundary instead of weakening runtime
+      validation.
+
+[ ] Make installs and releases reproducible.
+    - Add a narrow `.gitignore` exception and commit the root
+      `package-lock.json`.
+    - Use `npm ci` in hosted CI, release jobs, and clean-build verification.
+    - Prove a clean clone can build the runtime, launcher, SDK, declarations,
+      and Docker image without developer-local state.
+
+[ ] Add hosted PR and release gates.
+    - Required for every PR: typecheck, stable Vitest suite, build, SDK build and
+      typecheck, agent-surface contract, SBOM check, and path-relevant PTY/TUI
+      startup smoke.
+    - The release workflow must rerun the same required gates against the exact
+      release SHA before producing artifacts.
+    - Document the exact GitHub branch-protection checks; configure them on
+      `main` so merging cannot bypass them.
+
+M0 DONE WHEN:
+
+- A fresh checkout succeeds with `npm ci` followed by all required gates.
+- `npm test` cannot initiate OAuth, paid API traffic, media generation, or
+  public-network access.
+- Two clean installs resolve the same dependency tree and produce the expected
+  runtime/package artifacts.
+- Reverting any repaired behavior causes its regression test to fail.
+
+
+M1 -- BUILD THE REAL-AGENT SCORECARD FIRST
+-----------------------------------------
+
+Why this is mandatory: AgenC cannot know what improves agent quality, cannot
+route intelligently, and cannot honestly claim superiority using the current
+mock-oriented toy baseline.
+
+[ ] Define and version the evaluation contract.
+    - Pin repository commit, setup patch, issue text, allowed tools, budget,
+      timeout, expected artifacts, and hidden verifier for every task.
+    - Record model, provider, model parameters, AgenC commit/config, environment,
+      retries, approvals, wall time, token usage, provider-reported cost, and
+      final outcome.
+    - Pin the evaluator commit/container/toolchain, trial-state reset, scoring,
+      confidence method, exclusions, and infrastructure-invalid-run policy
+      before unblinding results.
+    - Split tasks into a visible development set and a frozen private holdout.
+      Holdout manifests/verifiers are inaccessible to agents and implementers.
+    - Weight tasks equally, average repetitions within each task, and cap any
+      single repository at 10% of the total score.
+    - Store append-only raw run evidence separately from the human-readable
+      summary.
+
+[ ] Maintain two separate versioned suites.
+    - Competitive coding suite: real repository changes with identical external
+      inputs and hidden verification, run clean and under a product-neutral
+      coordinator-process-kill/client-disconnect schedule. It must not depend on
+      AgenC-only protocol semantics.
+    - Trust-conformance suite: deterministic restart, reconnect, budget,
+      cancellation, permission, event-loss, and uncertain-effect fault
+      injection. Report this separately from clean coding quality.
+
+[ ] Build a 30-task pilot, then a powered superiority set.
+    - Include multi-file bug fixes, failing-test diagnosis, regression repair,
+      refactoring under compatibility constraints, missing tests, long-context
+      navigation, and ambiguous issue descriptions.
+    - Cover tool timeout, partial output, prompt injection in repository content,
+      and collaboration without making the competitive tasks AgenC-specific.
+    - Use the shared black-box kill/disconnect schedule for competitive recovery.
+      Put implementation-specific reservation, cancellation, permission,
+      event-gap, and uncertain-effect boundaries in the trust-conformance suite.
+    - Prefer pinned real repositories and real defects with deterministic local
+      verification over synthetic one-function exercises.
+    - Use pilot discordance/variance to pre-register a final sample with at least
+      80% power at alpha 0.05; never use fewer than 50 independent tasks or three
+      fresh trials per system/task for the superiority claim.
+
+[ ] Run the actual AgenC agent, not a mock executor.
+    - Keep a small deterministic offline suite for PRs.
+    - Run the paid/full matrix explicitly or on a scheduled worker with secrets.
+    - Publish a sanitized baseline report from real runs; never commit secrets or
+      private prompts/artifacts.
+
+[ ] Add fair comparator runs.
+    - Pin comparator versions and document unavoidable capability differences.
+    - Run a controlled lane using the same model/provider and a recommended-
+      product lane using each product's documented default configuration.
+    - Hold starting state, task text, USD/time/permission caps, network policy,
+      and hidden verifier constant in both lanes.
+    - Reset workspace, cache, memory, and session state for every trial; randomly
+      interleave systems to reduce provider/time drift.
+    - An in-scope unsupported capability is a failure in the primary result. An
+      infrastructure-invalid pair is excluded for both systems only under the
+      pre-registered rule.
+    - Publish adapter code, prompts, configs, and limitations. Never alter a task
+      after seeing which product wins it.
+
+[ ] Report the metrics that matter.
+    - Verified Fix Rate on clean competitive runs, Trust Recovery Rate on the
+      fault suite, and their strict end-to-end conjunction as Trusted Fix Rate.
+    - Intervention-free completion and restart recovery rate using a versioned
+      intervention event taxonomy.
+    - Policy escapes, duplicated effects, unknown outcomes, and event gaps.
+    - Median/p95 wall time, token use, total provider/tool cost, cost per trusted
+      fix, retries, and approvals, all at matched hard USD caps.
+    - Failure taxonomy by root cause so the next task is evidence-driven.
+
+[ ] Turn scorecard failures into measured quality improvements.
+    - Rank failure classes by lost TFR, not anecdotal annoyance.
+    - Change one major variable at a time: context assembly, planning, tool use,
+      verification behavior, recovery, or model configuration.
+    - Measure changes on the development validation split at matched spend; keep
+      the final private superiority holdout sealed.
+    - Keep only improvements that repeat; revert neutral or harmful complexity.
+
+M1 DONE WHEN:
+
+- A single documented command can reproduce the offline scorecard.
+- An authorized operator can reproduce the full real-agent report from pinned
+  inputs.
+- The first real baseline and competitor comparison are published with raw
+  evidence references and stated limitations.
+- The private holdout remains uncontaminated and the powered superiority run is
+  pre-registered before candidate results are opened.
+- Model routing is NOT built yet; use the best measured fixed configuration
+  until repeated scorecard evidence proves a router would help.
+
+
+M2 -- FIX KNOWN QUALITY AND SECURITY DEFECTS
+-------------------------------------------
+
+Why this is mandatory: these defects directly reduce patch quality, multiply
+cost, or let existing execution paths escape the intended workspace/policy
+boundary. They are higher leverage than new surface area.
+
+[ ] Deliver project instructions to every real model request.
+    - Use `runtime/src/memory/agencmd.ts` and its documented managed -> user ->
+      project -> local cascade as the single precedence implementation; do not
+      create a second closest-file instruction system.
+    - Ensure the resolved content, not merely its filename, reaches the live
+      model request exactly once.
+    - Add a fake-provider capture test with unique markers for precedence,
+      nested working directories, exclusion rules, and custom system prompts.
+
+[ ] Make provider retries idempotent at the prompt boundary.
+    - A retry must contain the assembled system/developer prompt exactly once,
+      never 2x, 4x, or cumulatively more.
+    - Add canned transport failures and capture every retry payload.
+
+[ ] Close workspace role leakage.
+    - Require workspace identity in role lookup and every spawn path.
+    - Reject cross-workspace role resolution even when role names collide.
+    - Add a two-workspace regression test that fails against the old call site.
+
+[ ] Keep repository-controlled content non-authoritative.
+    - Files, issue text, tool output, and project instructions may guide coding
+      but cannot grant capabilities, approve mutations, weaken sandboxing, or
+      change budgets/policy.
+    - Record instruction source, scope, and precedence in run evidence.
+    - Test hostile project instructions, source comments, generated tool output,
+      symlinks, and nested repositories.
+
+[ ] Make required sandboxing fail closed everywhere.
+    - Cover interactive, print, background, workflow/job, hook/cron, MCP, and
+      child-agent execution paths.
+    - Missing or unhealthy required sandbox support must stop execution with a
+      precise doctor/startup diagnostic; it must never become a warning-only
+      host execution.
+
+[ ] Fail-close inbound MCP mutations immediately.
+    - Read-only operations may remain available under explicit workspace scope.
+    - Disable mutations unless they already traverse the native daemon permission
+      and sandbox boundary.
+    - Remove the environment flag as sufficient authorization.
+    - M3 may re-enable a mutation only after it is bound to session/capability
+      identity and traverses the common admission, budget, concurrency,
+      redaction, and audit path.
+
+M2 DONE WHEN:
+
+- Each defect has a targeted, revert-sensitive regression test.
+- The tests exercise the real request/spawn/tool boundary, not only a helper.
+- No surface can bypass required instructions, workspace scoping, or
+  sandbox/permission policy implicitly. Explicit operator-selected modes such as
+  `--yolo` remain visible, deliberate, and auditable policy decisions.
+
+
+M3 -- CREATE ONE DAEMON-OWNED EXECUTION ADMISSION KERNEL
+-------------------------------------------------------
+
+Depends on: M0 and the first M1 seed failure report. Freeze the shared contract,
+implement the M5 CLI/SDK slice first, then migrate every remaining surface or
+fail it closed.
+
+Why this is mandatory: a durable multi-agent product cannot promise budgets,
+bounded fan-out, cancellation, or consistent permissions while each entry point
+starts work differently.
+
+[ ] Define one admission API used before every model turn and tool execution.
+    - Prove it first through the M5 CLI/SDK slice, then route TUI, print,
+      background agents, subagents, workflows/jobs, hooks, cron, MCP, and future
+      protocol adapters through it.
+    - Delete or block surface-specific bypasses instead of duplicating policy.
+    - Return a durable run/step identity and an explicit allow, queue, deny, or
+      approval-required decision.
+
+[ ] Enforce hierarchical budgets transactionally.
+    - Give every charge a durable unique reservation/reconciliation ID.
+    - Reserve a conservative maximum charge before every model call or charged
+      tool, and constrain the provider request with corresponding token/output
+      limits.
+    - Reject admission when the reservation exceeds the remaining allocation;
+      deny unpriced or unbounded operations while a hard USD cap is active.
+    - Child reservations must be conserved within the parent's remaining
+      allocation; siblings cannot overcommit it.
+    - Reconcile provider-reported usage exactly once after every turn and charged
+      tool. Restart recovery must not double-reconcile.
+    - Unknown usage consumes its full reservation until resolved or explicitly
+      released by recorded policy; never refund it as if the call were free.
+    - A provider-reported overrun becomes `provider_overrun`, stops descendants,
+      and remains visible; it is never hidden as ordinary success.
+    - Surface every fallback/model/spend decision. Never silently downgrade to
+      make a budget appear satisfied.
+
+[ ] Enforce bounded concurrency and durable admission.
+    - Add global, workspace, session, parent, and provider limits.
+    - Persist queued work and use starvation-resistant ordering.
+    - A daemon restart must reconstruct reservations and the queue before new
+      work is admitted.
+
+[ ] Propagate cancellation and deadlines.
+    - Cancelling a parent prevents new child admission and reaches queued and
+      running descendants.
+    - Preserve final states and partial evidence; cancellation is not deletion.
+
+[ ] Keep the control plane responsive under agent load.
+    - Make `session.list` bounded/paginated and stop scanning persisted threads
+      while holding the session lock.
+    - Do not serialize cancel, health, status, or session lookup behind a full
+      streaming model turn on stdio or WebSocket transports.
+    - Add load/contract tests for control RPCs during concurrent streaming runs.
+
+M3 DONE WHEN:
+
+- A fault-injected 100-child fan-out never exceeds configured concurrency or
+  the parent's reserved budget, including across daemon restart. Unknown usage
+  remains held and any provider overrun is explicit.
+- All entry points pass the same admission contract tests or are fail-closed.
+- Cancel/status/health remain responsive during a streaming turn, and session
+  listing work is bounded by the requested page rather than total persisted
+  history.
+- Queue, reservation, reconciliation, cancellation, and fallback decisions are
+  visible in the run journal.
+
+
+M4 -- MAKE RUNS, EFFECTS, AND EVENTS DURABLE
+-------------------------------------------
+
+Depends on: M0 and the shared M3 contract. Project the minimum durable semantics
+through the M5 CLI/SDK slice first, then migrate remaining producers/consumers.
+
+Why this is mandatory: a daemon-backed engineering agent is only more reliable
+if clients can reconnect and the daemon can recover without hiding loss or
+blindly replaying side effects.
+
+[ ] Add one canonical append-only run journal.
+    - Project and converge existing rollout checkpoints, single-writer resume
+      leases, dangling-effect recovery, job/task recovery, and bounded
+      multiplexer replay. Do not add a parallel state database.
+    - Persist run/step state transitions, admission decisions, budget holds and
+      reconciliation, permissions, approvals, tool effects, model attempts,
+      artifacts, cancellation, and terminal results.
+    - Reuse the protocol's existing `eventId` and `sequence` fields; carry and
+      persist them end to end instead of inventing competing IDs.
+    - Make terminal results queryable after the original connection disappears.
+
+[ ] Define honest effect semantics.
+    - Preserve the existing `idempotent | side-effecting | interactive`
+      `recoveryCategory` contract; add outcome/evidence state instead of a
+      competing effect taxonomy.
+    - Give supported idempotent effects durable keys and side-effecting effects
+      durable intent/result evidence.
+    - Retry only when the operation contract proves it safe.
+    - If the daemon loses the acknowledgement for an uncertain mutation, mark
+      the step `unknown_outcome`, stop dependent mutations, and require review.
+    - Never claim exactly-once execution for arbitrary shell/network effects.
+
+[ ] Add replay-safe client semantics.
+    - Extend the existing bounded reconnect buffer into cursor-based durable
+      replay with explicit retention gaps, reconnect/reattach, and final-result
+      reads.
+    - Preserve event IDs and sequence values in the typed SDK.
+    - Make duplicate delivery detectable and harmless to supported clients.
+
+[ ] Add failure injection at every critical boundary.
+    - Kill the daemon before and after reservation, model response, tool spawn,
+      tool acknowledgement, artifact write, event publish, and terminal commit.
+    - Disconnect and reconnect clients at multiple points during streaming and
+      cursor advancement.
+
+M4 DONE WHEN:
+
+- Restart/reconnect tests prove no silent event loss, no duplicate safe-state
+  transition, and no automatic replay of uncertain mutations.
+- The SDK can reconnect with a cursor, observe an explicit gap if retention was
+  exceeded, and fetch the durable terminal result by run ID.
+- Every recovered decision is explainable from journaled evidence.
+
+
+M5 -- SHIP ONE VERIFIED-CHANGE WORKFLOW
+--------------------------------------
+
+Depends on: M0, M2, and frozen shared M3/M4 contracts. Build the narrow M3/M4
+implementation as part of this vertical slice; M5 does not wait for every legacy
+surface to migrate.
+
+Why this is mandatory: the competitive product is the completed, verified
+engineering outcome. A generic DAG, Kanban board, or collection of primitives is
+not the product.
+
+[ ] Converge existing machinery into this fixed first workflow:
+
+        intake and policy check
+        -> isolated worktree
+        -> inspect and plan
+        -> implement
+        -> run targeted and required verification
+        -> independent fresh-context review
+        -> finalize evidence and patch
+
+[ ] Build on what already exists.
+    - Extend `runtime/src/agents/workflow-runner.ts`, the job orchestrator, task
+      store, worktree helpers, durable rollout state, daemon protocol, and SDK.
+    - Do not create a parallel WorkGraph database or a second task engine.
+    - Persist workflow/step state, dependencies, leases, attempts, worktree and
+      artifact pointers, verifier results, and terminal status.
+
+[ ] Protect the user's source checkout and patch integrity.
+    - Record the exact base commit and dirty-state summary before work begins.
+    - Never clean or modify the user's source checkout or unrelated dirty files;
+      all agent changes happen in the isolated worktree.
+    - Export the reviewable patch and artifact hashes before cleanup.
+    - Detect base movement and patch conflicts. Rebase/reverify safely or return
+      an explicit conflict instead of overwriting newer work.
+
+[ ] Make steps transactional where possible and explicit where not.
+    - Use idempotency keys for supported effects.
+    - Retry only safe steps.
+    - Run independent steps in parallel within M3 limits.
+    - Stop dependency unlocks after failed verification, cancellation, budget
+      exhaustion, or `unknown_outcome`.
+
+[ ] Make verification part of completion, not optional metadata.
+    - Capture commands, exit codes, relevant output, and artifact hashes.
+    - Run a reviewer in a fresh context that sees the task, diff, and evidence,
+      not the implementer's hidden chain of thought.
+    - Validate the evidence schema and hashes mechanically. Pin the reviewer
+      configuration and measure reviewer accuracy separately.
+    - A run cannot be `completed` if required tests/review are missing or the
+      reviewer reports an unresolved blocker.
+    - Return unresolved risks honestly; do not convert them into success text.
+
+[ ] Expose one stable run across CLI/TUI/SDK.
+    - Starting the same workflow through any surface must create the same kind of
+      durable run ID and policy/evidence contract.
+    - Support start, status, attach/replay, cancel, terminal-result fetch, and
+      machine-readable evidence export.
+
+M5 DONE WHEN:
+
+- On a pinned real repository issue, AgenC returns a hidden-verifier-passing,
+  review-ready patch after an injected daemon restart and client disconnect.
+- The run remains within its declared policy/budget and has no duplicated
+  platform-issued mutation or silently replayed uncertain effect.
+- A reviewer can reconstruct what happened from the exported evidence without
+  reading daemon logs or trusting the final prose summary.
+
+
+M6 -- PRODUCTIZE, DOGFOOD, COMPARE, AND RELEASE-GATE THE WIN
+-----------------------------------------------------------
+
+Depends on: M1, M3, M4, and M5. Remaining entry points are migrated to the
+shared contracts or explicitly fail-closed before release.
+
+Why this is mandatory: the workflow is not a competitive advantage until it is
+the easy path, used on real work, measured continuously, and protected from
+regression.
+
+[ ] Make the verified workflow the documented default for substantial coding
+    jobs.
+    - Provide one short CLI example, one TUI path, and one SDK example.
+    - Show run status, remaining budget, approvals, current step, restart state,
+      verification, artifacts, and unresolved risks without requiring raw logs.
+    - Keep simple interactive chat available, but do not present it as equivalent
+      to a verified durable job.
+
+[ ] Dogfood it on AgenC itself.
+    - Complete a representative set of real AgenC issues through the workflow.
+    - Inject restart/disconnect/failure cases instead of testing only the happy
+      path.
+    - Convert every observed failure into a pinned M1 task or a
+      revert-sensitive regression test before calling it fixed.
+
+[ ] Run and publish the competitive scorecard.
+    - Report the exact commits, versions, models, configs, hardware class, task
+      manifest, verifier results, cost, and limitations.
+    - Publish failures as well as wins.
+    - Do not use feature tables as evidence that AgenC performs better.
+
+[ ] Turn stable evidence into release gates.
+    - Keep the hermetic subset blocking on every PR.
+    - Once the real-agent suite has enough repeated runs to establish normal
+      variance, block releases on statistically meaningful TFR, policy,
+      recovery, event-loss, cost, or latency regressions.
+    - Pre-register non-inferiority margins and the frozen baseline/config
+      fingerprint before testing a candidate.
+    - Baseline, threshold, manifest, or verifier changes require a separate
+      reviewed rationale; never refresh a baseline in the implementation PR to
+      bless a regression.
+    - Pin a fixed winning model/config first. Add routing only when a measured
+      policy improves TFR/cost on unseen validation tasks and then passes the
+      sealed holdout.
+
+M6 DONE WHEN:
+
+- The competitive exit criterion at the top of this file is met and reproducible.
+- The hero workflow is the path used in docs and internal dogfooding.
+- A release cannot regress the hermetic contract, and mature real-agent
+  regressions are visible before release.
+
+
+GLOBAL DEFINITION OF DONE FOR EVERY CHECKBOX
+--------------------------------------------
+
+A checkbox is not done merely because code was generated.
+
+[ ] Current behavior was inspected first; stale backlog claims were removed.
+[ ] The smallest coherent change was made on a branch from `main`.
+[ ] New behavior has a targeted, revert-sensitive test.
+[ ] `npm run typecheck` is clean with zero `@ts-nocheck` additions.
+[ ] The stable full Vitest suite is green.
+[ ] `npm run build` and relevant SDK/contract/SBOM/TUI gates are green.
+[ ] User-facing CLI, SDK, protocol, or operational behavior is documented.
+[ ] Failure, restart, cancellation, and partial-result behavior is tested where
+    the change touches durable execution.
+[ ] No secrets, private run artifacts, or predecessor branding leak into shipped
+    identifiers, logs, fixtures, or generated files.
+[ ] The evidence and exact verification commands are recorded in the PR.
+
+
+NOT MUST-DO NOW
+---------------
+
+Do not put these into the mandatory queue unless M1 data or repeated user demand
+shows that they materially improve Trusted Fix Rate, adoption of the hero
+workflow, or a required trust boundary:
+
+- More chat channels, Signal/email expansion, WhatsApp, or mobile computer use.
+- SSH execution, broad remote adapters, or real-profile browser automation.
+- A generic Kanban/WorkGraph product separate from the existing engines.
+- A full multi-tenant trust-center dashboard, generalized RBAC product, or fleet
+  control plane.
+- Generic FTS memory, autonomous skill learning, or a curator without measured
+  held-out eval improvement and a revert path.
+- A public skill marketplace, publisher-signing service, or registry business.
+- ACP/editor extensions before durable attach/replay and policy contracts are
+  proven through the CLI/SDK workflow.
+- Docker execution unless environment drift is a leading measured failure mode.
+- OpenTelemetry/Prometheus dashboards beyond exporting the canonical sanitized
+  run events needed by real operators.
+- More providers, media features, or model routing before the scorecard proves
+  they improve the fixed hero workflow.
+- Feature-table parity with Hermes, OpenClaw, or any other agent.
+
+These are not rejected forever. They simply have not earned priority over the
+measured, durable, verified coding outcome above.
+
+
+SOURCE MAP
+----------
+
+- Public roadmap: `docs/roadmap.md`
+- Local engineering backlog evidence: `TODO.md`
+- Closed audit evidence and skipped residuals: `core-todo.md`
+- Budget behavior: `docs/design/budget-enforcement.md`
+- Evaluation harness: `runtime/eval/`
+- Workflow runner: `runtime/src/agents/workflow-runner.ts`
+- Job recovery: `runtime/src/agents/jobs/job-orchestrator.ts`
+- Task store: `runtime/src/bin/task-store.ts`
+- Existing durable turns: `runtime/src/session/durable-turns.ts`
+- Existing reconnect replay: `runtime/src/app-server/client-multiplexer.ts`
+- Protocol events: `runtime/src/app-server/protocol/index.ts`
+- SDK contract: `packages/agenc-sdk/` and `docs/sdk.md`
+- Inbound MCP boundary: `runtime/src/mcp-server/tools.ts`
