@@ -26,6 +26,7 @@
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
     "test": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run test --workspace=@tetsuo-ai/runtime",
     "test:unit": "npm run test --workspace=@tetsuo-ai/runtime",
+    "test:live": "npm run test:live --workspace=@tetsuo-ai/runtime --",
     "test:bun": "npm run test:bun:isolated --workspace=@tetsuo-ai/runtime",
     "test:coverage": "npm run test:coverage --workspace=@tetsuo-ai/runtime",
     "check:unused": "npm run check:unused --workspace=@tetsuo-ai/runtime",

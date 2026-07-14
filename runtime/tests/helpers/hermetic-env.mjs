@@ -136,9 +136,27 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_USE_FOUNDRY',
 ])
 
+/**
+ * Explicit switches that turn otherwise-local test files into browser,
+ * provider, chain, or design-snapshot live tests. Ambient shell values must
+ * never opt the default suite into one of these paths. The dedicated live
+ * Vitest config intentionally skips this sanitizer so operator-provided
+ * values survive there.
+ */
+export const HERMETIC_LIVE_TEST_OPT_IN_ENV_VARS = Object.freeze([
+  'AGENC_BROWSER_E2E',
+  'AGENC_RUN_PROVIDER_INTEGRATION_TESTS',
+  'AGENC_RUN_LOCAL_PROVIDER_TESTS',
+  'AGENC_TRANSACTION_GUARD_LIVE_E2E',
+  'AGENC_TUI_DESIGN_BROWSER',
+  'AGENC_TUI_DESIGN_BROWSER_REPORT',
+  'AGENC_TUI_DESIGN_DUMP_LIVE',
+])
+
 export const HERMETIC_STRIPPED_ENV_VARS = Object.freeze([
   ...HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS,
   ...HERMETIC_AGENC_STATE_ENV_VARS,
+  ...HERMETIC_LIVE_TEST_OPT_IN_ENV_VARS,
 ])
 
 /** Marker proving the hermetic setup ran in this process. */

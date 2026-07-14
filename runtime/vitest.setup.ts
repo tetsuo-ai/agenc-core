@@ -26,6 +26,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { sanitizeHermeticEnv } from './tests/helpers/hermetic-env.mjs'
+import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
+
+// Re-assert at every test-file boundary. The helper also self-installs when
+// preloaded into Node children via NODE_OPTIONS.
+installNetworkTripwire()
 
 // One hermetic home per worker process; setup files re-run per test file in
 // the same fork, so reuse the dir already minted for this process instead of
