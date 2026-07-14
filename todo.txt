@@ -121,7 +121,7 @@ Why this is mandatory: no benchmark, refactor, or release result is credible
 while the default suite can call live providers, clean installs are not locked,
 and hosted CI does not run the real gates.
 
-[ ] Make `npm test` hermetic and deterministic.
+[x] Make `npm test` hermetic and deterministic.
     - Exclude `runtime/tests/live/**`, `*.live.test.*`, OAuth, media-generation,
       and real-network/provider tests from the default Vitest configuration.
     - Add an explicit opt-in script for live/provider tests.
