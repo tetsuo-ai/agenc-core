@@ -78,15 +78,24 @@ Read-only lookups such as `solana balance`, `solana address`, and
 
 ## DevNet live validation
 
-Live tests must never rely on ambient Solana CLI defaults. This machine's
-default CLI config may point at mainnet-beta, so the live suite refuses any RPC
-that does not explicitly contain `devnet`.
+Live tests never rely on ambient Solana CLI defaults or a `devnet` substring.
+Before reading a keypair or running any balance, airdrop, or transfer command,
+the suite requires HTTPS on port 443 without URL userinfo, an exactly allowlisted
+RPC hostname, and the full Solana Devnet genesis hash returned by the
+`getGenesisHash` RPC method. The default allowlist contains only
+`api.devnet.solana.com`; add a reviewed provider explicitly with
+`AGENC_TRANSACTION_GUARD_DEVNET_RPC_ALLOWED_HOSTS`. The pinned hash is
+`EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG`; a Devnet reset requires a
+reviewed source update rather than an automatic fallback.
 
-The default wallet path is only referenced as a local keypair file:
-
-```bash
-/Users/<user>/.config/solana/id.json
-```
+The suite has no implicit wallet default. It refuses to start unless
+`AGENC_TRANSACTION_GUARD_DEVNET_KEYPAIR` names an explicit absolute path. RPC
+URLs and keypair paths are passed to any shell-backed guarded command as quoted
+literal arguments, including paths with spaces and RPC URLs with query strings.
+The live harness pins guarded execution to `/bin/sh`, fails closed on Windows
+before reading credentials or contacting an RPC, and does not trust the
+operator's ambient `$SHELL`. Windows validation needs a separate cmd.exe-safe
+harness rather than reusing POSIX quoting.
 
 Run the live suite with explicit DevNet settings:
 

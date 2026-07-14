@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { ProviderProfile } from '../../src/utils/config.ts'
 
@@ -70,12 +70,18 @@ function createMockConfigState(): MockConfigState {
 }
 
 let mockConfigState: MockConfigState = createMockConfigState()
+let testCwd = ''
 
 function saveMockGlobalConfig(
   updater: (current: MockConfigState) => MockConfigState,
 ): void {
   mockConfigState = updater(mockConfigState)
 }
+
+beforeEach(() => {
+  testCwd = mkdtempSync(join(tmpdir(), 'agenc-provider-profile-test-'))
+  process.chdir(testCwd)
+})
 
 afterEach(() => {
   for (const key of RESTORED_KEYS) {
@@ -91,6 +97,10 @@ afterEach(() => {
   vi.resetModules()
   mockConfigState = createMockConfigState()
   process.chdir(originalCwd)
+  if (testCwd.length > 0) {
+    rmSync(testCwd, { force: true, recursive: true })
+  }
+  testCwd = ''
 })
 
 async function importFreshProviderProfileModules() {

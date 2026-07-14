@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { createScanner, ScriptTarget, SyntaxKind } from 'typescript';
@@ -91,6 +91,61 @@ function stripCommentsForCompatibilityScan(source: string): string {
 const bunOnlyTestFiles = bunTestFiles.filter(
   (file) => !isVitestCompatibleBunTestFile(file),
 );
+
+export const DEFAULT_TEST_INCLUDE = Object.freeze([
+  'tests/**/*.test.ts',
+  'tests/**/*.test.tsx',
+]);
+
+export const DESIGN_TEST_INCLUDE = Object.freeze([
+  'tests/design-hermetic-env.test.ts',
+  'tests/tui/components/v2/designStateSmoke.test.tsx',
+]);
+
+/** Contracts owned by separately installed AgenC repositories. */
+export const CROSS_REPO_TEST_INCLUDE = Object.freeze([
+  'tests/app-server-protocol/ide-extension.repo.contract.test.ts',
+  'tests/app-server/protocol.contract.test.ts',
+  'tests/app-server/sdk-client.contract.test.ts',
+  'tests/app-server/sdk-hello-world-example.contract.test.ts',
+  'tests/app-server/sdk-tui-coattach-example.contract.test.ts',
+]);
+
+/**
+ * Tests that may contact a provider, browser, or chain are never discovered by
+ * the default suite. `HookProgressMessage.live.parity.test.ts` deliberately
+ * remains a default test: "live" describes its production-rendering source
+ * inspection, not external I/O, and its name does not match `*.live.test.*`.
+ */
+export const DEFAULT_TEST_EXCLUDE = Object.freeze([
+  ...configDefaults.exclude,
+  'dist/**',
+  'tests/agenc/**/*.test.ts',
+  'tests/agenc/**/*.test.tsx',
+  ...bunOnlyTestFiles,
+  'tests/integration.test.ts',
+  'tests/eval-replay.integration.test.ts',
+  'tests/live/**',
+  '**/*.live.test.*',
+  'tests/browser/live-e2e.test.ts',
+  'tests/llm/provider.integration.test.ts',
+  'tests/transaction-guard/devnet-live.e2e.test.ts',
+  ...DESIGN_TEST_INCLUDE,
+  ...CROSS_REPO_TEST_INCLUDE,
+]);
+
+/** Explicit allowlist for credential-preserving, operator-invoked live runs. */
+export const LIVE_TEST_INCLUDE = Object.freeze([
+  'tests/live/**/*.test.ts',
+  'tests/live/**/*.test.tsx',
+  'tests/**/*.live.test.ts',
+  'tests/**/*.live.test.tsx',
+  'tests/browser/live-e2e.test.ts',
+  'tests/llm/provider.integration.test.ts',
+  'tests/transaction-guard/devnet-live.e2e.test.ts',
+]);
+
+export type AgenCVitestMode = 'default' | 'live' | 'design' | 'cross-repo';
 
 function splitModuleId(id: string): { readonly path: string; readonly suffix: string } {
   const index = id.search(/[?#]/);
@@ -325,8 +380,47 @@ function resolveMovedRuntimeTestSource(importer: string, source: string): string
   return relocated === null ? null : `${relocated}${suffix}`;
 }
 
-export default defineConfig({
-  plugins: [
+/**
+ * Build a complete config for one test mode. Explicit configs are constructed
+ * directly because Vitest/Vite merges arrays; merging setup-file arrays can
+ * accidentally retain or remove security setup.
+ */
+export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
+  const discovery = mode === 'live'
+    ? {
+        // Live tests deliberately preserve provider credentials and external
+        // I/O opt-ins. Keep this empty and do not merge configs.
+        setupFiles: [] as string[],
+        include: [...LIVE_TEST_INCLUDE],
+        exclude: [...configDefaults.exclude],
+      }
+    : mode === 'design'
+      ? {
+          // Design audits preserve only their dedicated inputs while stripping
+          // credentials, live-provider gates, and real home state. The Node
+          // process retains the JS tripwire; an explicitly requested external
+          // browser is defense-in-depth hardened but is not an OS egress gate.
+          setupFiles: ['./vitest.design.setup.ts'],
+          include: [...DESIGN_TEST_INCLUDE],
+          exclude: [...configDefaults.exclude],
+        }
+      : mode === 'cross-repo'
+        ? {
+            // These tests inspect separately checked-out AgenC repositories.
+            // They retain the default credential stripping and JS tripwire,
+            // but are intentionally absent from the clean-checkout gate.
+            setupFiles: ['./vitest.setup.ts'],
+            include: [...CROSS_REPO_TEST_INCLUDE],
+            exclude: [...configDefaults.exclude],
+          }
+      : {
+        setupFiles: ['./vitest.setup.ts'],
+        include: [...DEFAULT_TEST_INCLUDE],
+        exclude: [...DEFAULT_TEST_EXCLUDE],
+      };
+
+  return defineConfig({
+    plugins: [
     {
       name: 'agenc-markdown-text-loader',
       enforce: 'pre',
@@ -370,51 +464,40 @@ export default defineConfig({
         return null;
       },
     },
-  ],
-  resolve: {
-    alias: [
-      { find: 'bun:test', replacement: resolve(__dirname, 'tests/helpers/bun-test-shim.ts') },
-      { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
-      { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
     ],
-  },
-  test: {
-    globals: false,
-    environment: 'node',
-    pool: 'forks',
-    // Suite-level hermeticity (TODO task 30): strip ambient provider keys /
-    // developer AgenC state and pin the local auth backend before any test
-    // module loads. See vitest.setup.ts + tests/helpers/hermetic-env.mjs.
-    setupFiles: ['./vitest.setup.ts'],
-    include: [
-      'tests/**/*.test.ts',
-      'tests/**/*.test.tsx',
-    ],
-    exclude: [
-      'node_modules',
-      'dist',
-      'tests/agenc/**/*.test.ts',
-      'tests/agenc/**/*.test.tsx',
-      ...bunOnlyTestFiles,
-      'tests/integration.test.ts',
-      'tests/eval-replay.integration.test.ts',
-    ],
-    testTimeout: 30000,
-    deps: {
-      interopDefault: true,
+    resolve: {
+      alias: [
+        { find: 'bun:test', replacement: resolve(__dirname, 'tests/helpers/bun-test-shim.ts') },
+        { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
+        { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
+      ],
     },
-    coverage: {
-      provider: 'v8',
-      include: ['src/**/*.{ts,tsx,mts,cts}'],
-      exclude: ['src/**/*.d.ts'],
-      reporter: ['text-summary', 'json-summary', 'json'],
-      reportsDirectory: 'coverage/runtime',
-      thresholds: {
-        statements: 100,
-        branches: 100,
-        functions: 100,
-        lines: 100,
+    test: {
+      globals: false,
+      environment: 'node',
+      pool: 'forks',
+      // Default mode strips ambient credentials/state and installs the public
+      // network tripwire before test modules load. Live mode has no setup.
+      ...discovery,
+      testTimeout: 30000,
+      deps: {
+        interopDefault: true,
+      },
+      coverage: {
+        provider: 'v8',
+        include: ['src/**/*.{ts,tsx,mts,cts}'],
+        exclude: ['src/**/*.d.ts'],
+        reporter: ['text-summary', 'json-summary', 'json'],
+        reportsDirectory: 'coverage/runtime',
+        thresholds: {
+          statements: 100,
+          branches: 100,
+          functions: 100,
+          lines: 100,
+        },
       },
     },
-  },
-});
+  });
+}
+
+export default createAgenCVitestConfig();

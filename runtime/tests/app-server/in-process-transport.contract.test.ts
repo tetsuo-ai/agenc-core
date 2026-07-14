@@ -20,9 +20,9 @@ import {
   startAgenCInProcessDaemonTransport,
 } from "./transport/in-process.js";
 import {
-  createAgenCDaemonClient as createSdkDaemonClient,
-  type AgenCDaemonTransport as SdkAgenCDaemonTransport,
-} from "../../../../agenc-sdk/src/daemon";
+  createAgencClient,
+  type AgencTransport,
+} from "../../../packages/agenc-sdk/src/index";
 
 const workspaces = createTempWorkspaceFixture(
   "agenc-in-process-transport-workspace-",
@@ -306,13 +306,13 @@ describe("AgenC in-process app-server transport", () => {
       agentManager: new AgenCDaemonAgentManager(),
     });
     const transport = new PublicAgenCInProcessDaemonTransport({ dispatcher });
-    const sdkTransport: SdkAgenCDaemonTransport = transport;
-    const sdkClient = createSdkDaemonClient({ transport: sdkTransport });
+    const sdkClient = createAgencClient({
+      transport: transport as unknown as AgencTransport,
+      clientId: "sdk-public-import-test",
+    });
 
     await expect(
       sdkClient.initialize({
-        protocolVersion: "1.0.0",
-        protocol: { version: "1.0.0" },
         clientName: "sdk-public-import-test",
       }),
     ).resolves.toMatchObject({

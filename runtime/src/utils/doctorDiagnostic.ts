@@ -585,8 +585,17 @@ export async function probeTransactionGuardEndpoint(
   endpoint: string,
   timeoutMs = 1_500,
 ): Promise<boolean> {
+  let target: URL
   try {
-    await fetch(endpoint, {
+    target = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    return false
+  }
+  try {
+    await fetch(target, {
       method: 'HEAD',
       signal: AbortSignal.timeout(timeoutMs),
     })

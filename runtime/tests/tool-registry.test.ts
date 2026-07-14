@@ -3,7 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildToolRegistry } from "./tool-registry.js";
-import { createModelFacingTools } from "./bin/model-facing-tools.js";
+import {
+  createModelFacingTools,
+  __setLiveWebFetchDnsAllLookupForTests,
+} from "./bin/model-facing-tools.js";
 import { PermissionModeRegistry } from "./permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
 import type { Session } from "./session/session.js";
@@ -328,6 +331,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
       text: async () => "registry fetch body",
     });
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
+      callback(null, [{ address: "192.0.2.1", family: 4 }]);
+    });
 
     try {
       const registry = buildToolRegistry({
@@ -354,6 +360,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
         content: "registry fetch body",
       });
     } finally {
+      __setLiveWebFetchDnsAllLookupForTests(undefined);
       globalThis.fetch = previousFetch;
     }
   });

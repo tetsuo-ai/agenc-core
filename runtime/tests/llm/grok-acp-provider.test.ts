@@ -1,8 +1,7 @@
-import { chmod } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-import { beforeAll, describe, expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
 import {
   flattenMessagesForAcp,
@@ -71,12 +70,6 @@ describe('message flattening', () => {
 })
 
 describe('GrokAcpProvider end to end (fake agent)', () => {
-  beforeAll(async () => {
-    // The provider spawns binaryPath directly with `agent stdio` args; the
-    // fixture has a node shebang and ignores argv.
-    await chmod(FIXTURE, 0o755)
-  })
-
   test('chat selects the model and returns the streamed text', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',

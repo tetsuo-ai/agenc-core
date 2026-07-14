@@ -45,6 +45,12 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
+function offlineFetchFixture(): typeof fetch {
+  return vi
+    .fn<typeof fetch>()
+    .mockRejectedValue(new Error("offline bootstrap fixture"));
+}
+
 function clearProcessEnv(keys: readonly string[]): () => void {
   const previous = new Map<string, string | undefined>();
   for (const key of keys) {
@@ -1829,6 +1835,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
+        fetchImpl: offlineFetchFixture(),
         env: {
           ...process.env,
           AGENC_HOME: home,
@@ -1971,6 +1978,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     try {
       const boot = await bootstrapLocalRuntimeSession({
         authBackend,
+        fetchImpl: offlineFetchFixture(),
         conversationId: "conv-auth",
         env: {
           ...process.env,
@@ -2323,6 +2331,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     try {
       const boot = await bootstrapLocalRuntimeSession({
         authBackend,
+        fetchImpl: offlineFetchFixture(),
         conversationId: "conv-hosted",
         argv: ["node", "agenc", "--provider", "grok", "--model", "agenc"],
         env: {
@@ -2424,6 +2433,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     try {
       const boot = await bootstrapLocalRuntimeSession({
         authBackend,
+        fetchImpl: offlineFetchFixture(),
         conversationId: "conv-agenc-provider",
         argv: ["node", "agenc", "--provider", "agenc"],
         env: {

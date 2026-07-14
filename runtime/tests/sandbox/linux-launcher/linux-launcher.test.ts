@@ -493,6 +493,13 @@ describe("Linux sandbox launcher", () => {
       "socket.once('error', () => process.exit(0));",
       "setTimeout(() => process.exit(0), 500);",
     ].join("");
+    // This is the one sanctioned native-network probe: bubblewrap creates the
+    // isolated network namespace before this Node command starts. Remove the
+    // JavaScript preload so the assertion exercises the kernel boundary, not
+    // the default-suite tripwire. No public route exists inside the namespace.
+    const probeEnv = { ...process.env };
+    delete probeEnv.NODE_OPTIONS;
+    delete probeEnv.AGENC_TEST_NETWORK_ATTEMPT_LEDGER;
 
     const exitCode = await runLinuxSandboxMain([
       "--sandbox-policy-cwd",
@@ -507,6 +514,7 @@ describe("Linux sandbox launcher", () => {
       "-e",
       script,
     ], {
+      env: probeEnv,
       preferredLauncher: () => ({ program: bwrap, supportsArgv0: true }),
     });
 

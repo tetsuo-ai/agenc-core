@@ -1,10 +1,11 @@
-import { access, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { promisify } from "node:util";
 import { describe, expect, test, vi } from "vitest";
+import { strToU8, zipSync } from "fflate";
 
 import {
   classifyPluginSource,
@@ -665,7 +666,7 @@ describe("plugin source resolution", () => {
       const plainTarPath = join(root, "real.tar");
       await execFileAsync("tar", ["-cf", plainTarPath, "-C", sourceRoot, "."]);
       const zipPath = join(root, "real.mcpb");
-      await execFileAsync("zip", ["-qr", zipPath, "."], { cwd: sourceRoot });
+      await writeFile(zipPath, pluginZipBytes("real-archive"));
 
       const tarball = await resolvePluginSource("https://agenc.tech/plugins/real.tgz", {
         agencHome,
@@ -700,11 +701,8 @@ describe("plugin source resolution", () => {
   test("rejects zip symlink entries before extraction", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
-      const sourceRoot = join(root, "source");
-      await writePlugin(sourceRoot, "zip-link");
-      await symlink("commands/hello.md", join(sourceRoot, "link.md"));
       const zipPath = join(root, "link.mcpb");
-      await execFileAsync("zip", ["-qry", zipPath, "."], { cwd: sourceRoot });
+      await writeFile(zipPath, pluginZipBytes("zip-link", true));
 
       await expect(
         resolvePluginSource("https://agenc.tech/plugins/link.mcpb", {
@@ -1468,6 +1466,38 @@ function safeZipVerboseListing(): string {
     "  commands/hello.md",
     "  Unix file attributes (100660 octal):            -rw-rw----",
   ].join("\n");
+}
+
+function pluginZipBytes(name: string, includeSymlink = false): Uint8Array {
+  const regularFile = {
+    attrs: (0o100644 << 16) >>> 0,
+    mtime: new Date('2026-05-05T00:00:00Z'),
+    os: 3,
+  } as const;
+  const files = {
+    '.agenc-plugin/plugin.json': [
+      strToU8(`${JSON.stringify({
+        name,
+        version: '1.0.0',
+        commands: './commands',
+      }, null, 2)}\n`),
+      regularFile,
+    ],
+    'commands/hello.md': [strToU8('# Hello\n'), regularFile],
+    ...(includeSymlink
+      ? {
+          'link.md': [
+            strToU8('commands/hello.md'),
+            {
+              attrs: (0o120777 << 16) >>> 0,
+              mtime: new Date('2026-05-05T00:00:00Z'),
+              os: 3,
+            } as const,
+          ],
+        }
+      : {}),
+  };
+  return zipSync(files);
 }
 
 async function writePlugin(

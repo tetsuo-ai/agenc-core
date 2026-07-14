@@ -282,7 +282,11 @@ From the repo root:
 npm install
 npm run build              # esbuild + declarations → runtime/dist + VERSION
 npm run typecheck          # tsc --noEmit (0 errors)
-npm test                   # typecheck + full vitest suite
+npm test                   # typecheck + authoritative hermetic stable suite
+npm --workspace=@tetsuo-ai/runtime run test:host-functional
+                           # fast host-only check; not an egress authority
+npm run test:cross-repo    # explicit contracts for separately checked-out repos
+npm run test:live          # explicit provider/browser/devnet tests (may incur cost)
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
 npm run check:agent-surface-contract
@@ -299,6 +303,58 @@ check:local-vllm
 check:e2e-all
 check:unused                # knip (informational)
 ```
+
+The required `npm test` gate runs on a Linux Docker host in a pinned Node 25
+image with no external network interface (private loopback only), a recursively
+read-only checkout, private IPC/tmpfs state, and a seccomp/ptrace process-tree
+supervisor. Before repository code executes, both the client and a trusted
+preflight container reject socket, FIFO, device, or unknown nodes in every host
+bind input. Pathname Unix sockets are limited to canonical, symlink-free paths
+under private `/tmp` or `/run`; the sole compatibility alias is the image's
+verified `/var/run/nscd/socket` → private `/run` path.
+
+The authoritative boundary requires a local Docker Engine and CLI 25.0 or newer
+negotiating Engine API 1.44 or newer, on a Linux 5.12-or-newer x64 or arm64 host
+with `CONFIG_SECCOMP` enabled and an OCI runtime that supports recursive
+read-only bind mounts. Docker 25.0/API 1.44 introduced the recursive read-only
+bind controls used here, and Linux 5.12 is required to enforce them; the
+observer also uses `PTRACE_GET_SYSCALL_INFO` (Linux 5.3) and `openat2` (Linux
+5.6). Startup aborts before repository code executes if the platform preflight
+or native canaries cannot prove these capabilities. See Docker's
+[25.0 release notes](https://docs.docker.com/engine/release-notes/25.0/),
+[API 1.44 history](https://docs.docker.com/reference/api/engine/version-history/#v144-api-changes),
+[recursive bind-mount documentation](https://docs.docker.com/engine/storage/bind-mounts/#recursive-mounts),
+[seccomp prerequisites](https://docs.docker.com/engine/security/seccomp/), and
+the Linux [`ptrace(2)`](https://man7.org/linux/man-pages/man2/ptrace.2.html) and
+[`openat2(2)`](https://man7.org/linux/man-pages/man2/openat2.2.html#HISTORY)
+histories. The 25.0 floor is a capability minimum, not a patching recommendation;
+operators should use a maintained Docker release.
+
+The Docker seccomp allowlist is content-pinned from Moby's reviewed
+[`seccomp/v0.2.3` profile](https://github.com/moby/profiles/blob/seccomp/v0.2.3/seccomp/default.json)
+(tag commit `f1a0fd6b5a369fca061b041539129661ed337ef5`) and snapshotted before the
+daemon consumes it. Docker's `none` network namespace (loopback only) plus the
+constrained mount set is the authoritative public-egress prevention. The
+supervisor adds fail-sticky defense in depth: it follows detached descendants,
+rejects selected observed network and observer-bypass calls, preserves real
+process signal semantics, and verifies blocked and allowed paths with native
+canaries before starting TypeScript or Vitest. Its attempt evidence is not an
+adversarially complete syscall ledger because pointer/path arguments can race.
+The boundary assumes a trusted local Docker daemon and stable host bind inputs
+during a run; a hostile host requires immutable snapshots instead of live
+binds. The command never pulls the pinned image; provision the exact digest
+printed by the fail-closed startup diagnostic outside the test command.
+
+Inside that OS boundary, the suite also strips ambient credentials and live
+opt-ins before modules load and uses a JavaScript network tripwire for clearer
+call-site evidence. Live tests preserve operator credentials only through the
+explicit `npm run test:live` surface. `test:host-functional` retains the fast
+host-only defense-in-depth run, but it is not an authoritative release gate.
+Contracts that inspect separately checked-out AgenC repositories run only via
+`npm run test:cross-repo`; they are not a clean-checkout or release gate.
+The optional design-audit browser is likewise an explicit external process:
+it receives background-network suppression flags, but only `npm test` provides
+the authoritative OS egress boundary.
 
 **CI:** [`.github/workflows/release-runtime.yml`](.github/workflows/release-runtime.yml)
 builds multi-platform runtime tarballs on `workflow_dispatch`. There is no
