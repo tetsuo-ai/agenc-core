@@ -2,8 +2,13 @@
 
 **Decision record:** 2026-07-14
 **Scope:** M0 “Make installs and releases reproducible”
-**Status:** implementation under local verification; Docker registry publication remains disabled
-until the separate hosted PR/release-gates item proves native amd64 and arm64.
+**Status:** implemented and locally verified on 2026-07-14; Docker registry publication remains
+disabled until the separate hosted PR/release-gates item proves native amd64 and arm64.
+
+The mandatory `npm run check:clean-build` gate passed from a clean committed tree. It reproduced
+569 installed packages and six release-facing artifacts across independent `.git`-free source
+snapshots, then produced byte-identical OCI layouts and passed the hardened non-root, read-only,
+native-addon, PTY, and daemon smokes.
 
 ## Required properties
 

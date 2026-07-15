@@ -134,7 +134,7 @@ and hosted CI does not run the real gates.
     - Fix stale mocks at the contract boundary instead of weakening runtime
       validation.
 
-[ ] Make installs and releases reproducible.
+[x] Make installs and releases reproducible.
     - Add a narrow `.gitignore` exception and commit the root
       `package-lock.json`.
     - Use `npm ci` in hosted CI, release jobs, and clean-build verification.
