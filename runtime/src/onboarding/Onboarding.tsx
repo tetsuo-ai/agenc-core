@@ -1172,19 +1172,13 @@ export function useFirstRunOnboardingController(
   const submitInFlight = useRef(false);
 
   useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  useEffect(() => {
     if (!active) return;
     let cancelled = false;
     void detectRunningLocalProviders(options).then((detected) => {
       if (cancelled || detected.length === 0) return;
-      setState((current) => {
-        const next = { ...current, detectedLocalProviders: detected };
-        stateRef.current = next;
-        return next;
-      });
+      const next = { ...stateRef.current, detectedLocalProviders: detected };
+      stateRef.current = next;
+      setState(next);
     });
     return () => {
       cancelled = true;
@@ -1207,19 +1201,24 @@ export function useFirstRunOnboardingController(
       if (!active) return false;
       if (submitInFlight.current) return true;
       submitInFlight.current = true;
-      setState((current) => {
-        const next = { ...current, isCheckingConnection: true };
-        stateRef.current = next;
-        return next;
-      });
+      // Keep the ref authoritative for async submissions. Mirroring React
+      // state back into it from a passive effect lets an older committed
+      // render overwrite a newer transition when input arrives quickly.
+      const checkingState = {
+        ...stateRef.current,
+        isCheckingConnection: true,
+      };
+      stateRef.current = checkingState;
+      setState(checkingState);
       try {
         const result = await submitFirstRunOnboardingInput(
-          stateRef.current,
+          checkingState,
           input,
           options,
         );
         const nextState = {
           ...result.state,
+          detectedLocalProviders: stateRef.current.detectedLocalProviders,
           isCheckingConnection: false,
         };
         stateRef.current = nextState;
