@@ -486,6 +486,31 @@ describe("agenc update CLI", () => {
     expect(parseInstallShWrapper(path)).toBeNull();
   });
 
+  test("renders the canonical POSIX wrapper with safe near-OOM diagnostics", () => {
+    const values = {
+      nodeBin: join(work, "Node ' runtime", "node"),
+      runtimeBin: join(agencHome, "runtime", OLD_VERSION, "bin ' runtime", "agenc.js"),
+      agencHome: join(work, "home ' runtime"),
+    };
+    mkdirSync(values.agencHome, { recursive: true });
+    const path = join(binDir, "agenc");
+    mkdirSync(binDir, { recursive: true });
+    const content = renderGeneratedWrapper({ kind: "posix", ...values });
+    writeFileSync(path, content, { mode: 0o755 });
+
+    expect(content).toContain('case " ${NODE_OPTIONS:-} " in');
+    expect(content).toContain("*heapsnapshot-near-heap-limit*)");
+    expect(content).toContain(
+      '--diagnostic-dir="${AGENC_HOME}/oom-snapshots"',
+    );
+    expect(content).not.toContain('NODE_OPTIONS="--heapsnapshot-near-heap-limit');
+    expect(parseGeneratedWrapper(path)).toEqual({
+      kind: "posix",
+      path,
+      ...values,
+    });
+  });
+
   test("rejects unsafe or non-canonical modern wrapper bytes", () => {
     const values = {
       nodeBin: process.execPath,

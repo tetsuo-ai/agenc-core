@@ -61,7 +61,18 @@ export function renderGeneratedWrapperContent({ kind, nodeBin, runtimeBin, agenc
     'if [ -z "${AGENC_HOME:-}" ]; then',
     `  export AGENC_HOME=${quote(agencHome)}`,
     "fi",
-    `exec ${quote(nodeBin)} ${quote(runtimeBin)} "$@"`,
+    "# Capture one V8 near-heap-limit snapshot unless the operator already configured it.",
+    'case " ${NODE_OPTIONS:-} " in',
+    "  *heapsnapshot-near-heap-limit*)",
+    `    exec ${quote(nodeBin)} ${quote(runtimeBin)} "$@"`,
+    "    ;;",
+    "  *)",
+    '    mkdir -p "${AGENC_HOME}/oom-snapshots" 2>/dev/null || :',
+    `    exec ${quote(nodeBin)} --heapsnapshot-near-heap-limit=1 ` +
+      '--diagnostic-dir="${AGENC_HOME}/oom-snapshots" ' +
+      `${quote(runtimeBin)} "$@"`,
+    "    ;;",
+    "esac",
     "",
   ].join("\n");
 }
