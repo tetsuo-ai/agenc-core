@@ -1,6 +1,6 @@
 import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { globby } from "globby";
+import { globbyStream } from "globby";
 
 import { buildProjectTreeRows } from "./buildTree.js";
 import { collectGitStatus, listGitFiles, type GitStatusByPath } from "./gitStatus.js";
@@ -522,21 +522,65 @@ async function listWorkspacePaths(cwd: string): Promise<string[]> {
   return readTopLevelPaths(cwd);
 }
 
-async function scanWorkspacePaths(cwd: string): Promise<string[]> {
-  const entries = await globby(["**/*"], {
+/**
+ * Hard bounds for the fallback workspace scan (non-git workspaces only — git
+ * repos list files via `git ls-files`, which is fast and already bounded by
+ * the repo).
+ *
+ * The scan MUST be bounded: a user launching agenc from a huge cwd (e.g.
+ * `$HOME`, millions of entries under ~/Library and project node_modules)
+ * previously ran an unbounded `globby("**\/*")` here. The walker's internal
+ * queue (fast-glob → @nodelib/fs.walk → fastq) produced entries faster than
+ * the ignore-matcher consumed them and retained every result, ballooning the
+ * heap to the V8 limit in minutes — a field OOM traced back here via heap
+ * snapshot (millions of queued fastq Tasks + hundreds of thousands of
+ * Dirents). The project tree is a UI convenience; it is never allowed to
+ * take the process down.
+ */
+export const WORKSPACE_SCAN_MAX_ENTRIES = 10_000;
+export const WORKSPACE_SCAN_MAX_DEPTH = 8;
+
+export async function scanWorkspacePaths(
+  cwd: string,
+  limits: {
+    readonly maxEntries?: number;
+    readonly maxDepth?: number;
+  } = {},
+): Promise<string[]> {
+  const maxEntries = limits.maxEntries ?? WORKSPACE_SCAN_MAX_ENTRIES;
+  const maxDepth = limits.maxDepth ?? WORKSPACE_SCAN_MAX_DEPTH;
+  const stream = globbyStream(["**/*"], {
     cwd,
+    deep: maxDepth,
     dot: true,
     gitignore: true,
     ignore: [...WORKSPACE_TREE_IGNORE],
     objectMode: true,
     onlyFiles: false,
     unique: true,
+    // Best-effort UI tree: a permission-denied directory (macOS TCC dirs
+    // like ~/Pictures/Photo Booth Library, ~/Library) must be SKIPPED. The
+    // buffered globby() surfaced these as a promise rejection that refresh()
+    // caught; the stream re-exposes them as an unhandled 'error' event that
+    // would crash the whole TUI — and skipping is also strictly better than
+    // the old behavior of erroring the tree on the first unreadable dir.
+    suppressErrors: true,
   });
 
-  return entries
-    .map((entry) => normalizeScannedPath(entry.path, entry.dirent.isDirectory()))
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  const paths: string[] = [];
+  for await (const entry of stream as AsyncIterable<{
+    path: string;
+    dirent: { isDirectory(): boolean };
+  }>) {
+    paths.push(normalizeScannedPath(entry.path, entry.dirent.isDirectory()));
+    if (paths.length >= maxEntries) {
+      // Breaking out of for-await destroys the stream, which tears down the
+      // underlying directory walker and frees its queue.
+      break;
+    }
+  }
+
+  return paths.filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 
 function normalizeScannedPath(pathValue: string, isDirectory: boolean): string {
