@@ -175,7 +175,7 @@ export function createGateEnvironment(privateRoot) {
   if (!executablePath) throw new Error("required gates need an explicit PATH");
   const home = path.join(privateRoot, "home");
   const agencHome = path.join(privateRoot, "agenc-home");
-  const temp = path.join(privateRoot, "tmp");
+  const temp = path.join(privateRoot, "t");
   const npmCache = path.join(privateRoot, "npm-cache");
   const dockerConfig = path.join(home, ".docker");
   for (const directory of [home, agencHome, temp, npmCache, dockerConfig]) {
@@ -220,7 +220,7 @@ export function createGateEnvironment(privateRoot) {
 }
 
 export function createRequiredGatesRoot() {
-  return createHermeticRunRoot("agenc-required-gates-");
+  return createHermeticRunRoot("agr-");
 }
 
 export function terminateCommandTree(child, force) {

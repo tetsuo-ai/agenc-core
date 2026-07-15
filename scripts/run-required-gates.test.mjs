@@ -3,11 +3,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -225,7 +227,7 @@ test("required-gates state ignores hostile ambient temp roots", (t) => {
   let root;
   try {
     root = createRequiredGatesRoot();
-    assert.match(root, /^\/tmp\/agenc-required-gates-/u);
+    assert.match(root, /^\/tmp\/agr-/u);
     assert.ok(path.isAbsolute(root));
     assert.ok(root.length < 100);
   } finally {
@@ -235,6 +237,40 @@ test("required-gates state ignores hostile ambient temp roots", (t) => {
       else process.env[key] = value;
     }
   }
+});
+
+test("gate temp root preserves Unix socket headroom for nested contract suites", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix socket path assertion");
+  const root = createRequiredGatesRoot();
+  const env = createGateEnvironment(root);
+  const socketDirectory = path.join(
+    env.TMPDIR,
+    "agenc-vitest-hermetic-home-ABCDEF",
+    "tmp",
+    "agenc-agent-connection-state-ABCDEF",
+  );
+  const socketPath = path.join(socketDirectory, "daemon.sock");
+  mkdirSync(socketDirectory, { mode: 0o700, recursive: true });
+  const server = createServer();
+  t.after(() => {
+    if (server.listening) server.close();
+    rmSync(root, { force: true, recursive: true });
+  });
+
+  assert.ok(
+    Buffer.byteLength(socketPath) < 104,
+    `nested Unix socket path needs cross-platform headroom: ${socketPath}`,
+  );
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 });
 
 test("importing the runner does not swallow process termination signals", async (t) => {
