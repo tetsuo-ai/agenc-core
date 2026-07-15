@@ -10,15 +10,67 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: publish-npm-production
   cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: "25.9.0"
   NPM_VERSION: "11.17.0"
 
 jobs:
+  release-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact release SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Bind the run to the reviewed source tag
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF_TYPE" = tag
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          expected_ref="refs/tags/agenc-v${version}"
+          test "$GITHUB_REF" = "$expected_ref"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  required-gates:
+    name: agenc-npm-release-gates
+    needs: release-source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact release SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run the complete required gate before npm artifact production
+        uses: ./.github/actions/required-gates
+        with:
+          expected-sha: ${{ github.sha }}
+
   pack:
+    needs: required-gates
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:

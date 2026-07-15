@@ -219,13 +219,30 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("environment: npm-production");
     expect(workflow).toContain('NODE_VERSION: "25.9.0"');
     expect(workflow.match(/id-token: write/g)).toHaveLength(1);
-    const packJob = workflow.slice(0, workflow.indexOf("\n  publish:"));
+    const releaseSourceJob = workflow.slice(
+      workflow.indexOf("\n  release-source:"),
+      workflow.indexOf("\n  required-gates:"),
+    );
+    const requiredGatesJob = workflow.slice(
+      workflow.indexOf("\n  required-gates:"),
+      workflow.indexOf("\n  pack:"),
+    );
+    const packJob = workflow.slice(
+      workflow.indexOf("\n  pack:"),
+      workflow.indexOf("\n  publish:"),
+    );
+    const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
     expect(packJob).not.toContain("id-token: write");
     expect(packJob).not.toContain("actions/attest@");
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = tag');
     expect(workflow).toContain('expected_ref="refs/tags/agenc-v${version}"');
     expect(workflow).toContain('test "$REPOSITORY_VISIBILITY" = public');
-    expect(workflow.match(/git merge-base --is-ancestor/g)).toHaveLength(2);
+    for (const job of [releaseSourceJob, packJob, publishJob]) {
+      expect(job.match(/git merge-base --is-ancestor/g)).toHaveLength(1);
+    }
+    for (const job of [releaseSourceJob, requiredGatesJob, packJob, publishJob]) {
+      expect(job.match(/persist-credentials: false/g)).toHaveLength(1);
+    }
     expect(workflow).toContain("gh release verify \"$RELEASE_TAG\"");
     expect(workflow).toContain("gh release verify-asset");
     const releaseInventory = readFileSync(
@@ -287,7 +304,6 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toMatch(/run:\s+npm publish/);
-    expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
     expect(workflow).toContain("npm ci --prefix \"$source\"");
     expect(workflow).toContain("npm ci --ignore-scripts --no-audit --no-fund");
     expect(workflow.indexOf("environment: npm-production")).toBeLessThan(

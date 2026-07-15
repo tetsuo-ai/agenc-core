@@ -22,6 +22,8 @@
     "check:agent-surface-contract:reviewed": "node scripts/check-agent-surface-contract.mjs --require-reviews",
     "check:agent-surface-contract:source": "node scripts/check-agent-surface-contract.mjs --verify-source --no-run-commands",
     "test:agent-surface-contract": "node --test scripts/check-agent-surface-contract.test.mjs",
+    "check:required-gates": "node scripts/run-required-gates.mjs",
+    "test:required-gates": "node --test scripts/run-required-gates.test.mjs",
     "check:clean-build": "node scripts/check-clean-build.mjs",
     "release:preflight": "node scripts/check-release-version-available.mjs",
     "check:installer-sqlite-lock": "node scripts/sync-installer-sqlite-lock.mjs --check",
@@ -30,8 +32,8 @@
     "check:sbom": "node scripts/check-spdx-sbom.mjs",
     "check:local-vllm": "npm --workspace=@tetsuo-ai/runtime run check:local-vllm --",
     "check:tui-v2-design-audit": "npm run check:tui-v2-design-audit --workspace=@tetsuo-ai/runtime",
-    "test": "npm run test:agent-surface-contract && npm run test --workspace=@tetsuo-ai/runtime",
-    "test:unit": "npm run test:agent-surface-contract && npm run test --workspace=@tetsuo-ai/runtime",
+    "test": "npm run test:required-gates && npm run test:agent-surface-contract && npm run test --workspace=@tetsuo-ai/runtime",
+    "test:unit": "npm run test:required-gates && npm run test:agent-surface-contract && npm run test --workspace=@tetsuo-ai/runtime",
     "test:cross-repo": "npm run test:cross-repo --workspace=@tetsuo-ai/runtime",
     "test:live": "npm run test:live --workspace=@tetsuo-ai/runtime --",
     "test:bun": "npm run test:bun:isolated --workspace=@tetsuo-ai/runtime",
@@ -62,6 +64,7 @@
     "node-pty@1.1.0": true
   },
   "devDependencies": {
+    "js-yaml": "4.3.0",
     "spdx-expression-parse": "4.0.0",
     "tar": "7.5.19",
     "typescript": "^6.0.3"
