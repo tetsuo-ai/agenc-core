@@ -481,6 +481,14 @@ describe("reproducible install and release contract", () => {
     expect(cleanBuild).toContain("docker-container");
     expect(cleanBuild).toContain("peer credential native binding unavailable");
     expect(cleanBuild).toContain("assertTrackedSnapshot(destination)");
+    expect(cleanBuild).toContain(
+      "mkdirSync(destination, { recursive: true, mode: 0o700 })",
+    );
+    expect(cleanBuild).toContain("chmodSync(destination, 0o700)");
+    expect(cleanBuild).toContain("env: testEnvironment(env)");
+    expect(cleanBuild).toContain("delete result.AGENC_BUILD_COMMIT");
+    expect(cleanBuild).toContain("delete result.AGENC_BUILD_TIME");
+    expect(cleanBuild).toContain("delete result.SOURCE_DATE_EPOCH");
     expect(cleanBuild).toContain('"pack",\n          "--json"');
     expect(cleanBuild).not.toContain('"scripts/npm-release.mjs",\n          "pack"');
     expect(cleanBuild).toContain(".git-free checkout-index snapshots before a");

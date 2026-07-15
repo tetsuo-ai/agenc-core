@@ -85,10 +85,15 @@ function ensureCleanCommittedSource() {
 }
 
 function checkoutIndex(destination, umask = 0o022) {
-  mkdirSync(destination, { recursive: true });
-  const prefix = destination.endsWith(sep) ? destination : `${destination}${sep}`;
   const previousUmask = process.umask(umask);
   try {
+    // The snapshot deliberately varies the checkout umask, while the security
+    // tests require every mutable ancestor to remain private. Create the
+    // snapshot root with an explicit mode inside the varied-umask boundary so
+    // the test environment itself cannot invalidate that security invariant.
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    chmodSync(destination, 0o700);
+    const prefix = destination.endsWith(sep) ? destination : `${destination}${sep}`;
     run("git", ["checkout-index", "--all", `--prefix=${prefix}`], {
       cwd: repoRoot,
     });
@@ -249,6 +254,17 @@ function isolatedEnvironment({ root, cache, timezone, metadata, offline }) {
     npm_config_userconfig: userConfig,
     npm_config_nodedir: nodePrefix,
   };
+}
+
+function testEnvironment(environment) {
+  const result = { ...environment };
+  // Package tests create their own synthetic repositories and must derive
+  // source identity from those repositories. Production build identity is
+  // injected only into the release artifacts built after the test gate.
+  delete result.AGENC_BUILD_COMMIT;
+  delete result.AGENC_BUILD_TIME;
+  delete result.SOURCE_DATE_EPOCH;
+  return result;
 }
 
 function smokeExtractedRuntime({ artifact, root, env }) {
@@ -422,7 +438,7 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
     console.error("[clean-build] build SDK + runtime declarations");
     run("npm", ["test", "--workspace=@tetsuo-ai/agenc"], {
       cwd: source,
-      env,
+      env: testEnvironment(env),
     });
     run("npm", ["run", "build", "--workspace=@tetsuo-ai/agenc-sdk"], {
       cwd: source,
