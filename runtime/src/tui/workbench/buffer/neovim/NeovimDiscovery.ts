@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isAbsolute } from "node:path";
 
 import { which } from "../../../../utils/which.js";
@@ -170,7 +170,9 @@ type ProbeResult =
 
 function probeNeovimVersion(executable: string, timeoutMs: number): Promise<ProbeResult> {
   return new Promise((resolve) => {
+    const detached = process.platform !== "win32";
     const child = spawn(executable, ["--version"], {
+      detached,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -181,10 +183,10 @@ function probeNeovimVersion(executable: string, timeoutMs: number): Promise<Prob
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      killProbeProcess(child, detached);
       resolve(result);
     };
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
       finish({ type: "timeout" });
     }, Math.max(1, timeoutMs));
     child.stdout.on("data", (chunk: Buffer) => {
@@ -196,7 +198,7 @@ function probeNeovimVersion(executable: string, timeoutMs: number): Promise<Prob
     child.on("error", (error) => {
       finish({ type: "failed", message: error.message });
     });
-    child.on("exit", (code, signal) => {
+    child.on("close", (code, signal) => {
       if (code !== 0) {
         finish({ type: "failed", message: stderr.trim() || signal || `exit ${code}` });
         return;
@@ -221,20 +223,33 @@ function probeNeovimEmbed(
   timeoutMs: number,
 ): Promise<EmbedProbeResult> {
   return new Promise((resolve) => {
+    const detached = process.platform !== "win32";
     const child = spawn(executable, [...args], {
+      detached,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     let stderr = "";
+    let failedExit: {
+      readonly code: number | null;
+      readonly signal: NodeJS.Signals | null;
+    } | null = null;
     let settled = false;
     const finish = (result: EmbedProbeResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      killProbeProcess(child, detached);
       resolve(result);
     };
     const timer = setTimeout(() => {
+      if (failedExit !== null) {
+        finish({
+          type: "failed",
+          message: stderr.trim() || failedExit.signal || `exit ${failedExit.code}`,
+        });
+        return;
+      }
       finish({ type: "ok" });
     }, Math.max(1, Math.min(timeoutMs, 200)));
     child.stderr.on("data", (chunk: Buffer) => {
@@ -249,9 +264,40 @@ function probeNeovimEmbed(
         finish({ type: "ok" });
         return;
       }
+      failedExit = { code, signal };
+    });
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        finish({ type: "ok" });
+        return;
+      }
       finish({ type: "failed", message: stderr.trim() || signal || `exit ${code}` });
     });
   });
+}
+
+function killProbeProcess(child: ChildProcess, detached: boolean): void {
+  const pid = child.pid;
+  // The leader may already be gone while jobs it started still occupy the
+  // owned group, so group cleanup must not depend on the leader's exit state.
+  if (detached && process.platform !== "win32" && pid !== undefined && pid > 0) {
+    try {
+      process.kill(-pid, "SIGKILL");
+      return;
+    } catch (error) {
+      if (isMissingProcessError(error)) return;
+    }
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // Spawn failures and concurrent exits can make the direct fallback unavailable.
+  }
+}
+
+function isMissingProcessError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
 function isSafeExecutableName(value: string): boolean {

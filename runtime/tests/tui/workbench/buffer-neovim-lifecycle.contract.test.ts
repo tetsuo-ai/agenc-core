@@ -18,12 +18,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  cleanupTrackedNeovimProcesses("SIGKILL");
+  vi.restoreAllMocks();
   await rm(dir, { recursive: true, force: true });
 });
 
 describe("embedded Neovim lifecycle", () => {
   it("covers process cleanup branches without spawning real Neovim", async () => {
-    const killedChild = fakeChild({ killed: true, pid: 111 });
+    mockMissingProcessGroups();
+    const killedChild = fakeChild({ killed: true, pid: 111, signalCode: "SIGTERM" });
     expect(normalizeNeovimPid(123)).toBe(123);
     expect(normalizeNeovimPid(undefined)).toBe(0);
     killNeovimChild(killedChild, true, "SIGTERM");
@@ -33,9 +36,9 @@ describe("embedded Neovim lifecycle", () => {
     killNeovimChild(noPidChild, true, "SIGTERM");
     expect(noPidChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const attachedChild = fakeChild({ pid: 222 });
-    killNeovimChild(attachedChild, false, "SIGTERM");
-    expect(attachedChild.kill).toHaveBeenCalledWith("SIGTERM");
+    const attachedChild = fakeChild({ killed: true, pid: 222 });
+    killNeovimChild(attachedChild, false, "SIGKILL");
+    expect(attachedChild.kill).toHaveBeenCalledWith("SIGKILL");
 
     const detachedChild = fakeChild({ pid: 333 });
     killNeovimChild(detachedChild, true, "SIGTERM");
@@ -48,9 +51,33 @@ describe("embedded Neovim lifecycle", () => {
     await expect(waitForNeovimExit(hangingChild, 1)).resolves.toBeUndefined();
     expect(hangingChild.kill).toHaveBeenCalledWith("SIGKILL");
 
+    const delayedExitChild = fakeChild({ pid: 556 });
+    const forceKillObserved = controlled<void>();
+    delayedExitChild.kill = vi.fn(() => {
+      delayedExitChild.killed = true;
+      forceKillObserved.resolve();
+      return true;
+    });
+    let waitResolved = false;
+    const delayedExitWait = waitForNeovimExit(delayedExitChild, 1).then(() => {
+      waitResolved = true;
+    });
+    await forceKillObserved.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(waitResolved).toBe(false);
+    delayedExitChild.signalCode = "SIGKILL";
+    delayedExitChild.emit("exit");
+    await delayedExitWait;
+
+    const unkillableChild = fakeChild({ pid: 557 });
+    unkillableChild.kill = vi.fn(() => true);
+    await expect(waitForNeovimExit(unkillableChild, 1)).rejects.toThrow(
+      "Neovim process 557 did not exit after SIGKILL",
+    );
   });
 
   it("guards closed embedded sessions and keeps cleanup idempotent", async () => {
+    mockMissingProcessGroups();
     const child = fakeChild({ exitCode: 0, pid: 777 });
     const handle = {
       child,
@@ -112,6 +139,31 @@ describe("embedded Neovim lifecycle", () => {
     await expect(cleanSession.quit(false)).resolves.toEqual({ closed: true });
     expect(cleanRpc.request).toHaveBeenCalledWith("nvim_command", ["quit"]);
 
+    const racedChild = fakeChild({ pid: 783 });
+    const racedHandle = {
+      child: racedChild,
+      pid: 783,
+      kill: vi.fn(),
+    };
+    const racedRpc = {
+      request: vi.fn(async (method: string, args: readonly any[]) => {
+        if (method === "nvim_buf_get_option") return false;
+        if (method === "nvim_command" && args[0] === "quit") {
+          throw new Error("E37: No write since last change");
+        }
+        return true;
+      }),
+      close: vi.fn(),
+    };
+    const racedSession = new EmbeddedNeovimSession(racedHandle as any, racedRpc as any, ui as any, 5);
+    await expect(racedSession.quit(false)).resolves.toEqual({
+      closed: false,
+      reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
+    });
+    expect(racedHandle.kill).not.toHaveBeenCalled();
+    expect(racedRpc.close).not.toHaveBeenCalled();
+    await expect(racedSession.quit(true)).resolves.toEqual({ closed: true });
+
     const dirtyGate = controlled<boolean>();
     const concurrentChild = fakeChild({ exitCode: 0, pid: 780 });
     const concurrentHandle = {
@@ -166,6 +218,35 @@ describe("embedded Neovim lifecycle", () => {
     const closeSession = new EmbeddedNeovimSession(closeHandle as any, closeRpc as any, ui as any, 5);
     await Promise.all([closeSession.quit(true), closeSession.quit(true)]);
     expect(closeRpc.request.mock.calls.filter((call) => call[0] === "nvim_command" && call[1]?.[0] === "quit!")).toHaveLength(1);
+
+    const unkillableChild = fakeChild({ pid: 782 });
+    unkillableChild.kill = vi.fn(() => true);
+    const unkillableHandle = {
+      child: unkillableChild,
+      pid: 782,
+      kill: vi.fn(),
+    };
+    const unkillableRpc = {
+      request: vi.fn(async () => true),
+      close: vi.fn(),
+    };
+    const unkillableSession = new EmbeddedNeovimSession(
+      unkillableHandle as any,
+      unkillableRpc as any,
+      ui as any,
+      1,
+    );
+    await expect(unkillableSession.cleanup()).rejects.toThrow(
+      "Neovim process 782 did not exit after SIGKILL",
+    );
+    expect(unkillableRpc.close).toHaveBeenCalledWith("session cleanup");
+    expect(unkillableHandle.kill).toHaveBeenCalledWith("SIGKILL");
+
+    await expect(unkillableSession.quit(true)).rejects.toThrow(
+      "Neovim process 782 did not exit after SIGKILL",
+    );
+    unkillableChild.exitCode = 0;
+    await expect(unkillableSession.quit(true)).resolves.toEqual({ closed: true });
   });
 
   it("maps embedded dirty notifications to boolean dirty state", () => {
@@ -196,6 +277,23 @@ describe("embedded Neovim lifecycle", () => {
     expect(errors).toContain("startup boom");
   });
 
+  it("does not track a child whose executable fails to spawn", async () => {
+    const trackedBefore = getTrackedNeovimProcessCountForTesting();
+    const handle = spawnNeovimProcess({
+      executable: join(dir, "guaranteed-missing-neovim"),
+      args: [],
+      cwd: dir,
+    });
+    const spawnError = new Promise<Error>((resolve) => {
+      handle.child.once("error", resolve);
+    });
+
+    await expect(waitForNeovimExit(handle.child, 10)).resolves.toBeUndefined();
+    await expect(spawnError).resolves.toMatchObject({ code: "ENOENT" });
+    expect(handle.pid).toBe(0);
+    expect(getTrackedNeovimProcessCountForTesting()).toBe(trackedBefore);
+  });
+
   it("kills a live child when startup setup rejects after spawn", async () => {
     const frame = Buffer.from(encode([1, 1, "attach failed", null])).toString("base64");
     const pidFile = join(dir, "child.pid");
@@ -224,6 +322,64 @@ describe("embedded Neovim lifecycle", () => {
     expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "preserves startup and cleanup failures in an AggregateError",
+    async () => {
+      const frame = Buffer.from(encode([1, 1, "attach failed", null])).toString("base64");
+      const pidFile = join(dir, "aggregate-child.pid");
+      const script = [
+        `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+        `process.stdout.write(Buffer.from("${frame}", "base64"));`,
+        "setInterval(() => {}, 1000);",
+      ].join("");
+      const realProcessKill = process.kill.bind(process);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid < 0 && signal === "SIGKILL") return true;
+        return realProcessKill(pid, signal);
+      });
+      let pid = 0;
+
+      try {
+        const failure = await startEmbeddedNeovim({
+          executable: process.execPath,
+          args: ["-e", script],
+          filePath: join(dir, "target.txt"),
+          line: 1,
+          column: 0,
+          size: { rows: 2, columns: 10 },
+          cleanupTimeoutMs: 5,
+          onSnapshot: () => {},
+          onError: () => {},
+          onExit: () => {},
+        }).catch((error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect(failure).toMatchObject({
+          message: expect.stringContaining("Neovim startup cleanup failed"),
+        });
+        const errors = (failure as AggregateError).errors;
+        expect(errors).toHaveLength(2);
+        expect(String(errors[0])).toContain("attach failed");
+        expect(errors[1]).toBeInstanceOf(Error);
+        expect(String(errors[1])).toContain("did not exit after SIGKILL");
+      } finally {
+        killSpy.mockRestore();
+        pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+        if (pid > 0) {
+          try {
+            realProcessKill(-pid, "SIGKILL");
+          } catch {
+            // The supervised process group already exited.
+          }
+          await waitUntilDead(pid);
+        }
+      }
+
+      expect(isProcessAlive(pid)).toBe(false);
+      expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
+    },
+  );
+
   it("kills a supervised child process group during cleanup", async () => {
     const handle = spawnNeovimProcess({
       executable: process.execPath,
@@ -236,6 +392,44 @@ describe("embedded Neovim lifecycle", () => {
 
     expect(isProcessAlive(handle.pid)).toBe(false);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "cleans tracked descendants when a detached Neovim leader exits",
+    async () => {
+      const descendantPidFile = join(dir, "descendant.pid");
+      const descendantScript = "setInterval(() => {}, 1000)";
+      const leaderScript = [
+        'const { spawn } = require("node:child_process");',
+        'const { writeFileSync } = require("node:fs");',
+        `const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], { stdio: "ignore" });`,
+        `writeFileSync(${JSON.stringify(descendantPidFile)}, String(child.pid));`,
+        "child.unref();",
+      ].join("");
+      const handle = spawnNeovimProcess({
+        executable: process.execPath,
+        args: ["-e", leaderScript],
+        cwd: dir,
+      });
+
+      let descendantPid = 0;
+      try {
+        await waitForNeovimExit(handle.child, 500);
+        descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+
+        cleanupTrackedNeovimProcesses("SIGKILL");
+        await waitUntilDead(descendantPid);
+
+        expect(isProcessAlive(descendantPid)).toBe(false);
+        expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
+      } finally {
+        try {
+          process.kill(-handle.pid, "SIGKILL");
+        } catch {
+          // The process group is already gone after successful cleanup.
+        }
+      }
+    },
+  );
 
   it("parent cleanup kills tracked Neovim children when graceful paths are unavailable", async () => {
     const handle = spawnNeovimProcess({
@@ -446,4 +640,13 @@ async function waitForSnapshot<T>(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`timed out waiting for embedded Neovim snapshot; last=${JSON.stringify(last)}`);
+}
+
+function mockMissingProcessGroups(): void {
+  vi.spyOn(process, "kill").mockImplementation((pid) => {
+    if (pid < 0) {
+      throw Object.assign(new Error(`process group ${-pid} does not exist`), { code: "ESRCH" });
+    }
+    return true;
+  });
 }
