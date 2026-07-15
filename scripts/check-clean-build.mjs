@@ -256,17 +256,6 @@ function isolatedEnvironment({ root, cache, timezone, metadata, offline }) {
   };
 }
 
-function testEnvironment(environment) {
-  const result = { ...environment };
-  // Package tests create their own synthetic repositories and must derive
-  // source identity from those repositories. Production build identity is
-  // injected only into the release artifacts built after the test gate.
-  delete result.AGENC_BUILD_COMMIT;
-  delete result.AGENC_BUILD_TIME;
-  delete result.SOURCE_DATE_EPOCH;
-  return result;
-}
-
 function smokeExtractedRuntime({ artifact, root, env }) {
   const extracted = join(root, "runtime-smoke");
   mkdirSync(extracted, { recursive: true });
@@ -438,7 +427,7 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
     console.error("[clean-build] build SDK + runtime declarations");
     run("npm", ["test", "--workspace=@tetsuo-ai/agenc"], {
       cwd: source,
-      env: testEnvironment(env),
+      env,
     });
     run("npm", ["run", "build", "--workspace=@tetsuo-ai/agenc-sdk"], {
       cwd: source,

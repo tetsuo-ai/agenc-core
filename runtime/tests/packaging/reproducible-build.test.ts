@@ -485,10 +485,13 @@ describe("reproducible install and release contract", () => {
       "mkdirSync(destination, { recursive: true, mode: 0o700 })",
     );
     expect(cleanBuild).toContain("chmodSync(destination, 0o700)");
-    expect(cleanBuild).toContain("env: testEnvironment(env)");
-    expect(cleanBuild).toContain("delete result.AGENC_BUILD_COMMIT");
-    expect(cleanBuild).toContain("delete result.AGENC_BUILD_TIME");
-    expect(cleanBuild).toContain("delete result.SOURCE_DATE_EPOCH");
+    const npmReleaseTest = readFileSync(
+      join(REPO_ROOT, "packages/agenc/test/npm-release.test.mjs"),
+      "utf8",
+    );
+    expect(npmReleaseTest).toContain(
+      'process.env.AGENC_BUILD_COMMIT?.trim() || "a".repeat(40)',
+    );
     expect(cleanBuild).toContain('"pack",\n          "--json"');
     expect(cleanBuild).not.toContain('"scripts/npm-release.mjs",\n          "pack"');
     expect(cleanBuild).toContain(".git-free checkout-index snapshots before a");

@@ -28,7 +28,13 @@ const releaseToolchain = JSON.parse(
 const launcherVersion = JSON.parse(
   readFileSync(join(repoRoot, "packages", "agenc", "package.json"), "utf8"),
 ).version;
-const sourceCommit = "a".repeat(40);
+// A git-free reproducibility snapshot supplies its reviewed source identity
+// explicitly. Synthetic release fixtures must use that same identity instead
+// of assuming the ambient checkout is available or that the variable is absent.
+const sourceCommit = process.env.AGENC_BUILD_COMMIT?.trim() || "a".repeat(40);
+assert.match(sourceCommit, /^[0-9a-f]{40,64}$/);
+const differentSourceCommit =
+  `${sourceCommit[0] === "0" ? "1" : "0"}${sourceCommit.slice(1)}`;
 const sourceTree = "c".repeat(40);
 const skipManifestValidation = () => {};
 
@@ -289,7 +295,7 @@ test("verify applies full validation to the manifest bytes embedded in the tarba
 test("pack rejects dirty, untagged, and forged source identities before packing", async () => {
   for (const [name, git, expected] of [
     ["dirty", fakeGit({ dirty: "?? publishable.mjs" }), /clean tagged checkout/],
-    ["tag drift", fakeGit({ tagCommit: "b".repeat(40) }), /checkout does not match refs\/tags/],
+    ["tag drift", fakeGit({ tagCommit: differentSourceCommit }), /checkout does not match refs\/tags/],
   ]) {
     const work = fixture();
     try {
@@ -312,7 +318,7 @@ test("pack rejects dirty, untagged, and forged source identities before packing"
 
   const work = fixture();
   const prior = process.env.AGENC_BUILD_COMMIT;
-  process.env.AGENC_BUILD_COMMIT = "b".repeat(40);
+  process.env.AGENC_BUILD_COMMIT = differentSourceCommit;
   try {
     await assert.rejects(
       packRelease({
@@ -695,7 +701,7 @@ test("publish rejects workspace paths, unsupported flags, dirty trees, and tag d
         cwd: work.source,
         packageRoot: work.source,
         nodeVersion: releaseToolchain.nodeVersion,
-        git: fakeGit({ tagCommit: "b".repeat(40) }),
+        git: fakeGit({ tagCommit: differentSourceCommit }),
         runNpm: fakeNpm(),
         validateManifest: skipManifestValidation,
       }),
