@@ -62,6 +62,16 @@ export class ProjectTreeStore {
   #listeners = new Set<Listener>();
   #snapshot: ProjectTreeSnapshot = EMPTY_SNAPSHOT;
   #refreshVersion = 0;
+  /**
+   * Count of refresh passes currently running. The periodic timer skips its
+   * tick while one is active: on a slow workspace a scan can outlive the
+   * refresh interval, and without this guard the timer stacks unbounded
+   * CONCURRENT scans — each with its own directory-walker queue — leaking
+   * memory even though every individual scan is bounded. Direct refresh()
+   * calls keep their original racing semantics (the version check already
+   * makes the newest result win).
+   */
+  #refreshActive = 0;
   #refreshTimer: ReturnType<typeof setInterval> | null = null;
   #started = false;
   // Directory paths known at the last successful scan, used to detect directories
@@ -81,7 +91,9 @@ export class ProjectTreeStore {
     void this.refresh();
     if (this.#refreshIntervalMs > 0) {
       this.#refreshTimer = setInterval(() => {
-        void this.refresh();
+        // Skip the tick while a pass is still running (see #refreshActive) —
+        // a fresh pass right after it finishes reads the same disk state.
+        if (this.#refreshActive === 0) void this.refresh();
       }, this.#refreshIntervalMs);
       this.#refreshTimer.unref?.();
     }
@@ -104,6 +116,15 @@ export class ProjectTreeStore {
   }
 
   async refresh(): Promise<void> {
+    this.#refreshActive += 1;
+    try {
+      await this.#refreshOnce();
+    } finally {
+      this.#refreshActive -= 1;
+    }
+  }
+
+  async #refreshOnce(): Promise<void> {
     const version = this.#refreshVersion + 1;
     this.#refreshVersion = version;
     this.#loading = true;
@@ -553,7 +574,12 @@ export async function scanWorkspacePaths(
     cwd,
     deep: maxDepth,
     dot: true,
-    gitignore: true,
+    // NO gitignore semantics here: this fallback only runs for NON-git
+    // workspaces (git repos list via `git ls-files`), and globby implements
+    // `gitignore: true` by first running its own `**/.gitignore` glob over
+    // the whole cwd — an unbounded walk that ignores `deep`/our entry cap
+    // and re-introduces the very OOM this scan was bounded to prevent.
+    gitignore: false,
     ignore: [...WORKSPACE_TREE_IGNORE],
     objectMode: true,
     onlyFiles: false,
