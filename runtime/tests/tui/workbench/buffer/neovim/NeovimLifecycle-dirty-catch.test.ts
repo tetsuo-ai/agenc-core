@@ -4,8 +4,9 @@ import { EmbeddedNeovimSession } from "../../../../../src/tui/workbench/buffer/n
 // M-TUI-5 (core-todo.md): isDirty() and the quit path called #rpc.request with
 // no catch. The transport can close independently of the session (stdin EPIPE
 // before the child's exit), so during that window :q/:wq and buffer:close (which
-// await isDirty()) let the RPC rejection escape as an unhandled rejection that
-// can take down the daemon. A dead transport is now treated as not-dirty.
+// await isDirty()) must contain the RPC rejection instead of letting an
+// unhandled rejection take down the daemon. Only an already-exited child is
+// treated as not-dirty; a live child with unknown state fails closed.
 
 function makeSession(): EmbeddedNeovimSession {
   const rpc = {

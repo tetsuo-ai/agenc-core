@@ -166,7 +166,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   resetAllLSPDiagnosticState();
-  resetWorkbenchBufferProviderControllerForTesting();
+  await resetWorkbenchBufferProviderControllerForTesting();
   resetWorkbenchBufferStoreForTesting();
   if (previousBufferProvider === undefined) {
     delete process.env.AGENC_BUFFER_PROVIDER;

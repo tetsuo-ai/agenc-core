@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import type { DiagnosticEntry } from "../../../services/lsp/types.js";
+import { logError } from "../../../utils/log.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import type { DOMElement } from "../../ink/dom.js";
 import type { InputEvent } from "../../ink/events/input-event.js";
@@ -67,7 +68,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
       !snapshot.dirty;
     if (!isNewRequest && !shouldRetryCleanBlockedPath) return;
     lastOpenRequest.current = requestKey;
-    void store.open(activePath, activeLine);
+    void store.open(activePath, activeLine).catch(logError);
   }, [activeLine, activeOpenRequestId, activePath, snapshot.dirty, snapshot.filePath, snapshot.status, store]);
 
   useEffect(() => {
@@ -93,7 +94,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   }, [dispatch, focused, snapshot.provider.kind, snapshot.providerStatus, workbench.activeSurfaceMode]);
 
   useEffect(() => () => {
-    void store.cleanup();
+    void store.cleanup().catch(logError);
   }, [store]);
 
   useRegisterKeybindingContext("Buffer", focused);
@@ -268,7 +269,7 @@ export function createBufferSurfaceKeyHandlers({
 }: BufferSurfaceActionOptions): Record<string, () => void | false | Promise<void>> {
   return {
     "buffer:save": () => {
-      void store.save({ hasInFlightAgent });
+      void store.save({ hasInFlightAgent }).catch(logError);
     },
     "workbench:focusExplorer": () => {
       dispatch({ type: "focus", pane: "explorer" });
@@ -279,20 +280,37 @@ export function createBufferSurfaceKeyHandlers({
     "workbench:focusComposer": () => {
       dispatch({ type: "focus", pane: "composer" });
     },
-    "buffer:revert": () => snapshot.provider.capabilities.terminalUi ? false : store.revert(),
+    "buffer:revert": () => {
+      if (snapshot.provider.capabilities.terminalUi) return false;
+      void store.revert().catch(logError);
+    },
     "buffer:close": async () => {
-      if (await store.close()) dispatch({ type: "closeSurface" });
+      try {
+        if (await store.close()) dispatch({ type: "closeSurface" });
+      } catch (error) {
+        logError(error);
+      }
     },
     "buffer:closeDiscard": async () => {
-      if (await store.close({ discard: true })) dispatch({ type: "closeSurface" });
+      try {
+        if (await store.close({ discard: true })) dispatch({ type: "closeSurface" });
+      } catch (error) {
+        logError(error);
+      }
     },
     "buffer:externalEditor": () => {
-      void store.openExternalEditor();
+      void store.openExternalEditor().catch(logError);
     },
     "buffer:undo": () => snapshot.provider.capabilities.terminalUi ? false : store.undo(),
     "buffer:redo": () => snapshot.provider.capabilities.terminalUi ? false : store.redo(),
-    "buffer:hover": () => snapshot.provider.capabilities.terminalUi ? false : store.requestHover(),
-    "buffer:definition": () => snapshot.provider.capabilities.terminalUi ? false : store.goToDefinition(),
+    "buffer:hover": () => {
+      if (snapshot.provider.capabilities.terminalUi) return false;
+      void store.requestHover().catch(logError);
+    },
+    "buffer:definition": () => {
+      if (snapshot.provider.capabilities.terminalUi) return false;
+      void store.goToDefinition().catch(logError);
+    },
     "buffer:up": () => store.move("up"),
     "buffer:down": () => store.move("down"),
     "buffer:left": () => store.move("left"),
@@ -318,18 +336,18 @@ export function executeBufferVimCommand(
 ): void {
   switch (command.type) {
     case "save":
-      void store.save({ hasInFlightAgent, force: command.force });
+      void store.save({ hasInFlightAgent, force: command.force }).catch(logError);
       break;
     case "quit":
       void (async () => {
         if (await store.close({ discard: command.discard })) dispatch({ type: "closeSurface" });
-      })();
+      })().catch(logError);
       break;
     case "saveQuit":
       void (async () => {
         const saved = await store.save({ hasInFlightAgent, force: command.force });
         if (saved && await store.close()) dispatch({ type: "closeSurface" });
-      })();
+      })().catch(logError);
       break;
   }
 }

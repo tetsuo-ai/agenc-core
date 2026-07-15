@@ -14,6 +14,9 @@ describe("embedded Neovim BUFFER docs and config", () => {
     expect(text).toContain("Explicit external-editor handoff provider");
     expect(text).toContain("AGENC_BUFFER_NVIM=/path/to/nvim");
     expect(text).toContain("AGENC_BUFFER_NVIM_TIMEOUT_MS=1200");
+    expect(text).toContain("AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS=10000");
+    expect(text).toContain("AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS=1000");
+    expect(text).toContain("`:qa`");
     expect(text).toContain("AGENC_BUFFER_NVIM_USE_INIT=0");
     expect(text).toContain("nvim --embed");
     expect(text).toContain("Missing executable");

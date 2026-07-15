@@ -31,11 +31,17 @@ const bufferHarness = vi.hoisted(() => ({
   inputCapture: null as CapturedInputHandler | null,
   inputCaptureOptions: null as Record<string, unknown> | null,
   keybindingOptions: null as Record<string, unknown> | null,
+  logError: vi.fn(),
   snapshot: null as BufferSnapshot | null,
   store: null as BufferStoreHarness | null,
   terminalSize: { rows: 12, columns: 44 },
   vimCommandExecutor: null as ((command: VimCommand) => void) | null,
   visibleLines: [{ number: 1, text: "const value = 1;", from: 0, to: 16 }],
+}));
+
+vi.mock("../../../src/utils/log.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../src/utils/log.js")>(),
+  logError: bufferHarness.logError,
 }));
 
 vi.mock("../../../src/tui/hooks/useTerminalSize.js", () => ({
@@ -208,6 +214,81 @@ describe("BufferSurface handlers", () => {
     });
     expect(bufferHarness.store?.close).toHaveBeenCalledTimes(closeCallsAfterQuit + 2);
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
+  });
+
+  it("contains rejected BUFFER open, close, command, and unmount actions", async () => {
+    const changes: AppState[] = [];
+    bufferHarness.store?.open.mockRejectedValueOnce(new Error("open cleanup failed"));
+
+    await renderBufferSurface({ changes });
+    await flushPromises();
+
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "open cleanup failed" }),
+    );
+
+    bufferHarness.store?.close.mockRejectedValueOnce(new Error("close cleanup failed"));
+    await expect(bufferHarness.handlers["buffer:closeDiscard"]?.()).resolves.toBeUndefined();
+    expect(changes).toHaveLength(0);
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "close cleanup failed" }),
+    );
+
+    for (const [action, method, message] of [
+      ["buffer:save", "save", "save failed"],
+      ["buffer:revert", "revert", "revert failed"],
+      ["buffer:externalEditor", "openExternalEditor", "external editor failed"],
+      ["buffer:hover", "requestHover", "hover failed"],
+      ["buffer:definition", "goToDefinition", "definition failed"],
+    ] as const) {
+      bufferHarness.store?.[method].mockRejectedValueOnce(new Error(message));
+      bufferHarness.handlers[action]?.();
+      await flushPromises();
+      expect(bufferHarness.logError).toHaveBeenCalledWith(
+        expect.objectContaining({ message }),
+      );
+    }
+
+    bufferHarness.inputCapture?.(":", {}, inputEvent());
+    const execute = bufferHarness.vimCommandExecutor;
+    expect(execute).toBeTruthy();
+    bufferHarness.store?.close.mockRejectedValueOnce(new Error("command cleanup failed"));
+    execute?.({ type: "quit", discard: true, all: false });
+    await flushPromises();
+    expect(changes).toHaveLength(0);
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "command cleanup failed" }),
+    );
+
+    bufferHarness.store?.save.mockRejectedValueOnce(new Error("command save failed"));
+    execute?.({ type: "save", force: true, all: false });
+    await flushPromises();
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "command save failed" }),
+    );
+
+    bufferHarness.store?.save.mockRejectedValueOnce(new Error("save-quit save failed"));
+    execute?.({ type: "saveQuit", force: false, all: false });
+    await flushPromises();
+    expect(changes).toHaveLength(0);
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "save-quit save failed" }),
+    );
+
+    bufferHarness.store?.close.mockRejectedValueOnce(new Error("save-quit cleanup failed"));
+    execute?.({ type: "saveQuit", force: false, all: false });
+    await flushPromises();
+    expect(changes).toHaveLength(0);
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "save-quit cleanup failed" }),
+    );
+
+    bufferHarness.store?.cleanup.mockRejectedValueOnce(new Error("unmount cleanup failed"));
+    await renderBufferSurface({ activeFilePath: null });
+    await flushPromises();
+    expect(bufferHarness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "unmount cleanup failed" }),
+    );
   });
 
   it("renders the empty surface without opening a buffer when no file is selected", async () => {
@@ -391,6 +472,7 @@ function resetHarness(): void {
   bufferHarness.inputCapture = null;
   bufferHarness.inputCaptureOptions = null;
   bufferHarness.keybindingOptions = null;
+  bufferHarness.logError.mockReset();
   bufferHarness.snapshot = baseSnapshot();
   bufferHarness.store = createStoreHarness();
   bufferHarness.terminalSize = { rows: 12, columns: 44 };
@@ -440,7 +522,7 @@ function createStoreHarness() {
     focus: vi.fn(),
     getSnapshot: vi.fn(() => bufferHarness.snapshot),
     getVisibleLines: vi.fn(() => bufferHarness.visibleLines),
-    goToDefinition: vi.fn(),
+    goToDefinition: vi.fn(async () => false),
     handleInput: vi.fn((
       _input: string,
       _key: Record<string, unknown>,
@@ -455,8 +537,8 @@ function createStoreHarness() {
     open: vi.fn(async () => {}),
     openExternalEditor: vi.fn(async () => true),
     redo: vi.fn(),
-    requestHover: vi.fn(),
-    revert: vi.fn(),
+    requestHover: vi.fn(async () => null),
+    revert: vi.fn(async () => {}),
     resize: vi.fn(),
     save: vi.fn(async () => true),
     undo: vi.fn(),

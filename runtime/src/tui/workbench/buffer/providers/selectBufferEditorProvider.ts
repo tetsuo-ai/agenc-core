@@ -10,6 +10,8 @@ export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
 export type BufferProviderSelectionConfig = NeovimDiscoveryConfig & {
   readonly mode?: BufferProviderMode;
   readonly inlineStore?: WorkbenchBufferStore;
+  readonly startupTimeoutMs?: number;
+  readonly cleanupTimeoutMs?: number;
 };
 
 export type BufferProviderSelection =
@@ -57,7 +59,11 @@ export async function selectBufferEditorProvider(
   if (discovery.usable) {
     return {
       kind: "neovim",
-      provider: new NeovimBufferProvider({ discovery }),
+      provider: new NeovimBufferProvider({
+        discovery,
+        startupTimeoutMs: config.startupTimeoutMs,
+        cleanupTimeoutMs: config.cleanupTimeoutMs,
+      }),
       discovery,
     };
   }
@@ -86,6 +92,8 @@ export function bufferProviderConfigFromEnv(env: NodeJS.ProcessEnv = process.env
     executable: env.AGENC_BUFFER_NVIM,
     useUserInit: parseUseUserInit(env.AGENC_BUFFER_NVIM_USE_INIT),
     timeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_TIMEOUT_MS),
+    startupTimeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS),
+    cleanupTimeoutMs: parsePositiveInteger(env.AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS),
   };
 }
 

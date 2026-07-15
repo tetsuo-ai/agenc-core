@@ -21,6 +21,11 @@ Additional env knobs:
 
 - `AGENC_BUFFER_NVIM=/path/to/nvim` — override executable discovery.
 - `AGENC_BUFFER_NVIM_TIMEOUT_MS=1200` — discovery probe timeout.
+- `AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS=10000` — maximum time for embedded UI,
+  file, and dirty-state startup before AgenC aborts and supervises teardown.
+- `AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS=1000` — dirty/close RPC deadline and
+  graceful process-exit window before SIGKILL escalation. Increase this for a
+  deliberately slow user init or shutdown hook; the defaults remain bounded.
 - By default, embedded BUFFER prefers user init loading so your normal Neovim
   configuration, plugins, and syntax behavior are available.
 - `AGENC_BUFFER_NVIM_USE_INIT=0` — disable user init; starts clean embedded
@@ -46,6 +51,11 @@ Troubleshooting:
   permissions, wrapper scripts, or stderr failures reported in the BUFFER header.
 - Probe timeout: raise `AGENC_BUFFER_NVIM_TIMEOUT_MS` only after confirming the
   binary starts normally from the same shell.
+- Startup timeout: raise `AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS` when a trusted
+  user init or plugin needs more than 10 seconds; use clean mode to isolate it.
+- Cleanup timeout: raise `AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS` only for a
+  trusted slow shutdown. Normal close fails closed when dirty state or `:qa`
+  cannot be confirmed; force close remains bounded and supervised.
 - Unsupported version: embedded BUFFER requires **`nvim 0.9.0` or newer** and
   shows `Embedded Neovim requires nvim 0.9.0 or newer` before falling back.
 
@@ -53,7 +63,12 @@ Troubleshooting:
 
 Embedded Neovim runs as a supervised child process. BUFFER cleanup sends a
 graceful quit, waits for the child, and then terminates the child process group
-when graceful shutdown does not complete within the configured timeout.
+on Unix (or the direct child on Windows) when graceful shutdown does not
+complete within the configured timeout. Neovim-started descendant cleanup on
+Windows remains subject to the operating system's direct-child limitation.
+The startup and cleanup deadlines are configurable with the env knobs above;
+external-editor handoff checks every loaded buffer (including hidden buffers),
+and unknown or modified state is never treated as permission to launch.
 If the TUI is killed, the PTY gate verifies that descendant Neovim processes are
 gone before the scenario passes.
 
