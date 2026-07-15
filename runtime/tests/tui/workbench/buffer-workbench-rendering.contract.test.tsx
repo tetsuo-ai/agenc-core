@@ -53,9 +53,9 @@ import { wheelInputIsInsideNode } from "../../../src/tui/workbench/surfaces/Buff
 import { WorkbenchLayout } from "../../../src/tui/workbench/WorkbenchLayout.js";
 import type { WorkbenchBufferSnapshot } from "../../../src/tui/workbench/buffer/BufferStore.js";
 
-afterEach(() => {
+afterEach(async () => {
   renderingHarness.inputCapture = null;
-  resetWorkbenchBufferProviderControllerForTesting();
+  await resetWorkbenchBufferProviderControllerForTesting();
 });
 
 describe("BUFFER workbench rendering", () => {

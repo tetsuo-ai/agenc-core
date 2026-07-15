@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ExternalEditorProvider } from "../../../src/tui/workbench/buffer/providers/external/ExternalEditorProvider.js";
+import type { BufferFileSnapshot } from "../../../src/tui/workbench/buffer/fileSnapshot.js";
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
 
 let dir: string;
@@ -117,7 +118,62 @@ describe("explicit external editor provider", () => {
     await provider.cleanup();
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  it("launches only the latest overlapping open and invalidates pending opens on cleanup", async () => {
+    const first = controlled<BufferFileSnapshot>();
+    const second = controlled<BufferFileSnapshot>();
+    const pendingCleanup = controlled<BufferFileSnapshot>();
+    const reads = vi.fn((filePath: string) => {
+      if (filePath === "first.txt") return first.promise;
+      if (filePath === "second.txt") return second.promise;
+      return pendingCleanup.promise;
+    });
+    const launch = vi.fn(() => true);
+    const provider = new ExternalEditorProvider(launch, reads);
+
+    const staleOpen = provider.open({ filePath: "first.txt", line: 1 });
+    const latestOpen = provider.open({ filePath: "second.txt", line: 2 });
+    second.resolve(snapshotFor("second.txt", 2));
+    await latestOpen;
+    first.resolve(snapshotFor("first.txt", 1));
+    await staleOpen;
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledWith("/workspace/second.txt", 2);
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "ready",
+      filePath: "second.txt",
+    });
+
+    const invalidatedOpen = provider.open({ filePath: "pending.txt", line: 3 });
+    await provider.cleanup();
+    pendingCleanup.resolve(snapshotFor("pending.txt", 3));
+    await invalidatedOpen;
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(provider.getSnapshot().providerStatus).toBe("idle");
+  });
 });
+
+function snapshotFor(filePath: string, mtimeMs: number): BufferFileSnapshot {
+  return {
+    filePath,
+    absolutePath: `/workspace/${filePath}`,
+    content: "alpha\n",
+    mtimeMs,
+    size: 6,
+    encoding: "utf8",
+    lineEndings: "LF",
+  };
+}
+
+function controlled<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 function baseKey() {
   return {

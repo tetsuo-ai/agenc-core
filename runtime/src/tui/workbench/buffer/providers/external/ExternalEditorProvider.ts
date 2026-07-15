@@ -2,7 +2,7 @@ import {
   openFileInBufferExternalEditor,
   type BufferExternalEditorLauncher,
 } from "../../externalEditor.js";
-import { readBufferFileSnapshot } from "../../fileSnapshot.js";
+import { readBufferFileSnapshot, type BufferFileSnapshot } from "../../fileSnapshot.js";
 import type { BufferMove } from "../../editing.js";
 import type {
   BufferEditorProvider,
@@ -34,10 +34,16 @@ export class ExternalEditorProvider implements BufferEditorProvider {
   };
   readonly #listeners = new Set<BufferProviderListener>();
   readonly #launcher: BufferExternalEditorLauncher;
+  readonly #readFileSnapshot: (filePath: string) => Promise<BufferFileSnapshot>;
   #snapshot: BufferProviderSnapshot = emptyProviderSnapshot(this.identity);
+  #openGeneration = 0;
 
-  constructor(launcher: BufferExternalEditorLauncher = openFileInBufferExternalEditor) {
+  constructor(
+    launcher: BufferExternalEditorLauncher = openFileInBufferExternalEditor,
+    readFileSnapshot: (filePath: string) => Promise<BufferFileSnapshot> = readBufferFileSnapshot,
+  ) {
     this.#launcher = launcher;
+    this.#readFileSnapshot = readFileSnapshot;
   }
 
   subscribe(listener: BufferProviderListener): () => void {
@@ -56,7 +62,16 @@ export class ExternalEditorProvider implements BufferEditorProvider {
   }
 
   async open(options: BufferProviderOpenOptions): Promise<void> {
-    const file = await readBufferFileSnapshot(options.filePath);
+    const generation = this.#openGeneration + 1;
+    this.#openGeneration = generation;
+    let file: BufferFileSnapshot;
+    try {
+      file = await this.#readFileSnapshot(options.filePath);
+    } catch (error) {
+      if (generation !== this.#openGeneration) return;
+      throw error;
+    }
+    if (generation !== this.#openGeneration) return;
     let opened = false;
     let launchError: string | null = null;
     try {
@@ -84,6 +99,7 @@ export class ExternalEditorProvider implements BufferEditorProvider {
   }
 
   async close(_options: BufferProviderCloseOptions = {}): Promise<boolean> {
+    this.#openGeneration += 1;
     this.#snapshot = emptyProviderSnapshot(this.identity);
     this.#emit();
     return true;
