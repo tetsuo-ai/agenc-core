@@ -1,5 +1,7 @@
 {
   "contractName": "agent-surface-contract",
+  "sourceCommit": "966932124c243aab71719c269d79305844f35814",
+  "contractSha256": "97688945f87db7b407f36c787ba24a81d9d75c9533c03a63afe1cd8dfb42d03b",
   "reviewer": "manual-contract-reviewer",
   "reviewedAt": "2026-06-14T19:54:12Z",
   "verdict": "APPROVED",
