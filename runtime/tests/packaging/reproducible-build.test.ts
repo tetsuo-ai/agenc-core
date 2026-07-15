@@ -511,6 +511,9 @@ describe("reproducible install and release contract", () => {
     expect(cleanBuild).toContain(
       "AGENC_NATIVE_PEER_CREDENTIAL_ADDON=/data/evil.node",
     );
+    expect(cleanBuild).toContain("checkedJavaScriptProgram(");
+    expect(cleanBuild).toContain('"hardened container runtime smoke"');
+    expect(cleanBuild).toContain('!== "required\\\\n"');
     expect(cleanBuild).toContain('"--cap-drop"');
     expect(cleanBuild.match(/checkoutIndex\(dockerSources\[/g)).toHaveLength(2);
 
