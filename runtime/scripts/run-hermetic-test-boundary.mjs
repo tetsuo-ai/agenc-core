@@ -857,7 +857,10 @@ const canaries = [
   ['--unix-symlink-canary', ['target=unix-path-symlink']],
   ['--unix-noncanonical-canary', ['target=unix-path-noncanonical']],
 ]
-const allowedCanaries = ['--unix-private-canary']
+const allowedCanaries = [
+  '--unix-private-canary',
+  '--ptrace-state-canary',
+]
 const exitStatusCanaries = [['--sigtrap-canary', 133]]
 
 async function verifyObserver(supervisorRoot) {
