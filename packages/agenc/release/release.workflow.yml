@@ -1,134 +1,18 @@
-name: release
-
-# Cuts a public AgenC release:
-#   1. build the per-platform runtime tarballs (native deps compiled on each OS),
-#   2. publish them as GitHub Release assets,
-#   3. generate the runtime manifest pointing at those assets,
-#   4. publish the thin @tetsuo-ai/agenc launcher to npm.
+# INACTIVE SAFETY STUB — GitHub does not load workflows outside .github/workflows.
 #
-# Trigger by pushing a tag like `agenc-v0.3.0` (must match runtime/package.json
-# version), or run manually via workflow_dispatch.
+# This path previously contained an obsolete release draft with unsafe ordering,
+# mutable action tags, the wrong public repository, and a non-reproducible Linux
+# toolchain. It is deliberately a no-op so copying it into .github/workflows
+# cannot publish anything.
+#
+# The only runtime artifact workflow is:
+#   .github/workflows/release-runtime.yml
+# It builds artifacts but does not publish them. Operator-reviewed draft-release
+# commands are documented in that workflow's header and docs/install.md.
+
+name: inactive-release-safety-stub
 
 on:
-  push:
-    tags:
-      - "agenc-v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. agenc-v0.3.0). Must match runtime version."
-        required: true
 
-permissions:
-  contents: write # create the GitHub Release + upload assets
-
-env:
-  NODE_VERSION: "25"
-
-jobs:
-  build-runtime:
-    name: build runtime (${{ matrix.slug }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            slug: linux-x64
-          - os: macos-14 # Apple silicon
-            slug: darwin-arm64
-          - os: macos-13 # Intel
-            slug: darwin-x64
-          - os: windows-latest
-            slug: win-x64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      # Native deps (better-sqlite3, node-pty) compile here if no prebuild.
-      # Uses `npm install` (not `npm ci`) because lockfiles are not committed.
-      - name: Install root deps
-        run: npm install --no-audit --no-fund
-      - name: Build runtime tarball
-        run: node packages/agenc/scripts/build-runtime-tarball.mjs
-      - name: Upload artifact + sidecar meta
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-${{ matrix.slug }}
-          path: |
-            packages/agenc/release-artifacts/*.tar.gz
-            packages/agenc/release-artifacts/*.meta.json
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
-    name: publish release + npm
-    needs: build-runtime
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Verify tag matches runtime version
-        run: |
-          VERSION="$(node -p "require('./runtime/package.json').version")"
-          EXPECTED="agenc-v${VERSION}"
-          if [ "${{ steps.tag.outputs.tag }}" != "$EXPECTED" ]; then
-            echo "::error::tag ${{ steps.tag.outputs.tag }} does not match runtime version ($EXPECTED)"
-            exit 1
-          fi
-
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dl
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p packages/agenc/release-artifacts
-          find dl -type f \( -name "*.tar.gz" -o -name "*.meta.json" \) \
-            -exec cp {} packages/agenc/release-artifacts/ \;
-          ls -la packages/agenc/release-artifacts
-
-      - name: Generate SPDX SBOM
-        run: |
-          npm run sbom -- \
-            --output "packages/agenc/release-artifacts/agenc-core-${{ steps.tag.outputs.tag }}.spdx.json"
-
-      - name: Create GitHub Release with runtime assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            packages/agenc/release-artifacts/*.tar.gz \
-            packages/agenc/release-artifacts/*.spdx.json \
-            --title "${{ steps.tag.outputs.tag }}" \
-            --generate-notes
-
-      - name: Generate runtime manifest (points at the uploaded assets)
-        run: |
-          node packages/agenc/scripts/gen-manifest.mjs \
-            --repo "${{ github.repository }}" \
-            --tag "${{ steps.tag.outputs.tag }}"
-
-      - name: Publish launcher to npm
-        working-directory: packages/agenc
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # CI guard in postinstall keeps `npm publish`'s local pack step from
-          # trying to download the runtime on the publish runner.
-          CI: "true"
-        run: npm publish --access public --provenance
+jobs: {}

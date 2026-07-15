@@ -1,4 +1,6 @@
-# AgenC daemon via compose (TODO task 4).
+# AgenC daemon via compose. Export a tracked Git snapshot directory and the
+# four source-bound build values first; docs/install.md contains the exact
+# command. A raw working-directory context is intentionally not the default.
 #
 #   docker compose -f packaging/docker/docker-compose.yml up -d
 #
@@ -9,11 +11,23 @@
 services:
   agenc-daemon:
     build:
-      context: ../..
+      context: ${AGENC_DOCKER_CONTEXT:?set AGENC_DOCKER_CONTEXT to a tracked Git snapshot directory or checksum-bound Git URL}
       dockerfile: packaging/docker/Dockerfile
+      args:
+        AGENC_BUILD_COMMIT: ${AGENC_BUILD_COMMIT:?set AGENC_BUILD_COMMIT from the clean source commit}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:?set SOURCE_DATE_EPOCH from the source commit}
+        AGENC_BUILD_TIME: ${AGENC_BUILD_TIME:?set AGENC_BUILD_TIME from SOURCE_DATE_EPOCH}
+        AGENC_VERSION: ${AGENC_VERSION:?set AGENC_VERSION from package.json}
     image: agenc:local
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
+      # Persistent state is data only. Native code is prebuilt and root-owned
+      # in the image, so no executable is loaded from this writable volume.
       - agenc-data:/data
     environment:
       # Pass through whichever provider credential you use (unset ones are

@@ -47,6 +47,15 @@ export interface AgenCUnixSocketServerOptions {
   readonly socketPath?: string;
   readonly homeDir?: string;
   readonly allowRuntimeNativePeerCredentialBuild?: boolean;
+  /**
+   * Root-owned, prebuilt Linux binding supplied by a managed installation.
+   * An explicitly configured addon is mandatory: loading it fails closed
+   * instead of falling back to runtime compilation or cookie-only auth.
+   */
+  readonly nativePeerCredentialAddonPath?: string;
+  readonly requireRootOwnedNativePeerCredentialAddon?: boolean;
+  readonly requireNativePeerCredentialForConnections?: boolean;
+  readonly onRequiredNativePeerCredentialFailure?: (error: Error) => void;
   readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
   readonly onNativePeerCredentialUnavailable?: (message: string) => void;
   readonly acceptAuthenticator?: (
@@ -98,6 +107,39 @@ export class AgenCUnixSocketServer {
       throw new Error("AgenC Unix socket transport is already listening");
     }
 
+    if (
+      this.#options.nativePeerCredentialAddonPath !== undefined &&
+      this.#options.nativePeerCredentialBinding !== undefined
+    ) {
+      throw new Error(
+        "AgenC peer credential addon path and injected binding are mutually exclusive",
+      );
+    }
+    const nativePeerCredential = loadAgenCNativePeerCredentialBinding({
+      allowRuntimeNativeBuild:
+        this.#options.nativePeerCredentialAddonPath === undefined
+          ? this.#options.allowRuntimeNativePeerCredentialBuild
+          : false,
+      nativeAddonPath: this.#options.nativePeerCredentialAddonPath,
+      nativeBinding: this.#options.nativePeerCredentialBinding,
+      requireRootOwnedNativeAddon:
+        this.#options.requireRootOwnedNativePeerCredentialAddon,
+    });
+    if (
+      this.#options.nativePeerCredentialAddonPath !== undefined &&
+      nativePeerCredential.binding === null
+    ) {
+      throw new Error(
+        `AgenC configured peer credential native binding unavailable: ${nativePeerCredential.error ?? "unknown load failure"}`,
+      );
+    }
+    this.#nativePeerCredentialBinding = nativePeerCredential.binding;
+    if (nativePeerCredential.error !== undefined) {
+      this.#options.onNativePeerCredentialUnavailable?.(
+        nativePeerCredential.error,
+      );
+    }
+
     const socketPath = this.socketPath;
     await prepareAgenCUnixSocketPath(socketPath);
 
@@ -126,17 +168,6 @@ export class AgenCUnixSocketServer {
 
     this.#privateSocketOwnerUid =
       await resolveAgenCPrivateUnixSocketOwnerUid(socketPath);
-    const nativePeerCredential = loadAgenCNativePeerCredentialBinding({
-      allowRuntimeNativeBuild:
-        this.#options.allowRuntimeNativePeerCredentialBuild,
-      nativeBinding: this.#options.nativePeerCredentialBinding,
-    });
-    this.#nativePeerCredentialBinding = nativePeerCredential.binding;
-    if (nativePeerCredential.error !== undefined) {
-      this.#options.onNativePeerCredentialUnavailable?.(
-        nativePeerCredential.error,
-      );
-    }
     return socketPath;
   }
 
@@ -174,6 +205,18 @@ export class AgenCUnixSocketServer {
       socket,
       this.#nativePeerCredentialBinding,
     );
+    if (
+      this.#options.requireNativePeerCredentialForConnections === true &&
+      peerUid === null
+    ) {
+      const error = new Error(
+        "AgenC required peer credential binding could not identify an accepted Unix socket",
+      );
+      this.#options.onError?.(error, connectionId);
+      socket.destroy();
+      this.#options.onRequiredNativePeerCredentialFailure?.(error);
+      return;
+    }
     let accepted = this.#options.acceptAuthenticator === undefined;
     let closingUnauthenticated = false;
     let authenticationTimeout: NodeJS.Timeout | undefined;

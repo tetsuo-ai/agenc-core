@@ -25,7 +25,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/canonicalize-package-modes.mjs .",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": [
@@ -47,6 +48,6 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=25.0.0"
+    "node": ">=25.9.0 <26.0.0"
   }
 }

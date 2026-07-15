@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "nodeVersion": "25.9.0",
+  "nodeMajor": 25,
+  "nodeModuleAbi": "141",
+  "nodeApiVersion": "10",
+  "npmVersion": "11.17.0",
+  "npmDistribution": {
+    "file": "npm-11.17.0.tgz",
+    "url": "https://registry.npmjs.org/npm/-/npm-11.17.0.tgz",
+    "sha256": "b290bbb35b9e72c3ef84edbe041f28c4479c4d9ee79f555817b8caafe7ce4bba"
+  },
+  "githubCli": {
+    "version": "2.96.0",
+    "linuxX64": {
+      "file": "gh_2.96.0_linux_amd64.tar.gz",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz",
+      "sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
+      "bytes": 14652560
+    },
+    "linuxArm64": {
+      "file": "gh_2.96.0_linux_arm64.tar.gz",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_arm64.tar.gz",
+      "sha256": "06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909",
+      "bytes": 13321232
+    },
+    "macosX64": {
+      "file": "gh_2.96.0_macOS_amd64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_macOS_amd64.zip",
+      "sha256": "4bd449df9ad639391bc62b8032546f0fe9edcd8526e06682a4f88abd8c5d163c",
+      "bytes": 15298430
+    },
+    "macosArm64": {
+      "file": "gh_2.96.0_macOS_arm64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_macOS_arm64.zip",
+      "sha256": "f23a0c37d963aacc3bed703ccbd59b41c5ca22101fab7f00eb2b7cad23aba463",
+      "bytes": 13950131
+    },
+    "windowsX64": {
+      "file": "gh_2.96.0_windows_amd64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip",
+      "sha256": "c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3",
+      "bytes": 14821821
+    }
+  },
+  "legacyBridge": {
+    "schemaVersion": 1,
+    "runtimeVersion": "0.6.2",
+    "releaseRepository": "tetsuo-ai/agenc-releases",
+    "releaseTag": "agenc-v0.6.2",
+    "filename": "agenc-runtime-manifest.json",
+    "status": "pending-v0.6.2-publication",
+    "sha256": null,
+    "bytes": null
+  },
+  "nodeDistributions": {
+    "linux-x64": {
+      "file": "node-v25.9.0-linux-x64.tar.gz",
+      "sha256": "134e55b2408448a219760fe04dc44d6851f9de8a79549021ffd870e9082d9e7b"
+    },
+    "linux-arm64": {
+      "file": "node-v25.9.0-linux-arm64.tar.gz",
+      "sha256": "8fb4283301b8c720fc9f18bffff0f659e72cc14d0cf207a3bb411808aaa73a57"
+    },
+    "darwin-x64": {
+      "file": "node-v25.9.0-darwin-x64.tar.gz",
+      "sha256": "7d737b53ce191142bfa1c17cfa5b070d96e84eebf76b8dd06d84981cbdc3f7e3"
+    },
+    "darwin-arm64": {
+      "file": "node-v25.9.0-darwin-arm64.tar.gz",
+      "sha256": "e479f3c469d3d9303a44f00a8ea37a3788395d171bb8059c48a4bbbd2e371b59"
+    },
+    "win-x64": {
+      "file": "node-v25.9.0-win-x64.zip",
+      "sha256": "929552b8305effac843ba7b4270c437aefb702fc3fbd73fcd1bffd35d4ac284e"
+    }
+  },
+  "nodeHeaders": {
+    "file": "node-v25.9.0-headers.tar.gz",
+    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a"
+  },
+  "docker": {
+    "dockerfileFrontend": "docker/dockerfile:1.25.0@sha256:0adf442eae370b6087e08edc7c50b552d80ddf261576f4ebd6421006b2461f12",
+    "buildx": {
+      "version": "0.35.0",
+      "linux-amd64": {
+        "file": "buildx-v0.35.0.linux-amd64",
+        "url": "https://github.com/docker/buildx/releases/download/v0.35.0/buildx-v0.35.0.linux-amd64",
+        "sha256": "d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda"
+      },
+      "linux-arm64": {
+        "file": "buildx-v0.35.0.linux-arm64",
+        "url": "https://github.com/docker/buildx/releases/download/v0.35.0/buildx-v0.35.0.linux-arm64",
+        "sha256": "c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766"
+      }
+    },
+    "buildkit": {
+      "version": "0.31.1",
+      "image": "moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a",
+      "compatibilityVersion": "30"
+    },
+    "buildImage": "node:25.9.0-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b",
+    "runtimeImage": "node:25.9.0-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370",
+    "debianSnapshot": {
+      "timestamp": "20260701T000000Z",
+      "repositories": [
+        {
+          "archive": "debian",
+          "suite": "bookworm",
+          "components": ["main"]
+        },
+        {
+          "archive": "debian",
+          "suite": "bookworm-updates",
+          "components": ["main"]
+        },
+        {
+          "archive": "debian-security",
+          "suite": "bookworm-security",
+          "components": ["main"]
+        }
+      ]
+    },
+    "runtimePackages": {
+      "ripgrep": "13.0.0-4+b2",
+      "git": "1:2.39.5-0+deb12u3",
+      "ca-certificates": "20230311+deb12u1",
+      "tini": "0.19.0-1+b3"
+    }
+  },
+  "linux": {
+    "containerImage": "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
+    "builderPackages": {
+      "gcc-toolset-12-gcc-c++": "gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10",
+      "gcc-toolset-12-binutils": "gcc-toolset-12-binutils-2.38-17.el8",
+      "python3.12": "python3.12-3.12.13-2.el8_10",
+      "make": "make-4.2.1-11.el8",
+      "git": "git-2.43.7-1.el8_10",
+      "tar": "tar-1.30-11.el8_10",
+      "gzip": "gzip-1.9-13.el8_5"
+    },
+    "rpmContentInventory": {
+      "schemaVersion": 1,
+      "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
+      "signatureKeyIds": ["15af5dac6d745a60"],
+      "sha256": {
+        "x64": "19188b90457ed82a19099d05015df66773c81e1cb93612e21db4b5e5a931b905",
+        "arm64": "304f9e337e2f2515bd9550b4ac6a75de88c240da45fdb9e51a16441171421172"
+      }
+    },
+    "compilerVersion": "12.2.1",
+    "binutilsVersion": "2.38",
+    "pythonVersion": "3.12.13",
+    "maximumGlibcVersion": "2.28",
+    "maximumGlibcxxVersion": "3.4.25",
+    "maximumCxxAbiVersion": "1.3.11"
+  },
+  "macos": {
+    "minimumVersion": "13.5"
+  },
+  "hostedRunners": {
+    "darwin-arm64": {
+      "runnerLabel": "macos-15",
+      "imageOS": "macos15",
+      "imageVersion": "20260706.0213.1",
+      "runnerArch": "ARM64",
+      "xcodeVersion": "16.4",
+      "xcodeBuild": "16F6",
+      "macosSdkVersion": "15.5",
+      "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+    },
+    "darwin-x64": {
+      "runnerLabel": "macos-15-intel",
+      "imageOS": "macos15",
+      "imageVersion": "20260629.0276.1",
+      "runnerArch": "X64",
+      "xcodeVersion": "16.4",
+      "xcodeBuild": "16F6",
+      "macosSdkVersion": "15.5",
+      "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)"
+    },
+    "win-x64": {
+      "runnerLabel": "windows-2025",
+      "imageOS": "win25",
+      "imageVersion": "20260628.181.1",
+      "runnerArch": "X64",
+      "visualStudioVersion": "17.14.37411.7",
+      "visualStudioInstallPath": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise",
+      "msvcToolsVersion": "14.44.35211",
+      "msvcCompilerVersion": "19.44.35222",
+      "windowsSdkVersion": "10.0.26100.0"
+    }
+  }
+}

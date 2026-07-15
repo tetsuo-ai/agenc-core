@@ -350,6 +350,40 @@ describe('hermetic test discovery', () => {
     });
   });
 
+  it('uses the exact release-toolchain Node image for the hermetic suite', async () => {
+    const toolchain = JSON.parse(
+      readFileSync(resolve(runtimeRoot, '../release-toolchain.json'), 'utf8'),
+    ) as { readonly docker: { readonly buildImage: string } };
+    const boundaryUrl = new URL(
+      '../scripts/run-hermetic-test-boundary.mjs',
+      import.meta.url,
+    );
+    boundaryUrl.searchParams.set('node-image', String(Date.now()));
+    const boundary = await import(/* @vite-ignore */ boundaryUrl.href) as {
+      readonly PINNED_NODE_IMAGE: string;
+    };
+
+    expect(boundary.PINNED_NODE_IMAGE).toBe(toolchain.docker.buildImage);
+  });
+
+  it('maps the container UID to an isolated writable account home', async () => {
+    const boundaryUrl = new URL(
+      '../scripts/run-hermetic-test-boundary.mjs',
+      import.meta.url,
+    );
+    boundaryUrl.searchParams.set('account-passwd', String(Date.now()));
+    const boundary = await import(/* @vite-ignore */ boundaryUrl.href) as {
+      readonly boundaryPasswdEntry: (uid: number, gid: number) => string;
+    };
+
+    expect(boundary.boundaryPasswdEntry(1234, 5678)).toBe(
+      'agenc-boundary:x:1234:5678:AgenC hermetic test:/tmp/agenc-boundary-home:/usr/sbin/nologin\n',
+    );
+    expect(() => boundary.boundaryPasswdEntry(-1, 5678)).toThrow(
+      /non-negative integers/u,
+    );
+  });
+
   it('fails closed when the Docker boundary platform is too old or lacks seccomp', async () => {
     const boundaryUrl = new URL(
       '../scripts/run-hermetic-test-boundary.mjs',

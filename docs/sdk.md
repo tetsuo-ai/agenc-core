@@ -1,6 +1,6 @@
 # AgenC Embedding SDK (`@tetsuo-ai/agenc-sdk`)
 
-Package: `packages/agenc-sdk` · version **0.2.0** · Node ≥ 25 · ESM only · zero runtime dependencies.
+Package: `packages/agenc-sdk` · version **0.2.0** · Node **>=25.9 <26** · ESM only · zero runtime dependencies.
 
 The SDK embeds AgenC in another application without importing runtime internals.
 It speaks the daemon's JSON-RPC protocol over a hand-mirrored type surface

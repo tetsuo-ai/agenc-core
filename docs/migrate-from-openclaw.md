@@ -43,7 +43,7 @@ agenc onboard autonomy
 | Channels (Telegram, WhatsApp, …) | **Shipped:** Telegram, Discord, Slack, WebChat, stdio | `agenc gateway run` / `install-service`; pairing-gated, in-channel token approvals, untrusted-content framing. Discord: official Gateway WS + REST (`AGENC_DISCORD_BOT_TOKEN`); Slack: Socket Mode — no inbound listener (`AGENC_SLACK_BOT_TOKEN` + `AGENC_SLACK_APP_TOKEN`); guild/channel messages mention-gated by default. Signal and WhatsApp still roadmap |
 | Nodes (phone/Canvas) | Partial | Device pairing + relay remote control of the **local daemon** ships (`agenc remote on`); see [remote-control.md](remote-control.md). Realtime voice (WebRTC) exists in the TUI |
 | `openclaw security audit` | `agenc security audit --fix` | Fail-closed exit codes; runs automatically around onboard/daemon start |
-| Docker install | `packaging/docker/` | Non-root image, no published ports by default; tag `ghcr.io/tetsuo-ai/agenc:0.6.0` |
+| Docker install | `packaging/docker/` | Non-root image, no published ports by default; build from the tracked Git snapshot per [`docs/install.md`](install.md#docker) until the hosted native multi-architecture release gate lands |
 
 ## What you gain immediately
 

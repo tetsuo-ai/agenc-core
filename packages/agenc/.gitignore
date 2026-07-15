@@ -2,6 +2,7 @@
 # GitHub Releases — never committed).
 release-artifacts/
 
-# The runtime manifest is generated at release time (gen-manifest.mjs) and
-# included in the npm tarball via package.json "files"; it is not source.
-generated/agenc-runtime-manifest.json
+# The ABI-aware v2 manifest is generated at release time and bundled with npm.
+# The fixed-name v1 bridge is a release asset only and must never enter npm.
+generated/agenc-runtime-manifest-v2.json
+release-manifests/agenc-runtime-manifest.json

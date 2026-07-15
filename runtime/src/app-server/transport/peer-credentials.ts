@@ -27,6 +27,7 @@ export interface AgenCNativePeerCredentialOptions {
   readonly compiler?: string;
   readonly execFileSync?: typeof execFileSync;
   readonly nativeAddonPath?: string;
+  readonly requireRootOwnedNativeAddon?: boolean;
   readonly nativeBinding?: AgenCNativePeerCredentialBinding;
   readonly nodeIncludeDir?: string;
   readonly platform?: NodeJS.Platform;
@@ -49,14 +50,16 @@ const NATIVE_PEER_CREDENTIAL_SOURCE = String.raw`
 
 static napi_value agenc_null(napi_env env) {
   napi_value result;
-  napi_get_null(env, &result);
+  if (napi_get_null(env, &result) != napi_ok) return NULL;
   return result;
 }
 
 static napi_value agenc_get_peer_uid(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
-  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+  if (napi_get_cb_info(env, info, &argc, args, NULL, NULL) != napi_ok) {
+    return NULL;
+  }
   if (argc < 1) return agenc_null(env);
 
   int32_t fd = -1;
@@ -67,12 +70,17 @@ static napi_value agenc_get_peer_uid(napi_env env, napi_callback_info info) {
 #if defined(__linux__)
   struct ucred credentials;
   socklen_t length = sizeof(credentials);
-  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) != 0) {
+  if (
+    getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) != 0 ||
+    length != sizeof(credentials)
+  ) {
     return agenc_null(env);
   }
 
   napi_value result;
-  napi_create_int64(env, (int64_t)credentials.uid, &result);
+  if (napi_create_int64(env, (int64_t)credentials.uid, &result) != napi_ok) {
+    return NULL;
+  }
   return result;
 #else
   return agenc_null(env);
@@ -92,7 +100,9 @@ NAPI_MODULE_INIT() {
       NULL,
     },
   };
-  napi_define_properties(env, exports, 1, descriptors);
+  if (napi_define_properties(env, exports, 1, descriptors) != napi_ok) {
+    return NULL;
+  }
   return exports;
 }
 `;
@@ -122,6 +132,7 @@ export function loadAgenCNativePeerCredentialBinding(
       return {
         binding: loadNativePeerCredentialBindingFromPath(
           options.nativeAddonPath,
+          options.requireRootOwnedNativeAddon,
         ),
       };
     } catch (error) {
@@ -177,8 +188,9 @@ export function compileAndLoadAgenCNativePeerCredentialBinding(
 
 function loadNativePeerCredentialBindingFromPath(
   addonPath: string,
+  requireRootOwner = false,
 ): AgenCNativePeerCredentialBinding {
-  assertTrustedNativeAddonFile(addonPath);
+  assertTrustedNativeAddonFile(addonPath, requireRootOwner);
   const loaded = createRequire(import.meta.url)(
     addonPath,
   ) as AgenCNativePeerCredentialBinding;
@@ -210,10 +222,17 @@ function rebuildNativePeerCredentialBinding(
     options.runExecFileSync(
       options.compiler,
       [
+        "-O2",
+        "-D_FORTIFY_SOURCE=2",
+        "-fstack-protector-strong",
         "-shared",
         "-fPIC",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
         "-I",
         includeDir,
+        "-Wl,-z,relro,-z,now,-z,noexecstack,--build-id=none",
         "-o",
         buildAddonPath,
         sourcePath,
@@ -303,17 +322,54 @@ function assertSafeCacheFile(filePath: string): void {
   }
 }
 
-function assertTrustedNativeAddonFile(filePath: string): void {
+function assertTrustedNativeAddonFile(
+  filePath: string,
+  requireRootOwner: boolean,
+): void {
   const stats = lstatSync(filePath);
   if (stats.isSymbolicLink() || !stats.isFile()) {
     throw new Error(
       `AgenC peer credential addon is not a regular file: ${filePath}`,
     );
   }
-  assertOwnedByCurrentOrRootUser(filePath, stats.uid);
+  if (requireRootOwner) {
+    assertRootOwnedImmutablePath(filePath, stats.uid, stats.mode);
+    let parent = path.dirname(path.resolve(filePath));
+    while (true) {
+      const parentStats = lstatSync(parent);
+      if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+        throw new Error(
+          `AgenC peer credential addon parent is not a real directory: ${parent}`,
+        );
+      }
+      assertRootOwnedImmutablePath(parent, parentStats.uid, parentStats.mode);
+      const next = path.dirname(parent);
+      if (next === parent) break;
+      parent = next;
+    }
+  } else {
+    assertOwnedByCurrentOrRootUser(filePath, stats.uid);
+  }
   if ((stats.mode & 0o022) !== 0) {
     throw new Error(
       `AgenC peer credential addon is writable by group or others: ${filePath}`,
+    );
+  }
+}
+
+function assertRootOwnedImmutablePath(
+  filePath: string,
+  uid: number,
+  mode: number,
+): void {
+  if (typeof process.getuid === "function" && uid !== 0) {
+    throw new Error(
+      `AgenC peer credential system addon path is not root-owned: ${filePath}`,
+    );
+  }
+  if ((mode & 0o022) !== 0) {
+    throw new Error(
+      `AgenC peer credential system addon path is writable by group or others: ${filePath}`,
     );
   }
 }

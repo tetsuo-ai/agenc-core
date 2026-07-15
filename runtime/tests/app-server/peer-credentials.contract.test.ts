@@ -44,6 +44,29 @@ describe("AgenC Unix peer credential native binding", () => {
     });
   });
 
+  const itNonRoot =
+    typeof process.getuid === "function" && process.getuid() !== 0 ? it : it.skip;
+
+  itNonRoot("rejects a current-user addon when system policy requires root ownership", () => {
+    const dir = tempDir("agenc-peer-credentials-root-policy-");
+    const addonPath = path.join(dir, "agenc-peer-credentials.node");
+    writeFileSync(addonPath, "not-a-real-addon", { mode: 0o600 });
+    try {
+      expect(
+        loadAgenCNativePeerCredentialBinding({
+          nativeAddonPath: addonPath,
+          platform: "linux",
+          requireRootOwnedNativeAddon: true,
+        }),
+      ).toEqual({
+        binding: null,
+        error: expect.stringContaining("not root-owned"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("builds the native addon from a static SO_PEERCRED source", () => {
     const cacheDir = tempDir("agenc-peer-credentials-cache-");
     const includeDir = tempNodeIncludeDir();
@@ -71,10 +94,22 @@ describe("AgenC Unix peer credential native binding", () => {
 
       expect(calls).toHaveLength(1);
       expect(calls[0]?.args).toEqual(
-        expect.arrayContaining(["-shared", "-fPIC", "-I", includeDir]),
+        expect.arrayContaining([
+          "-O2",
+          "-D_FORTIFY_SOURCE=2",
+          "-fstack-protector-strong",
+          "-shared",
+          "-fPIC",
+          "-Werror",
+          "-I",
+          includeDir,
+          "-Wl,-z,relro,-z,now,-z,noexecstack,--build-id=none",
+        ]),
       );
       expect(sourceText).toContain("SO_PEERCRED");
       expect(sourceText).toContain("getPeerUid");
+      expect(sourceText).toContain("length != sizeof(credentials)");
+      expect(sourceText).toContain("napi_define_properties(env, exports, 1, descriptors) != napi_ok");
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
       rmSync(includeDir, { recursive: true, force: true });

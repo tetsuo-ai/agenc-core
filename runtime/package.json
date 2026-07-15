@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/runtime",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "AgenC lean coding CLI",
   "type": "module",
@@ -23,7 +23,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types",
+    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",
@@ -61,6 +61,7 @@
     "test:transaction-guard": "node scripts/run-hermetic-vitest.mjs run tests/transaction-guard",
     "test:transaction-guard:live": "vitest run --config vitest.live.config.ts tests/transaction-guard/devnet-live.e2e.test.ts",
     "validate:required": "npm run typecheck && npm run test && npm run build && npm run check:tui-runtime-startup && npm run check:e2e-all",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -155,7 +156,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/lodash-es": "^4.17.12",
-    "@types/node": "^25.4.0",
+    "@types/node": "^25.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.0.0",
     "@types/turndown": "^5.0.6",
@@ -169,6 +170,6 @@
     "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=25.0.0"
+    "node": ">=25.9.0 <26.0.0"
   }
 }

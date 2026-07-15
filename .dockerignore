@@ -1,12 +1,32 @@
-# Keep the Docker build context small and hermetic: npm ci + npm run build
-# inside the image produce everything; host artifacts must not leak in.
-.git
-.worktrees
-node_modules
+# Docker builds need only the three npm workspaces and the two root helpers
+# they invoke. Keep unrelated repository files and local credentials out of
+# the context by default instead of relying on an ever-growing denylist.
+**
+!LICENSE
+!package-lock.json
+!package.json
+!release-toolchain.json
+!scripts/
+!scripts/canonicalize-package-modes.mjs
+!scripts/fetch-pinned-npm.mjs
+!packages/
+!packages/agenc/
+!packages/agenc/**
+!packages/agenc-sdk/
+!packages/agenc-sdk/**
+!runtime/
+!runtime/**
+
+# Generated trees and common secret material remain excluded even beneath an
+# allowed source directory. Published builds additionally use a checksum-bound
+# Git context, so only reviewed tracked files can enter that boundary.
 **/node_modules
-runtime/dist
-packages/agenc/release-artifacts
+**/dist
+**/.env
+**/.env.*
+**/*.key
+**/*.p12
+**/*.pem
+**/keys
 packages/agenc/release
-logs
-*.log
-TODO.md
+packages/agenc/release-artifacts

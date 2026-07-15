@@ -392,4 +392,48 @@ describe('cronEnqueueToCommandQueue (production wiring)', () => {
     await drainPromise
     expect(tickFinished).toBe(true)
   })
+
+  test('concurrent reschedules have one owner and stop invalidates a pending scan', async () => {
+    setScheduledTasksEnabled(true)
+    const clock = new FakeClock(59 * 60_000)
+    const releases: Array<(tasks: CronTask[]) => void> = []
+    const loadTasks = vi.fn(
+      () => new Promise<CronTask[]>(resolveLoad => releases.push(resolveLoad)),
+    )
+    const sched = new CronScheduler(
+      {
+        now: () => clock.nowMs,
+        monotonicNow: () => clock.monoMs,
+        setTimer: clock.setTimer,
+        clearTimer: clock.clearTimer,
+        loadTasks,
+        enqueue: vi.fn(),
+      },
+      { minIntervalFloorMs: 1_000, dir: undefined },
+    )
+    const scheduled = [task({ id: 'eeee0005', cron: '0 * * * *' })]
+
+    // start() owns scan 1; the explicit reschedule owns scan 2. Resolving the
+    // older scan after scan 2 exists must not leave a second armed timer.
+    sched.start()
+    await flush()
+    const newest = sched.reschedule()
+    await flush()
+    expect(releases).toHaveLength(2)
+    releases[0]!(scheduled)
+    await flush()
+    expect(clock.pendingCount()).toBe(0)
+    releases[1]!(scheduled)
+    await newest
+    expect(clock.pendingCount()).toBe(1)
+
+    // A scan that completes after shutdown must not resurrect the timer.
+    const pendingAtStop = sched.reschedule()
+    await flush()
+    expect(releases).toHaveLength(3)
+    sched.stop()
+    releases[2]!(scheduled)
+    await pendingAtStop
+    expect(clock.pendingCount()).toBe(0)
+  })
 })
