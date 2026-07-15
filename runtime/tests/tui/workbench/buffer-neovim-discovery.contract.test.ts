@@ -303,6 +303,117 @@ describe("embedded Neovim discovery", () => {
     expect(isProcessAlive(pid)).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "kills a long-lived version-probe descendant that inherits the probe pipes",
+    async () => {
+      const executable = join(dir, "nvim-version-descendant");
+      const descendantPidFile = join(dir, "nvim-version-descendant.pid");
+      await writeFile(
+        executable,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then',
+          "  sleep 60 &",
+          `  printf '%s' "$!" > '${descendantPidFile}'`,
+          "  printf 'NVIM v0.12.0\\n'",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(executable, 0o755);
+
+      let descendantPid = 0;
+      try {
+        const result = await discoverNeovim({ executable, timeoutMs: 50 });
+        descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+        await waitUntilDead(descendantPid);
+
+        expect(result).toMatchObject({ usable: false, reasonCode: "probe-timeout" });
+        expect(isProcessAlive(descendantPid)).toBe(false);
+      } finally {
+        descendantPid ||= await readProcessIdIfPresent(descendantPidFile);
+        killProcessIfAlive(descendantPid);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "kills a closed-stdio version-probe descendant after a successful close",
+    async () => {
+      const executable = join(dir, "nvim-version-detached-descendant");
+      const descendantPidFile = join(dir, "nvim-version-detached-descendant.pid");
+      await writeFile(
+        executable,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then',
+          "  sleep 60 </dev/null >/dev/null 2>&1 &",
+          `  printf '%s' "$!" > '${descendantPidFile}'`,
+          "  printf 'NVIM v0.12.0\\n'",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(executable, 0o755);
+
+      let descendantPid = 0;
+      try {
+        const result = await discoverNeovim({ executable, timeoutMs: 500 });
+        descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+        await waitUntilDead(descendantPid);
+
+        expect(result).toMatchObject({ usable: true, executable });
+        expect(isProcessAlive(descendantPid)).toBe(false);
+      } finally {
+        descendantPid ||= await readProcessIdIfPresent(descendantPidFile);
+        killProcessIfAlive(descendantPid);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "kills a long-lived embedded-probe descendant after its leader exits successfully",
+    async () => {
+      const executable = join(dir, "nvim-embed-descendant");
+      const descendantPidFile = join(dir, "nvim-embed-descendant.pid");
+      await writeFile(
+        executable,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "--version" ]; then',
+          "  printf 'NVIM v0.12.0\\n'",
+          "  exit 0",
+          "fi",
+          "sleep 60 &",
+          `printf '%s' "$!" > '${descendantPidFile}'`,
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(executable, 0o755);
+
+      let descendantPid = 0;
+      try {
+        const result = await discoverNeovim({ executable, timeoutMs: 500 });
+        descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+        await waitUntilDead(descendantPid);
+
+        expect(result).toMatchObject({ usable: true, executable });
+        expect(isProcessAlive(descendantPid)).toBe(false);
+      } finally {
+        descendantPid ||= await readProcessIdIfPresent(descendantPidFile);
+        killProcessIfAlive(descendantPid);
+      }
+    },
+  );
+
   it("ignores a late process exit after a timed out probe has already settled", async () => {
     const executable = join(dir, "nvim-late-exit");
     await writeFile(executable, "#!/bin/sh\nprintf 'NVIM v0.12.0\\n'\nsleep 1\n", "utf8");
@@ -324,10 +435,35 @@ describe("embedded Neovim discovery", () => {
 });
 
 function isProcessAlive(pid: number): boolean {
+  if (pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function waitUntilDead(pid: number): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline && isProcessAlive(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function readProcessIdIfPresent(path: string): Promise<number> {
+  try {
+    return Number(await readFile(path, "utf8"));
+  } catch {
+    return 0;
+  }
+}
+
+function killProcessIfAlive(pid: number): void {
+  if (!isProcessAlive(pid)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // The process exited between the liveness check and the cleanup signal.
   }
 }

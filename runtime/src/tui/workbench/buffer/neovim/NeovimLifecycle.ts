@@ -26,6 +26,7 @@ export type NeovimCloseResult =
   | { readonly closed: false; readonly reason: string };
 
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
+const DIRTY_CLOSE_REASON = "Unsaved Neovim edits. Save or use force quit before closing BUFFER.";
 
 export class EmbeddedNeovimSession {
   readonly #handle: NeovimProcessHandle;
@@ -33,6 +34,7 @@ export class EmbeddedNeovimSession {
   readonly #ui: NeovimUi;
   readonly #cleanupTimeoutMs: number;
   #closed = false;
+  #cleanupComplete = false;
   #cleanupPromise: Promise<void> | null = null;
   #quitPromise: Promise<NeovimCloseResult> | null = null;
 
@@ -101,7 +103,10 @@ export class EmbeddedNeovimSession {
   }
 
   async quit(discard: boolean): Promise<NeovimCloseResult> {
-    if (this.#closed) return { closed: true };
+    if (this.#closed) {
+      await this.cleanup();
+      return { closed: true };
+    }
     if (this.#quitPromise) {
       const result = await this.#quitPromise;
       if (!result.closed && discard) return this.quit(true);
@@ -115,31 +120,55 @@ export class EmbeddedNeovimSession {
 
   async #quitWithDirtyCheck(discard: boolean): Promise<NeovimCloseResult> {
     if (!discard && await this.isDirty()) {
-      return { closed: false, reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER." };
+      return { closed: false, reason: DIRTY_CLOSE_REASON };
     }
     return this.#quitOnce(discard);
   }
 
   async #quitOnce(discard: boolean): Promise<NeovimCloseResult> {
-    await this.#rpc.request("nvim_command", [discard ? "quit!" : "quit"]).catch(() => null);
+    try {
+      await this.#rpc.request("nvim_command", [discard ? "quit!" : "quit"]);
+    } catch {
+      // A clean-check and :quit are not atomic: edits can arrive between them.
+      // Neovim rejects :quit in that race. Preserve the live buffer instead of
+      // falling through to cleanup(), whose final qa! intentionally discards.
+      if (!discard && !childHasExited(this.#handle.child)) {
+        return { closed: false, reason: DIRTY_CLOSE_REASON };
+      }
+    }
     await this.cleanup();
     return { closed: true };
   }
 
   async cleanup(): Promise<void> {
-    this.#cleanupPromise ??= this.#cleanupOnce();
-    return this.#cleanupPromise;
+    if (this.#cleanupComplete) return;
+    if (this.#cleanupPromise) return this.#cleanupPromise;
+    const attempt = this.#cleanupOnce();
+    this.#cleanupPromise = attempt;
+    try {
+      await attempt;
+      this.#cleanupComplete = true;
+    } finally {
+      if (this.#cleanupPromise === attempt) this.#cleanupPromise = null;
+    }
   }
 
   async #cleanupOnce(): Promise<void> {
     this.#closed = true;
     this.#ui.dispose();
     await this.#rpc.request("nvim_command", ["qa!"]).catch(() => null);
-    this.#handle.child.stdin.end();
-    await waitForNeovimExit(this.#handle.child, this.#cleanupTimeoutMs);
-    this.#rpc.close("session cleanup");
-    this.#handle.kill("SIGKILL");
+    if (!this.#handle.child.stdin.writableEnded) this.#handle.child.stdin.end();
+    try {
+      await waitForNeovimExit(this.#handle.child, this.#cleanupTimeoutMs);
+    } finally {
+      this.#rpc.close("session cleanup");
+      this.#handle.kill("SIGKILL");
+    }
   }
+}
+
+function childHasExited(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 export async function startEmbeddedNeovim(
@@ -169,8 +198,27 @@ export async function startEmbeddedNeovim(
     ui.dispose();
     rpc.close("startup failed");
     handle.child.stdin.end();
-    await waitForNeovimExit(handle.child, options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS);
-    handle.kill("SIGKILL");
+    let cleanupError: unknown;
+    try {
+      await waitForNeovimExit(
+        handle.child,
+        options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS,
+      );
+    } catch (waitError) {
+      cleanupError = waitError;
+    } finally {
+      handle.kill("SIGKILL");
+    }
+    if (cleanupError !== undefined) {
+      const primaryMessage = error instanceof Error ? error.message : String(error);
+      const cleanupMessage = cleanupError instanceof Error
+        ? cleanupError.message
+        : String(cleanupError);
+      throw new AggregateError(
+        [error, cleanupError],
+        `${primaryMessage}; Neovim startup cleanup failed: ${cleanupMessage}`,
+      );
+    }
     throw error;
   }
   return new EmbeddedNeovimSession(
