@@ -11,7 +11,10 @@ import {
   resetStructureBuildCountForTest,
 } from "../../../src/tui/workbench/project-tree/buildTree.js";
 import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
-import { ProjectTreeStore } from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
+import {
+  ProjectTreeStore,
+  scanWorkspacePaths,
+} from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
 
 describe("project tree helpers", () => {
   it("reuses the sorted structure across cursor moves and rebuilds on a paths change (M-TUI-11)", () => {
@@ -1126,3 +1129,38 @@ async function waitForTreePaths(
   }
   throw new Error(`Timed out waiting for project tree paths: ${expectedPaths.join(", ")}`);
 }
+
+describe("scanWorkspacePaths bounds (workspace-scan OOM regression)", () => {
+  // An unbounded scan of a huge cwd (e.g. $HOME) previously ballooned the
+  // heap to the V8 limit — the scan must stop at its caps, not enumerate
+  // everything.
+  it("stops at maxEntries instead of enumerating the whole tree", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-scan-cap-"));
+    try {
+      for (let i = 0; i < 60; i++) {
+        await writeFile(join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
+      }
+      const paths = await scanWorkspacePaths(dir, { maxEntries: 25 });
+      expect(paths.length).toBe(25);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not descend past maxDepth", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-scan-depth-"));
+    try {
+      let deep = dir;
+      for (let level = 1; level <= 6; level++) {
+        deep = join(deep, `d${level}`);
+        await mkdir(deep);
+        await writeFile(join(deep, "leaf.txt"), "x");
+      }
+      const paths = await scanWorkspacePaths(dir, { maxDepth: 3 });
+      expect(paths.some((p) => p.includes("d1/d2/d3/"))).toBe(true);
+      expect(paths.some((p) => p.includes("d1/d2/d3/d4/"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
