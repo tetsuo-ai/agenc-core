@@ -10,14 +10,40 @@ import {
 
 describe("daemon child heap cap arg construction", () => {
   it("prepends a default --max-old-space-size ahead of the entrypoint", () => {
-    const args = buildAgenCDaemonChildNodeArgs("/path/to/agenc.js", {});
+    const userHome = join(tmpdir(), "agenc-test-home");
+    const args = buildAgenCDaemonChildNodeArgs(
+      "/path/to/agenc.js",
+      {},
+      userHome,
+    );
     expect(args).toEqual([
       "--max-old-space-size=4096",
+      "--heapsnapshot-near-heap-limit=1",
+      `--diagnostic-dir=${join(userHome, ".agenc", "oom-snapshots")}`,
       "/path/to/agenc.js",
       "daemon",
       "start",
       "--foreground",
     ]);
+  });
+
+  it("passes an AGENC_HOME containing spaces as one diagnostic argument", () => {
+    const agencHome = join(tmpdir(), "AgenC home with spaces");
+    const args = buildAgenCDaemonChildNodeArgs("/entry.js", {
+      AGENC_HOME: agencHome,
+    });
+    expect(args[2]).toBe(
+      `--diagnostic-dir=${join(agencHome, "oom-snapshots")}`,
+    );
+  });
+
+  it("preserves an operator-provided near-heap-limit policy", () => {
+    const args = buildAgenCDaemonChildNodeArgs("/entry.js", {
+      NODE_OPTIONS: "--heapsnapshot-near-heap-limit=3 --diagnostic-dir=/custom",
+    });
+    expect(args).not.toContain("--heapsnapshot-near-heap-limit=1");
+    expect(args.some((arg) => arg.startsWith("--diagnostic-dir="))).toBe(false);
+    expect(args).toContain("/entry.js");
   });
 
   it("honours the AGENC_DAEMON_MAX_OLD_SPACE_MB override", () => {

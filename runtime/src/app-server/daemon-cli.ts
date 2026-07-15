@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
@@ -150,6 +150,10 @@ const AGENC_DAEMON_FORCE_STOP_GRACE_MS = 2_000;
 const AGENC_DAEMON_MAX_OLD_SPACE_MB_ENV = "AGENC_DAEMON_MAX_OLD_SPACE_MB";
 const DEFAULT_DAEMON_MAX_OLD_SPACE_MB = 4096;
 
+function hasOperatorHeapSnapshotOption(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_OPTIONS?.includes("heapsnapshot-near-heap-limit") ?? false;
+}
+
 /**
  * Builds the node CLI args for the detached daemon child, prepending an
  * explicit `--max-old-space-size` (overridable via
@@ -159,6 +163,7 @@ const DEFAULT_DAEMON_MAX_OLD_SPACE_MB = 4096;
 export function buildAgenCDaemonChildNodeArgs(
   entrypointPath: string,
   env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
 ): string[] {
   const configured = env[AGENC_DAEMON_MAX_OLD_SPACE_MB_ENV]?.trim();
   let maxOldSpaceMb = DEFAULT_DAEMON_MAX_OLD_SPACE_MB;
@@ -168,8 +173,19 @@ export function buildAgenCDaemonChildNodeArgs(
       maxOldSpaceMb = Math.floor(parsed);
     }
   }
+  const diagnosticDirectory = join(
+    resolveAgenCDaemonHome(env, userHome),
+    "oom-snapshots",
+  );
+  const diagnosticArgs = hasOperatorHeapSnapshotOption(env)
+    ? []
+    : [
+        "--heapsnapshot-near-heap-limit=1",
+        `--diagnostic-dir=${diagnosticDirectory}`,
+      ];
   return [
     `--max-old-space-size=${maxOldSpaceMb}`,
+    ...diagnosticArgs,
     entrypointPath,
     "daemon",
     "start",
@@ -3018,16 +3034,23 @@ export { ensureAgenCDaemonCookie } from "./transport/auth.js";
 
 export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
   const entrypointPath = process.argv[1] ?? "";
+  const userHome = homedir();
   return {
     env: process.env,
-    userHome: homedir(),
+    userHome,
     entrypointPath,
     execPath: process.execPath,
     pid: process.pid,
     spawnDetachedDaemon: (env) => {
+      if (!hasOperatorHeapSnapshotOption(env)) {
+        mkdirSync(join(resolveAgenCDaemonHome(env, userHome), "oom-snapshots"), {
+          recursive: true,
+          mode: 0o700,
+        });
+      }
       const child = spawn(
         process.execPath,
-        buildAgenCDaemonChildNodeArgs(entrypointPath, env),
+        buildAgenCDaemonChildNodeArgs(entrypointPath, env, userHome),
         {
           detached: true,
           env,
