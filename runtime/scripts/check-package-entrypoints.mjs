@@ -13,6 +13,9 @@ const requiredRootExports = [
   "AgenCDaemonJsonRpcDispatcher",
   "AgenCInProcessDaemonTransport",
   "startAgenCInProcessDaemonTransport",
+  "EVAL_CONTRACT_VERSION",
+  "validateDerivedSummaryAgainstBundle",
+  "validateEvalContractDocument",
 ];
 const requiredRuntimeAssetPaths = [
   "dist/yolo-classifier-prompts/auto_mode_system_prompt.txt",
@@ -133,6 +136,12 @@ async function checkRequiredRootExports(packageManifest) {
     throw new Error(
       `runtime package root export is missing required exports:\n- ${missingExports.join("\n- ")}`,
     );
+  }
+  if (rootModule.EVAL_CONTRACT_VERSION !== "1.0.0") {
+    throw new Error("runtime package root export has the wrong evaluation contract version");
+  }
+  if (typeof rootModule.validateEvalContractDocument !== "function") {
+    throw new Error("runtime package root evaluation validator is not callable");
   }
 }
 

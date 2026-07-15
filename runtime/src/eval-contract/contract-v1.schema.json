@@ -1,0 +1,2047 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:eval:contract:1.0.0",
+  "title": "AgenC Evaluation Contract v1",
+  "oneOf": [
+    { "$ref": "#/definitions/operatorTask" },
+    { "$ref": "#/definitions/agentTask" },
+    { "$ref": "#/definitions/suiteManifest" },
+    { "$ref": "#/definitions/holdoutDescriptor" },
+    { "$ref": "#/definitions/holdoutAccessReceipt" },
+    { "$ref": "#/definitions/preregistration" },
+    { "$ref": "#/definitions/preregistrationReceipt" },
+    { "$ref": "#/definitions/blindedResultsSeal" },
+    { "$ref": "#/definitions/unblindingRecord" },
+    { "$ref": "#/definitions/runRecord" },
+    { "$ref": "#/definitions/evidenceEvent" },
+    { "$ref": "#/definitions/evidenceSeal" },
+    { "$ref": "#/definitions/derivedSummary" }
+  ],
+  "definitions": {
+    "version": { "type": "string", "const": "1.0.0" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "decimal": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"
+    },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+    "ociImage": {
+      "type": "string",
+      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+    },
+    "repositoryUri": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$",
+      "maxLength": 2048
+    },
+    "contentArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "sizeBytes", "mediaType", "uri"],
+      "properties": {
+        "digest": { "$ref": "#/definitions/digest" },
+        "sizeBytes": { "$ref": "#/definitions/nonNegativeInteger" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "uri": {
+          "type": "string",
+          "pattern": "^cas://sha256/[0-9a-f]{64}$"
+        }
+      }
+    },
+    "keyedCommitment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "digest"],
+      "properties": {
+        "algorithm": { "const": "hmac-sha256" },
+        "keyId": { "$ref": "#/definitions/id" },
+        "digest": { "$ref": "#/definitions/digest" }
+      }
+    },
+    "toolchainPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "digest"],
+      "properties": {
+        "name": { "$ref": "#/definitions/id" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "digest": { "$ref": "#/definitions/digest" }
+      }
+    },
+    "toolchain": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/toolchainPin" }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowlist", "dns"],
+      "properties": {
+        "mode": { "enum": ["none", "loopback", "allowlist"] },
+        "allowlist": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 255 }
+        },
+        "dns": { "enum": ["disabled", "pinned"] }
+      }
+    },
+    "permissionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "policyDigest", "allowedApprovalKinds"],
+      "properties": {
+        "mode": { "const": "deny_by_default" },
+        "policyDigest": { "$ref": "#/definitions/digest" },
+        "allowedApprovalKinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/id" }
+        }
+      }
+    },
+    "toolGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "manifestDigest", "capabilities"],
+      "properties": {
+        "name": { "$ref": "#/definitions/id" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "manifestDigest": { "$ref": "#/definitions/digest" },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["read", "write", "execute", "network"] }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "usd",
+        "inputTokens",
+        "outputTokens",
+        "reasoningTokens",
+        "cacheTokens",
+        "totalTokens",
+        "toolCalls",
+        "turns",
+        "wallTimeMs"
+      ],
+      "properties": {
+        "currency": { "const": "USD" },
+        "usd": { "$ref": "#/definitions/decimal" },
+        "inputTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+        "outputTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+        "reasoningTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+        "cacheTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+        "totalTokens": { "$ref": "#/definitions/positiveInteger" },
+        "toolCalls": { "$ref": "#/definitions/positiveInteger" },
+        "turns": { "$ref": "#/definitions/positiveInteger" },
+        "wallTimeMs": { "$ref": "#/definitions/positiveInteger" }
+      }
+    },
+    "repositoryPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "commit", "cluster", "solutionHistory"],
+      "properties": {
+        "uri": { "$ref": "#/definitions/repositoryUri" },
+        "commit": { "$ref": "#/definitions/gitCommit" },
+        "cluster": { "$ref": "#/definitions/id" },
+        "solutionHistory": { "const": "stripped" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "digest"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000000 },
+        "digest": { "$ref": "#/definitions/digest" }
+      }
+    },
+    "expectedArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "mediaType", "required", "maxBytes"],
+      "properties": {
+        "id": { "$ref": "#/definitions/id" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "required": { "const": true },
+        "maxBytes": { "$ref": "#/definitions/positiveInteger" }
+      }
+    },
+    "environmentPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "platform", "hardwareClass", "toolchain"],
+      "properties": {
+        "image": { "$ref": "#/definitions/ociImage" },
+        "platform": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "hardwareClass": { "$ref": "#/definitions/id" },
+        "toolchain": { "$ref": "#/definitions/toolchain" }
+      }
+    },
+    "resetRecipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "digest", "workspace", "cache", "memory", "session", "clock"],
+      "properties": {
+        "id": { "$ref": "#/definitions/id" },
+        "digest": { "$ref": "#/definitions/digest" },
+        "workspace": { "const": "fresh_clone" },
+        "cache": { "const": "empty" },
+        "memory": { "const": "empty" },
+        "session": { "const": "new" },
+        "clock": { "enum": ["real", "fixed"] }
+      }
+    },
+    "hiddenVerifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "bundle",
+        "image",
+        "command",
+        "timeoutMs",
+        "network",
+        "publicCommitment",
+        "outputPolicy"
+      ],
+      "properties": {
+        "id": { "$ref": "#/definitions/id" },
+        "version": { "$ref": "#/definitions/semver" },
+        "bundle": { "$ref": "#/definitions/contentArtifact" },
+        "image": { "$ref": "#/definitions/ociImage" },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "timeoutMs": { "$ref": "#/definitions/positiveInteger" },
+        "network": { "const": "none" },
+        "publicCommitment": { "$ref": "#/definitions/keyedCommitment" },
+        "outputPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "maxBytes", "revealAssertions"],
+          "properties": {
+            "mode": { "const": "result_only" },
+            "maxBytes": { "$ref": "#/definitions/positiveInteger" },
+            "revealAssertions": { "const": false }
+          }
+        }
+      }
+    },
+    "referenceSolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "patch",
+        "validationEvidence",
+        "baseFailsTargetChecks",
+        "basePassesRegressionChecks",
+        "solutionPassesAllChecks"
+      ],
+      "properties": {
+        "patch": { "$ref": "#/definitions/contentArtifact" },
+        "validationEvidence": { "$ref": "#/definitions/contentArtifact" },
+        "baseFailsTargetChecks": { "const": true },
+        "basePassesRegressionChecks": { "const": true },
+        "solutionPassesAllChecks": { "const": true }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceType",
+        "authoredAt",
+        "cutoffAt",
+        "repositoryWasPublic",
+        "issueWasPublic",
+        "setupPatchWasPublic",
+        "verifierWasPublic",
+        "goldPatchWasPublic",
+        "contaminationAuditDigest",
+        "status",
+        "retirementReason"
+      ],
+      "properties": {
+        "sourceType": {
+          "enum": ["private_authored", "public_issue", "synthetic_diagnostic"]
+        },
+        "authoredAt": { "$ref": "#/definitions/timestamp" },
+        "cutoffAt": { "$ref": "#/definitions/timestamp" },
+        "repositoryWasPublic": { "type": "boolean" },
+        "issueWasPublic": { "type": "boolean" },
+        "setupPatchWasPublic": { "type": "boolean" },
+        "verifierWasPublic": { "type": "boolean" },
+        "goldPatchWasPublic": { "type": "boolean" },
+        "contaminationAuditDigest": { "$ref": "#/definitions/digest" },
+        "status": { "enum": ["eligible", "retired_leak", "retired_quality"] },
+        "retirementReason": {
+          "type": ["string", "null"],
+          "maxLength": 1000
+        }
+      }
+    },
+    "operatorTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "taskId",
+        "taskVersion",
+        "split",
+        "repository",
+        "setupPatch",
+        "issue",
+        "allowedTools",
+        "networkPolicy",
+        "permissionPolicy",
+        "budget",
+        "expectedArtifacts",
+        "environment",
+        "resetRecipe",
+        "hiddenVerifier",
+        "referenceSolution",
+        "provenance"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.operator-task" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "taskId": { "$ref": "#/definitions/id" },
+        "taskVersion": { "$ref": "#/definitions/semver" },
+        "split": { "enum": ["development", "private_holdout"] },
+        "repository": { "$ref": "#/definitions/repositoryPin" },
+        "setupPatch": { "$ref": "#/definitions/contentArtifact" },
+        "issue": { "$ref": "#/definitions/issue" },
+        "allowedTools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/toolGrant" }
+        },
+        "networkPolicy": { "$ref": "#/definitions/networkPolicy" },
+        "permissionPolicy": { "$ref": "#/definitions/permissionPolicy" },
+        "budget": { "$ref": "#/definitions/budget" },
+        "expectedArtifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/expectedArtifact" }
+        },
+        "environment": { "$ref": "#/definitions/environmentPin" },
+        "resetRecipe": { "$ref": "#/definitions/resetRecipe" },
+        "hiddenVerifier": { "$ref": "#/definitions/hiddenVerifier" },
+        "referenceSolution": { "$ref": "#/definitions/referenceSolution" },
+        "provenance": { "$ref": "#/definitions/provenance" }
+      }
+    },
+    "agentTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "taskId",
+        "taskVersion",
+        "repository",
+        "setupPatch",
+        "issue",
+        "allowedTools",
+        "networkPolicy",
+        "permissionPolicy",
+        "budget",
+        "expectedArtifacts",
+        "environment",
+        "verifierCommitment"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.agent-task" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "taskId": { "$ref": "#/definitions/id" },
+        "taskVersion": { "$ref": "#/definitions/semver" },
+        "repository": { "$ref": "#/definitions/repositoryPin" },
+        "setupPatch": { "$ref": "#/definitions/contentArtifact" },
+        "issue": { "$ref": "#/definitions/issue" },
+        "allowedTools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/toolGrant" }
+        },
+        "networkPolicy": { "$ref": "#/definitions/networkPolicy" },
+        "permissionPolicy": { "$ref": "#/definitions/permissionPolicy" },
+        "budget": { "$ref": "#/definitions/budget" },
+        "expectedArtifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/expectedArtifact" }
+        },
+        "environment": { "$ref": "#/definitions/environmentPin" },
+        "verifierCommitment": { "$ref": "#/definitions/keyedCommitment" }
+      }
+    },
+    "suiteManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "suiteId",
+        "suiteVersion",
+        "split",
+        "createdAt",
+        "repositoryFamilies",
+        "tasks"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.suite-manifest" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "split": { "enum": ["development", "private_holdout"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "repositoryFamilies": {
+          "type": "array",
+          "minItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cluster", "canonicalRepositoryUri", "memberRepositoryUris"],
+            "properties": {
+              "cluster": { "$ref": "#/definitions/id" },
+              "canonicalRepositoryUri": { "$ref": "#/definitions/repositoryUri" },
+              "memberRepositoryUris": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "$ref": "#/definitions/repositoryUri" }
+              }
+            }
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 10,
+          "items": { "$ref": "#/definitions/operatorTask" }
+        }
+      }
+    },
+    "holdoutDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "suiteId",
+        "suiteVersion",
+        "createdAt",
+        "sealedAt",
+        "taskCount",
+        "repositoryCount",
+        "maximumTasksPerRepository",
+        "taskManifestCommitment",
+        "verifierRootCommitment",
+        "repositoryFamilyMapCommitment",
+        "accessPolicyDigest",
+        "unsealPolicyDigest",
+        "custodianKeyId",
+        "custody",
+        "status"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.holdout-descriptor" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "sealedAt": { "$ref": "#/definitions/timestamp" },
+        "taskCount": { "type": "integer", "minimum": 10 },
+        "repositoryCount": { "type": "integer", "minimum": 10 },
+        "maximumTasksPerRepository": { "$ref": "#/definitions/positiveInteger" },
+        "taskManifestCommitment": { "$ref": "#/definitions/keyedCommitment" },
+        "verifierRootCommitment": { "$ref": "#/definitions/keyedCommitment" },
+        "repositoryFamilyMapCommitment": { "$ref": "#/definitions/keyedCommitment" },
+        "accessPolicyDigest": { "$ref": "#/definitions/digest" },
+        "unsealPolicyDigest": { "$ref": "#/definitions/digest" },
+        "custodianKeyId": { "$ref": "#/definitions/id" },
+        "custody": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "custodianIdentity",
+            "implementerPrincipalSetDigest",
+            "accessControlEvidenceDigest",
+            "custodyVerifierDigest",
+            "accessLogRootCommitment",
+            "projectionPolicyDigest"
+          ],
+          "properties": {
+            "mode": { "const": "separate_os_principal_or_remote_service" },
+            "custodianIdentity": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "implementerPrincipalSetDigest": { "$ref": "#/definitions/digest" },
+            "accessControlEvidenceDigest": { "$ref": "#/definitions/digest" },
+            "custodyVerifierDigest": { "$ref": "#/definitions/digest" },
+            "accessLogRootCommitment": { "$ref": "#/definitions/keyedCommitment" },
+            "projectionPolicyDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "status": { "enum": ["sealed", "retired"] }
+      }
+    },
+    "holdoutAccessReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "experimentId",
+        "holdoutDescriptorDigest",
+        "suiteManifestDigest",
+        "preregistrationDigest",
+        "blindedResultsSealDigest",
+        "completeRunMatrixDigest",
+        "accessPolicyDigest",
+        "unsealPolicyDigest",
+        "projectionPolicyDigest",
+        "implementerPrincipalSetDigest",
+        "custodianIdentity",
+        "accessLogHeadDigest",
+        "projectedRunIdsDigest",
+        "authorizationEvidenceDigest",
+        "authorizedRole",
+        "authorizedPrincipal",
+        "firstAccessAt",
+        "lastAccessAt",
+        "issuedAt",
+        "receiptVerifierDigest",
+        "signatureAlgorithm",
+        "signatureDigest",
+        "verificationMaterialDigest",
+        "receiptUri"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.holdout-access-receipt" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "holdoutDescriptorDigest": { "$ref": "#/definitions/digest" },
+        "suiteManifestDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "blindedResultsSealDigest": { "$ref": "#/definitions/digest" },
+        "completeRunMatrixDigest": { "$ref": "#/definitions/digest" },
+        "accessPolicyDigest": { "$ref": "#/definitions/digest" },
+        "unsealPolicyDigest": { "$ref": "#/definitions/digest" },
+        "projectionPolicyDigest": { "$ref": "#/definitions/digest" },
+        "implementerPrincipalSetDigest": { "$ref": "#/definitions/digest" },
+        "custodianIdentity": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "accessLogHeadDigest": { "$ref": "#/definitions/digest" },
+        "projectedRunIdsDigest": { "$ref": "#/definitions/digest" },
+        "authorizationEvidenceDigest": { "$ref": "#/definitions/digest" },
+        "authorizedRole": { "$ref": "#/definitions/id" },
+        "authorizedPrincipal": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "firstAccessAt": { "$ref": "#/definitions/timestamp" },
+        "lastAccessAt": { "$ref": "#/definitions/timestamp" },
+        "issuedAt": { "$ref": "#/definitions/timestamp" },
+        "receiptVerifierDigest": { "$ref": "#/definitions/digest" },
+        "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+        "signatureDigest": { "$ref": "#/definitions/digest" },
+        "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
+        "receiptUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 }
+      }
+    },
+    "namedParameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "$ref": "#/definitions/id" },
+        "value": {
+          "oneOf": [
+            { "type": ["string", "number", "boolean", "null"] },
+            {
+              "type": "array",
+              "items": { "type": ["string", "number", "boolean", "null"] }
+            }
+          ]
+        }
+      }
+    },
+    "systemPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "systemId",
+        "name",
+        "lane",
+        "release",
+        "repositoryUri",
+        "commit",
+        "package",
+        "image",
+        "agentConfigDigest",
+        "publicConfigDigest",
+        "redactedConfigFields",
+        "systemPromptDigest",
+        "toolManifestDigest",
+        "installCommandDigest",
+        "environmentClassDigest",
+        "provider",
+        "requestedModelId",
+        "immutableModelId",
+        "generationParameters",
+        "retryPolicy",
+        "approvalPolicy",
+        "hardwareClass",
+        "networkPolicy"
+      ],
+      "properties": {
+        "systemId": { "$ref": "#/definitions/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lane": { "enum": ["matched_model", "recommended_product"] },
+        "release": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "repositoryUri": { "$ref": "#/definitions/repositoryUri" },
+        "commit": { "$ref": "#/definitions/gitCommit" },
+        "package": { "$ref": "#/definitions/contentArtifact" },
+        "image": { "$ref": "#/definitions/ociImage" },
+        "agentConfigDigest": { "$ref": "#/definitions/digest" },
+        "publicConfigDigest": { "$ref": "#/definitions/digest" },
+        "redactedConfigFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "systemPromptDigest": { "$ref": "#/definitions/digest" },
+        "toolManifestDigest": { "$ref": "#/definitions/digest" },
+        "installCommandDigest": { "$ref": "#/definitions/digest" },
+        "environmentClassDigest": { "$ref": "#/definitions/digest" },
+        "provider": { "$ref": "#/definitions/id" },
+        "requestedModelId": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "immutableModelId": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "generationParameters": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/namedParameter" }
+        },
+        "retryPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxAttempts", "retryableReasons", "backoffDigest"],
+          "properties": {
+            "maxAttempts": { "$ref": "#/definitions/positiveInteger" },
+            "retryableReasons": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/id" }
+            },
+            "backoffDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "approvalPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policyDigest", "allowedKinds", "undeclaredIntervention"],
+          "properties": {
+            "policyDigest": { "$ref": "#/definitions/digest" },
+            "allowedKinds": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/id" }
+            },
+            "undeclaredIntervention": { "const": "failure" }
+          }
+        },
+        "hardwareClass": { "$ref": "#/definitions/id" },
+        "networkPolicy": { "$ref": "#/definitions/networkPolicy" }
+      }
+    },
+    "infrastructureReason": {
+      "enum": [
+        "evaluator_host_failure",
+        "shared_provider_outage",
+        "corrupt_task_image",
+        "verifier_infrastructure_failure",
+        "evaluator_coordinator_failure"
+      ]
+    },
+    "preregistration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "experimentId",
+        "claim",
+        "createdAt",
+        "lane",
+        "suite",
+        "evaluator",
+        "primarySystemId",
+        "systems",
+        "comparisons",
+        "trialDesign",
+        "resetPolicy",
+        "scoring",
+        "inference",
+        "samplePlan",
+        "exclusions",
+        "evidencePolicy",
+        "unblinding"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.preregistration" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "claim": { "enum": ["diagnostic", "pilot", "superiority"] },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "lane": { "enum": ["matched_model", "recommended_product"] },
+        "suite": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "suiteId",
+            "suiteVersion",
+            "split",
+            "manifestDigest",
+            "holdoutDescriptorDigest",
+            "taskSelectionCommitment",
+            "repositoryFamilyMapDigest"
+          ],
+          "properties": {
+            "suiteId": { "$ref": "#/definitions/id" },
+            "suiteVersion": { "$ref": "#/definitions/semver" },
+            "split": { "enum": ["development", "private_holdout"] },
+            "manifestDigest": { "$ref": "#/definitions/digest" },
+            "holdoutDescriptorDigest": {
+              "oneOf": [
+                { "$ref": "#/definitions/digest" },
+                { "type": "null" }
+              ]
+            },
+            "taskSelectionCommitment": { "$ref": "#/definitions/keyedCommitment" },
+            "repositoryFamilyMapDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "evaluator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repositoryUri", "commit", "image", "harnessConfigDigest", "toolchain", "analysisImplementation", "trustAssessmentImplementation"],
+          "properties": {
+            "repositoryUri": { "$ref": "#/definitions/repositoryUri" },
+            "commit": { "$ref": "#/definitions/gitCommit" },
+            "image": { "$ref": "#/definitions/ociImage" },
+            "harnessConfigDigest": { "$ref": "#/definitions/digest" },
+            "toolchain": { "$ref": "#/definitions/toolchain" },
+            "analysisImplementation": { "$ref": "#/definitions/contentArtifact" },
+            "trustAssessmentImplementation": { "$ref": "#/definitions/contentArtifact" }
+          }
+        },
+        "primarySystemId": { "$ref": "#/definitions/id" },
+        "systems": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/systemPin" }
+        },
+        "comparisons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["comparisonId", "primarySystemId", "comparatorSystemId"],
+            "properties": {
+              "comparisonId": { "$ref": "#/definitions/id" },
+              "primarySystemId": { "$ref": "#/definitions/id" },
+              "comparatorSystemId": { "$ref": "#/definitions/id" }
+            }
+          }
+        },
+        "trialDesign": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repetitionsPerSystemTask",
+            "seedSlots",
+            "order",
+            "orderAlgorithm",
+            "orderSeed",
+            "plannedExecutionOrderDigest"
+          ],
+          "properties": {
+            "repetitionsPerSystemTask": { "$ref": "#/definitions/positiveInteger" },
+            "seedSlots": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/nonNegativeInteger" }
+            },
+            "order": { "const": "randomized_interleave" },
+            "orderAlgorithm": { "const": "sha256_fisher_yates_v1" },
+            "orderSeed": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+            "plannedExecutionOrderDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "resetPolicy": { "$ref": "#/definitions/resetRecipe" },
+        "scoring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primaryMetric",
+            "taskWeighting",
+            "repetitionAggregation",
+            "repositoryCapPercent",
+            "deterministicOutcomeOnly"
+          ],
+          "properties": {
+            "primaryMetric": { "const": "trusted_fix_rate" },
+            "taskWeighting": { "const": "equal" },
+            "repetitionAggregation": { "const": "mean_within_task" },
+            "repositoryCapPercent": { "const": 10 },
+            "deterministicOutcomeOnly": { "const": true }
+          }
+        },
+        "inference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "estimand",
+            "targetPopulation",
+            "pairKey",
+            "trialAggregation",
+            "resamplingUnit",
+            "clusterSampling",
+            "trialResampling",
+            "taskWeightingWithinResample",
+            "interval",
+            "lowerQuantile",
+            "upperQuantile",
+            "quantileMethod",
+            "randomStreamDerivation",
+            "multipleComparators",
+            "successRule",
+            "method",
+            "confidenceLevel",
+            "alpha",
+            "resamples",
+            "randomSeed",
+            "minimumEffectPercentagePoints",
+            "targetPower",
+            "powerAnalysisDigest"
+          ],
+          "properties": {
+            "estimand": { "const": "paired_tfr_difference" },
+            "targetPopulation": { "const": "preregistered_repository_task_population" },
+            "pairKey": { "const": "task_id_and_seed_slot" },
+            "trialAggregation": { "const": "mean_within_task_before_resampling" },
+            "resamplingUnit": { "const": "whole_repository_cluster" },
+            "clusterSampling": { "const": "uniform_with_replacement" },
+            "trialResampling": { "const": "none" },
+            "taskWeightingWithinResample": { "const": "equal" },
+            "interval": { "const": "two_sided_percentile" },
+            "lowerQuantile": { "const": "0.025" },
+            "upperQuantile": { "const": "0.975" },
+            "quantileMethod": { "const": "linear_type_7" },
+            "randomStreamDerivation": { "const": "sha256_seed_and_comparison_id_first_u32_then_xorshift32_v1" },
+            "multipleComparators": { "const": "intersection_union" },
+            "successRule": { "const": "point_at_least_0.10_and_lower_above_0_for_every_comparator" },
+            "method": { "const": "repository_clustered_paired_percentile_bootstrap" },
+            "confidenceLevel": { "const": "0.95" },
+            "alpha": { "const": "0.05" },
+            "resamples": { "type": "integer", "minimum": 10000, "maximum": 1000000 },
+            "randomSeed": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+            "minimumEffectPercentagePoints": { "const": 10 },
+            "targetPower": { "const": "0.80" },
+            "powerAnalysisDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "samplePlan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimumTasks", "maximumTasks", "minimumRepositories", "stoppingRule"],
+          "properties": {
+            "minimumTasks": { "$ref": "#/definitions/positiveInteger" },
+            "maximumTasks": { "$ref": "#/definitions/positiveInteger" },
+            "minimumRepositories": { "type": "integer", "minimum": 10 },
+            "stoppingRule": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "taskCount"],
+              "properties": {
+                "kind": { "const": "fixed" },
+                "taskCount": { "$ref": "#/definitions/positiveInteger" }
+              }
+            }
+          }
+        },
+        "exclusions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedInfrastructureReasons",
+            "classifierImplementation",
+            "classifierVersion",
+            "infrastructureEvidenceRequired",
+            "infrastructurePairing",
+            "unpairedInfrastructureInvalid",
+            "unsupported",
+            "timeout",
+            "crash",
+            "providerError",
+            "permissionDenial",
+            "budgetExhaustion"
+          ],
+          "properties": {
+            "allowedInfrastructureReasons": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/infrastructureReason" }
+            },
+            "classifierImplementation": { "$ref": "#/definitions/contentArtifact" },
+            "classifierVersion": { "$ref": "#/definitions/semver" },
+            "infrastructureEvidenceRequired": { "const": true },
+            "infrastructurePairing": { "const": "comparison_pair_same_task_trial" },
+            "unpairedInfrastructureInvalid": { "const": "reject_experiment" },
+            "unsupported": { "const": "count_failure" },
+            "timeout": { "const": "count_failure" },
+            "crash": { "const": "count_failure" },
+            "providerError": { "const": "count_failure" },
+            "permissionDenial": { "const": "count_failure" },
+            "budgetExhaustion": { "const": "count_failure" }
+          }
+        },
+        "evidencePolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ledgerFormat",
+            "maximumEventBytes",
+            "maximumPayloadBytes",
+            "maximumLedgerBytes",
+            "maximumEvents",
+            "redactionPolicyDigest",
+            "anchorPolicyDigest",
+            "anchorVerifierDigest",
+            "platformProtectionVerifierDigest"
+          ],
+          "properties": {
+            "ledgerFormat": { "const": "jcs-ndjson-v1" },
+            "maximumEventBytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 },
+            "maximumPayloadBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+            "maximumLedgerBytes": { "type": "integer", "minimum": 1024, "maximum": 1073741824 },
+            "maximumEvents": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "redactionPolicyDigest": { "$ref": "#/definitions/digest" },
+            "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
+            "anchorVerifierDigest": { "$ref": "#/definitions/digest" },
+            "platformProtectionVerifierDigest": {
+              "oneOf": [
+                { "$ref": "#/definitions/digest" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "unblinding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "policyDigest", "authorizedRole"],
+          "properties": {
+            "state": { "const": "sealed" },
+            "policyDigest": { "$ref": "#/definitions/digest" },
+            "authorizedRole": { "$ref": "#/definitions/id" }
+          }
+        }
+      }
+    },
+    "preregistrationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "preregistrationDigest",
+        "statementDigest",
+        "anchorPolicyDigest",
+        "signatureAlgorithm",
+        "signatureDigest",
+        "verificationMaterialDigest",
+        "anchorUri",
+        "signerIdentity",
+        "anchoredAt"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.preregistration-receipt" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "statementDigest": { "$ref": "#/definitions/digest" },
+        "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
+        "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+        "signatureDigest": { "$ref": "#/definitions/digest" },
+        "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
+        "anchorUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 },
+        "signerIdentity": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "anchoredAt": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "blindedResultsSeal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "experimentId",
+        "preregistrationDigest",
+        "preregistrationReceiptDigest",
+        "completeRunMatrixCommitment",
+        "completeRunMatrixDigest",
+        "evidenceSealSetDigest",
+        "sealedAt"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.blinded-results-seal" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationReceiptDigest": { "$ref": "#/definitions/digest" },
+        "completeRunMatrixCommitment": { "$ref": "#/definitions/keyedCommitment" },
+        "completeRunMatrixDigest": { "$ref": "#/definitions/digest" },
+        "evidenceSealSetDigest": { "$ref": "#/definitions/digest" },
+        "sealedAt": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "unblindingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "experimentId",
+        "preregistrationDigest",
+        "preregistrationReceiptDigest",
+        "blindedResultsSealDigest",
+        "holdoutDescriptorDigest",
+        "holdoutAccessReceiptDigest",
+        "policyDigest",
+        "authorizedRole",
+        "authorizationEvidenceDigest",
+        "unblindedBy",
+        "unblindedAt"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.unblinding-record" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationReceiptDigest": { "$ref": "#/definitions/digest" },
+        "blindedResultsSealDigest": { "$ref": "#/definitions/digest" },
+        "holdoutDescriptorDigest": {
+          "oneOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "holdoutAccessReceiptDigest": {
+          "oneOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "policyDigest": { "$ref": "#/definitions/digest" },
+        "authorizedRole": { "$ref": "#/definitions/id" },
+        "authorizationEvidenceDigest": { "$ref": "#/definitions/digest" },
+        "unblindedBy": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "unblindedAt": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "actualSystemSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "systemId",
+        "release",
+        "commit",
+        "packageDigest",
+        "image",
+        "agentConfigDigest",
+        "publicConfigDigest",
+        "redactedConfigFields",
+        "systemPromptDigest",
+        "toolManifestDigest",
+        "installCommandDigest",
+        "environmentClassDigest",
+        "provider",
+        "requestedModelId",
+        "immutableModelId",
+        "providerReportedModelId",
+        "generationParameters",
+        "retryPolicy",
+        "approvalPolicy"
+      ],
+      "properties": {
+        "systemId": { "$ref": "#/definitions/id" },
+        "release": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "commit": { "$ref": "#/definitions/gitCommit" },
+        "packageDigest": { "$ref": "#/definitions/digest" },
+        "image": { "$ref": "#/definitions/ociImage" },
+        "agentConfigDigest": { "$ref": "#/definitions/digest" },
+        "publicConfigDigest": { "$ref": "#/definitions/digest" },
+        "redactedConfigFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "systemPromptDigest": { "$ref": "#/definitions/digest" },
+        "toolManifestDigest": { "$ref": "#/definitions/digest" },
+        "installCommandDigest": { "$ref": "#/definitions/digest" },
+        "environmentClassDigest": { "$ref": "#/definitions/digest" },
+        "provider": { "$ref": "#/definitions/id" },
+        "requestedModelId": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "immutableModelId": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "providerReportedModelId": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "generationParameters": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/namedParameter" }
+        },
+        "retryPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxAttempts", "retryableReasons", "backoffDigest"],
+          "properties": {
+            "maxAttempts": { "$ref": "#/definitions/positiveInteger" },
+            "retryableReasons": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/id" }
+            },
+            "backoffDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "approvalPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policyDigest", "allowedKinds", "undeclaredIntervention"],
+          "properties": {
+            "policyDigest": { "$ref": "#/definitions/digest" },
+            "allowedKinds": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/id" }
+            },
+            "undeclaredIntervention": { "const": "failure" }
+          }
+        }
+      }
+    },
+    "recordedRunArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "expectedArtifactId", "path", "role", "digest", "sizeBytes", "mediaType", "uri"],
+      "properties": {
+        "artifactId": { "$ref": "#/definitions/id" },
+        "expectedArtifactId": {
+          "oneOf": [
+            { "$ref": "#/definitions/id" },
+            { "type": "null" }
+          ]
+        },
+        "path": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 1024 },
+            { "type": "null" }
+          ]
+        },
+        "role": {
+          "enum": [
+            "patch",
+            "changed_files",
+            "test_result",
+            "independent_review",
+            "cost_usage",
+            "approval_log",
+            "effect_log",
+            "risk_register",
+            "diagnostic"
+          ]
+        },
+        "digest": { "$ref": "#/definitions/digest" },
+        "sizeBytes": { "$ref": "#/definitions/nonNegativeInteger" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "uri": { "type": "string", "pattern": "^cas://sha256/[0-9a-f]{64}$" }
+      }
+    },
+    "trustCriterionAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/digest" }
+        }
+      }
+    },
+    "hiddenVerifierAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "inaccessibleDuringRun", "deterministicAssertionsPassed"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "inaccessibleDuringRun": { "type": "boolean" },
+        "deterministicAssertionsPassed": { "type": "boolean" }
+      }
+    },
+    "policyAndBudgetAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "permissionEscapes", "sandboxEscapes", "concurrencyEscapes", "budgetOverruns", "unresolvedUsageFullyReserved"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "permissionEscapes": { "$ref": "#/definitions/nonNegativeInteger" },
+        "sandboxEscapes": { "$ref": "#/definitions/nonNegativeInteger" },
+        "concurrencyEscapes": { "$ref": "#/definitions/nonNegativeInteger" },
+        "budgetOverruns": { "$ref": "#/definitions/nonNegativeInteger" },
+        "unresolvedUsageFullyReserved": { "type": "boolean" }
+      }
+    },
+    "effectSafetyAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "duplicatedUncertainMutations", "unsafeAutomaticRetries", "unresolvedUnknownOutcomes"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "duplicatedUncertainMutations": { "$ref": "#/definitions/nonNegativeInteger" },
+        "unsafeAutomaticRetries": { "$ref": "#/definitions/nonNegativeInteger" },
+        "unresolvedUnknownOutcomes": { "$ref": "#/definitions/nonNegativeInteger" }
+      }
+    },
+    "recoveryIntegrityAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "scheduledFaults", "successfulRecoveries", "eventGaps", "hiddenEventLoss"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "scheduledFaults": { "$ref": "#/definitions/nonNegativeInteger" },
+        "successfulRecoveries": { "$ref": "#/definitions/nonNegativeInteger" },
+        "eventGaps": { "$ref": "#/definitions/nonNegativeInteger" },
+        "hiddenEventLoss": { "$ref": "#/definitions/nonNegativeInteger" }
+      }
+    },
+    "evidenceBundleAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "schemaValid", "hashesValid", "unresolvedReviewBlockers", "missingRequiredArtifacts"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "schemaValid": { "type": "boolean" },
+        "hashesValid": { "type": "boolean" },
+        "unresolvedReviewBlockers": { "$ref": "#/definitions/nonNegativeInteger" },
+        "missingRequiredArtifacts": { "$ref": "#/definitions/nonNegativeInteger" }
+      }
+    },
+    "interventionAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidenceDigests", "undeclaredInterventions"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "evidenceDigests": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/digest" } },
+        "undeclaredInterventions": { "$ref": "#/definitions/nonNegativeInteger" }
+      }
+    },
+    "trustAssessment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "trustedFix", "reason", "missingCriteria"],
+          "properties": {
+            "status": { "const": "unassessed" },
+            "trustedFix": { "const": false },
+            "reason": { "enum": ["shared_trust_contract_not_available", "insufficient_evidence"] },
+            "missingCriteria": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "hidden_verifier",
+                  "policy_and_budget",
+                  "effect_safety",
+                  "recovery_integrity",
+                  "evidence_bundle",
+                  "intervention_free"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "trustedFix", "assessmentImplementationDigest", "criteria"],
+          "properties": {
+            "status": { "const": "assessed" },
+            "trustedFix": { "type": "boolean" },
+            "assessmentImplementationDigest": { "$ref": "#/definitions/digest" },
+            "criteria": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "hiddenVerifier",
+                "policyAndBudget",
+                "effectSafety",
+                "recoveryIntegrity",
+                "evidenceBundle",
+                "interventionFree"
+              ],
+              "properties": {
+                "hiddenVerifier": { "$ref": "#/definitions/hiddenVerifierAssessment" },
+                "policyAndBudget": { "$ref": "#/definitions/policyAndBudgetAssessment" },
+                "effectSafety": { "$ref": "#/definitions/effectSafetyAssessment" },
+                "recoveryIntegrity": { "$ref": "#/definitions/recoveryIntegrityAssessment" },
+                "evidenceBundle": { "$ref": "#/definitions/evidenceBundleAssessment" },
+                "interventionFree": { "$ref": "#/definitions/interventionAssessment" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "runRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "runId",
+        "experimentId",
+        "preregistrationDigest",
+        "preregistrationReceiptDigest",
+        "suiteManifestDigest",
+        "taskId",
+        "operatorTaskDigest",
+        "agentTaskDigest",
+        "repositoryCluster",
+        "systemId",
+        "trialIndex",
+        "seedSlot",
+        "executionIndex",
+        "startedAt",
+        "finishedAt",
+        "wallTimeMs",
+        "evaluator",
+        "system",
+        "environment",
+        "resetReceipt",
+        "usage",
+        "approvals",
+        "interventions",
+        "artifacts",
+        "verifier",
+        "evidence",
+        "outcome",
+        "verifiedFix",
+        "trustAssessment",
+        "infrastructureInvalidPairs"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.run-record" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "runId": { "$ref": "#/definitions/id" },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationReceiptDigest": { "$ref": "#/definitions/digest" },
+        "suiteManifestDigest": { "$ref": "#/definitions/digest" },
+        "taskId": { "$ref": "#/definitions/id" },
+        "operatorTaskDigest": { "$ref": "#/definitions/digest" },
+        "agentTaskDigest": { "$ref": "#/definitions/digest" },
+        "repositoryCluster": { "$ref": "#/definitions/id" },
+        "systemId": { "$ref": "#/definitions/id" },
+        "trialIndex": { "$ref": "#/definitions/nonNegativeInteger" },
+        "seedSlot": { "$ref": "#/definitions/nonNegativeInteger" },
+        "executionIndex": { "$ref": "#/definitions/nonNegativeInteger" },
+        "startedAt": { "$ref": "#/definitions/timestamp" },
+        "finishedAt": { "$ref": "#/definitions/timestamp" },
+        "wallTimeMs": { "$ref": "#/definitions/nonNegativeInteger" },
+        "evaluator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["commit", "image", "harnessConfigDigest", "analysisImplementationDigest", "trustAssessmentImplementationDigest"],
+          "properties": {
+            "commit": { "$ref": "#/definitions/gitCommit" },
+            "image": { "$ref": "#/definitions/ociImage" },
+            "harnessConfigDigest": { "$ref": "#/definitions/digest" },
+            "analysisImplementationDigest": { "$ref": "#/definitions/digest" },
+            "trustAssessmentImplementationDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "system": { "$ref": "#/definitions/actualSystemSnapshot" },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operatingSystem",
+            "architecture",
+            "kernel",
+            "platform",
+            "hardwareClass",
+            "image",
+            "toolchain",
+            "networkPolicy",
+            "permissionPolicyDigest"
+          ],
+          "properties": {
+            "operatingSystem": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "architecture": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "kernel": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "platform": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "hardwareClass": { "$ref": "#/definitions/id" },
+            "image": { "$ref": "#/definitions/ociImage" },
+            "toolchain": { "$ref": "#/definitions/toolchain" },
+            "networkPolicy": { "$ref": "#/definitions/networkPolicy" },
+            "permissionPolicyDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "resetReceipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "recipeDigest",
+            "repositoryCommit",
+            "workspaceFingerprint",
+            "cacheEmpty",
+            "memoryEmpty",
+            "sessionFresh"
+          ],
+          "properties": {
+            "recipeDigest": { "$ref": "#/definitions/digest" },
+            "repositoryCommit": { "$ref": "#/definitions/gitCommit" },
+            "workspaceFingerprint": { "$ref": "#/definitions/digest" },
+            "cacheEmpty": { "const": true },
+            "memoryEmpty": { "const": true },
+            "sessionFresh": { "const": true }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inputTokens",
+            "outputTokens",
+            "reasoningTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "totalTokens",
+            "providerCost",
+            "toolCalls",
+            "turns",
+            "retries"
+          ],
+          "properties": {
+            "inputTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "outputTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "reasoningTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "cacheReadTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "cacheWriteTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "totalTokens": { "$ref": "#/definitions/nonNegativeInteger" },
+            "providerCost": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status", "amount", "currency", "source"],
+                  "properties": {
+                    "status": { "const": "reported" },
+                    "amount": { "$ref": "#/definitions/decimal" },
+                    "currency": { "const": "USD" },
+                    "source": { "const": "provider_reported" }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status", "reason", "evidenceDigest", "reservedAmount", "currency"],
+                  "properties": {
+                    "status": { "const": "unavailable" },
+                    "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+                    "evidenceDigest": { "$ref": "#/definitions/digest" },
+                    "reservedAmount": { "$ref": "#/definitions/decimal" },
+                    "currency": { "const": "USD" }
+                  }
+                }
+              ]
+            },
+            "toolCalls": { "$ref": "#/definitions/nonNegativeInteger" },
+            "turns": { "$ref": "#/definitions/nonNegativeInteger" },
+            "retries": { "$ref": "#/definitions/nonNegativeInteger" }
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "requestedAt", "resolvedAt", "decision", "declaredByTask"],
+            "properties": {
+              "id": { "$ref": "#/definitions/id" },
+              "kind": { "$ref": "#/definitions/id" },
+              "requestedAt": { "$ref": "#/definitions/timestamp" },
+              "resolvedAt": { "$ref": "#/definitions/timestamp" },
+              "decision": { "enum": ["approved", "denied"] },
+              "declaredByTask": { "type": "boolean" }
+            }
+          }
+        },
+        "interventions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "occurredAt", "declaredByTask"],
+            "properties": {
+              "kind": { "$ref": "#/definitions/id" },
+              "occurredAt": { "$ref": "#/definitions/timestamp" },
+              "declaredByTask": { "type": "boolean" }
+            }
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/recordedRunArtifact" }
+        },
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "verifierId",
+            "verifierVersion",
+            "bundleDigest",
+            "result",
+            "assertionCount",
+            "passedAssertions",
+            "evidenceDigest"
+          ],
+          "properties": {
+            "verifierId": { "$ref": "#/definitions/id" },
+            "verifierVersion": { "$ref": "#/definitions/semver" },
+            "bundleDigest": { "$ref": "#/definitions/digest" },
+            "result": { "enum": ["passed", "failed", "error"] },
+            "assertionCount": { "$ref": "#/definitions/nonNegativeInteger" },
+            "passedAssertions": { "$ref": "#/definitions/nonNegativeInteger" },
+            "evidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "contractDigest",
+            "taskId",
+            "systemId",
+            "ledgerDigest",
+            "ledgerByteLength",
+            "genesisEventDigest",
+            "headEventDigest",
+            "eventCount",
+            "platformProtectionVerifierDigest",
+            "sealDigest",
+            "statementDigest",
+            "anchorPolicyDigest",
+            "signatureAlgorithm",
+            "signatureDigest",
+            "verificationMaterialDigest",
+            "anchorUri",
+            "signerIdentity",
+            "sealedAt"
+          ],
+          "properties": {
+            "contractDigest": { "$ref": "#/definitions/digest" },
+            "taskId": { "$ref": "#/definitions/id" },
+            "systemId": { "$ref": "#/definitions/id" },
+            "ledgerDigest": { "$ref": "#/definitions/digest" },
+            "ledgerByteLength": { "$ref": "#/definitions/positiveInteger" },
+            "genesisEventDigest": { "$ref": "#/definitions/digest" },
+            "headEventDigest": { "$ref": "#/definitions/digest" },
+            "eventCount": { "$ref": "#/definitions/positiveInteger" },
+            "platformProtectionVerifierDigest": {
+              "oneOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+            },
+            "sealDigest": { "$ref": "#/definitions/digest" },
+            "statementDigest": { "$ref": "#/definitions/digest" },
+            "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
+            "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+            "signatureDigest": { "$ref": "#/definitions/digest" },
+            "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
+            "anchorUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 },
+            "signerIdentity": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "sealedAt": { "$ref": "#/definitions/timestamp" }
+          }
+        },
+        "outcome": {
+          "enum": [
+            "pass",
+            "fail",
+            "timeout",
+            "crash",
+            "unsupported",
+            "provider_error",
+            "permission_denied",
+            "budget_exhausted",
+            "unknown_outcome",
+            "infrastructure_invalid"
+          ]
+        },
+        "verifiedFix": { "type": "boolean" },
+        "trustAssessment": { "$ref": "#/definitions/trustAssessment" },
+        "infrastructureInvalidPairs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["comparisonId", "counterpartRunId", "reason", "incidentId", "evidenceDigest", "classifierVersion", "classifierImplementationDigest"],
+            "properties": {
+              "comparisonId": { "$ref": "#/definitions/id" },
+              "counterpartRunId": { "$ref": "#/definitions/id" },
+              "reason": { "$ref": "#/definitions/infrastructureReason" },
+              "incidentId": { "$ref": "#/definitions/id" },
+              "evidenceDigest": { "$ref": "#/definitions/digest" },
+              "classifierVersion": { "$ref": "#/definitions/semver" },
+              "classifierImplementationDigest": { "$ref": "#/definitions/digest" }
+            }
+          }
+        }
+      }
+    },
+    "evidenceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "runId",
+        "eventId",
+        "contractDigest",
+        "taskId",
+        "systemId",
+        "sequence",
+        "occurredAt",
+        "producer",
+        "type",
+        "payload",
+        "previousEventDigest",
+        "eventDigest"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.evidence-event" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "runId": { "$ref": "#/definitions/id" },
+        "eventId": { "$ref": "#/definitions/id" },
+        "contractDigest": { "$ref": "#/definitions/digest" },
+        "taskId": { "$ref": "#/definitions/id" },
+        "systemId": { "$ref": "#/definitions/id" },
+        "sequence": { "$ref": "#/definitions/nonNegativeInteger" },
+        "occurredAt": { "$ref": "#/definitions/timestamp" },
+        "producer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "version", "binaryDigest"],
+          "properties": {
+            "identity": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "binaryDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "type": {
+          "enum": [
+            "run.started",
+            "reset.completed",
+            "instruction.recorded",
+            "admission.decision",
+            "budget.reserved",
+            "budget.reconciled",
+            "policy.evaluated",
+            "sandbox.evaluated",
+            "model.request",
+            "model.response",
+            "tool.request",
+            "tool.result",
+            "effect.intent",
+            "effect.result",
+            "effect.unknown_outcome",
+            "approval.requested",
+            "approval.resolved",
+            "intervention.recorded",
+            "usage.reported",
+            "artifact.recorded",
+            "verifier.completed",
+            "review.completed",
+            "risk.recorded",
+            "recovery.assessed",
+            "trust.assessed",
+            "daemon.restarted",
+            "client.disconnected",
+            "client.reconnected",
+            "event.gap",
+            "infrastructure.classified",
+            "holdout.accessed",
+            "holdout.unsealed",
+            "holdout.rotated",
+            "run.finished",
+            "diagnostic"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["digest", "sizeBytes", "mediaType", "uri", "sensitivity", "redactionPolicyDigest"],
+          "properties": {
+            "digest": { "$ref": "#/definitions/digest" },
+            "sizeBytes": { "$ref": "#/definitions/nonNegativeInteger" },
+            "mediaType": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "uri": { "type": "string", "pattern": "^cas://sha256/[0-9a-f]{64}$" },
+            "sensitivity": { "const": "restricted" },
+            "redactionPolicyDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "previousEventDigest": {
+          "oneOf": [
+            { "$ref": "#/definitions/digest" },
+            { "type": "null" }
+          ]
+        },
+        "eventDigest": { "$ref": "#/definitions/digest" }
+      }
+    },
+    "evidenceSeal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "contractVersion", "statement", "receipt"],
+      "properties": {
+        "kind": { "const": "agenc.eval.evidence-seal" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "statement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runId",
+            "contractDigest",
+            "taskId",
+            "systemId",
+            "ledgerDigest",
+            "ledgerByteLength",
+            "genesisEventDigest",
+            "headEventDigest",
+            "eventCount",
+            "platformProtectionVerifierDigest",
+            "sealedAt"
+          ],
+          "properties": {
+            "runId": { "$ref": "#/definitions/id" },
+            "contractDigest": { "$ref": "#/definitions/digest" },
+            "taskId": { "$ref": "#/definitions/id" },
+            "systemId": { "$ref": "#/definitions/id" },
+            "ledgerDigest": { "$ref": "#/definitions/digest" },
+            "ledgerByteLength": { "$ref": "#/definitions/positiveInteger" },
+            "genesisEventDigest": { "$ref": "#/definitions/digest" },
+            "headEventDigest": { "$ref": "#/definitions/digest" },
+            "eventCount": { "$ref": "#/definitions/positiveInteger" },
+            "platformProtectionVerifierDigest": {
+              "oneOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+            },
+            "sealedAt": { "$ref": "#/definitions/timestamp" }
+          }
+        },
+        "receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "statementDigest",
+            "anchorPolicyDigest",
+            "signatureAlgorithm",
+            "signatureDigest",
+            "verificationMaterialDigest",
+            "anchorUri",
+            "signerIdentity"
+          ],
+          "properties": {
+            "statementDigest": { "$ref": "#/definitions/digest" },
+            "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
+            "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+            "signatureDigest": { "$ref": "#/definitions/digest" },
+            "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
+            "anchorUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 },
+            "signerIdentity": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        }
+      }
+    },
+    "derivedSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contractVersion",
+        "documentDigest",
+        "summaryId",
+        "generatedAt",
+        "derived",
+        "claim",
+        "experimentId",
+        "preregistrationDigest",
+        "preregistrationReceiptDigest",
+        "blindedResultsSealDigest",
+        "unblindingRecordDigest",
+        "suiteManifestDigest",
+        "analysisImplementationDigest",
+        "evidenceSeals",
+        "systems",
+        "pairedEffects",
+        "superiorityEstablished",
+        "excludedInfrastructurePairs",
+        "rawEvidenceEmbedded"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.derived-summary" },
+        "contractVersion": { "$ref": "#/definitions/version" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "summaryId": { "$ref": "#/definitions/id" },
+        "generatedAt": { "$ref": "#/definitions/timestamp" },
+        "derived": { "const": true },
+        "claim": { "enum": ["diagnostic", "pilot", "superiority"] },
+        "experimentId": { "$ref": "#/definitions/id" },
+        "preregistrationDigest": { "$ref": "#/definitions/digest" },
+        "preregistrationReceiptDigest": { "$ref": "#/definitions/digest" },
+        "blindedResultsSealDigest": { "$ref": "#/definitions/digest" },
+        "unblindingRecordDigest": { "$ref": "#/definitions/digest" },
+        "suiteManifestDigest": { "$ref": "#/definitions/digest" },
+        "analysisImplementationDigest": { "$ref": "#/definitions/digest" },
+        "evidenceSeals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "runId",
+              "contractDigest",
+              "taskId",
+              "systemId",
+              "ledgerDigest",
+              "ledgerByteLength",
+              "headEventDigest",
+              "eventCount",
+              "platformProtectionVerifierDigest",
+              "sealDigest",
+              "statementDigest",
+              "anchorPolicyDigest",
+              "signatureAlgorithm",
+              "signatureDigest",
+              "verificationMaterialDigest",
+              "anchorUri",
+              "signerIdentity",
+              "sealedAt"
+            ],
+            "properties": {
+              "runId": { "$ref": "#/definitions/id" },
+              "contractDigest": { "$ref": "#/definitions/digest" },
+              "taskId": { "$ref": "#/definitions/id" },
+              "systemId": { "$ref": "#/definitions/id" },
+              "ledgerDigest": { "$ref": "#/definitions/digest" },
+              "ledgerByteLength": { "$ref": "#/definitions/positiveInteger" },
+              "headEventDigest": { "$ref": "#/definitions/digest" },
+              "eventCount": { "$ref": "#/definitions/positiveInteger" },
+              "platformProtectionVerifierDigest": {
+                "oneOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+              },
+              "sealDigest": { "$ref": "#/definitions/digest" },
+              "statementDigest": { "$ref": "#/definitions/digest" },
+              "anchorPolicyDigest": { "$ref": "#/definitions/digest" },
+              "signatureAlgorithm": { "enum": ["ed25519", "ecdsa-p256-sha256"] },
+              "signatureDigest": { "$ref": "#/definitions/digest" },
+              "verificationMaterialDigest": { "$ref": "#/definitions/digest" },
+              "anchorUri": { "type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 2048 },
+              "signerIdentity": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "sealedAt": { "$ref": "#/definitions/timestamp" }
+            }
+          }
+        },
+        "systems": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "systemId",
+              "taskCount",
+              "includedTrialCount",
+              "pairwiseInfrastructureExclusionCount",
+              "unassessedTrialCount",
+              "verifiedFixRate",
+              "trustedFixRate",
+              "taskScores"
+            ],
+            "properties": {
+              "systemId": { "$ref": "#/definitions/id" },
+              "taskCount": { "$ref": "#/definitions/positiveInteger" },
+              "includedTrialCount": { "$ref": "#/definitions/nonNegativeInteger" },
+              "pairwiseInfrastructureExclusionCount": { "$ref": "#/definitions/nonNegativeInteger" },
+              "unassessedTrialCount": { "$ref": "#/definitions/nonNegativeInteger" },
+              "verifiedFixRate": { "type": "number", "minimum": 0, "maximum": 1 },
+              "trustedFixRate": {
+                "oneOf": [
+                  { "type": "number", "minimum": 0, "maximum": 1 },
+                  { "type": "null" }
+                ]
+              },
+              "taskScores": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["taskId", "repositoryCluster", "repetitions", "verifiedFixRate", "trustedFixRate"],
+                  "properties": {
+                    "taskId": { "$ref": "#/definitions/id" },
+                    "repositoryCluster": { "$ref": "#/definitions/id" },
+                    "repetitions": { "$ref": "#/definitions/positiveInteger" },
+                    "verifiedFixRate": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "trustedFixRate": {
+                      "oneOf": [
+                        { "type": "number", "minimum": 0, "maximum": 1 },
+                        { "type": "null" }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "pairedEffects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "comparisonId",
+              "comparatorSystemId",
+              "pointEstimate",
+              "confidenceLower",
+              "confidenceUpper",
+              "confidenceLevel",
+              "method",
+              "resamples",
+              "superiorityCriterionMet"
+            ],
+            "properties": {
+              "comparisonId": { "$ref": "#/definitions/id" },
+              "comparatorSystemId": { "$ref": "#/definitions/id" },
+              "pointEstimate": { "type": "number", "minimum": -1, "maximum": 1 },
+              "confidenceLower": { "type": "number", "minimum": -1, "maximum": 1 },
+              "confidenceUpper": { "type": "number", "minimum": -1, "maximum": 1 },
+              "confidenceLevel": { "const": "0.95" },
+              "method": { "const": "repository_clustered_paired_percentile_bootstrap" },
+              "resamples": { "type": "integer", "minimum": 10000 },
+              "superiorityCriterionMet": {
+                "oneOf": [
+                  { "type": "boolean" },
+                  { "type": "null" }
+                ]
+              }
+            }
+          }
+        },
+        "superiorityEstablished": {
+          "oneOf": [{ "type": "boolean" }, { "type": "null" }]
+        },
+        "excludedInfrastructurePairs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "comparisonId",
+              "taskId",
+              "seedSlot",
+              "primaryRunId",
+              "comparatorRunId",
+              "incidentId",
+              "reason",
+              "evidenceDigest",
+              "classifierVersion",
+              "classifierImplementationDigest"
+            ],
+            "properties": {
+              "comparisonId": { "$ref": "#/definitions/id" },
+              "taskId": { "$ref": "#/definitions/id" },
+              "seedSlot": { "$ref": "#/definitions/nonNegativeInteger" },
+              "primaryRunId": { "$ref": "#/definitions/id" },
+              "comparatorRunId": { "$ref": "#/definitions/id" },
+              "incidentId": { "$ref": "#/definitions/id" },
+              "reason": { "$ref": "#/definitions/infrastructureReason" },
+              "evidenceDigest": { "$ref": "#/definitions/digest" },
+              "classifierVersion": { "$ref": "#/definitions/semver" },
+              "classifierImplementationDigest": { "$ref": "#/definitions/digest" }
+            }
+          }
+        },
+        "rawEvidenceEmbedded": { "const": false }
+      }
+    }
+  }
+}

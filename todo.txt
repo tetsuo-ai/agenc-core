@@ -167,7 +167,7 @@ Why this is mandatory: AgenC cannot know what improves agent quality, cannot
 route intelligently, and cannot honestly claim superiority using the current
 mock-oriented toy baseline.
 
-[ ] Define and version the evaluation contract.
+[x] Define and version the evaluation contract.
     - Pin repository commit, setup patch, issue text, allowed tools, budget,
       timeout, expected artifacts, and hidden verifier for every task.
     - Record model, provider, model parameters, AgenC commit/config, environment,

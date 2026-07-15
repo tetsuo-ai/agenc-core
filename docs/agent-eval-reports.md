@@ -1,5 +1,13 @@
 # Agent Evaluation Reports
 
+> **Legacy diagnostic only.** The `schemaVersion: 1` report and tiny mock task
+> suite on this page are deterministic offline smokes. They are not the versioned
+> real-agent evaluation contract, do not produce Trusted Fix Rate, and cannot
+> support an AgenC superiority claim. See
+> [`evaluation-contract-v1.md`](evaluation-contract-v1.md) for the confirmatory
+> task/preregistration/evidence boundary. Use `check:eval-contract -- --legacy`
+> to obtain the explicit non-confirmatory classification.
+
 AgenC records local SWE-style evaluation results in a checked JSON shape and
 summarizes them without remote CI, hosted model APIs, or benchmark-specific
 infrastructure.

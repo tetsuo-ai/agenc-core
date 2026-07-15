@@ -42,6 +42,7 @@ obj/
 !/package-lock.json
 !/release-toolchain.json
 !/runtime/tsconfig.bundle.json
+!/runtime/src/eval-contract/contract-v1.schema.json
 !runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json
 !Anchor.toml
