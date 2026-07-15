@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.6.0**). For the
+A current map of how `agenc` is put together (runtime **0.6.2**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -109,11 +109,12 @@ Everything past the launcher lives in the single runtime workspace
 | `bootstrap/` / `lifecycle/` / `conversation/` | Bootstrap state, shutdown/signals, conversation token-budget and realtime |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities |
 | `browser/` | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool |
-| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.6.0`), public barrel |
+| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.6.2`), public barrel |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
-The daemon and runtime persist under one home. Relocate with `AGENC_HOME=/path`.
+The daemon and runtime persist under one home. Relocate with an absolute
+`AGENC_HOME=/path`; relative values are rejected.
 
 | Path | Purpose |
 | --- | --- |
@@ -125,6 +126,8 @@ The daemon and runtime persist under one home. Relocate with `AGENC_HOME=/path`.
 | `config.toml` | Operator config (`[budget]`, `[heartbeat]`, providers, …) |
 | `auth.json` | Stored credentials / auth backend state |
 | `budget/ledger.json` | Cumulative spend ledger (0600, atomic writes) |
+| `runtime/<version>/<artifact-key>-sha256-<digest>/` | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable |
+| `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry |
 | `gateway/` | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane |
 | `projects/<slug>/` | Per-project SQLite state + `sessions/<id>/` rollouts |
 | `sessions/` (project-scoped) | Append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename) |
@@ -132,6 +135,17 @@ The daemon and runtime persist under one home. Relocate with `AGENC_HOME=/path`.
 
 Optional trajectory export writes redacted rollout items via
 `AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`.
+
+`AGENC_HOME` is a single-host trust and locking boundary. It must live on a
+local filesystem with reliable SQLite OS locks and atomic same-filesystem
+rename, and must not be shared between machines or containers. Runtime
+installation fails closed when the owning filesystem cannot be proven local.
+Canonical wrapper locks live in persistent OS-account state rather than mutable
+environment-derived runtime directories: Linux `~/.local/state/AgenC`, macOS
+`~/Library/Application Support/AgenC`, and Windows
+`os.userInfo().homedir/.agenc-state`. Account-state ownership, permissions,
+symlinks, filesystem locality, and stable file identity are validated before
+lock creation; Windows lock paths are NTFS-only and do not accept ReFS.
 
 ## Client surfaces
 
@@ -310,6 +324,12 @@ crashing the process.
 - **Type-check** — `tsc --noEmit`, kept at **0 errors** with **0 `@ts-nocheck`**.
 - **Tests** — large vitest suite under `runtime/tests`, isolated Bun suite,
   PTY/e2e scenario gates (`check:tui-e2e`, `check:e2e-all`, …).
+- **Reproducible packages** — the committed root lock and exact npm version
+  drive `npm ci`; release runtime tarballs normalize ordering, timestamps,
+  ownership, and modes. `npm run check:clean-build` compares two isolated
+  installs and package builds under different umasks, then uses two additional
+  pristine checkouts to prove byte-identical recursive OCI layouts with an
+  exact Buildx client and digest-pinned BuildKit daemon.
 - **Local gates are authoritative** for correctness (no hosted test CI in
   this checkout). Release workflow builds per-platform runtime tarballs on
   demand (`workflow_dispatch` / release packaging under `packages/agenc` and
@@ -318,14 +338,25 @@ crashing the process.
 Root development loop (from repo root):
 
 ```bash
-npm install
+npm ci
 npm run build
 npm run typecheck
 npm test
 npm run validate:runtime
+npm run check:clean-build
 ```
 
-## Current status (0.6.0)
+The clean-build comparison covers the dependency inventory, runtime and SDK
+output/declarations, canonical runtime tarball and metadata, all three npm
+packages, and repository SPDX SBOM. Byte identity is scoped to the same source
+and recorded toolchain; hosted macOS and Windows runner images can evolve
+between runs. Docker inputs are digest-, version-, or signed-snapshot-pinned;
+the gate exports two no-cache OCI layouts with fixed compatibility,
+compression, and timestamp policy, validates the descriptor graph, compares
+every compressed blob, then starts the bound image under read-only-root,
+capability-free, no-network hardening and verifies native socket credentials.
+
+## Current status (0.6.2)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

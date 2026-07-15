@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // An ESM bundle is already strict by specification. Disabling TypeScript's
+    // per-module directive emission prevents esbuild's shared-chunk traversal
+    // from making redundant `"use strict"` wrappers depend on discovery order.
+    // Declaration/type checking continues to use tsconfig.json unchanged.
+    "strict": false,
+    "alwaysStrict": false
+  }
+}

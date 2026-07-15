@@ -1,21 +1,41 @@
 {
   "name": "@tetsuo-ai/agenc",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Public AgenC CLI launcher package",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tetsuo-ai/agenc-core.git",
+    "directory": "packages/agenc"
+  },
+  "homepage": "https://github.com/tetsuo-ai/agenc-core#readme",
+  "bugs": {
+    "url": "https://github.com/tetsuo-ai/agenc-core/issues"
+  },
   "bin": {
     "agenc": "bin/agenc"
   },
   "files": [
-    "bin",
-    "src",
-    "lib",
-    "scripts",
-    "generated"
+    "bin/agenc",
+    "src/launcher.mjs",
+    "lib/activation-lock-identity.d.mts",
+    "lib/activation-lock-identity.mjs",
+    "lib/generated-wrapper.d.mts",
+    "lib/generated-wrapper.mjs",
+    "lib/runtime-archive.mjs",
+    "lib/runtime-compatibility.mjs",
+    "lib/runtime-manager.mjs",
+    "lib/runtime-release-contract.d.mts",
+    "lib/runtime-release-contract.mjs",
+    "lib/sqlite-lock.d.mts",
+    "lib/sqlite-lock.mjs",
+    "scripts/postinstall.mjs",
+    "generated/agenc-runtime-manifest-v2.json"
   ],
   "scripts": {
     "postinstall": "node ./scripts/postinstall.mjs",
+    "prepack": "node ./scripts/check-package-ready.mjs && node ../../scripts/canonicalize-package-modes.mjs .",
     "build:runtime-tarball": "node ./scripts/build-runtime-tarball.mjs",
     "gen:manifest": "node ./scripts/gen-manifest.mjs",
     "test": "node --test test/*.test.mjs"
@@ -27,6 +47,6 @@
     "@tetsuo-ai/runtime": "file:../../runtime"
   },
   "engines": {
-    "node": ">=25.0.0"
+    "node": ">=25.9.0 <26.0.0"
   }
 }

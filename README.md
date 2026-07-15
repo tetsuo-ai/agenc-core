@@ -4,8 +4,8 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-pre--release-orange)
-![version](https://img.shields.io/badge/version-0.6.0-blue)
-![node](https://img.shields.io/badge/node-%E2%89%A5%2025-339933?logo=node.js&logoColor=white)
+![version](https://img.shields.io/badge/version-0.6.2-blue)
+![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.6.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.6.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.6.2` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.6.2` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -90,10 +90,12 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**0.6.0 pre-release.** Runtime and launcher are versioned `0.6.0`; the embedding
+**0.6.2 pre-release.** Runtime and launcher are versioned `0.6.2`; the embedding
 SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
-workspace is a private monorepo. Type-clean: **0** `@ts-nocheck`. MIT licensed
+workspace is non-publishable (`"private": true`); the GitHub source repository
+is public so npm can issue verifiable provenance. Type-clean: **0**
+`@ts-nocheck`. MIT licensed
 ([`LICENSE`](LICENSE)).
 
 Shipped in this line: multi-channel gateway, Browser tool, heartbeat, budget
@@ -102,8 +104,10 @@ onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth, SDK.
 
 ## Requirements
 
-- **Node.js `>= 25`** (`runtime/package.json` engines).
-- **npm `11.x`** (`packageManager`).
+- **Node.js `>=25.9 <26`** (`runtime/package.json` engines). Release artifacts
+  are built with exactly Node.js `25.9.0`; see the
+  [supported-host matrix](docs/install.md#supported-hosts).
+- **npm `11.17.0`** (exactly pinned by `packageManager` and `devEngines`).
 - **ripgrep (`rg`)** on `PATH` for file search (`agenc doctor` reports status).
 - **A provider** before real model calls. Default: **xAI** via `XAI_API_KEY`
   (also accepts `GROK_API_KEY`); default model `grok-4.5` (`AGENC_MODEL`
@@ -129,7 +133,7 @@ agenc --help
 From this checkout:
 
 ```bash
-npm install
+npm ci
 npm run build
 node runtime/bin/agenc --help
 npm run start                 # interactive TUI
@@ -243,8 +247,11 @@ VPS deploy: [`docs/deploy/vps.md`](docs/deploy/vps.md).
 
 ## Configuration
 
-Runtime state lives under `AGENC_HOME` (default `~/.agenc`): daemon pid/cookie/
-socket, config, sessions, gateway, budget ledger, logs.
+Runtime state lives under absolute `AGENC_HOME` (default `~/.agenc`; relative
+values are rejected): daemon pid/cookie/
+socket, config, sessions, gateway, budget ledger, logs. Keep it on a local,
+single-host filesystem with working SQLite file locks and atomic rename;
+shared NFS/SMB/multi-host container volumes are rejected for runtime locks.
 
 | Setting | Purpose |
 | --- | --- |
@@ -279,7 +286,7 @@ gateway, remote connector, SDK consumers). Full map:
 From the repo root:
 
 ```bash
-npm install
+npm ci
 npm run build              # esbuild + declarations → runtime/dist + VERSION
 npm run typecheck          # tsc --noEmit (0 errors)
 npm test                   # typecheck + authoritative hermetic stable suite
@@ -290,7 +297,15 @@ npm run test:live          # explicit provider/browser/devnet tests (may incur c
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
 npm run check:agent-surface-contract
+npm run check:clean-build  # two installs + byte-identical OCI builds + hardened smoke
 ```
+
+`package-lock.json` is the dependency contract. Use `npm ci` for a checkout;
+use `npm install` only when intentionally updating that lock. The clean-build
+gate requires a clean committed tree, compares two isolated installs and all
+release-facing package artifacts byte-for-byte, then uses two additional
+pristine trees and a verified, digest-pinned BuildKit toolchain to compare every
+OCI blob before smoke-testing the proven image under a hardened daemon profile.
 
 Runtime-scoped gates (`npm --workspace=@tetsuo-ai/runtime run <name>`):
 
@@ -304,7 +319,7 @@ check:e2e-all
 check:unused                # knip (informational)
 ```
 
-The required `npm test` gate runs on a Linux Docker host in a pinned Node 25
+The required `npm test` gate runs on a Linux Docker host in a pinned Node 25.9.0
 image with no external network interface (private loopback only), a recursively
 read-only checkout, private IPC/tmpfs state, and a seccomp/ptrace process-tree
 supervisor. Before repository code executes, both the client and a trusted
@@ -401,5 +416,5 @@ git config core.hooksPath .githooks
 ## License
 
 MIT. Top-level [`LICENSE`](LICENSE) and runtime / launcher package metadata.
-The root workspace remains `private` (implementation monorepo, not the npm
-publish unit).
+The root package remains `"private": true` (implementation workspace, not the
+npm publish unit); that setting is unrelated to GitHub repository visibility.

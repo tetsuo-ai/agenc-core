@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distDir = resolve(runtimeRoot, "dist");
 const configPath = resolve(runtimeRoot, "build.config.ts");
+const bundleTsconfigPath = resolve(runtimeRoot, "tsconfig.bundle.json");
 
 async function loadConfig() {
   const source = await readFile(configPath, "utf8");
@@ -23,7 +24,7 @@ async function loadConfig() {
     platform: "node",
     sourcefile: configPath,
     sourcemap: "inline",
-    target: "node25",
+    target: "node24",
   });
 
   const tempDir = await mkdtemp(join(tmpdir(), "agenc-build-config-"));
@@ -89,6 +90,7 @@ async function runBundle(config) {
     sourcemap: config.sourcemap ?? true,
     splitting: true,
     target: config.target ?? "es2022",
+    tsconfig: bundleTsconfigPath,
   };
 
   config.esbuildOptions?.(options);

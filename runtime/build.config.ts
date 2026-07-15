@@ -477,6 +477,8 @@ const external = [
   'usehooks-ts',
 ];
 
+const macroBuildTime = process.env.AGENC_BUILD_TIME ?? new Date().toISOString();
+
 export default defineConfig({
   entry,
   format: ['esm'],
@@ -499,7 +501,7 @@ export default defineConfig({
       ...(options.define ?? {}),
       'MACRO.VERSION': JSON.stringify(displayVersion),
       'MACRO.DISPLAY_VERSION': JSON.stringify(displayVersion),
-      'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+      'MACRO.BUILD_TIME': JSON.stringify(macroBuildTime),
       'MACRO.ISSUES_EXPLAINER': JSON.stringify(
         'report the issue at https://github.com/tetsuo-ai/agenc-core/issues',
       ),

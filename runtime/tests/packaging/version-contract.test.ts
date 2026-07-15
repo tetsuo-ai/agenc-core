@@ -28,6 +28,16 @@ function tsFilesUnder(dir: string): string[] {
 }
 
 describe("release version contract", () => {
+  test("root, runtime, and launcher release versions match", () => {
+    const repoRoot = resolve(RUNTIME_ROOT, "..");
+    const versions = [
+      join(repoRoot, "package.json"),
+      join(repoRoot, "runtime", "package.json"),
+      join(repoRoot, "packages", "agenc", "package.json"),
+    ].map((path) => JSON.parse(readFileSync(path, "utf8")).version as string);
+    expect(new Set(versions).size).toBe(1);
+  });
+
   test("version.ts matches runtime/package.json", () => {
     const pkg = JSON.parse(
       readFileSync(join(RUNTIME_ROOT, "package.json"), "utf8"),

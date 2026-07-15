@@ -11,7 +11,7 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.6.0**. Default session provider **grok**, fresh-config session model
+Version: **0.6.2**. Default session provider **grok**, fresh-config session model
 **grok-4.5** (see [providers.md](providers.md)).
 
 ---
@@ -171,9 +171,10 @@ agenc update --pin <x.y.z>
 | `--wrapper <path>` | Explicit wrapper script to repoint |
 
 Installer-style installs extract the new runtime under
-`<AGENC_HOME>/runtime/<version>/` with sha256 verification, then repoint the
-`agenc` wrapper. A running daemon keeps the old version until
-`agenc daemon restart`.
+`<AGENC_HOME>/runtime/<version>/<platform>-<arch>-<libc-or-native>-node-abi-<abi>-sha256-<digest>/`
+after compatibility, byte-count, sha256, and archive-safety checks, then
+atomically repoint the `agenc` wrapper. A running daemon keeps the old version
+until `agenc daemon restart`.
 
 npm-launcher installs update with:
 

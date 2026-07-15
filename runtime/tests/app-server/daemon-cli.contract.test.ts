@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -1666,6 +1667,39 @@ backend = "local"
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("required native peer lookup failure shuts the daemon down nonzero", async () => {
+    if (typeof process.getuid !== "function") return;
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      {
+        host,
+        io,
+        signalProcess,
+        nativePeerCredentialBinding: { getPeerUid: () => null },
+        requireNativePeerCredentialForConnections: true,
+      },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    const socket = createConnection(socketPath);
+    await once(socket, "connect");
+    await expect(waitForSocketClose(socket)).resolves.toBe("closed");
+    await expect(running).resolves.toBe(1);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(existsSync(socketPath)).toBe(false);
+    expect(io.stderrText()).toContain(
+      "fatal daemon socket authentication failure",
+    );
 
     await rm(agencHome, { recursive: true, force: true });
   });

@@ -1,6 +1,6 @@
 # Running AgenC on a VPS
 
-**AgenC 0.6.0.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
+**AgenC 0.6.2 in-tree pre-release.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
 container) runs the daemon fine: providers do the heavy lifting; the daemon is
 orchestration. Two supported shapes.
 
@@ -12,7 +12,8 @@ Related: [install](../install.md) · [gateway](../gateway.md) ·
 ```bash
 # as a normal user (never root) on Ubuntu 24.04 / Debian 12:
 curl -fsSL https://get.agenc.ag/install.sh | sh
-# verifies sha256, installs runtime under $AGENC_HOME/runtime/<version>/,
+# verifies compatibility, bytes, and sha256; installs under an ABI-keyed
+# $AGENC_HOME/runtime/<version>/<platform>-<arch>-<libc>-node-abi-<abi>/ path,
 # wrapper to ~/.local/bin, daemon as a systemd user service
 
 agenc onboard                                  # Act 1: provider/key/theme
@@ -65,32 +66,44 @@ reach them; do not publish those ports.
 
 ## Shape 2 — Docker
 
-Pull the published image (no source checkout):
-
-```bash
-docker run -d --restart unless-stopped -v agenc-data:/data \
-  -e XAI_API_KEY ghcr.io/tetsuo-ai/agenc:0.6.0
-# or :latest when you accept floating tags
-
-# one-shot against the same state:
-docker run --rm -v agenc-data:/data ghcr.io/tetsuo-ai/agenc:0.6.0 security audit
-```
+No GHCR image is authorized yet. Build from the tracked source snapshot below;
+published amd64/arm64 commands will be added only after the hosted native
+multi-architecture release gate lands.
 
 Build from a source checkout:
 
 ```bash
-docker build -f packaging/docker/Dockerfile -t agenc:local .
+commit="$(git rev-parse HEAD)"
+epoch="$(git show -s --format=%ct HEAD)"
+build_time="$(node -e 'process.stdout.write(new Date(Number(process.argv[1])*1000).toISOString())' "$epoch")"
+version="$(node -p 'require("./package.json").version')"
+git archive --format=tar HEAD | \
+  docker buildx build --load -f packaging/docker/Dockerfile -t agenc:local \
+  --build-arg AGENC_BUILD_COMMIT="$commit" \
+  --build-arg SOURCE_DATE_EPOCH="$epoch" \
+  --build-arg AGENC_BUILD_TIME="$build_time" \
+  --build-arg AGENC_VERSION="$version" -
 ```
 
 Compose (from a checkout):
 
 ```bash
+export AGENC_BUILD_COMMIT="$(git rev-parse HEAD)"
+export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+export AGENC_BUILD_TIME="$(node -e 'process.stdout.write(new Date(Number(process.argv[1])*1000).toISOString())' "$SOURCE_DATE_EPOCH")"
+export AGENC_VERSION="$(node -p 'require("./package.json").version')"
+export AGENC_DOCKER_CONTEXT="$(mktemp -d)"
+trap 'rm -rf -- "$AGENC_DOCKER_CONTEXT"' EXIT
+git archive --format=tar HEAD | tar -xf - -C "$AGENC_DOCKER_CONTEXT"
 docker compose -f packaging/docker/docker-compose.yml up -d
 ```
 
-Non-root image, state in the `/data` volume, **no published ports by default**
+Numeric non-root image, read-only root, no Linux capabilities, data-only state
+in `/data`, and **no published ports by default**
 (see the compose file's exposure note). Pass channel tokens and provider keys
-as env (or secrets), never bake them into the image.
+as env (or secrets), never bake them into the image. The peer-credential addon
+is prebuilt and root-owned in the image; the daemon never compiles or loads
+native code from `/data`, and the release smoke starts it with `/data:noexec`.
 
 ## Provider credentials
 
@@ -117,5 +130,6 @@ equivalents), loaded by `agenc gateway run` / the gateway user unit.
 Railway/Hostinger/DigitalOcean template listings wrap Shape 2 with the
 `agenc-data` volume and env-var prompts for the provider key. Publishing the
 templates is an owner/release step; this document is the source of truth for
-what they must configure (volume, env passthrough, no published ports, current
-image tag `0.6.0`).
+what they must configure (volume, env passthrough, no published ports). There
+is no current GHCR image tag; pin the reviewed source commit until the hosted
+multi-architecture release gate authorizes one.

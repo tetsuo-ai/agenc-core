@@ -1,0 +1,387 @@
+# Publish the reviewed @tetsuo-ai/agenc launcher tarball with npm Trusted
+# Publishing. Configure npmjs.com for this exact workflow filename and the
+# `npm-production` environment, allow `npm publish`, and do not provide an npm
+# token. Dispatch only at the matching immutable source tag, after the runtime
+# release in tetsuo-ai/agenc-releases has been published and made immutable.
+
+name: publish-npm
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "25.9.0"
+  NPM_VERSION: "11.17.0"
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    outputs:
+      package-version: ${{ steps.source.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Bind the run to the reviewed source tag
+        id: source
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF_TYPE" = tag
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          expected_ref="refs/tags/agenc-v${version}"
+          test "$GITHUB_REF" = "$expected_ref"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install digest-pinned Node and npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
+          node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+          node_archive="$RUNNER_TEMP/$node_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" --output "$node_archive"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$npm_url" --output "$npm_archive"
+          test "$(sha256sum "$node_archive" | cut -d ' ' -f 1)" = "$node_sha"
+          test "$(sha256sum "$npm_archive" | cut -d ' ' -f 1)" = "$npm_sha"
+          node_root="$RUNNER_TEMP/node-distribution"
+          mkdir -p "$node_root"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
+            install --global "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
+          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          echo "$node_root/bin" >> "$GITHUB_PATH"
+
+      - name: Install checksum-pinned GitHub CLI verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["version"])')"
+          gh_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["file"])')"
+          gh_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["url"])')"
+          gh_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["sha256"])')"
+          gh_archive="$RUNNER_TEMP/$gh_file"
+          gh_root="$RUNNER_TEMP/github-cli"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error "$gh_url" --output "$gh_archive"
+          test "$(sha256sum "$gh_archive" | cut -d ' ' -f 1)" = "$gh_sha"
+          mkdir -m 700 "$gh_root"
+          tar -xzf "$gh_archive" --strip-components=1 -C "$gh_root"
+          test "$("$gh_root/bin/gh" --version | awk 'NR == 1 { print $3 }')" = "$gh_version"
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
+
+      - name: Verify and download the immutable runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "true"
+          GH_NO_UPDATE_NOTIFIER: "true"
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_root="$RUNNER_TEMP/runtime-release"
+          mkdir -m 700 "$release_root"
+          gh release verify "$RELEASE_TAG" \
+            --repo tetsuo-ai/agenc-releases --format json > "$release_root/release-attestation.json"
+          for asset in agenc-runtime-manifest-v2.json agenc-runtime-manifest.json SHA256SUMS; do
+            gh release download "$RELEASE_TAG" --repo tetsuo-ai/agenc-releases \
+              --pattern "$asset" --dir "$release_root"
+            gh release verify-asset "$RELEASE_TAG" "$release_root/$asset" \
+              --repo tetsuo-ai/agenc-releases --format json > "$release_root/$asset.verify.json"
+          done
+          gh release download "$RELEASE_TAG" --repo tetsuo-ai/agenc-releases \
+            --pattern 'agenc-runtime-*.tar.gz' \
+            --pattern 'agenc-runtime-*.tar.gz.sigstore.json' \
+            --pattern 'agenc-runtime-*.meta.json' --dir "$release_root"
+          release_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/tetsuo-ai/agenc-releases/releases/tags/$RELEASE_TAG")"
+          release_json_path="$release_root/release.json"
+          printf '%s' "$release_json" > "$release_json_path"
+          chmod 0600 "$release_json_path"
+          python3 scripts/validate-runtime-release-inventory.py \
+            --release-json "$release_json_path" \
+            --manifest "$release_root/agenc-runtime-manifest-v2.json" \
+            --checksums "$release_root/SHA256SUMS" \
+            --asset-root "$release_root" \
+            --tag "$RELEASE_TAG"
+
+      - name: Pack the exact reviewed launcher bytes in an isolated worktree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "true"
+          GH_NO_UPDATE_NOTIFIER: "true"
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          source_root="$(pwd -P)"
+          owned_root="$RUNNER_TEMP/agenc-npm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          source="$owned_root/source"
+          artifacts="$RUNNER_TEMP/npm-artifacts"
+          cleanup() {
+            git -C "$source_root" worktree remove --force "$source" 2>/dev/null || true
+            git -C "$source_root" worktree prune --expire=now
+            rm -rf "$owned_root"
+          }
+          trap cleanup EXIT INT TERM
+          cleanup
+          mkdir -m 700 "$owned_root" "$artifacts"
+          git worktree add --detach "$source" "$GITHUB_SHA"
+          test "$(git -C "$source" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git -C "$source" status --porcelain=v1 --untracked-files=all)"
+          npm ci --prefix "$source" --cache "$owned_root/npm-cache" \
+            --ignore-scripts --no-audit --no-fund
+          install -m 0644 "$RUNNER_TEMP/runtime-release/agenc-runtime-manifest-v2.json" \
+            "$source/packages/agenc/generated/agenc-runtime-manifest-v2.json"
+          source_epoch="$(git -C "$source" show -s --format=%ct HEAD)"
+          (
+            cd "$source"
+            export AGENC_BUILD_COMMIT="$GITHUB_SHA"
+            export SOURCE_DATE_EPOCH="$source_epoch"
+            npm run sbom -- --output "$owned_root/agenc-core.spdx.json"
+            node packages/agenc/scripts/prepare-release-assets.mjs \
+              --artifacts "$RUNNER_TEMP/runtime-release" \
+              --github-cli "$RUNNER_TEMP/github-cli/bin/gh" \
+              --manifest packages/agenc/generated/agenc-runtime-manifest-v2.json \
+              --legacy-manifest "$RUNNER_TEMP/runtime-release/agenc-runtime-manifest.json" \
+              --sbom "$owned_root/agenc-core.spdx.json" \
+              --output "$owned_root/verified-release"
+            python3 scripts/validate-runtime-release-inventory.py \
+              --release-json "$RUNNER_TEMP/runtime-release/release.json" \
+              --manifest "$RUNNER_TEMP/runtime-release/agenc-runtime-manifest-v2.json" \
+              --checksums "$RUNNER_TEMP/runtime-release/SHA256SUMS" \
+              --asset-root "$RUNNER_TEMP/runtime-release" \
+              --prepared-root "$owned_root/verified-release" \
+              --tag "$RELEASE_TAG"
+            node packages/agenc/scripts/check-package-ready.mjs
+            npm test --workspace=@tetsuo-ai/agenc
+            node scripts/npm-release.mjs pack --silent \
+              --pack-destination "$artifacts" --workspace=@tetsuo-ai/agenc
+          )
+          test "$(find "$artifacts" -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          test "$(find "$artifacts" -maxdepth 1 -type f -name '*.tgz.release.json' | wc -l)" -eq 1
+          test "$(find "$artifacts" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+
+      - name: Transfer reviewed npm bytes to the approval job
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reviewed-agenc-npm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-artifacts/*.tgz
+            ${{ runner.temp }}/npm-artifacts/*.tgz.release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Write approval evidence
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$(find "$RUNNER_TEMP/npm-artifacts" -maxdepth 1 -type f -name '*.tgz.release.json' -print -quit)"
+          python3 - "$receipt" "$GITHUB_STEP_SUMMARY" "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$ARTIFACT_URL" <<'PY'
+          import json
+          import sys
+
+          receipt_path, summary_path, artifact_id, artifact_digest, artifact_url = sys.argv[1:]
+          with open(receipt_path, encoding="utf-8") as source:
+              receipt = json.load(source)
+          rows = [
+              ("Source", f"{receipt['source']['commit']} (`{receipt['package']['version']}` / `{receipt['artifact']}`)"),
+              ("Runtime release", f"https://github.com/tetsuo-ai/agenc-releases/releases/tag/agenc-v{receipt['package']['version']}"),
+              ("Tarball", f"{receipt['bytes']} bytes; SHA-256 `{receipt['hashes']['sha256']}`"),
+              ("SRI", f"`{receipt['integrity']}`"),
+              ("Receipt SHA-256", f"`{__import__('hashlib').sha256(open(receipt_path, 'rb').read()).hexdigest()}`"),
+              ("Workflow artifact", f"[{artifact_id}]({artifact_url}); `{artifact_digest}`"),
+          ]
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write("## npm production approval evidence\n\n| Evidence | Value |\n| --- | --- |\n")
+              for label, value in rows:
+                  summary.write(f"| {label} | {value} |\n")
+          PY
+
+  publish:
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: npm-production
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Revalidate the approved source tag
+        env:
+          PACKAGE_VERSION: ${{ needs.pack.outputs.package-version }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF_TYPE" = tag
+          [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/tags/agenc-v${PACKAGE_VERSION}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${GITHUB_REF}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install digest-pinned Node and npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
+          node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+          node_archive="$RUNNER_TEMP/$node_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" --output "$node_archive"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$npm_url" --output "$npm_archive"
+          test "$(sha256sum "$node_archive" | cut -d ' ' -f 1)" = "$node_sha"
+          test "$(sha256sum "$npm_archive" | cut -d ' ' -f 1)" = "$npm_sha"
+          node_root="$RUNNER_TEMP/node-distribution"
+          mkdir -p "$node_root"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
+            install --global "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
+          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          echo "$node_root/bin" >> "$GITHUB_PATH"
+
+      - name: Install checksum-pinned GitHub CLI verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["version"])')"
+          gh_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["file"])')"
+          gh_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["url"])')"
+          gh_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["githubCli"]["linuxX64"]["sha256"])')"
+          gh_archive="$RUNNER_TEMP/$gh_file"
+          gh_root="$RUNNER_TEMP/github-cli"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error "$gh_url" --output "$gh_archive"
+          test "$(sha256sum "$gh_archive" | cut -d ' ' -f 1)" = "$gh_sha"
+          mkdir -m 700 "$gh_root"
+          tar -xzf "$gh_archive" --strip-components=1 -C "$gh_root"
+          test "$("$gh_root/bin/gh" --version | awk 'NR == 1 { print $3 }')" = "$gh_version"
+          echo "$gh_root/bin" >> "$GITHUB_PATH"
+
+      - name: Install the release verifier dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Download the exact reviewed npm bytes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.pack.outputs.artifact-id }}
+          path: ${{ runner.temp }}/npm-artifacts
+          digest-mismatch: error
+
+      - name: Revalidate the transferred npm bytes
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/oidc-only.npmrc
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : > "$NPM_CONFIG_USERCONFIG"
+          artifacts="$RUNNER_TEMP/npm-artifacts"
+          tarball="$(find "$artifacts" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          test -f "$tarball.release.json"
+          test "$(find "$artifacts" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+          node scripts/npm-release.mjs verify "$tarball"
+
+      - name: Attest the approved npm tarball and receipt
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            ${{ runner.temp }}/npm-artifacts/*.tgz
+            ${{ runner.temp }}/npm-artifacts/*.tgz.release.json
+
+      - name: Verify approved attestations and publish with OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: "true"
+          GH_NO_UPDATE_NOTIFIER: "true"
+          NPM_CONFIG_PROVENANCE: "true"
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/oidc-only.npmrc
+          NODE_AUTH_TOKEN: ""
+          NPM_TOKEN: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : > "$NPM_CONFIG_USERCONFIG"
+          artifacts="$RUNNER_TEMP/npm-artifacts"
+          tarball="$(find "$artifacts" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          test -f "$tarball.release.json"
+          test "$(find "$artifacts" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+          for asset in "$tarball" "$tarball.release.json"; do
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-npm.yml" \
+              --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+              --deny-self-hosted-runners
+          done
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          node scripts/npm-release.mjs publish "$tarball" --tag=latest

@@ -21,13 +21,14 @@ import { fileURLToPath } from 'node:url'
 
 import { createHermeticRunRoot } from '../tests/helpers/hermetic-env.mjs'
 
-const PINNED_NODE_IMAGE =
-  'node@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b'
+export const PINNED_NODE_IMAGE =
+  'node:25.9.0-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b'
 const DOCKER_HOST = 'unix:///var/run/docker.sock'
 const BOUNDARY_EXIT = 97
 const MINIMUM_DOCKER_VERSION = Object.freeze([25, 0])
 const MINIMUM_DOCKER_API_VERSION = Object.freeze([1, 44])
 const MINIMUM_LINUX_VERSION = Object.freeze([5, 12])
+const BOUNDARY_ACCOUNT_HOME = '/tmp/agenc-boundary-home'
 export const DOCKER_SECCOMP_PROFILE_SHA256 =
   'de1f5327ca42b80be02daba8d39c0d087a530dc3c16f7028170fe068c9d66e61'
 const RIPGREP_SHA256 = Object.freeze({
@@ -53,6 +54,7 @@ if (requestedArgs.length === 0) requestedArgs.push('run')
 let activeContainer
 let activeDockerChild
 let activeDockerSeccompProfile
+let activePasswdFile
 let activeRipgrepBinary
 let interruptedSignal
 
@@ -396,6 +398,27 @@ function snapshotDockerSeccompProfile(snapshotRoot) {
   return snapshot
 }
 
+export function boundaryPasswdEntry(uid, gid) {
+  if (
+    !Number.isSafeInteger(uid) ||
+    uid < 0 ||
+    !Number.isSafeInteger(gid) ||
+    gid < 0
+  ) {
+    throw new Error('Hermetic account UID and GID must be non-negative integers')
+  }
+  return `agenc-boundary:x:${uid}:${gid}:AgenC hermetic test:${BOUNDARY_ACCOUNT_HOME}:/usr/sbin/nologin\n`
+}
+
+function snapshotBoundaryPasswd(snapshotRoot) {
+  const passwd = join(snapshotRoot, 'passwd')
+  writeFileSync(passwd, boundaryPasswdEntry(process.getuid(), process.getgid()), {
+    flag: 'wx',
+    mode: 0o400,
+  })
+  return passwd
+}
+
 function isWithin(parent, candidate) {
   const rel = relative(parent, candidate)
   return (
@@ -485,6 +508,9 @@ function commonContainerArgs(name, boundaryMountMode = 'readonly') {
   if (activeDockerSeccompProfile === undefined) {
     throw new Error('Hermetic Docker seccomp input was not initialized')
   }
+  if (activePasswdFile === undefined) {
+    throw new Error('Hermetic account identity input was not initialized')
+  }
   return [
     'run',
     '--rm',
@@ -518,6 +544,8 @@ function commonContainerArgs(name, boundaryMountMode = 'readonly') {
     ...gitCommonMount,
     '--mount',
     bindMount(activeRipgrepBinary, '/usr/local/bin/rg'),
+    '--mount',
+    bindMount(activePasswdFile, '/etc/passwd'),
     '--mount',
     bindMount(activeBoundaryRoot, '/boundary', {
       readonly: boundaryMountMode === 'readonly',
@@ -931,7 +959,7 @@ async function runRequiredGates(supervisorRoot) {
     observerBinary,
     'sh',
     '-c',
-    'node ../node_modules/typescript/bin/tsc --noEmit && exec node scripts/run-hermetic-vitest.mjs "$@"',
+    'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && node ../node_modules/typescript/bin/tsc --noEmit && exec node scripts/run-hermetic-vitest.mjs "$@"',
     'agenc-hermetic-suite',
     ...requestedArgs,
   ])
@@ -968,6 +996,7 @@ async function main() {
       assertSafeBindTree(gitCommonDirectory, 'Git metadata')
     }
     activeDockerSeccompProfile = snapshotDockerSeccompProfile(toolInputRoot)
+    activePasswdFile = snapshotBoundaryPasswd(toolInputRoot)
     activeRipgrepBinary = snapshotBundledRipgrep(toolInputRoot)
     mkdirSync(join(activeBoundaryRoot, 'docker-config'), {
       mode: 0o700,

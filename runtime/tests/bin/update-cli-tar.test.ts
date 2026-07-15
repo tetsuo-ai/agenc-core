@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SpawnSyncReturns } from "node:child_process";
 import { assertTarExtractionSucceeded } from "../../src/bin/update-cli.js";
 
-// update-cli.ts:410 (core-todo.md): when `tar` is not on PATH, spawnSync never
-// runs the process — it sets res.error (ENOENT) and leaves res.status null. The
-// old `status !== 0` check reported the opaque "tar extraction failed (status
-// null)". A clear missing-binary message is now surfaced.
+// The extractor is resolved to an absolute, trusted operating-system path
+// before use. ENOENT therefore means that trusted component disappeared
+// between resolution and execution rather than that PATH was incomplete.
 
 function res(
   partial: Partial<SpawnSyncReturns<Buffer>>,
@@ -20,12 +19,12 @@ function res(
 }
 
 describe("assertTarExtractionSucceeded", () => {
-  it("reports a clear message when tar is missing (ENOENT)", () => {
+  it("reports a clear message when trusted tar disappears (ENOENT)", () => {
     const enoent = Object.assign(new Error("spawnSync tar ENOENT"), {
       code: "ENOENT",
     });
     expect(() => assertTarExtractionSucceeded(res({ error: enoent, status: null }))).toThrow(
-      /tar not found on PATH/,
+      /trusted operating-system tar disappeared/,
     );
   });
 

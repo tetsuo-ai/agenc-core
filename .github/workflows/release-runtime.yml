@@ -1,24 +1,64 @@
-# Build per-platform runtime tarballs (TODO Phase 0 publish).
+# Build per-platform runtime tarballs from the committed lockfile.
 #
-# Runs on demand (workflow_dispatch). Each matrix job runs
-# packages/agenc/scripts/build-runtime-tarball.mjs on its native runner —
-# native deps (better-sqlite3, node-pty) must compile per OS/arch — and
-# uploads the tarball + .meta.json as workflow artifacts.
+# Runs on demand (workflow_dispatch). Each matrix job builds the same artifact
+# twice on its native runner and uploads it only when tarball + sidecar bytes
+# match exactly.
+# Linux native dependencies build in a glibc 2.28 container so the generic
+# linux artifacts retain Node's Tier-1 compatibility baseline.
 #
-# Publishing stays local/operator-driven (no cross-repo secrets in CI):
-#   gh workflow run release-runtime.yml
-#   gh run download <run-id> --dir packages/agenc/release-artifacts --pattern 'agenc-runtime-*'
-#   node packages/agenc/scripts/gen-manifest.mjs --repo tetsuo-ai/agenc-releases --tag agenc-v<version>
-#   gh release upload agenc-v<version> --repo tetsuo-ai/agenc-releases --clobber \
-#     packages/agenc/release-artifacts/agenc-runtime-*.tar.gz \
-#     packages/agenc/generated/agenc-runtime-manifest.json
+# Publishing stays local/operator-driven (no cross-repository write secret in
+# this workflow). The reviewed draft, explicit destination tag, attestation
+# verification, immutable publication, and downstream npm/Docker/Homebrew
+# sequence are documented in docs/install.md under "Reproducible release gate".
 
 name: release-runtime
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "25.9.0"
+  NPM_VERSION: "11.17.0"
+  npm_config_build_from_source: "true"
+  LINUX_BUILDER_IMAGE: "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c"
+
 jobs:
-  tarball:
+  release-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Bind the run to the version tag commit
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF_TYPE" = "tag"
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          expected_ref="refs/tags/agenc-v${version}"
+          test "$GITHUB_REF" = "$expected_ref"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  linux-tarball:
+    needs: release-source
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +67,278 @@ jobs:
             slug: linux-x64
           - runner: ubuntu-24.04-arm
             slug: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c
+    timeout-minutes: 45
+    steps:
+      - name: Install glibc 2.28 build prerequisites
+        run: |
+          dnf install -y --setopt=gpgcheck=1 \
+            gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
+            gcc-toolset-12-binutils-2.38-17.el8 \
+            python3.12-3.12.13-2.el8_10 \
+            make-4.2.1-11.el8 \
+            git-2.43.7-1.el8_10 \
+            tar-1.30-11.el8_10 \
+            gzip-1.9-13.el8_5
+          dnf clean all
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Activate and inventory the pinned native toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolset=/opt/rh/gcc-toolset-12/root/usr/bin
+          echo "$toolset" >> "$GITHUB_PATH"
+          echo "CC=$toolset/gcc" >> "$GITHUB_ENV"
+          echo "CXX=$toolset/g++" >> "$GITHUB_ENV"
+          echo "PYTHON=/usr/bin/python3.12" >> "$GITHUB_ENV"
+          echo "npm_config_python=/usr/bin/python3.12" >> "$GITHUB_ENV"
+          rpm -qa --qf '%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SHA256HEADER}|%{PAYLOADDIGEST}|%{PAYLOADDIGESTALGO}|%{RSAHEADER:pgpsig}\n' \
+            > "$RUNNER_TEMP/rpm-content-inventory.raw"
+          python3.12 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import re
+
+          architecture = {"x86_64": "x64", "aarch64": "arm64"}[platform.machine()]
+          with open("release-toolchain.json", encoding="utf-8") as source:
+              toolchain = json.load(source)
+          contract = toolchain["linux"]["rpmContentInventory"]
+          if contract != {
+              "schemaVersion": 1,
+              "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
+              "signatureKeyIds": ["15af5dac6d745a60"],
+              "sha256": contract.get("sha256"),
+          }:
+              raise SystemExit("invalid reviewed RPM content-inventory contract")
+          allowed_signers = set(contract["signatureKeyIds"])
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "rpm-content-inventory.raw"), encoding="utf-8") as source:
+              lines = [line.rstrip("\n") for line in source if line.rstrip("\n")]
+          lines = [line for line in lines if line.split("|", 1)[0] != "gpg-pubkey"]
+          observed_signers = set()
+          for line in lines:
+              fields = line.split("|")
+              if len(fields) != 9:
+                  raise SystemExit("malformed RPM content inventory line")
+              name, epoch, version, release, rpm_arch, header_sha, payload_sha, algorithm, signature = fields
+              match = re.search(r"(?:^|, )Key ID ([0-9a-f]{16})$", signature)
+              if (
+                  not re.fullmatch(r"[A-Za-z0-9+_.-]+", name)
+                  or not epoch.isdigit()
+                  or not version
+                  or not release
+                  or rpm_arch not in {"aarch64", "noarch", "x86_64"}
+                  or not re.fullmatch(r"[0-9a-f]{64}", header_sha)
+                  or not re.fullmatch(r"[0-9a-f]{64}", payload_sha)
+                  or algorithm != "8"
+                  or match is None
+                  or match.group(1) not in allowed_signers
+              ):
+                  raise SystemExit(f"unapproved signed RPM content identity: {name}")
+              observed_signers.add(match.group(1))
+          if observed_signers != allowed_signers:
+              raise SystemExit("installed RPM signer set does not match the reviewed contract")
+          canonical = "\n".join(sorted(lines, key=lambda value: value.encode("utf-8"))) + "\n"
+          inventory_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          expected_sha = contract["sha256"][architecture]
+          if inventory_sha != expected_sha:
+              raise SystemExit(
+                  f"signed RPM content inventory drift for {architecture}: {inventory_sha} != {expected_sha}"
+              )
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "rpm-content-inventory.txt"), "w", encoding="utf-8", newline="\n") as output:
+              output.write(canonical)
+          builder = f'{toolchain["linux"]["containerImage"]}+rpm-content-sha256:{inventory_sha}'
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
+              environment.write(f"AGENC_BUILDER_ID={builder}\n")
+              environment.write(f"AGENC_RPM_CONTENT_INVENTORY_SHA256={inventory_sha}\n")
+          print(f"approved {len(lines)} signed RPM payloads ({inventory_sha})")
+          PY
+      - name: Install digest-pinned Node, headers, and npm
+        shell: bash
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          node_file="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
+          node_sha="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
+          headers_file="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["file"])')"
+          headers_sha="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["sha256"])')"
+          npm_file="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+          node_archive="$RUNNER_TEMP/$node_file"
+          headers_archive="$RUNNER_TEMP/$headers_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          python3.12 - "$node_archive" "$node_sha" "$headers_archive" "$headers_sha" "$npm_archive" "$npm_sha" "$npm_url" "$NODE_VERSION" "$node_file" "$headers_file" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          import urllib.request
+
+          node_path, node_sha, headers_path, headers_sha, npm_path, npm_sha, npm_url, version, node_file, headers_file = sys.argv[1:]
+          for url, destination, expected in (
+              (f"https://nodejs.org/dist/v{version}/{node_file}", node_path, node_sha),
+              (f"https://nodejs.org/dist/v{version}/{headers_file}", headers_path, headers_sha),
+              (npm_url, npm_path, npm_sha),
+          ):
+              urllib.request.urlretrieve(url, destination)
+              actual = hashlib.sha256(pathlib.Path(destination).read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"digest mismatch for {url}: {actual} != {expected}")
+          PY
+          node_root="$RUNNER_TEMP/node-distribution"
+          headers_parent="$RUNNER_TEMP/node-headers"
+          mkdir -p "$node_root" "$headers_parent"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          tar -xzf "$headers_archive" -C "$headers_parent"
+          headers_root="$headers_parent/node-v${NODE_VERSION}"
+          test -f "$headers_root/include/node/node.h"
+          "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
+            install --global "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
+          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_DISTRIBUTION_SHA256=$npm_sha" >> "$GITHUB_ENV"
+      - name: Build from two isolated worktrees and compare bytes
+        env:
+          AGENC_MAX_GLIBC: "2.28"
+          AGENC_MAX_GLIBCXX: "3.4.25"
+          AGENC_MAX_CXXABI: "1.3.11"
+        run: |
+          set -euo pipefail
+          umask 022
+          test "$(gcc -dumpfullversion)" = "12.2.1"
+          test "$(g++ -dumpfullversion)" = "12.2.1"
+          ld --version | head -1 | grep -F '2.38'
+          test "$(python3.12 -c 'import platform; print(platform.python_version())')" = "3.12.13"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          source_root="$(pwd -P)"
+          owned_root="$RUNNER_TEMP/agenc-owned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
+          first_source="$owned_root/source-first"
+          second_source="$owned_root/source-second"
+          first="$owned_root/artifact-first"
+          second="$owned_root/artifact-second"
+          cleanup() {
+            git -C "$source_root" worktree remove --force "$first_source" 2>/dev/null || true
+            git -C "$source_root" worktree remove --force "$second_source" 2>/dev/null || true
+            git -C "$source_root" worktree prune --expire=now
+            rm -rf "$owned_root"
+          }
+          trap cleanup EXIT INT TERM
+          cleanup
+          mkdir -p "$owned_root"
+          git worktree add --detach "$first_source" "$GITHUB_SHA"
+          git worktree add --detach "$second_source" "$GITHUB_SHA"
+          for build in first second; do
+            if test "$build" = first; then
+              build_source="$first_source"
+              build_output="$first"
+            else
+              build_source="$second_source"
+              build_output="$second"
+            fi
+            test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
+            test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
+            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            AGENC_RELEASE_OUT_DIR="$build_output" \
+              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+          done
+          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+            --first "$first" --second "$second" \
+            --output "$source_root/packages/agenc/release-artifacts"
+      - name: Select the canonical runtime subject and bundle path
+        id: runtime-artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(packages/agenc/release-artifacts/agenc-runtime-*.tar.gz)
+          test "${#artifacts[@]}" -eq 1
+          artifact="${artifacts[0]}"
+          test "$(basename "$artifact")" = \
+            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+          test -f "${artifact}.meta.json"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
+          echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
+          echo "bundle=${artifact}.sigstore.json" >> "$GITHUB_OUTPUT"
+      - name: Attest runtime artifact provenance
+        id: attest-runtime
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            ${{ steps.runtime-artifact.outputs.path }}
+            ${{ steps.runtime-artifact.outputs.metadata }}
+      - name: Bind the action-produced bundle to its canonical release name
+        shell: bash
+        env:
+          ACTION_BUNDLE_PATH: ${{ steps.attest-runtime.outputs.bundle-path }}
+          CANONICAL_BUNDLE_PATH: ${{ steps.runtime-artifact.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          python3.12 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import stat
+
+          source_text = os.environ.get("ACTION_BUNDLE_PATH", "")
+          destination_text = os.environ.get("CANONICAL_BUNDLE_PATH", "")
+          if not source_text or not destination_text:
+              raise SystemExit("actions/attest did not return a canonicalizable bundle path")
+          source = pathlib.Path(source_text)
+          source_metadata = source.lstat()
+          if source.is_symlink() or not stat.S_ISREG(source_metadata.st_mode):
+              raise SystemExit("actions/attest bundle is not one regular file")
+          if source_metadata.st_size <= 0 or source_metadata.st_size > 4 * 1024 * 1024:
+              raise SystemExit("actions/attest bundle is outside the 4 MiB release bound")
+          with source.open("r", encoding="utf-8") as bundle:
+              parsed = json.load(bundle)
+          if not isinstance(parsed, dict):
+              raise SystemExit("actions/attest bundle root is not a JSON object")
+          destination = pathlib.Path(destination_text)
+          release_root = pathlib.Path("packages/agenc/release-artifacts").resolve(strict=True)
+          if (
+              destination.parent.resolve(strict=True) != release_root
+              or destination.exists()
+              or destination.is_symlink()
+          ):
+              raise SystemExit("refusing a detached or pre-existing canonical bundle path")
+          shutil.copyfile(source, destination, follow_symlinks=False)
+          destination.chmod(0o644)
+          print(f"bound {source} to {destination}")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agenc-runtime-${{ matrix.slug }}
+          path: |
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
+            packages/agenc/release-artifacts/agenc-runtime-*.meta.json
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.sigstore.json
+          if-no-files-found: error
+
+  native-tarball:
+    needs: release-source
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - runner: macos-15
             slug: darwin-arm64
           - runner: macos-15-intel
@@ -35,24 +347,336 @@ jobs:
             slug: win-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+      AGENC_RUNNER_LABEL: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          node-version: 25
-      - name: Install workspace deps
+          persist-credentials: false
+      - name: Validate the reviewed macOS runner and native toolchain
+        if: runner.os == 'macOS'
         shell: bash
-        # No lockfile is committed (local gates are authoritative), so npm ci
-        # cannot run here; the artifact dep tree is resolved from the packed
-        # tgz by build-runtime-tarball, so install-vs-ci does not affect it.
-        run: npm install --no-audit --no-fund
-      - name: Build runtime tarball
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import platform
+          import subprocess
+
+          with open("release-toolchain.json", encoding="utf-8") as source:
+              toolchain = json.load(source)
+          slug = os.environ["AGENC_RELEASE_SLUG"]
+          expected_slug = {"arm64": "darwin-arm64", "x86_64": "darwin-x64"}[platform.machine()]
+          if slug != expected_slug:
+              raise SystemExit(f"runner architecture resolves to {expected_slug}, not {slug}")
+          contract = toolchain["hostedRunners"][slug]
+          observed = {
+              "runnerLabel": os.environ.get("AGENC_RUNNER_LABEL"),
+              "imageOS": os.environ.get("ImageOS"),
+              "imageVersion": os.environ.get("ImageVersion"),
+              "runnerArch": os.environ.get("RUNNER_ARCH"),
+          }
+          for field, actual in observed.items():
+              if actual != contract[field]:
+                  raise SystemExit(f"hosted runner drift for {slug} {field}: {actual!r} != {contract[field]!r}")
+          def capture(*command):
+              return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
+          xcode = capture("xcodebuild", "-version")
+          expected_xcode = f'Xcode {contract["xcodeVersion"]}\nBuild version {contract["xcodeBuild"]}'
+          sdk = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
+          clang = capture("xcrun", "--sdk", "macosx", "clang", "--version").splitlines()[0]
+          for label, actual, expected in (
+              ("Xcode", xcode, expected_xcode),
+              ("macOS SDK", sdk, contract["macosSdkVersion"]),
+              ("Apple clang", clang, contract["clangVersion"]),
+          ):
+              if actual != expected:
+                  raise SystemExit(f"{label} drift for {slug}: {actual!r} != {expected!r}")
+          builder = ":".join((
+              "github-hosted", contract["runnerLabel"], contract["imageOS"],
+              contract["imageVersion"], contract["runnerArch"],
+          ))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
+              environment.write(f"AGENC_BUILDER_ID={builder}\n")
+              environment.write(f'CC={capture("xcrun", "--find", "clang")}\n')
+              environment.write(f'CXX={capture("xcrun", "--find", "clang++")}\n')
+          print(f"approved hosted runner and Xcode contract for {slug}")
+          PY
+      - name: Validate and activate the reviewed Windows runner and native toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = Get-Content -Raw release-toolchain.json | ConvertFrom-Json
+          $contract = $toolchain.hostedRunners.PSObject.Properties[$env:AGENC_RELEASE_SLUG].Value
+          if ($null -eq $contract) { throw "missing hosted runner contract for $env:AGENC_RELEASE_SLUG" }
+          function Assert-Exact([string]$Label, [string]$Actual, [string]$Expected) {
+            if ($Actual -cne $Expected) { throw "$Label drift: '$Actual' != '$Expected'" }
+          }
+          Assert-Exact 'runner label' $env:AGENC_RUNNER_LABEL $contract.runnerLabel
+          Assert-Exact 'ImageOS' $env:ImageOS $contract.imageOS
+          Assert-Exact 'ImageVersion' $env:ImageVersion $contract.imageVersion
+          Assert-Exact 'RUNNER_ARCH' $env:RUNNER_ARCH $contract.runnerArch
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "missing $vswhere" }
+          $vswhereArgs = @(
+            '-latest', '-products', '*',
+            '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+          )
+          $installPath = (& $vswhere @vswhereArgs -property installationPath | Select-Object -First 1).Trim()
+          $installationVersion = (& $vswhere @vswhereArgs -property installationVersion | Select-Object -First 1).Trim()
+          Assert-Exact 'Visual Studio path' $installPath $contract.visualStudioInstallPath
+          Assert-Exact 'Visual Studio version' $installationVersion $contract.visualStudioVersion
+          $defaultToolsFile = Join-Path $installPath 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+          if (-not (Test-Path -LiteralPath $defaultToolsFile -PathType Leaf)) { throw "missing $defaultToolsFile" }
+          Assert-Exact 'default MSVC tools version' (Get-Content -Raw $defaultToolsFile).Trim() $contract.msvcToolsVersion
+          $devCmd = Join-Path $installPath 'Common7\Tools\VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw "missing $devCmd" }
+          $environmentLines = & cmd.exe /d /s /c "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
+          $required = @(
+            'PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsVersion',
+            'WindowsSdkDir', 'WindowsSDKVersion', 'VCINSTALLDIR', 'VSINSTALLDIR'
+          )
+          $captured = @{}
+          foreach ($line in $environmentLines) {
+            $separator = $line.IndexOf('=')
+            if ($separator -le 0) { continue }
+            $name = $line.Substring(0, $separator)
+            if ($required -notcontains $name) { continue }
+            $value = $line.Substring($separator + 1)
+            $captured[$name] = $value
+            Set-Item -Path "Env:$name" -Value $value
+            "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          foreach ($name in $required) {
+            if (-not $captured.ContainsKey($name) -or -not $captured[$name]) {
+              throw "VsDevCmd.bat did not define $name"
+            }
+          }
+          $toolsVersion = $captured['VCToolsVersion'].TrimEnd([char[]]'\/')
+          $sdkVersion = $captured['WindowsSDKVersion'].TrimEnd([char[]]'\/')
+          Assert-Exact 'active MSVC tools version' $toolsVersion $contract.msvcToolsVersion
+          Assert-Exact 'active Windows SDK version' $sdkVersion $contract.windowsSdkVersion
+          $cl = (Get-Command cl.exe -ErrorAction Stop).Source
+          $link = (Get-Command link.exe -ErrorAction Stop).Source
+          $compilerLines = @(& $cl /Bv 2>&1 | ForEach-Object { $_.ToString().Trim() })
+          $compilerIdentity = $compilerLines | Where-Object { $_ -like 'Microsoft (R) C/C++ Optimizing Compiler Version *' } | Select-Object -First 1
+          $expectedCompiler = "Microsoft (R) C/C++ Optimizing Compiler Version $($contract.msvcCompilerVersion) for x64"
+          Assert-Exact 'MSVC compiler identity' $compilerIdentity $expectedCompiler
+          $clSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $cl).Hash.ToLowerInvariant()
+          $linkSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $link).Hash.ToLowerInvariant()
+          $builder = "github-hosted:$($contract.runnerLabel):$($contract.imageOS):$($contract.imageVersion):$($contract.runnerArch)"
+          @(
+            'CC=cl.exe'
+            'CXX=cl.exe'
+            "AGENC_BUILDER_ID=$builder"
+            "AGENC_VISUAL_STUDIO_VERSION=$installationVersion"
+            "AGENC_VISUAL_STUDIO_INSTALL_PATH=$installPath"
+            "AGENC_MSVC_COMPILER_SHA256=$clSha"
+            "AGENC_MSVC_LINKER_SHA256=$linkSha"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "approved hosted runner, MSVC $toolsVersion, and Windows SDK $sdkVersion"
+      - name: Install digest-pinned Node, headers, and npm (macOS)
+        if: runner.os == 'macOS'
         shell: bash
-        run: npm --workspace=@tetsuo-ai/agenc run build:runtime-tarball
-      - uses: actions/upload-artifact@v4
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          node_file="$(python3 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
+          node_sha="$(python3 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
+          headers_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["file"])')"
+          headers_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["sha256"])')"
+          npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+          node_archive="$RUNNER_TEMP/$node_file"
+          headers_archive="$RUNNER_TEMP/$headers_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" --output "$node_archive"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${headers_file}" --output "$headers_archive"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "$npm_url" --output "$npm_archive"
+          test "$(shasum -a 256 "$node_archive" | awk '{print $1}')" = "$node_sha"
+          test "$(shasum -a 256 "$headers_archive" | awk '{print $1}')" = "$headers_sha"
+          test "$(shasum -a 256 "$npm_archive" | awk '{print $1}')" = "$npm_sha"
+          node_root="$RUNNER_TEMP/node-distribution"
+          headers_parent="$RUNNER_TEMP/node-headers"
+          mkdir -p "$node_root" "$headers_parent"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          tar -xzf "$headers_archive" -C "$headers_parent"
+          headers_root="$headers_parent/node-v${NODE_VERSION}"
+          test -f "$headers_root/include/node/node.h"
+          "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
+            install --global "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
+          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_DISTRIBUTION_SHA256=$npm_sha" >> "$GITHUB_ENV"
+      - name: Install digest-pinned Node, headers, and npm (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = Get-Content -Raw release-toolchain.json | ConvertFrom-Json
+          $distribution = $toolchain.nodeDistributions.PSObject.Properties[$env:AGENC_RELEASE_SLUG].Value
+          if ($null -eq $distribution) { throw "missing Node distribution for $env:AGENC_RELEASE_SLUG" }
+          $nodeArchive = Join-Path $env:RUNNER_TEMP $distribution.file
+          $headersArchive = Join-Path $env:RUNNER_TEMP $toolchain.nodeHeaders.file
+          $npmArchive = Join-Path $env:RUNNER_TEMP $toolchain.npmDistribution.file
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/$($distribution.file)" -OutFile $nodeArchive
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/$($toolchain.nodeHeaders.file)" -OutFile $headersArchive
+          Invoke-WebRequest -Uri $toolchain.npmDistribution.url -OutFile $npmArchive
+          function Assert-Sha256([string]$Path, [string]$Expected) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+            if ($actual -cne $Expected) { throw "digest mismatch for ${Path}: $actual != $Expected" }
+          }
+          Assert-Sha256 $nodeArchive $distribution.sha256
+          Assert-Sha256 $headersArchive $toolchain.nodeHeaders.sha256
+          Assert-Sha256 $npmArchive $toolchain.npmDistribution.sha256
+          $distributionParent = Join-Path $env:RUNNER_TEMP 'node-distribution'
+          $headersParent = Join-Path $env:RUNNER_TEMP 'node-headers'
+          New-Item -ItemType Directory -Force -Path $distributionParent, $headersParent | Out-Null
+          Expand-Archive -LiteralPath $nodeArchive -DestinationPath $distributionParent
+          & tar.exe -xzf $headersArchive -C $headersParent
+          if ($LASTEXITCODE -ne 0) { throw 'failed to extract Node headers' }
+          $nodeRoot = Join-Path $distributionParent "node-v$env:NODE_VERSION-win-x64"
+          $headersRoot = Join-Path $headersParent "node-v$env:NODE_VERSION"
+          if (-not (Test-Path -LiteralPath (Join-Path $headersRoot 'include\node\node.h') -PathType Leaf)) {
+            throw 'extracted Node headers are incomplete'
+          }
+          & (Join-Path $nodeRoot 'npm.cmd') install --global $npmArchive --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
+          if ((& (Join-Path $nodeRoot 'node.exe') --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
+          if ((& (Join-Path $nodeRoot 'npm.cmd') --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
+          $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "npm_config_nodedir=$headersRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_DISTRIBUTION_SHA256=$($distribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_HEADERS_SHA256=$($toolchain.nodeHeaders.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build from two isolated worktrees and compare bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          test "$(node --version)" = "v$NODE_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          source_root="$(pwd -P)"
+          runner_temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null 2>&1; then
+            runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          fi
+          owned_root="$runner_temp/agenc-owned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
+          first_source="$owned_root/source-first"
+          second_source="$owned_root/source-second"
+          first="$owned_root/artifact-first"
+          second="$owned_root/artifact-second"
+          cleanup() {
+            git -C "$source_root" worktree remove --force "$first_source" 2>/dev/null || true
+            git -C "$source_root" worktree remove --force "$second_source" 2>/dev/null || true
+            git -C "$source_root" worktree prune --expire=now
+            rm -rf "$owned_root"
+          }
+          trap cleanup EXIT INT TERM
+          cleanup
+          mkdir -p "$owned_root"
+          git worktree add --detach "$first_source" "$GITHUB_SHA"
+          git worktree add --detach "$second_source" "$GITHUB_SHA"
+          for build in first second; do
+            if test "$build" = first; then
+              build_source="$first_source"
+              build_output="$first"
+            else
+              build_source="$second_source"
+              build_output="$second"
+            fi
+            test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
+            test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
+            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            AGENC_RELEASE_OUT_DIR="$build_output" \
+              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+          done
+          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+            --first "$first" --second "$second" \
+            --output "$source_root/packages/agenc/release-artifacts"
+      - name: Select the canonical runtime subject and bundle path
+        id: runtime-artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(packages/agenc/release-artifacts/agenc-runtime-*.tar.gz)
+          test "${#artifacts[@]}" -eq 1
+          artifact="${artifacts[0]}"
+          test "$(basename "$artifact")" = \
+            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+          test -f "${artifact}.meta.json"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
+          echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
+          echo "bundle=${artifact}.sigstore.json" >> "$GITHUB_OUTPUT"
+      - name: Attest runtime artifact provenance
+        id: attest-runtime
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            ${{ steps.runtime-artifact.outputs.path }}
+            ${{ steps.runtime-artifact.outputs.metadata }}
+      - name: Bind the action-produced bundle to its canonical release name
+        shell: bash
+        env:
+          ACTION_BUNDLE_PATH: ${{ steps.attest-runtime.outputs.bundle-path }}
+          CANONICAL_BUNDLE_PATH: ${{ steps.runtime-artifact.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import stat
+
+          source_text = os.environ.get("ACTION_BUNDLE_PATH", "")
+          destination_text = os.environ.get("CANONICAL_BUNDLE_PATH", "")
+          if not source_text or not destination_text:
+              raise SystemExit("actions/attest did not return a canonicalizable bundle path")
+          source = pathlib.Path(source_text)
+          source_metadata = source.lstat()
+          if source.is_symlink() or not stat.S_ISREG(source_metadata.st_mode):
+              raise SystemExit("actions/attest bundle is not one regular file")
+          if source_metadata.st_size <= 0 or source_metadata.st_size > 4 * 1024 * 1024:
+              raise SystemExit("actions/attest bundle is outside the 4 MiB release bound")
+          with source.open("r", encoding="utf-8") as bundle:
+              parsed = json.load(bundle)
+          if not isinstance(parsed, dict):
+              raise SystemExit("actions/attest bundle root is not a JSON object")
+          destination = pathlib.Path(destination_text)
+          release_root = pathlib.Path("packages/agenc/release-artifacts").resolve(strict=True)
+          if (
+              destination.parent.resolve(strict=True) != release_root
+              or destination.exists()
+              or destination.is_symlink()
+          ):
+              raise SystemExit("refusing a detached or pre-existing canonical bundle path")
+          shutil.copyfile(source, destination, follow_symlinks=False)
+          destination.chmod(0o644)
+          print(f"bound {source} to {destination}")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agenc-runtime-${{ matrix.slug }}
           path: |
             packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
             packages/agenc/release-artifacts/agenc-runtime-*.meta.json
+            packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.sigstore.json
           if-no-files-found: error

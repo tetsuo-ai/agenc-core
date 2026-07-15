@@ -81,6 +81,71 @@ describe("AgenC Unix socket transport", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  itUnix("fails closed before binding when a configured native addon cannot load", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      nativePeerCredentialAddonPath: join(dir, "missing.node"),
+      onMessage: () => {},
+    });
+
+    await expect(server.listen()).rejects.toThrow(
+      /configured peer credential native binding unavailable/,
+    );
+    expect(existsSync(socketPath)).toBe(false);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  itUnix("rejects conflicting configured and injected native bindings", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      nativePeerCredentialAddonPath: join(dir, "configured.node"),
+      nativePeerCredentialBinding: { getPeerUid: () => process.getuid?.() ?? 0 },
+      onMessage: () => {},
+    });
+
+    await expect(server.listen()).rejects.toThrow(/mutually exclusive/);
+    expect(existsSync(socketPath)).toBe(false);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  itUnix("closes accepted sockets when required native credentials return no uid", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const onMessage = vi.fn();
+    const onError = vi.fn();
+    const onFatal = vi.fn();
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      nativePeerCredentialBinding: { getPeerUid: () => null },
+      requireNativePeerCredentialForConnections: true,
+      onError,
+      onRequiredNativePeerCredentialFailure: onFatal,
+      onMessage,
+    });
+
+    await server.listen();
+    try {
+      const client = createConnection(socketPath);
+      await once(client, "connect");
+      await expect(waitForSocketClose(client)).resolves.toBe("closed");
+      expect(onMessage).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining("could not identify"),
+        }),
+        1,
+      );
+      expect(onFatal).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   itUnix("accepts newline-delimited JSON over a Unix socket", async () => {
     const dir = await tempDir();
     const socketPath = join(dir, "daemon.sock");

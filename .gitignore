@@ -39,6 +39,9 @@ obj/
 # Keys (CRITICAL - never commit private keys)
 /.wallet/
 *.json
+!/package-lock.json
+!/release-toolchain.json
+!/runtime/tsconfig.bundle.json
 !runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json
 !Anchor.toml
@@ -79,6 +82,7 @@ keys/
 
 # Testing
 *.log
+/scripts/__pycache__/
 
 # OS
 .DS_Store

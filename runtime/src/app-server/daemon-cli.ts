@@ -7,6 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
@@ -276,6 +277,8 @@ export interface RunAgenCDaemonCliOptions {
   readonly beforeDaemonReady?: () => void | Promise<void>;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
+  readonly nativePeerCredentialAddonPath?: string;
+  readonly requireNativePeerCredentialForConnections?: boolean;
   readonly snapshotPeriodicIntervalMs?: number;
   readonly socketAcceptAuthenticationTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
@@ -466,6 +469,28 @@ export function resolveAgenCDaemonLogPath(
   return join(resolveAgenCDaemonHome(env, userHome), AGENC_DAEMON_LOG_FILENAME);
 }
 
+const AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_ROOT = "/usr/lib/agenc";
+const AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_MARKER = join(
+  AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_ROOT,
+  "peer-credentials-required",
+);
+const AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_ADDON = join(
+  AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_ROOT,
+  "agenc-peer-credentials.node",
+);
+
+export function resolveSystemNativePeerCredentialAddonPath(
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (
+    platform !== "linux" ||
+    !existsSync(AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_MARKER)
+  ) {
+    return undefined;
+  }
+  return AGENC_SYSTEM_NATIVE_PEER_CREDENTIAL_ADDON;
+}
+
 /**
  * Routes the foreground daemon's `console.*` output through a size-capped,
  * single-backup rotating file sink so `daemon.log` cannot grow without bound.
@@ -649,6 +674,10 @@ async function runAgenCDaemonAction(
         beforeDaemonReady: options.beforeDaemonReady,
         runner: options.runner,
         nativePeerCredentialBinding: options.nativePeerCredentialBinding,
+        nativePeerCredentialAddonPath:
+          options.nativePeerCredentialAddonPath,
+        requireNativePeerCredentialForConnections:
+          options.requireNativePeerCredentialForConnections,
         snapshotPeriodicIntervalMs: options.snapshotPeriodicIntervalMs,
         socketAcceptAuthenticationTimeoutMs:
           options.socketAcceptAuthenticationTimeoutMs,
@@ -1206,6 +1235,8 @@ async function runAgenCDaemonForeground(
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
+    readonly nativePeerCredentialAddonPath?: string;
+    readonly requireNativePeerCredentialForConnections?: boolean;
     readonly snapshotPeriodicIntervalMs?: number;
     readonly socketAcceptAuthenticationTimeoutMs?: number;
   } = {},
@@ -1282,6 +1313,11 @@ async function runAgenCDaemonForeground(
     }
   }
   let shuttingDown = false;
+  let fatalPeerCredentialFailure: Error | null = null;
+  let resolveFatalPeerCredentialFailure!: (error: Error) => void;
+  const fatalPeerCredentialFailureCompleted = new Promise<Error>((resolve) => {
+    resolveFatalPeerCredentialFailure = resolve;
+  });
   let runner = options.runner;
   let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
   if (runner === undefined) {
@@ -1568,8 +1604,29 @@ async function runAgenCDaemonForeground(
       return;
     }
   };
+  const systemNativePeerCredentialAddonPath =
+    options.nativePeerCredentialBinding === undefined
+      ? resolveSystemNativePeerCredentialAddonPath()
+      : undefined;
+  const nativePeerCredentialAddonPath =
+    options.nativePeerCredentialAddonPath ??
+    systemNativePeerCredentialAddonPath;
   const socketServer = new AgenCUnixSocketServer({
     socketPath,
+    nativePeerCredentialAddonPath,
+    requireRootOwnedNativePeerCredentialAddon:
+      options.nativePeerCredentialAddonPath === undefined &&
+      systemNativePeerCredentialAddonPath !== undefined,
+    requireNativePeerCredentialForConnections:
+      nativePeerCredentialAddonPath !== undefined ||
+      options.requireNativePeerCredentialForConnections === true,
+    onRequiredNativePeerCredentialFailure: (error) => {
+      if (fatalPeerCredentialFailure !== null) return;
+      fatalPeerCredentialFailure = error;
+      shuttingDown = true;
+      io.stderr.write(`agenc: fatal daemon socket authentication failure: ${error.message}\n`);
+      resolveFatalPeerCredentialFailure(error);
+    },
     nativePeerCredentialBinding: options.nativePeerCredentialBinding,
     onNativePeerCredentialUnavailable: (message) => {
       io.stderr.write(
@@ -1751,9 +1808,23 @@ async function runAgenCDaemonForeground(
       io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
     }
 
-    const event = await shutdownSignal.completed;
-    cleanupContext = event;
-    exitCode = event.exitCode;
+    const termination = await Promise.race([
+      shutdownSignal.completed.then((event) => ({
+        kind: "signal" as const,
+        event,
+      })),
+      fatalPeerCredentialFailureCompleted.then((error) => ({
+        kind: "peer_credential_failure" as const,
+        error,
+      })),
+    ]);
+    if (termination.kind === "signal") {
+      cleanupContext = termination.event;
+      exitCode = termination.event.exitCode;
+    } else {
+      cleanupContext = { reason: "daemon_shutdown" };
+      exitCode = 1;
+    }
   } finally {
     shuttingDown = true;
     shutdownSignal.dispose();

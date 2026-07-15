@@ -221,15 +221,16 @@ function streamOnOpen(this: StreamState, fd: number): void {
   })
 }
 
-function streamOnData(this: StreamState, chunk: string): void {
+function streamOnData(this: StreamState, chunk: string | Buffer): void {
+  let text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
   if (this.isFirstChunk) {
     this.isFirstChunk = false
-    if (chunk.charCodeAt(0) === 0xfeff) {
-      chunk = chunk.slice(1)
+    if (text.charCodeAt(0) === 0xfeff) {
+      text = text.slice(1)
     }
   }
 
-  this.totalBytesRead += Buffer.byteLength(chunk)
+  this.totalBytesRead += Buffer.byteLength(text)
   if (
     !this.truncateOnByteLimit &&
     this.maxBytes !== undefined &&
@@ -241,7 +242,7 @@ function streamOnData(this: StreamState, chunk: string): void {
     return
   }
 
-  const data = this.partial.length > 0 ? this.partial + chunk : chunk
+  const data = this.partial.length > 0 ? this.partial + text : text
   this.partial = ''
 
   let startPos = 0

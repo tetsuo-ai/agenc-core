@@ -2,7 +2,7 @@
 
 **0.2.0** — typed, zero-dependency embedding SDK for the AgenC daemon protocol.
 
-Node ≥ 25 · ESM only · plain `tsc` build · no runtime dependencies.
+Node **>=25.9 <26** · ESM only · plain `tsc` build · no runtime dependencies.
 
 ## Surfaces
 

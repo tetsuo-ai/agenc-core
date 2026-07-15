@@ -149,6 +149,13 @@ export class CronScheduler {
   private readonly deps: CronSchedulerDeps
   private readonly opts: CronSchedulerOptions
   private timer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Monotonic ownership token for asynchronous schedule scans. Multiple
+   * callers may request a reschedule while filesystem-backed task loading is
+   * still in flight. Only the newest scan may arm a timer; stop() invalidates
+   * every pending scan so a late completion cannot resurrect the scheduler.
+   */
+  private scheduleGeneration = 0
   private running = false
   /** True while a tick (the local wake path) is executing — re-entrancy guard. */
   private tickInFlight = false
@@ -232,6 +239,7 @@ export class CronScheduler {
    */
   stop(): void {
     this.running = false
+    this.scheduleGeneration += 1
     this.clearTimer()
   }
 
@@ -271,9 +279,15 @@ export class CronScheduler {
    */
   async reschedule(): Promise<void> {
     if (!this.running || this.paused) return
+    const generation = ++this.scheduleGeneration
     this.clearTimer()
 
     const dueAt = await this.earliestDueAt()
+    if (
+      !this.running ||
+      this.paused ||
+      generation !== this.scheduleGeneration
+    ) return
     if (dueAt === null) {
       // No tasks (or none with a future fire). Stay asleep. Zero model calls.
       this.recordNextWake(null)
@@ -535,6 +549,7 @@ export class CronScheduler {
 
   private pauseForCap(): void {
     this.paused = true
+    this.scheduleGeneration += 1
     this.clearTimer()
     logForDebugging(
       `[CronScheduler] invocation cap (${this.opts.maxInvocationsPerWindow}/` +
