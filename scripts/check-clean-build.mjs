@@ -494,9 +494,12 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
     });
 
     // This gate runs inside exact, .git-free checkout-index snapshots before a
-    // release tag exists. Production launcher promotion deliberately uses the
-    // stricter tagged-source wrapper in scripts/npm-release.mjs; reproducibility
-    // proof uses pinned npm directly and compares the complete resulting bytes
+    // release tag exists. The build and package-readiness steps were executed
+    // explicitly above, including the narrow clean-local manifest validator.
+    // Skip npm lifecycle re-entry here because the launcher's production
+    // prepack intentionally accepts only a complete hosted release manifest.
+    // Production promotion uses the stricter tagged-source wrapper in
+    // scripts/npm-release.mjs; this proof compares the complete resulting bytes
     // from both independent snapshots.
     for (const workspace of ["@tetsuo-ai/runtime", "@tetsuo-ai/agenc-sdk", "@tetsuo-ai/agenc"]) {
       const output = run(
@@ -505,7 +508,7 @@ async function reproduce({ runRoot, source, cache, metadata, offline, timezone, 
           "pack",
           "--json",
           "--silent",
-          "--ignore-scripts=false",
+          "--ignore-scripts=true",
           "--foreground-scripts=false",
           "--pack-destination",
           artifacts,

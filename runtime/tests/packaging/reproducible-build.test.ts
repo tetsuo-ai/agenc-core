@@ -494,6 +494,11 @@ describe("reproducible install and release contract", () => {
     );
     expect(cleanBuild).toContain('"pack",\n          "--json"');
     expect(cleanBuild).not.toContain('"scripts/npm-release.mjs",\n          "pack"');
+    expect(cleanBuild).toContain('"--ignore-scripts=true"');
+    expect(cleanBuild).not.toContain('"--ignore-scripts=false"');
+    expect(cleanBuild).toContain(
+      "The build and package-readiness steps were executed",
+    );
     expect(cleanBuild).toContain(".git-free checkout-index snapshots before a");
     expect(cleanBuild).toContain(
       "must not be synthesized from --allow-partial output",
