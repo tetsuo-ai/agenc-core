@@ -51,6 +51,7 @@
     "check:unused:report": "node scripts/check-unused-report.mjs",
     "eval:agent": "node scripts/run-agent-eval.mjs",
     "check:agent-eval-report": "node scripts/check-agent-eval-report.mjs",
+    "check:eval-contract": "tsx src/eval-contract/cli.ts",
     "check:eval-regression": "node scripts/check-eval-regression.mjs",
     "test": "node scripts/run-hermetic-test-boundary.mjs run",
     "test:host-functional": "node scripts/run-hermetic-vitest.mjs run",

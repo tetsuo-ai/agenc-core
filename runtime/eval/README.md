@@ -1,5 +1,10 @@
 # Agent Eval Quality Gate
 
+> This tiny public suite and its scripted executor are legacy diagnostic smokes,
+> not a private real-agent scorecard or competitive result. They cannot produce
+> Trusted Fix Rate. The versioned contract is documented in
+> [`../../docs/evaluation-contract-v1.md`](../../docs/evaluation-contract-v1.md).
+
 Local, deterministic coding-task suite plus a regression gate over
 agent-eval reports (`src/eval/agent-eval-report.schema.json`).
 

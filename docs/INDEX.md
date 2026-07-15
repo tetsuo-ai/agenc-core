@@ -33,6 +33,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [migrate-from-hermes.md](migrate-from-hermes.md) | Surface map from Hermes Agent |
 | [trajectory-training-data.md](trajectory-training-data.md) | Enable trajectory export and curate SFT/DPO JSONL |
 | [agent-eval-reports.md](agent-eval-reports.md) | Local agent-eval suite, reports, and regression gate |
+| [evaluation-contract-v1.md](evaluation-contract-v1.md) | Versioned real-agent task, preregistration, evidence, and score derivation contract |
 | [provider-tool-compat.md](provider-tool-compat.md) | Tool JSON-schema root-type requirements for strict providers |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | BUFFER providers, nvim trust boundary, env knobs |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
