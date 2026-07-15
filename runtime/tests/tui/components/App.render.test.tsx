@@ -3314,6 +3314,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = {
       ...createSession(),
+      submit: vi.fn(async () => {}),
       setPendingProviderSwitch: vi.fn(),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
@@ -3340,31 +3341,40 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           }}
         />,
         async ({ output }) => {
-          const submit = async (value: string): Promise<void> => {
+          const currentFrameText = (): string =>
+            stripAnsi(extractLastSynchronizedFrame(output())).replace(/\s+/gu, "");
+          const submit = async (value: string, nextFrameMarker: string): Promise<void> => {
             const onSubmit = providerProbe.promptSubmits.at(-1);
             expect(onSubmit).toBeDefined();
             await onSubmit!(value, helpers);
-            await new Promise((resolve) => setTimeout(resolve, 25));
+            await vi.waitFor(
+              () => expect(currentFrameText()).toContain(nextFrameMarker),
+              { interval: 10, timeout: 5_000 },
+            );
           };
 
           expect(output()).toContain("Preflight");
-          await submit("summarize this repository");
+          // This marker already exists before the invalid submission, so the
+          // next input can arrive before its error frame commits. That keeps
+          // this regression sensitive to stale passive-effect state writes.
+          await submit("summarize this repository", "Typenexttocontinue.");
           expect(output()).toContain("Preflight");
           expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
-          await submit("next");
-          await submit("1");
-          await submit("2");
-          await submit("skip");
-          await submit("test");
-          await submit("next");
-          await submit("done");
+          await submit("next", "Typeanumberorthemename.");
+          await submit("1", "Typeanumberorproviderslug.");
+          await submit("2", "OPENAI_API_KEY");
+          await submit("skip", "runtheconnectioncheck.");
+          await submit("test", "Sandboxworkspace-write");
+          await submit("next", "Typedonetofinishonboarding.");
+          await submit("done", "spinner:requesting:");
 
           expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
             provider: "openai",
             model: "gpt-5",
           });
           expect(readOnboardingState({ agencHome }).completed).toBe(true);
-          expect(output()).toContain("messages:0");
+          expect(session.submit).toHaveBeenCalledTimes(1);
+          expect(output()).toContain("spinner:requesting:");
         },
       );
     } finally {
