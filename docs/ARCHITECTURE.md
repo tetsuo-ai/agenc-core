@@ -330,13 +330,13 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Hosted required gates** — every pull request runs the single stable
-  `agenc-m0-required` contract; merge-queue candidates use the same workflow,
-  and both release workflows rerun it against the exact tagged SHA before
-  artifact jobs. The no-bypass `main` ruleset and local reproduction are
-  documented in [`ci-required-gates.md`](ci-required-gates.md). Release
-  workflows still run on demand; binaries publish to public
-  `tetsuo-ai/agenc-releases`.
+- **Local required attestations** — the complete stable contract runs only on
+  the dedicated local gate host. A repository-scoped GitHub App records
+  `agenc-local-required-v1` for the exact PR head or merged-`main` SHA; the
+  no-bypass ruleset and release workflows enforce/read back that result without
+  running tests on GitHub. Trust boundaries and reproduction are documented in
+  [`ci-required-gates.md`](ci-required-gates.md). Release workflows still run
+  on demand; binaries publish to public `tetsuo-ai/agenc-releases`.
 
 Root development loop (from repo root):
 

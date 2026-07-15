@@ -1,0 +1,11 @@
+{
+  "default_events": [],
+  "default_permissions": {
+    "checks": "write",
+    "statuses": "write"
+  },
+  "description": "Publishes exact-SHA AgenC local required-gate Check Runs. It never executes in GitHub Actions.",
+  "name": "AgenC Local Gate",
+  "public": false,
+  "url": "https://github.com/tetsuo-ai/agenc-core"
+}

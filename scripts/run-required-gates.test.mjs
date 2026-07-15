@@ -5,8 +5,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -16,11 +16,14 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
-import { load as loadYaml } from "js-yaml";
-
 import {
+  artifactTreeDigest,
+  assertExactSource,
+  classifySystemdWorkerResult,
   createGateEnvironment,
   createRequiredGatesRoot,
+  environmentForGate,
+  freezeArtifactTree,
   REQUIRED_GATES,
   REQUIRED_GATES_REPOSITORY_ROOT,
   REQUIRED_NODE_VERSION,
@@ -29,35 +32,29 @@ import {
   runGateSequence,
   stopOwnedDaemon,
 } from "./run-required-gates.mjs";
+import {
+  buildSystemdJobMountCommand,
+  buildSystemdJobUnmountCommand,
+  buildSystemdWorkerCommand,
+  assertCgroupAncestorCapacity,
+  assertCgroupResourceProfile,
+  assertDockerCgroupPlacement,
+  LOCAL_GATE_AGGREGATE_LIMITS,
+  LOCAL_GATE_AGGREGATE_SLICE,
+  LOCAL_GATE_COMBINED_LIMITS,
+} from "./systemd-worker-sandbox.mjs";
+import {
+  computeRequiredGateContract,
+  REQUIRED_GATE_CONTEXT,
+  REQUIRED_GATE_POLICY_PATHS,
+} from "./required-gate-contract.mjs";
+import { proveDockerDaemonQuiescence } from "./docker-quiescence.mjs";
 
 const runnerPath = path.join(
   REQUIRED_GATES_REPOSITORY_ROOT,
   "scripts",
   "run-required-gates.mjs",
 );
-
-function readYaml(relativePath) {
-  return loadYaml(
-    readFileSync(path.join(REQUIRED_GATES_REPOSITORY_ROOT, relativePath), "utf8"),
-  );
-}
-
-function collectUses(value, uses = []) {
-  if (Array.isArray(value)) {
-    for (const item of value) collectUses(item, uses);
-  } else if (value !== null && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "uses" && typeof item === "string") uses.push(item);
-      collectUses(item, uses);
-    }
-  }
-  return uses;
-}
-
-function needs(job, dependency) {
-  const declared = job?.needs;
-  return Array.isArray(declared) ? declared.includes(dependency) : declared === dependency;
-}
 
 function waitForOutput(stream, pattern, timeoutMs = 2_000) {
   return new Promise((resolve, reject) => {
@@ -90,29 +87,42 @@ test("required gate inventory is complete, ordered, and bounded", () => {
         args: ["run", "build", "--workspace=@tetsuo-ai/agenc-sdk"],
       },
       {
-        id: "sdk-typecheck",
-        args: ["run", "typecheck", "--workspace=@tetsuo-ai/agenc-sdk"],
+        id: "launcher-tests",
+        args: ["test", "--workspace=@tetsuo-ai/agenc"],
       },
-      { id: "runtime-typecheck", args: ["run", "typecheck"] },
-      { id: "stable-tests", args: ["test"] },
-      { id: "runtime-build", args: ["run", "build"] },
+      { id: "gate-policy-tests", args: ["run", "test:required-gates"] },
+      {
+        id: "agent-surface-tests",
+        args: ["run", "test:agent-surface-contract"],
+      },
+      {
+        id: "stable-tests",
+        args: ["runtime/scripts/run-hermetic-test-boundary.mjs", "run"],
+      },
       {
         id: "agent-surface",
-        args: ["run", "check:agent-surface-contract"],
+        args: ["run", "check:agent-surface-contract", "--", "--no-run-commands"],
       },
+      { id: "runtime-build", args: ["run", "build"] },
       { id: "sbom", args: ["run", "check:sbom"] },
       {
         id: "tui-startup",
-        args: [
-          "run",
-          "check:tui-runtime-startup",
-          "--workspace=@tetsuo-ai/runtime",
-        ],
+        args: ["runtime/scripts/check-tui-runtime-startup.mjs"],
       },
     ],
   );
   assert.ok(REQUIRED_GATES.every(({ timeoutMs }) =>
     Number.isSafeInteger(timeoutMs) && timeoutMs >= 60_000 && timeoutMs <= 20 * 60_000
+  ));
+  assert.deepEqual(
+    REQUIRED_GATES.filter(({ dockerAccess }) => dockerAccess).map(({ id }) => id),
+    ["stable-tests"],
+  );
+  assert.ok(REQUIRED_GATES.every(({ executable, writablePaths, freezePaths }) =>
+    ["node", "npm", "trusted-node"].includes(executable) &&
+    [writablePaths, freezePaths].every((paths) => paths.every((relativePath) =>
+      !path.isAbsolute(relativePath) && !relativePath.includes("..")
+    ))
   ));
   const npm = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
     encoding: "utf8",
@@ -121,7 +131,37 @@ test("required gate inventory is complete, ordered, and bounded", () => {
   assert.equal(npm.stdout.trim(), REQUIRED_NPM_VERSION);
 });
 
-test("required-gates CLI exposes only the reviewed inventory", () => {
+test("Docker cleanup waits through late daemon-side container materialization", async () => {
+  const late = "a".repeat(64);
+  const observations = [[], [], [late], [], [], [], [], []];
+  const removed = [];
+  const stable = await proveDockerDaemonQuiescence({
+    listContainers: async () => observations.shift() ?? [],
+    removeContainers: async (containers) => removed.push(...containers),
+    emptySamples: 5,
+    sampleIntervalMs: 0,
+    wait: async () => {},
+  });
+  assert.deepEqual(removed, [late]);
+  assert.deepEqual(stable.recoveredIds, [late]);
+  assert.equal(stable.observations, 8);
+});
+
+test("Docker preflight cannot green from a single empty inventory", async () => {
+  const late = "b".repeat(64);
+  const observations = [[], [], [late]];
+  await assert.rejects(
+    proveDockerDaemonQuiescence({
+      listContainers: async () => observations.shift() ?? [],
+      emptySamples: 5,
+      sampleIntervalMs: 0,
+      wait: async () => {},
+    }),
+    /retained 1 container/u,
+  );
+});
+
+test("required-gates CLI exposes only the reviewed inventory and contract", () => {
   const listed = spawnSync(process.execPath, [runnerPath, "--list-json"], {
     cwd: REQUIRED_GATES_REPOSITORY_ROOT,
     encoding: "utf8",
@@ -129,40 +169,107 @@ test("required-gates CLI exposes only the reviewed inventory", () => {
   assert.equal(listed.status, 0, listed.stderr);
   assert.deepEqual(JSON.parse(listed.stdout), REQUIRED_GATES);
 
+  const contract = spawnSync(process.execPath, [runnerPath, "--contract-json"], {
+    cwd: REQUIRED_GATES_REPOSITORY_ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(contract.status, 0, contract.stderr);
+  const parsedContract = JSON.parse(contract.stdout);
+  assert.equal(parsedContract.context, REQUIRED_GATE_CONTEXT);
+  assert.match(parsedContract.sha256, /^[0-9a-f]{64}$/u);
+  assert.deepEqual(
+    parsedContract.files.map(({ path: relativePath }) => relativePath),
+    REQUIRED_GATE_POLICY_PATHS,
+  );
+
   const typo = spawnSync(process.execPath, [runnerPath, "--list-jsno"], {
     cwd: REQUIRED_GATES_REPOSITORY_ROOT,
     encoding: "utf8",
   });
-  assert.equal(typo.status, 1);
+  assert.equal(typo.status, 20);
   assert.match(typo.stderr, /unknown option: --list-jsno/);
 });
 
-test("GitHub execution rejects a mismatched SHA before any gate starts", () => {
+test("required gate rejects a mismatched expected SHA before any gate starts", () => {
   const result = spawnSync(process.execPath, [runnerPath], {
     cwd: REQUIRED_GATES_REPOSITORY_ROOT,
     encoding: "utf8",
     env: {
       ...process.env,
       AGENC_REQUIRED_GATES_SHA: "0000000000000000000000000000000000000000",
-      GITHUB_ACTIONS: "true",
     },
   });
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 20);
   assert.match(result.stderr, /does not match expected SHA/);
   assert.doesNotMatch(result.stdout, /required-gates: running/);
 });
 
-test("GitHub execution rejects a missing expected SHA before any gate starts", () => {
-  const env = { ...process.env, GITHUB_ACTIONS: "true" };
-  delete env.AGENC_REQUIRED_GATES_SHA;
-  const result = spawnSync(process.execPath, [runnerPath], {
-    cwd: REQUIRED_GATES_REPOSITORY_ROOT,
-    encoding: "utf8",
-    env,
-  });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /AGENC_REQUIRED_GATES_SHA is required/u);
-  assert.doesNotMatch(result.stdout, /required-gates: running/u);
+test("ending source validation rejects a commit that moved after the gate", () => {
+  const expected = "1".repeat(40);
+  assert.throws(
+    () => assertExactSource(expected, (args) => {
+      if (args[0] === "rev-parse") return "2".repeat(40);
+      if (args[0] === "status") return "";
+      throw new Error(`unexpected fake git arguments: ${args.join(" ")}`);
+    }),
+    /does not match expected SHA/u,
+  );
+});
+
+test("required gate contract is deterministic and mutation-sensitive", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "agenc-gate-contract-"));
+  try {
+    writeFileSync(path.join(root, "a"), "alpha\n");
+    writeFileSync(path.join(root, "b"), "beta\n");
+    const first = computeRequiredGateContract({ repositoryRoot: root, policyPaths: ["a", "b"] });
+    const second = computeRequiredGateContract({ repositoryRoot: root, policyPaths: ["a", "b"] });
+    assert.deepEqual(first, second);
+    writeFileSync(path.join(root, "b"), "changed\n");
+    const changed = computeRequiredGateContract({ repositoryRoot: root, policyPaths: ["a", "b"] });
+    assert.notEqual(changed.sha256, first.sha256);
+    assert.notEqual(changed.files[1].sha256, first.files[1].sha256);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact freeze rejects nested and root symlinks", (t) => {
+  if (process.platform === "win32") return t.skip("POSIX symlink assertion");
+  const fixture = mkdtempSync(path.join(
+    REQUIRED_GATES_REPOSITORY_ROOT,
+    ".agenc-artifact-freeze-test-",
+  ));
+  try {
+    const target = path.join(fixture, "target");
+    const nested = path.join(fixture, "nested");
+    mkdirSync(target);
+    mkdirSync(nested);
+    writeFileSync(path.join(target, "payload.txt"), "trusted artifact\n");
+    const nestedLink = path.join(nested, "00-linked-payload.txt");
+    symlinkSync("../target/payload.txt", nestedLink);
+
+    assert.throws(
+      () => freezeArtifactTree(nested),
+      /artifact contains a symbolic link.*00-linked-payload\.txt/u,
+    );
+    assert.throws(
+      () => artifactTreeDigest(nested),
+      /artifact contains a symbolic link.*00-linked-payload\.txt/u,
+    );
+
+    const rootLink = path.join(fixture, "linked-dist");
+    symlinkSync("target", rootLink, "dir");
+    assert.throws(
+      () => freezeArtifactTree(rootLink),
+      /artifact contains a symbolic link.*linked-dist/u,
+    );
+    assert.throws(
+      () => artifactTreeDigest(rootLink),
+      /artifact contains a symbolic link.*linked-dist/u,
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test("gate environment strips credentials and isolates writable state", () => {
@@ -174,6 +281,8 @@ test("gate environment strips credentials and isolates writable state", () => {
     SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
     XAI_API_KEY: process.env.XAI_API_KEY,
     GH_TOKEN: process.env.GH_TOKEN,
+    DOCKER_HOST: process.env.DOCKER_HOST,
+    AGENC_REQUIRED_GATES_DOCKER_HOST: process.env.AGENC_REQUIRED_GATES_DOCKER_HOST,
     npm_config_script_shell: process.env.npm_config_script_shell,
     npm_config_userconfig: process.env.npm_config_userconfig,
   };
@@ -183,6 +292,8 @@ test("gate environment strips credentials and isolates writable state", () => {
   process.env.SSH_AUTH_SOCK = "/tmp/untrusted-agent.sock";
   process.env.XAI_API_KEY = "must-not-survive";
   process.env.GH_TOKEN = "must-not-survive";
+  process.env.DOCKER_HOST = "tcp://attacker.invalid:2375";
+  delete process.env.AGENC_REQUIRED_GATES_DOCKER_HOST;
   process.env.npm_config_script_shell = "/tmp/untrusted-shell";
   process.env.npm_config_userconfig = "/tmp/untrusted-npmrc";
   try {
@@ -193,8 +304,10 @@ test("gate environment strips credentials and isolates writable state", () => {
     assert.equal(env.SSH_AUTH_SOCK, undefined);
     assert.equal(env.XAI_API_KEY, undefined);
     assert.equal(env.GH_TOKEN, undefined);
-    assert.equal(env.npm_config_script_shell, undefined);
-    assert.equal(env.npm_config_userconfig, undefined);
+    assert.equal(env.DOCKER_HOST, undefined);
+    assert.equal(env.npm_config_script_shell, "/bin/sh");
+    assert.equal(env.npm_config_userconfig, "/nonexistent/agenc-required-gates-user-npmrc");
+    assert.equal(env.npm_config_globalconfig, "/dev/null");
     assert.equal(env.AGENC_AUTH_BACKEND, "local");
     assert.ok(env.AGENC_HOME.startsWith(root));
     assert.ok(env.HOME.startsWith(root));
@@ -202,8 +315,27 @@ test("gate environment strips credentials and isolates writable state", () => {
     assert.ok(env.npm_config_cache.startsWith(root));
     assert.equal(env.npm_config_offline, "true");
     assert.deepEqual(
-      Object.keys(env).filter((key) => /TOKEN|SECRET|SOCK|OPTIONS|script_shell|userconfig/u.test(key)),
+      Object.keys(env).filter((key) => /TOKEN|SECRET|SOCK/u.test(key)),
       [],
+    );
+    process.env.AGENC_REQUIRED_GATES_DOCKER_HOST = "unix:///run/user/992/docker.sock";
+    const rootless = createGateEnvironment(path.join(root, "rootless"));
+    assert.equal(rootless.DOCKER_HOST, undefined);
+    assert.equal(
+      environmentForGate(rootless, { dockerAccess: true }).DOCKER_HOST,
+      "unix:///run/user/992/docker.sock",
+    );
+    assert.equal(
+      environmentForGate(rootless, { dockerAccess: false }).DOCKER_HOST,
+      undefined,
+    );
+    process.env.AGENC_REQUIRED_GATES_DOCKER_HOST = "unix:///var/run/docker.sock";
+    assert.throws(
+      () => environmentForGate(
+        createGateEnvironment(path.join(root, "rootful")),
+        { dockerAccess: true },
+      ),
+      /only an explicit rootless Docker user socket/u,
     );
   } finally {
     for (const [key, value] of Object.entries(previous)) {
@@ -212,6 +344,220 @@ test("gate environment strips credentials and isolates writable state", () => {
     }
     rmSync(root, { force: true, recursive: true });
   }
+});
+
+test("transient systemd workers bind to the dispatcher and expose Docker only to the stable gate", () => {
+  const common = {
+    unitName: "agenc-local-gate-deadbeef",
+    parentUnit: "agenc-local-gate-dispatcher@pr-1505.service",
+    uid: 992,
+    gid: 992,
+    cwd: "/var/lib/agenc-local-gatekeeper/job/source",
+    environment: { CI: "1", PATH: "/opt/node/bin:/usr/bin:/bin" },
+    command: "/opt/node/bin/node",
+    args: ["/opt/node/lib/node_modules/npm/bin/npm-cli.js", "run", "typecheck"],
+    readWritePaths: ["/var/lib/agenc-local-gatekeeper/job/runs/typecheck"],
+    inaccessiblePaths: ["/var/lib/agenc-gate-worker"],
+    runtimeMaxSeconds: 300,
+  };
+  const isolated = buildSystemdWorkerCommand({ ...common, dockerAccess: false });
+  assert.equal(isolated.unitName, "agenc-local-gate-deadbeef.service");
+  assert.equal(
+    isolated.args.filter((value) => value === `--slice=${LOCAL_GATE_AGGREGATE_SLICE}`).length,
+    1,
+  );
+  assert.ok(isolated.args.includes("--property=BindsTo=agenc-local-gate-dispatcher@pr-1505.service"));
+  assert.ok(isolated.args.includes("--property=ExitType=main"));
+  assert.ok(isolated.args.includes("--property=PrivateNetwork=yes"));
+  assert.ok(isolated.args.includes("--property=RestrictAddressFamilies=AF_UNIX"));
+  assert.ok(isolated.args.includes("--property=ProtectHome=yes"));
+  assert.ok(isolated.args.includes("--property=SupplementaryGroups=992"));
+  assert.ok(isolated.args.includes("--property=InaccessiblePaths=-/run/docker.sock"));
+  assert.ok(isolated.args.includes("--property=InaccessiblePaths=/var/lib/agenc-gate-worker"));
+  assert.ok(isolated.args.includes("--property=TemporaryFileSystem=/run:ro"));
+  assert.ok(isolated.args.includes(
+    "--property=TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=512M,nr_inodes=65536,mode=1777",
+  ));
+  assert.ok(isolated.args.includes(
+    "--property=TemporaryFileSystem=/var/tmp:rw,nosuid,nodev,size=128M,nr_inodes=16384,mode=1777",
+  ));
+  assert.equal(isolated.args.includes("--property=PrivateTmp=yes"), false);
+  assert.equal(isolated.args.includes("--collect"), false);
+  assert.equal(
+    isolated.args.some((value) => value.includes("After=agenc-local-gate-dispatcher@")),
+    false,
+  );
+
+  const installer = buildSystemdWorkerCommand({
+    ...common,
+    networkAccess: true,
+  });
+  assert.ok(installer.args.includes("--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"));
+  assert.equal(installer.args.includes("--property=PrivateNetwork=yes"), false);
+  assert.equal(installer.args.includes("--property=IPAddressDeny=any"), false);
+  assert.equal(installer.args.includes("--property=TemporaryFileSystem=/run:ro"), false);
+
+  const docker = buildSystemdWorkerCommand({
+    ...common,
+    dockerAccess: true,
+    dockerSocketPath: "/run/user/992/docker.sock",
+  });
+  assert.ok(docker.args.includes("--property=ProtectHome=tmpfs"));
+  assert.ok(docker.args.includes("--property=BindReadOnlyPaths=/run/user/992/docker.sock"));
+  assert.ok(docker.args.includes("--property=TemporaryFileSystem=/run:ro"));
+  assert.equal(
+    docker.args.some((value) => value.includes("InaccessiblePaths=") && value.includes("docker.sock")),
+    false,
+  );
+  assert.throws(
+    () => buildSystemdWorkerCommand({
+      ...common,
+      cwd: "/var/lib/agenc-local-gatekeeper/%n/source",
+      dockerAccess: false,
+    }),
+    /safe absolute path/u,
+  );
+  assert.throws(
+    () => buildSystemdWorkerCommand({
+      ...common,
+      dockerAccess: true,
+      dockerSocketPath: "/run/user/992/docker.sock",
+      networkAccess: true,
+    }),
+    /mutually exclusive/u,
+  );
+  assert.throws(
+    () => buildSystemdWorkerCommand({
+      ...common,
+      readWritePaths: ["/var/lib/agenc-local-gatekeeper/path with space"],
+      dockerAccess: false,
+    }),
+    /safe absolute path/u,
+  );
+});
+
+test("bounded job filesystems are exact dispatcher-bound tmpfs mounts", () => {
+  const mountPath = `/var/lib/agenc-local-gatekeeper/pr-1505-job-${"a".repeat(32)}`;
+  const mounted = buildSystemdJobMountCommand({
+    jobId: "a".repeat(32),
+    parentUnit: "agenc-local-gate-dispatcher@pr-1505.service",
+    mountPath,
+  });
+  assert.equal(mounted.command, "/usr/bin/systemd-mount");
+  assert.equal(mounted.source, `agenc-local-gate-job-${"a".repeat(32)}`);
+  assert.ok(mounted.args.includes(
+    "--property=BindsTo=agenc-local-gate-dispatcher@pr-1505.service",
+  ));
+  assert.ok(mounted.args.includes(
+    "--property=PartOf=agenc-local-gate-dispatcher@pr-1505.service",
+  ));
+  assert.ok(mounted.args.includes("--property=Slice=system-agencgate.slice"));
+  assert.ok(mounted.args.includes(
+    "--options=rw,nosuid,nodev,size=16G,nr_inodes=1000000,mode=0711",
+  ));
+  assert.equal(mounted.args.includes("--no-block"), false);
+  assert.deepEqual(
+    buildSystemdJobUnmountCommand(mountPath).args.slice(-2),
+    ["--umount", mountPath],
+  );
+});
+
+test("aggregate cgroup records enforce exact local-gate limits and parent capacity", () => {
+  const exact = {
+    "cpu.max": "800000 100000",
+    "memory.high": "12884901888",
+    "memory.max": "17179869184",
+    "memory.swap.max": "0",
+    "memory.zswap.max": "0",
+    "pids.max": "4096",
+    "cgroup.subtree_control": "cpu memory pids",
+  };
+  assert.doesNotThrow(() => assertCgroupResourceProfile(exact, LOCAL_GATE_AGGREGATE_LIMITS));
+  for (const drift of [
+    { "memory.max": "max" },
+    { "memory.zswap.max": "max" },
+    { "pids.max": "4097" },
+    { "cgroup.subtree_control": "cpu memory" },
+  ]) {
+    assert.throws(
+      () => assertCgroupResourceProfile({ ...exact, ...drift }, LOCAL_GATE_AGGREGATE_LIMITS),
+      /cgroup/u,
+    );
+  }
+  assert.doesNotThrow(() => assertCgroupAncestorCapacity({
+    "cpu.max": "max 100000",
+    "memory.high": "max",
+    "memory.max": "34359738368",
+    "pids.max": "8192",
+  }, LOCAL_GATE_AGGREGATE_LIMITS));
+  assert.throws(() => assertCgroupAncestorCapacity({
+    "cpu.max": "400000 100000",
+    "memory.high": "12884901888",
+    "memory.max": "17179869184",
+    "pids.max": "4096",
+  }, LOCAL_GATE_AGGREGATE_LIMITS), /CPU capacity/u);
+  assert.doesNotThrow(() => assertCgroupAncestorCapacity({
+    "cpu.max": "max 100000",
+    "memory.high": "max",
+    "memory.max": "51539607552",
+    "pids.max": "32768",
+  }, LOCAL_GATE_COMBINED_LIMITS));
+  assert.throws(() => assertCgroupAncestorCapacity({
+    "cpu.max": "1600000 100000",
+    "memory.high": "27917287424",
+    "memory.max": "17179869184",
+    "pids.max": "16384",
+  }, LOCAL_GATE_COMBINED_LIMITS), /below the reviewed/u);
+});
+
+test("rootless Docker daemon must remain beneath the capped delegated user slice", () => {
+  const record = {
+    dockerUid: 993,
+    userManager: {
+      ActiveState: "active",
+      ControlGroup: "/user.slice/user-993.slice/user@993.service",
+      Delegate: "yes",
+      DelegateControllers: "cpu memory pids",
+    },
+    dockerService: {
+      ActiveState: "active",
+      MainPID: "4242",
+      ControlGroup: "/user.slice/user-993.slice/user@993.service/app.slice/docker.service",
+    },
+  };
+  assert.doesNotThrow(() => assertDockerCgroupPlacement(record));
+  for (const drift of [
+    { userManager: { ...record.userManager, DelegateControllers: "cpu memory" } },
+    { dockerService: { ...record.dockerService, ControlGroup: "/user.slice/user-993.slice/escape/docker.service" } },
+  ]) {
+    assert.throws(() => assertDockerCgroupPlacement({ ...record, ...drift }), /Docker|delegate/u);
+  }
+});
+
+test("systemd result classification publishes only authoritative command outcomes", () => {
+  const failed = {
+    ActiveState: "failed",
+    SubState: "failed",
+    Result: "exit-code",
+    ExecMainCode: "1",
+    ExecMainStatus: "7",
+    ControlGroup: "",
+  };
+  assert.deepEqual(
+    classifySystemdWorkerResult({ error: null, status: 7, signal: null }, failed),
+    { error: null, status: 7, signal: null, timedOut: false, treeError: null },
+  );
+  assert.match(
+    classifySystemdWorkerResult(
+      { error: null, status: 1, signal: null },
+      { ...failed, ExecMainStatus: "203" },
+    ).error.message,
+    /infrastructure/u,
+  );
+  assert.match(
+    classifySystemdWorkerResult({ error: null, status: 1, signal: null }, null).error.message,
+    /without an inspectable transient unit/u,
+  );
 });
 
 test("required-gates state ignores hostile ambient temp roots", (t) => {
@@ -511,121 +857,4 @@ test("daemon cleanup refuses a receipt for a process without exact ownership", a
   assert.doesNotThrow(() => process.kill(child.pid, 0));
   process.kill(-child.pid, "SIGKILL");
   await closed;
-});
-
-test("PR workflow has one stable, least-privilege, unskippable required check", () => {
-  const workflow = readYaml(".github/workflows/required-gates.yml");
-  assert.deepEqual(Object.keys(workflow.on).sort(), ["merge_group", "pull_request"]);
-  assert.deepEqual(workflow.on.merge_group, { types: ["checks_requested"] });
-  const pullRequest = workflow.on.pull_request ?? {};
-  assert.equal("paths" in pullRequest, false);
-  assert.equal("paths-ignore" in pullRequest, false);
-  assert.deepEqual(workflow.permissions, { contents: "read" });
-  assert.equal(workflow.concurrency["cancel-in-progress"], true);
-
-  const jobs = Object.values(workflow.jobs);
-  assert.equal(jobs.length, 1);
-  const job = workflow.jobs["required-gates"];
-  assert.equal(job.name, "agenc-m0-required");
-  assert.equal(job["runs-on"], "ubuntu-24.04");
-  const declaredGateMinutes = REQUIRED_GATES.reduce(
-    (total, { timeoutMs }) => total + timeoutMs,
-    0,
-  ) / 60_000;
-  assert.ok(
-    job["timeout-minutes"] >= declaredGateMinutes + 15,
-    `job timeout ${job["timeout-minutes"]}m cannot contain ${declaredGateMinutes}m of gates plus setup`,
-  );
-  assert.deepEqual(job.permissions, { contents: "read" });
-  const checkout = job.steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
-  assert.equal(
-    checkout.uses,
-    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-  );
-  assert.equal(checkout.with["persist-credentials"], false);
-  const gate = job.steps.find(({ uses }) => uses === "./.github/actions/required-gates");
-  assert.equal(gate.with["expected-sha"], "${{ github.sha }}");
-});
-
-test("shared action binds source before lifecycle code and provisions exact dependencies", () => {
-  const action = readYaml(".github/actions/required-gates/action.yml");
-  const steps = action.runs.steps;
-  const bindIndex = steps.findIndex(({ name }) => name === "Bind the checkout before executing repository code");
-  const installIndex = steps.findIndex(({ name }) => name === "Install the committed dependency graph");
-  const gateIndex = steps.findIndex(({ name }) => name === "Run the exact required-gates contract");
-  assert.equal(bindIndex, 0);
-  assert.ok(installIndex > bindIndex);
-  assert.ok(gateIndex > installIndex);
-  assert.match(steps[bindIndex].run, /test "\$EXPECTED_SHA" = "\$GITHUB_SHA"/);
-  const setupNode = steps.find(({ uses }) => uses?.startsWith("actions/setup-node@"));
-  assert.equal(
-    setupNode.uses,
-    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
-  );
-  assert.equal(setupNode.with["node-version"], "25.9.0");
-  assert.equal(setupNode.with["package-manager-cache"], false);
-  assert.match(steps.find(({ name }) => name === "Install the digest-pinned npm release").run,
-    /scripts\/fetch-pinned-npm\.mjs/);
-  const install = steps[installIndex];
-  assert.equal(install.env.npm_config_build_from_source, "false");
-  assert.match(install.run, /npm ci --no-audit --no-fund/);
-  assert.match(
-    steps.find(({ name }) => name === "Provision the digest-pinned hermetic test image").run,
-    /docker pull "\$image"/,
-  );
-  assert.match(steps[gateIndex].run, /npm run check:required-gates/);
-});
-
-test("release artifacts cannot run before the same required gate", () => {
-  const runtimeRelease = readYaml(".github/workflows/release-runtime.yml");
-  const npmRelease = readYaml(".github/workflows/publish-npm.yml");
-
-  assert.deepEqual(npmRelease.permissions, { contents: "read" });
-  for (const [workflow, expectedName] of [
-    [runtimeRelease, "agenc-runtime-release-gates"],
-    [npmRelease, "agenc-npm-release-gates"],
-  ]) {
-    assert.equal(workflow.concurrency["cancel-in-progress"], false);
-    assert.equal(workflow.concurrency.queue, "max");
-    const required = workflow.jobs["required-gates"];
-    assert.equal(required.name, expectedName);
-    assert.ok(needs(required, "release-source"));
-    assert.equal(required.permissions.contents, "read");
-    assert.ok(required["timeout-minutes"] >= 95);
-    assert.equal(
-      required.steps.find(({ uses }) => uses === "./.github/actions/required-gates")
-        .with["expected-sha"],
-      "${{ github.sha }}",
-    );
-  }
-  assert.equal(
-    runtimeRelease.concurrency.group,
-    "release-runtime-${{ github.ref }}",
-  );
-  assert.equal(npmRelease.concurrency.group, "publish-npm-production");
-  assert.ok(needs(runtimeRelease.jobs["linux-tarball"], "required-gates"));
-  assert.ok(needs(runtimeRelease.jobs["native-tarball"], "required-gates"));
-  assert.ok(needs(npmRelease.jobs.pack, "required-gates"));
-  assert.ok(needs(npmRelease.jobs.publish, "pack"));
-  const protectedNameOccurrences = [
-    readYaml(".github/workflows/required-gates.yml"),
-    runtimeRelease,
-    npmRelease,
-  ].flatMap((workflow) => Object.values(workflow.jobs).map((job) => job.name))
-    .filter((name) => name === "agenc-m0-required");
-  assert.equal(protectedNameOccurrences.length, 1);
-});
-
-test("every external action reference is pinned to one full commit SHA", () => {
-  for (const file of [
-    ".github/actions/required-gates/action.yml",
-    ".github/workflows/required-gates.yml",
-    ".github/workflows/release-runtime.yml",
-    ".github/workflows/publish-npm.yml",
-  ]) {
-    for (const uses of collectUses(readYaml(file))) {
-      if (uses.startsWith("./")) continue;
-      assert.match(uses, /^[^@\s]+@[0-9a-f]{40}$/, `${file}: ${uses}`);
-    }
-  }
 });

@@ -1,0 +1,21 @@
+{
+  "approvedContractSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dockerGid": 993,
+  "dockerDataRoot": "/var/lib/agenc-gate-docker",
+  "dockerDataDevice": "/dev/mapper/agenc-gate-docker",
+  "dockerHost": "unix:///run/user/993/docker.sock",
+  "dockerUid": 993,
+  "executorId": "agenc-gate-primary",
+  "githubAppId": 1,
+  "githubClientId": "Iv1.REPLACE_WITH_CLIENT_ID",
+  "githubInstallationId": 1,
+  "logDirectory": "/var/log/agenc-local-gatekeeper",
+  "nodePath": "/opt/agenc-local-gatekeeper/node/bin/node",
+  "npmPath": "/opt/agenc-local-gatekeeper/node/bin/npm",
+  "repository": "tetsuo-ai/agenc-core",
+  "schemaVersion": 1,
+  "stateDirectory": "/var/lib/agenc-local-gatekeeper",
+  "workerGid": 992,
+  "workerHome": "/var/lib/agenc-gate-worker",
+  "workerUid": 992
+}

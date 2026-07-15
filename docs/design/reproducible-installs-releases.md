@@ -231,7 +231,7 @@ checkout, so a self-consistent forged tarball and receipt are insufficient.
 Docker publication is deliberately not authorized by this slice. A local
 single-architecture proof cannot justify a multi-platform tag, and the
 temporary verified Buildx binary cannot validate a later ambient invocation.
-The hosted PR/release quality gate does not expand that product scope. A future
+The local PR/release quality attestation does not expand that product scope. A future
 Docker-publication proposal must first show environment drift as a leading
 measured failure mode, then separately prove native amd64 and arm64, validate
 attestation subjects/SBOMs against the proven manifests, push the immutable
@@ -305,7 +305,7 @@ artifact. npm/GitHub publication is immutable, so recovery uses the next patch
 version rather than overwriting released bytes.
 
 The current Docker acceptance proof is intentionally native-host only. It does
-not claim arm64 from an amd64 host or authorize GHCR. The required hosted M0
+not claim arm64 from an amd64 host or authorize GHCR. The required local M0
 quality gate is Linux-only; native Windows ACL and architecture behavior remain
 release-matrix responsibilities, not an implied Docker-publication grant.
 `socket._handle.fd` is a Node implementation detail, so the real

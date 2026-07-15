@@ -366,6 +366,24 @@ describe('hermetic test discovery', () => {
     expect(boundary.PINNED_NODE_IMAGE).toBe(toolchain.docker.buildImage);
   });
 
+  it('streams attached test output without daemon-side Docker log persistence', async () => {
+    const boundaryUrl = new URL(
+      '../scripts/run-hermetic-test-boundary.mjs',
+      import.meta.url,
+    );
+    boundaryUrl.searchParams.set('docker-log-boundary', String(Date.now()));
+    const boundary = await import(/* @vite-ignore */ boundaryUrl.href) as {
+      readonly DOCKER_GATE_LABEL_ARGS: readonly string[];
+      readonly DOCKER_LOG_BOUNDARY_ARGS: readonly string[];
+    };
+
+    expect(boundary.DOCKER_LOG_BOUNDARY_ARGS).toEqual(['--log-driver=none']);
+    expect(boundary.DOCKER_GATE_LABEL_ARGS).toEqual([
+      '--label',
+      'agenc.local-gate=true',
+    ]);
+  });
+
   it('maps the container UID to an isolated writable account home', async () => {
     const boundaryUrl = new URL(
       '../scripts/run-hermetic-test-boundary.mjs',

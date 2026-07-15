@@ -1,0 +1,15 @@
+[Unit]
+Description=AgenC local required-gate aggregate resource boundary
+Documentation=https://github.com/tetsuo-ai/agenc-core/blob/main/docs/ci-required-gates.md
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=800%
+CPUQuotaPeriodSec=100ms
+MemoryAccounting=yes
+MemoryHigh=12G
+MemoryMax=16G
+MemorySwapMax=0
+MemoryZSwapMax=0
+TasksAccounting=yes
+TasksMax=4096

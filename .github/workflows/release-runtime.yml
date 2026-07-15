@@ -33,6 +33,9 @@ jobs:
   release-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      checks: read
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -56,26 +59,21 @@ jobs:
           test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-
-  required-gates:
-    name: agenc-runtime-release-gates
-    needs: release-source
-    runs-on: ubuntu-24.04
-    timeout-minutes: 100
-    permissions:
-      contents: read
-    steps:
-      - name: Check out the exact release SHA
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - name: Run the complete required gate before artifact production
-        uses: ./.github/actions/required-gates
-        with:
-          expected-sha: ${{ github.sha }}
+      - name: Verify the App-owned local gate for this exact release SHA
+        env:
+          AGENC_LOCAL_GATE_APP_ID: ${{ vars.AGENC_LOCAL_GATE_APP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AGENC_LOCAL_GATE_APP_ID" =~ ^[1-9][0-9]*$ ]]
+          node scripts/verify-required-gate-check.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --app-id "$AGENC_LOCAL_GATE_APP_ID"
 
   linux-tarball:
-    needs: [release-source, required-gates]
+    needs: release-source
     permissions:
       contents: read
       id-token: write
@@ -351,7 +349,7 @@ jobs:
           if-no-files-found: error
 
   native-tarball:
-    needs: [release-source, required-gates]
+    needs: release-source
     permissions:
       contents: read
       id-token: write

@@ -297,7 +297,7 @@ npm run test:live          # explicit provider/browser/devnet tests (may incur c
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
 npm run check:agent-surface-contract
-npm run check:required-gates # exact hosted/release contract; clean Linux checkout
+npm run check:required-gates # exact local attestation contract; clean Linux checkout
 npm run check:clean-build  # two installs + byte-identical OCI builds + hardened smoke
 ```
 
@@ -372,11 +372,12 @@ The optional design-audit browser is likewise an explicit external process:
 it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
-**CI:** [`.github/workflows/required-gates.yml`](.github/workflows/required-gates.yml)
-runs the stable `agenc-m0-required` check for every pull request and merge-queue
-candidate. Both dispatch-only release workflows rerun the same exact-SHA gate
-before producing artifacts. Contract, branch-ruleset, local-reproduction, and
-rollback details live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
+**Required checks:** the complete suite runs on the trusted local gate host,
+never in GitHub Actions. A dedicated GitHub App records
+`agenc-local-required-v1` for the exact PR or merged-`main` SHA; the no-bypass
+ruleset and both dispatch-only release workflows only enforce/read back that
+result. Contract, trust boundary, setup, reproduction, and rollback details
+live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 

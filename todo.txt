@@ -119,7 +119,7 @@ M0 -- MAKE THE BASELINE TRUSTWORTHY
 
 Why this is mandatory: no benchmark, refactor, or release result is credible
 while the default suite can call live providers, clean installs are not locked,
-and hosted CI does not run the real gates.
+and required results are not bound to the exact reviewed SHA.
 
 [x] Make `npm test` hermetic and deterministic.
     - Exclude `runtime/tests/live/**`, `*.live.test.*`, OAuth, media-generation,
@@ -137,18 +137,22 @@ and hosted CI does not run the real gates.
 [x] Make installs and releases reproducible.
     - Add a narrow `.gitignore` exception and commit the root
       `package-lock.json`.
-    - Use `npm ci` in hosted CI, release jobs, and clean-build verification.
+    - Use `npm ci` on the trusted local gate host, release jobs, and clean-build
+      verification.
     - Prove a clean clone can build the runtime, launcher, SDK, declarations,
       and Docker image without developer-local state.
 
-[ ] Add hosted PR and release gates.
-    - Required for every PR: typecheck, stable Vitest suite, build, SDK build and
-      typecheck, agent-surface contract, SBOM check, and path-relevant PTY/TUI
-      startup smoke.
-    - The release workflow must rerun the same required gates against the exact
-      release SHA before producing artifacts.
-    - Document the exact GitHub branch-protection checks; configure them on
-      `main` so merging cannot bypass them.
+[ ] Add required local PR and release attestations.
+    - Run locally for every PR: typecheck, stable Vitest suite, build, SDK build
+      and typecheck, agent-surface contract, SBOM check, and PTY/TUI startup
+      smoke.
+    - GitHub must run no tests: a dedicated repository-scoped App records and
+      enforces only the authenticated exact-SHA local result. Release workflows
+      must read back a separate successful merged-`main` attestation for the
+      exact release SHA before producing artifacts.
+    - Document the exact App-bound GitHub ruleset; configure it on `main` with
+      strict source matching and no bypass actors, then prove a new unattested
+      SHA cannot merge.
 
 M0 DONE WHEN:
 
