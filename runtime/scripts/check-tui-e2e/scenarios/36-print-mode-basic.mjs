@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createTempHome,
+  tempDaemonEnv,
   teardownTempHome,
   trustProjectForHome,
 } from "../harness.mjs";
@@ -30,11 +31,7 @@ export default async function () {
     const result = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [BIN_AGENC, "-p", "say only the word HELLO and nothing else"], {
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          HOME: home,
-          AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
-        },
+        env: tempDaemonEnv(home, wsPort),
       });
       let stdout = "";
       let stderr = "";
