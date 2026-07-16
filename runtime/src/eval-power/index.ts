@@ -1,0 +1,23 @@
+export {
+  PowerAnalysisValidationError,
+  computePowerAnalysis,
+} from "./analysis.js";
+export {
+  EVAL_POWER_ALPHA,
+  EVAL_POWER_ANALYSIS_VERSION,
+  EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES,
+  EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS,
+  EVAL_POWER_MINIMUM_EFFECT,
+  EVAL_POWER_MINIMUM_PILOT_REPOSITORIES,
+  EVAL_POWER_MINIMUM_PILOT_TASKS,
+  EVAL_POWER_MINIMUM_REPETITIONS,
+  EVAL_POWER_TARGET,
+  type BinaryOutcome,
+  type FixedConfirmatoryPlan,
+  type PairedPilotBinaryOutcome,
+  type PilotComparisonSummary,
+  type PowerAnalysisDocument,
+  type PowerAnalysisInput,
+  type PowerEstimate,
+  type SensitivityCell,
+} from "./types.js";
