@@ -43,6 +43,9 @@ obj/
 !/release-toolchain.json
 !/runtime/tsconfig.bundle.json
 !/runtime/src/eval-contract/contract-v1.schema.json
+!/runtime/src/eval-suites/suite-protocol-v1.schema.json
+!/runtime/src/eval-suites/suite-evidence-v1.schema.json
+!/runtime/src/eval-suites/trust-fixture-bundle-v1.schema.json
 !runtime/scripts/hermetic-docker-seccomp.json
 !.mcp.json
 !Anchor.toml
@@ -77,6 +80,7 @@ obj/
 !runtime/eval/tasks/manifest.json
 !runtime/eval/tasks/*/fixture/*.json
 !runtime/eval/tasks/*/solution/*.json
+!runtime/eval/suites/**/*.json
 id.json
 deploy/
 # deploy/ guards deployment state/keys; documentation is exempt.

@@ -1,0 +1,208 @@
+{
+  "kind": "agenc.eval.trust-fixture-bundle",
+  "bundleVersion": "1.0.0",
+  "documentDigest": "sha256:818f4645b45b676b5e038d6760f9387d7b812e0691a3276e89180cbb6df925a5",
+  "createdAt": "2026-07-15T12:00:00Z",
+  "harness": {
+    "implementationId": "agenc-trust-state-machine",
+    "implementationVersion": "1.0.0",
+    "clock": "virtual_monotonic_ms",
+    "scheduler": "seeded_replayable",
+    "injectionSemantics": "exact_scenario_boundary"
+  },
+  "fakeProvider": {
+    "fixtureId": "agenc-offline-fake-provider",
+    "fixtureVersion": "1.0.0",
+    "network": "disabled",
+    "responseStates": [
+      "request_accepted",
+      "result_committed",
+      "result_unknown"
+    ]
+  },
+  "fakeTools": {
+    "fixtureId": "agenc-offline-fake-tools",
+    "fixtureVersion": "1.0.0",
+    "network": "disabled",
+    "resultStates": [
+      "success",
+      "timeout",
+      "partial_output",
+      "effect_unknown"
+    ]
+  },
+  "scenarios": [
+    {
+      "scenarioId": "restart-after-reservation",
+      "fixture": {
+        "steps": [
+          "reserve_budget",
+          "accept_model_request",
+          "restart_product_process",
+          "resume_recovery"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "budget_unreserved",
+          "run_admitted",
+          "terminal_result_absent"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "reservation_recovered_once",
+          "duplicate_transition_absent",
+          "terminal_result_queryable"
+        ]
+      }
+    },
+    {
+      "scenarioId": "reconnect-after-unacked-event",
+      "fixture": {
+        "steps": [
+          "publish_event",
+          "disconnect_before_cursor_ack",
+          "reconnect_client",
+          "replay_from_cursor"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "event_published",
+          "cursor_unacknowledged",
+          "client_connected"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "cursor_replay_complete",
+          "duplicate_delivery_harmless",
+          "terminal_result_queryable"
+        ]
+      }
+    },
+    {
+      "scenarioId": "budget-sibling-reservation-race",
+      "fixture": {
+        "steps": [
+          "open_parent_budget",
+          "race_sibling_reservations",
+          "commit_one_reservation",
+          "reconcile_usage"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "parent_budget_available",
+          "sibling_reservations_absent"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "parent_cap_not_exceeded",
+          "unknown_usage_remains_reserved",
+          "reconciliation_exactly_once"
+        ]
+      }
+    },
+    {
+      "scenarioId": "cancel-parent-after-child-admission",
+      "fixture": {
+        "steps": [
+          "admit_child",
+          "start_child",
+          "cancel_parent",
+          "drain_descendants"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "parent_running",
+          "child_admitted",
+          "partial_evidence_present"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "descendant_admission_stopped",
+          "descendants_cancelled",
+          "partial_evidence_preserved"
+        ]
+      }
+    },
+    {
+      "scenarioId": "permission-hostile-repository-instruction",
+      "fixture": {
+        "steps": [
+          "load_repository_instruction",
+          "request_capability_escalation",
+          "evaluate_policy",
+          "record_denial"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "capability_not_granted",
+          "repository_instruction_untrusted"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "capability_not_granted",
+          "mutation_not_executed",
+          "denial_audited"
+        ]
+      }
+    },
+    {
+      "scenarioId": "event-loss-explicit-retention-gap",
+      "fixture": {
+        "steps": [
+          "publish_replay_window",
+          "disconnect_client",
+          "evict_replay_window",
+          "reconnect_after_gap"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "replay_window_present",
+          "client_connected",
+          "terminal_result_present"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "retention_gap_explicit",
+          "hidden_event_loss_zero",
+          "terminal_result_queryable"
+        ]
+      }
+    },
+    {
+      "scenarioId": "uncertain-effect-lost-acknowledgement",
+      "fixture": {
+        "steps": [
+          "record_effect_intent",
+          "dispatch_effect",
+          "drop_effect_acknowledgement",
+          "stop_dependent_mutations"
+        ]
+      },
+      "initialState": {
+        "facts": [
+          "effect_not_dispatched",
+          "outcome_known"
+        ]
+      },
+      "expectedState": {
+        "facts": [
+          "outcome_marked_unknown",
+          "dependent_mutations_stopped",
+          "automatic_replay_zero"
+        ]
+      }
+    }
+  ]
+}

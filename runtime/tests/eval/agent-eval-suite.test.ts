@@ -4,16 +4,26 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { runtimeRootPath } from "../helpers/source-path.ts";
 
 const runnerScriptPath = resolve(runtimeRootPath, "scripts", "run-agent-eval.mjs");
 const suitePath = resolve(runtimeRootPath, "eval", "tasks");
 const SUITE_TASK_COUNT = 12;
+const controlledTmpDir = mkdtempSync(join(tmpdir(), "agenc-eval-test-tmp-"));
+
+// Prove copied fixtures do not inherit an unrelated module type from the host.
+writeFileSync(
+  join(controlledTmpDir, "package.json"),
+  JSON.stringify({ private: true, type: "commonjs" }),
+);
+
+afterAll(() => rmSync(controlledTmpDir, { force: true, recursive: true }));
 
 interface TaskResult {
   id: string;
@@ -41,6 +51,12 @@ function runRunner(args: string[]) {
   return spawnSync(process.execPath, [runnerScriptPath, ...args], {
     cwd: runtimeRootPath,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      TEMP: controlledTmpDir,
+      TMP: controlledTmpDir,
+      TMPDIR: controlledTmpDir,
+    },
   });
 }
 

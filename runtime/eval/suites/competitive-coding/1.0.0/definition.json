@@ -1,0 +1,106 @@
+{
+  "kind": "agenc.eval.competitive-suite-definition",
+  "suiteProtocolVersion": "1.0.0",
+  "documentDigest": "sha256:e7214668c3bd9d9299afb61ade397232f3e060d8a45ee7bd26ac87675514f69b",
+  "suiteClass": "competitive_coding",
+  "suiteId": "agenc-competitive-coding",
+  "suiteVersion": "1.0.0",
+  "createdAt": "2026-07-15T12:00:00Z",
+  "status": "active",
+  "evaluationContractVersion": "1.0.0",
+  "taskProtocol": {
+    "taskKind": "real_repository_change",
+    "operatorTaskKind": "agenc.eval.operator-task",
+    "agentTaskKind": "agenc.eval.agent-task",
+    "agentInputEquality": "exact_canonical_agent_task_bytes",
+    "hiddenVerification": "out_of_workspace_result_only",
+    "outputTruth": "external_workspace_patch_and_declared_artifacts",
+    "containerReferences": "digest_only",
+    "productSpecificTaskSemantics": "forbidden",
+    "unsupportedCapability": "count_failure"
+  },
+  "adapterContract": {
+    "version": "1.0.0",
+    "operations": [
+      "start",
+      "deliver_task_and_record_receipt",
+      "disconnect_client_transport",
+      "reconnect_client_transport",
+      "kill_coordinator_process_group",
+      "collect_result"
+    ],
+    "acceptanceSource": "harness_task_delivery_receipt",
+    "resultTruth": "external_workspace_and_hidden_verifier",
+    "productReportedCompletion": "diagnostic_only"
+  },
+  "resetPolicy": {
+    "workspace": "fresh_clone",
+    "productState": "empty",
+    "session": "new",
+    "cache": "empty",
+    "home": "isolated",
+    "toolHome": "isolated",
+    "temp": "isolated",
+    "sockets": "isolated",
+    "ports": "isolated",
+    "environment": "sanitized",
+    "processTreeBeforeAndAfter": "empty",
+    "receipt": "content_addressed_required"
+  },
+  "conditions": [
+    "clean",
+    "coordinator_process_kill",
+    "client_disconnect"
+  ],
+  "faultSchedule": {
+    "kind": "product_neutral_black_box_v1",
+    "scheduleVersion": "1.0.0",
+    "triggerSource": "harness_delivery_receipt_monotonic",
+    "delayAlgorithm": "sha256_rejection_u32_v1",
+    "seedDomain": "agenc.eval.competitive-fault-delay.v1",
+    "minimumDelayMs": 5000,
+    "maximumDelayMs": 60000,
+    "recoveryWindowMs": 30000,
+    "maximumInjectionJitterMs": 1000,
+    "actions": [
+      {
+        "condition": "coordinator_process_kill",
+        "target": "coordinator_process_group",
+        "operation": "sigkill",
+        "recovery": "adapter_restart_and_attach"
+      },
+      {
+        "condition": "client_disconnect",
+        "target": "client_transport",
+        "operation": "abrupt_close",
+        "recovery": "adapter_reconnect"
+      }
+    ],
+    "productProtocolObservation": "forbidden",
+    "systemSpecificTriggerFields": "forbidden",
+    "faultNotInjected": "count_failure"
+  },
+  "reporting": {
+    "kind": "agenc.eval.competitive-coding-report",
+    "version": "1.0.0",
+    "primaryMetric": "verified_fix_rate_clean",
+    "requiredMetrics": [
+      "verified_fix_rate_clean",
+      "verified_fix_rate_by_fault_condition",
+      "recovery_rate_by_fault_condition",
+      "attempt_count",
+      "unsupported_count"
+    ],
+    "allAttemptsInDenominator": true,
+    "mixedSuiteAggregation": "forbidden",
+    "separateFrom": "agenc.eval.trust-conformance-report",
+    "trustConformanceMetrics": "forbidden"
+  },
+  "changeControl": {
+    "publishedVersionMutation": "forbidden",
+    "taskOrScenarioChange": "new_suite_version",
+    "scheduleOrScoringChange": "new_suite_version",
+    "compatibility": "exact_kind_id_version_digest",
+    "rollback": "select_prior_immutable_digest"
+  }
+}

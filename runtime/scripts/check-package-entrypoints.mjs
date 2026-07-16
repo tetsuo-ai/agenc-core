@@ -14,8 +14,16 @@ const requiredRootExports = [
   "AgenCInProcessDaemonTransport",
   "startAgenCInProcessDaemonTransport",
   "EVAL_CONTRACT_VERSION",
+  "EVAL_SUITE_PROTOCOL_VERSION",
+  "compileCompetitiveFaultPlan",
+  "compileTrustFaultPlans",
+  "loadAndValidateEvalSuiteCatalog",
   "validateDerivedSummaryAgainstBundle",
+  "validateCompetitiveCodingReport",
   "validateEvalContractDocument",
+  "validateEvalSuiteCatalogSet",
+  "validateTrustFixtureBundleBinding",
+  "validateTrustConformanceReport",
 ];
 const requiredRuntimeAssetPaths = [
   "dist/yolo-classifier-prompts/auto_mode_system_prompt.txt",
@@ -140,8 +148,16 @@ async function checkRequiredRootExports(packageManifest) {
   if (rootModule.EVAL_CONTRACT_VERSION !== "1.0.0") {
     throw new Error("runtime package root export has the wrong evaluation contract version");
   }
-  if (typeof rootModule.validateEvalContractDocument !== "function") {
-    throw new Error("runtime package root evaluation validator is not callable");
+  if (rootModule.EVAL_SUITE_PROTOCOL_VERSION !== "1.0.0") {
+    throw new Error("runtime package root export has the wrong evaluation suite protocol version");
+  }
+  const requiredFunctions = requiredRootExports.filter((name) =>
+    name.startsWith("compile") || name.startsWith("load") || name.startsWith("validate"));
+  const nonFunctions = requiredFunctions.filter((name) => typeof rootModule[name] !== "function");
+  if (nonFunctions.length > 0) {
+    throw new Error(
+      `runtime package root evaluation exports are not callable:\n- ${nonFunctions.join("\n- ")}`,
+    );
   }
 }
 

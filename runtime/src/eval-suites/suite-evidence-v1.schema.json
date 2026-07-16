@@ -1,0 +1,378 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:eval:suite-evidence:1.0.0",
+  "title": "AgenC Evaluation Suite Evidence v1",
+  "oneOf": [
+    { "$ref": "#/definitions/resetReceipt" },
+    { "$ref": "#/definitions/competitiveReport" },
+    { "$ref": "#/definitions/trustReport" }
+  ],
+  "definitions": {
+    "protocolVersion": { "const": "1.0.0" },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "nonNegativeSafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "suiteReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suiteClass", "suiteId", "suiteVersion", "definitionDigest"],
+      "properties": {
+        "suiteClass": { "enum": ["competitive_coding", "trust_conformance"] },
+        "suiteId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "definitionDigest": { "$ref": "#/definitions/digest" }
+      }
+    },
+    "resetReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "suiteDefinitionDigest",
+        "attemptId",
+        "createdAt",
+        "resetPolicyDigest",
+        "suiteManifestDigest",
+        "taskDocumentDigest",
+        "taskResetRecipeDigest",
+        "condition",
+        "scenarioId",
+        "seedSlot",
+        "systemConfigurationDigest",
+        "workspace",
+        "isolation",
+        "processTree"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.suite-reset-receipt" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "suiteDefinitionDigest": { "$ref": "#/definitions/digest" },
+        "attemptId": { "$ref": "#/definitions/id" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "resetPolicyDigest": { "$ref": "#/definitions/digest" },
+        "suiteManifestDigest": {
+          "anyOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "taskDocumentDigest": {
+          "anyOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "taskResetRecipeDigest": {
+          "anyOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "enum": ["clean", "coordinator_process_kill", "client_disconnect"]
+            },
+            { "type": "null" }
+          ]
+        },
+        "scenarioId": {
+          "anyOf": [{ "$ref": "#/definitions/id" }, { "type": "null" }]
+        },
+        "seedSlot": { "$ref": "#/definitions/nonNegativeSafeInteger" },
+        "systemConfigurationDigest": { "$ref": "#/definitions/digest" },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "repositoryCommit", "workspaceFingerprint"],
+          "properties": {
+            "state": { "const": "fresh_clone" },
+            "repositoryCommit": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+            "workspaceFingerprint": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "isolation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "productState",
+            "session",
+            "cache",
+            "home",
+            "toolHome",
+            "temp",
+            "sockets",
+            "ports",
+            "environment",
+            "evidenceDigest"
+          ],
+          "properties": {
+            "productState": { "const": "empty" },
+            "session": { "const": "new" },
+            "cache": { "const": "empty" },
+            "home": { "const": "isolated" },
+            "toolHome": { "const": "isolated" },
+            "temp": { "const": "isolated" },
+            "sockets": { "const": "isolated" },
+            "ports": { "const": "isolated" },
+            "environment": { "const": "sanitized" },
+            "evidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "processTree": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["before", "after", "evidenceDigest"],
+          "properties": {
+            "before": { "const": "empty" },
+            "after": { "const": "empty" },
+            "evidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        }
+      }
+    },
+    "competitiveReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "reportVersion",
+        "createdAt",
+        "attemptId",
+        "suite",
+        "suiteManifestDigest",
+        "condition",
+        "task",
+        "seedSlot",
+        "harnessConfigDigest",
+        "resetReceiptDigest",
+        "runRecordDigest",
+        "systemConfigurationDigest",
+        "deliveryReceipt",
+        "faultPlanDigest",
+        "fault",
+        "verifier",
+        "outcome"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.competitive-coding-report" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "reportVersion": { "const": "1.0.0" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "attemptId": { "$ref": "#/definitions/id" },
+        "suite": {
+          "allOf": [
+            { "$ref": "#/definitions/suiteReference" },
+            {
+              "type": "object",
+              "properties": { "suiteClass": { "const": "competitive_coding" } }
+            }
+          ]
+        },
+        "suiteManifestDigest": { "$ref": "#/definitions/digest" },
+        "condition": {
+          "enum": ["clean", "coordinator_process_kill", "client_disconnect"]
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["taskId", "taskVersion", "taskDocumentDigest"],
+          "properties": {
+            "taskId": { "$ref": "#/definitions/id" },
+            "taskVersion": { "$ref": "#/definitions/semver" },
+            "taskDocumentDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "seedSlot": { "$ref": "#/definitions/nonNegativeSafeInteger" },
+        "harnessConfigDigest": { "$ref": "#/definitions/digest" },
+        "resetReceiptDigest": { "$ref": "#/definitions/digest" },
+        "runRecordDigest": { "$ref": "#/definitions/digest" },
+        "systemConfigurationDigest": { "$ref": "#/definitions/digest" },
+        "deliveryReceipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agentTaskDigest",
+            "acceptedAtMonotonicMs",
+            "processGroupEvidenceDigest",
+            "transportEvidenceDigest"
+          ],
+          "properties": {
+            "agentTaskDigest": { "$ref": "#/definitions/digest" },
+            "acceptedAtMonotonicMs": { "$ref": "#/definitions/nonNegativeSafeInteger" },
+            "processGroupEvidenceDigest": { "$ref": "#/definitions/digest" },
+            "transportEvidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "faultPlanDigest": {
+          "anyOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+        },
+        "fault": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheduled",
+            "injected",
+            "scheduledDelayAfterAcceptanceMs",
+            "observedInjectedAtMonotonicMs",
+            "evidenceDigest"
+          ],
+          "properties": {
+            "scheduled": { "type": "boolean" },
+            "injected": { "type": "boolean" },
+            "scheduledDelayAfterAcceptanceMs": {
+              "anyOf": [
+                { "$ref": "#/definitions/nonNegativeSafeInteger" },
+                { "type": "null" }
+              ]
+            },
+            "observedInjectedAtMonotonicMs": {
+              "anyOf": [
+                { "$ref": "#/definitions/nonNegativeSafeInteger" },
+                { "type": "null" }
+              ]
+            },
+            "evidenceDigest": {
+              "anyOf": [{ "$ref": "#/definitions/digest" }, { "type": "null" }]
+            }
+          }
+        },
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "evidenceDigest"],
+          "properties": {
+            "result": { "enum": ["passed", "failed", "error"] },
+            "evidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "outcome": {
+          "enum": [
+            "verified_fix",
+            "verification_failure",
+            "unsupported",
+            "fault_not_injected",
+            "infrastructure_invalid"
+          ]
+        }
+      }
+    },
+    "trustReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "reportVersion",
+        "createdAt",
+        "attemptId",
+        "suite",
+        "scenarioId",
+        "faultClass",
+        "seedSlot",
+        "faultPlanDigest",
+        "resetReceiptDigest",
+        "runRecordDigest",
+        "systemConfigurationDigest",
+        "harnessReceiptDigest",
+        "fault",
+        "durationMs",
+        "invariantResults",
+        "observedEvidenceTypes",
+        "actualStateDigest",
+        "outcome"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.trust-conformance-report" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "reportVersion": { "const": "1.0.0" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "attemptId": { "$ref": "#/definitions/id" },
+        "suite": {
+          "allOf": [
+            { "$ref": "#/definitions/suiteReference" },
+            {
+              "type": "object",
+              "properties": { "suiteClass": { "const": "trust_conformance" } }
+            }
+          ]
+        },
+        "scenarioId": { "$ref": "#/definitions/id" },
+        "faultClass": {
+          "enum": [
+            "restart",
+            "reconnect",
+            "budget",
+            "cancellation",
+            "permission",
+            "event_loss",
+            "uncertain_effect"
+          ]
+        },
+        "seedSlot": { "$ref": "#/definitions/nonNegativeSafeInteger" },
+        "faultPlanDigest": { "$ref": "#/definitions/digest" },
+        "resetReceiptDigest": { "$ref": "#/definitions/digest" },
+        "runRecordDigest": { "$ref": "#/definitions/digest" },
+        "systemConfigurationDigest": { "$ref": "#/definitions/digest" },
+        "harnessReceiptDigest": { "$ref": "#/definitions/digest" },
+        "fault": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["injected", "injectedAtVirtualMs", "evidenceDigest"],
+          "properties": {
+            "injected": { "type": "boolean" },
+            "injectedAtVirtualMs": {
+              "anyOf": [
+                { "$ref": "#/definitions/nonNegativeSafeInteger" },
+                { "type": "null" }
+              ]
+            },
+            "evidenceDigest": { "$ref": "#/definitions/digest" }
+          }
+        },
+        "durationMs": { "$ref": "#/definitions/nonNegativeSafeInteger" },
+        "invariantResults": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["invariant", "passed", "evidenceDigest"],
+            "properties": {
+              "invariant": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" },
+              "passed": { "type": "boolean" },
+              "evidenceDigest": { "$ref": "#/definitions/digest" }
+            }
+          }
+        },
+        "observedEvidenceTypes": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.]{1,127}$" }
+        },
+        "actualStateDigest": { "$ref": "#/definitions/digest" },
+        "outcome": { "enum": ["passed", "failed", "infrastructure_invalid"] }
+      }
+    }
+  }
+}
