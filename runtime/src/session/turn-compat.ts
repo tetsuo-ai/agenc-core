@@ -4,6 +4,7 @@ import type { z } from "zod/v4";
 
 import type { LLMContentPart, LLMMessage, LLMTool, LLMToolCall } from "../llm/types.js";
 import type { LLMUsage } from "../llm/types.js";
+import { assertAgentRoleWorkspaceMatches } from "../agents/role.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { StopHookHandler, StopHookOutcome, StopRequest } from "../phases/stop-hooks.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -24,6 +25,10 @@ import {
 import type { SystemPrompt } from "../utils/systemPromptType.js";
 import { zodToJsonSchema } from "../utils/zodToJsonSchema.js";
 import { getCwdOverrideForCurrentContext } from "../utils/cwd.js";
+import {
+  runWithAgentMemoryAuthorization,
+  type AgentMemoryAuthorization,
+} from "../utils/agentContext.js";
 import {
   getAgentName,
   getTeamName,
@@ -58,7 +63,15 @@ export interface TurnCompatSession {
   readonly history: LLMMessage[];
   readonly userMessage: string | readonly LLMContentPart[];
   readonly systemPrompt: string;
+  readonly foregroundMemoryScope: ForegroundAgentMemoryScope;
 }
+
+type ForegroundAgentMemoryScope =
+  | { readonly selected: false }
+  | {
+      readonly selected: true;
+      readonly authorization: AgentMemoryAuthorization | undefined;
+    };
 
 export type TurnCompatRunEvent =
   | { readonly type: "phase"; readonly event: PhaseEvent }
@@ -72,6 +85,21 @@ export async function createTurnCompatSession(
   params: TurnCompatParams,
   opts: { readonly conversationId?: string } = {},
 ): Promise<TurnCompatSession> {
+  assertTurnCompatAgentCatalog(parent, params.toolUseContext);
+  const catalogWorkspaceId =
+    params.toolUseContext.options.agentDefinitions.agentRoleWorkspaceId;
+  if (catalogWorkspaceId === undefined) {
+    throw new Error("turn compatibility agent catalog provenance is missing");
+  }
+  const scopedAgentDefinitions = {
+    ...params.toolUseContext.options.agentDefinitions,
+    agentRoleWorkspaceId: catalogWorkspaceId,
+  };
+  const appState = params.toolUseContext.getAppState();
+  const foregroundMemoryScope = resolveForegroundAgentMemoryScope(
+    appState.agent,
+    scopedAgentDefinitions.activeAgents,
+  );
   const model = params.toolUseContext.options.mainLoopModel;
   const systemPrompt = appendSystemContext(
     params.systemPrompt,
@@ -85,7 +113,6 @@ export async function createTurnCompatSession(
     toolUseContext: params.toolUseContext,
     canUseTool: params.canUseTool,
   });
-  const appState = params.toolUseContext.getAppState();
   const effectiveCwd =
     getCwdOverrideForCurrentContext() ??
     parent.sessionConfiguration.cwd ??
@@ -103,6 +130,8 @@ export async function createTurnCompatSession(
       opts.conversationId ??
       params.toolUseContext.agentId ??
       `${parent.conversationId}:turn:${randomUUID()}`,
+    roleWorkspace: parent.roleWorkspace,
+    agentDefinitions: scopedAgentDefinitions,
     initialState: {
       sessionConfiguration,
       history: [],
@@ -149,7 +178,28 @@ export async function createTurnCompatSession(
     },
   });
   attachToolContextSurface(session, params.toolUseContext);
-  return { session, history, userMessage, systemPrompt };
+  return {
+    session,
+    history,
+    userMessage,
+    systemPrompt,
+    foregroundMemoryScope,
+  };
+}
+
+export function assertTurnCompatAgentCatalog(
+  parent: Pick<Session, "roleWorkspace">,
+  toolUseContext: Pick<ToolUseContext, "options" | "getAppState">,
+): void {
+  assertAgentRoleWorkspaceMatches(
+    parent.roleWorkspace,
+    toolUseContext.options.agentDefinitions.agentRoleWorkspaceId,
+  );
+  const appState = toolUseContext.getAppState();
+  assertAgentRoleWorkspaceMatches(
+    parent.roleWorkspace,
+    appState.agentDefinitions.agentRoleWorkspaceId,
+  );
 }
 
 function configuredCompatStopHooks(
@@ -414,19 +464,32 @@ export async function* runTurnCompat(
     opts.signal?.addEventListener("abort", forwardAbort, { once: true });
   }
 
-  const iterator = turn.session.runTurn(turn.userMessage, {
-    history: turn.history,
-    systemPrompt: turn.systemPrompt,
-    signal: runAbortController.signal,
-    querySource: params.querySource,
-    ...(params.skipCacheWrite !== undefined
-      ? { skipCacheWrite: params.skipCacheWrite }
-      : {}),
-    configOverrides:
-      params.maxTurns !== undefined ? { maxTurns: params.maxTurns } : undefined,
-  });
+  const foregroundMemoryScope = turn.foregroundMemoryScope;
+  const runInForegroundMemoryScope = <T>(fn: () => T): T =>
+    foregroundMemoryScope.selected
+      ? runWithAgentMemoryAuthorization(
+          foregroundMemoryScope.authorization,
+          fn,
+        )
+      : fn();
 
-  let next = iterator.next();
+  const iterator = runInForegroundMemoryScope(() =>
+    turn.session.runTurn(turn.userMessage, {
+      history: turn.history,
+      systemPrompt: turn.systemPrompt,
+      signal: runAbortController.signal,
+      querySource: params.querySource,
+      ...(params.skipCacheWrite !== undefined
+        ? { skipCacheWrite: params.skipCacheWrite }
+        : {}),
+      configOverrides:
+        params.maxTurns !== undefined ? { maxTurns: params.maxTurns } : undefined,
+    }),
+  );
+  const requestNext = () =>
+    runInForegroundMemoryScope(() => iterator.next());
+
+  let next = requestNext();
   let completed = false;
   try {
     while (true) {
@@ -447,13 +510,13 @@ export async function* runTurnCompat(
       if (event.type === "assistant_text") {
         assistantText = event.content;
         flushedToolAssistantText = "";
-        next = iterator.next();
+        next = requestNext();
         continue;
       }
 
       if (event.type === "tool_call") {
         pendingToolCalls = [...pendingToolCalls, event.toolCall];
-        next = iterator.next();
+        next = requestNext();
         continue;
       }
 
@@ -493,7 +556,7 @@ export async function* runTurnCompat(
             pendingToolAssistantUuid,
           ),
         };
-        next = iterator.next();
+        next = requestNext();
         continue;
       }
 
@@ -507,7 +570,7 @@ export async function* runTurnCompat(
             }),
           };
         }
-        next = iterator.next();
+        next = requestNext();
         continue;
       }
 
@@ -522,7 +585,7 @@ export async function* runTurnCompat(
               content: event.error?.message ?? "turn errored",
             }),
           };
-          next = iterator.next();
+          next = requestNext();
           continue;
         }
         if (event.stopReason === "max_turns") {
@@ -534,7 +597,7 @@ export async function* runTurnCompat(
               turnCount: completedTurnCount + 1,
             }),
           };
-          next = iterator.next();
+          next = requestNext();
           continue;
         }
         if (
@@ -550,7 +613,7 @@ export async function* runTurnCompat(
           };
         }
       }
-      next = iterator.next();
+      next = requestNext();
     }
     yield* drainQueuedEvents();
   } finally {
@@ -558,10 +621,40 @@ export async function* runTurnCompat(
     if (!completed && !runAbortController.signal.aborted) {
       runAbortController.abort(new Error("turn compatibility stream closed"));
     }
-    await iterator.return?.({ reason: "cancelled" });
+    await runInForegroundMemoryScope(
+      () => iterator.return?.({ reason: "cancelled" }),
+    );
     unsubscribe();
     queueWake = null;
   }
+}
+
+/**
+ * Resolve the legacy/main-thread selected role from the same canonical catalog
+ * envelope that is copied into the compatibility Session. A present but stale
+ * selection is an explicit deny; it must never inherit an unrelated ambient
+ * agent grant.
+ */
+function resolveForegroundAgentMemoryScope(
+  selectedAgentType: string | undefined,
+  activeAgents: ToolUseContext['options']['agentDefinitions']['activeAgents'],
+): ForegroundAgentMemoryScope {
+  if (selectedAgentType === undefined) {
+    return { selected: false };
+  }
+  const selectedAgent = activeAgents
+    .find((agent) => agent.agentType === selectedAgentType);
+  return {
+    selected: true,
+    ...(selectedAgent?.memory !== undefined
+      ? {
+          authorization: {
+            agentType: selectedAgent.agentType,
+            scope: selectedAgent.memory,
+          },
+        }
+      : { authorization: undefined }),
+  };
 }
 
 function parseLegacyProgressMessage(chunk: string): Message | null {

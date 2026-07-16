@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 import {
   AgentControl,
   AgentReferenceUnresolvedError,
@@ -11,9 +12,18 @@ import {
   renderInputPreview,
 } from "./control.js";
 import { AgentRegistry, type AgentMetadata } from "./registry.js";
-import { _resetNicknamePoolForTesting } from "./role.js";
+import {
+  _resetAgentRolesForTesting,
+  _resetNicknamePoolForTesting,
+  agentRoleFingerprint,
+  createAgentRoleWorkspace,
+  registerAgentRole,
+  requireAgentRole,
+} from "./role.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { ThreadManager } from "./thread-manager.js";
 import { SimpleMailbox, type InterAgentCommunication } from "../session/session.js";
+import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -21,6 +31,7 @@ let originalAgencHome = "";
 function stubSession(opts: {
   rolloutStore?: RolloutStore | null;
   conversationId?: string;
+  cwd?: string;
   submit?: (
     message: string,
     opts?: { displayUserMessage?: string | null },
@@ -28,6 +39,7 @@ function stubSession(opts: {
 } = {}) {
   const emitted: unknown[] = [];
   const mailbox = new SimpleMailbox<InterAgentCommunication & { seq: number }>();
+  const cwd = opts.cwd ?? agencHome;
   return {
     emit: (e: unknown) => {
       emitted.push(e);
@@ -44,6 +56,8 @@ function stubSession(opts: {
     ...(opts.submit !== undefined ? { submit: opts.submit } : {}),
     rolloutStore: opts.rolloutStore ?? null,
     conversationId: opts.conversationId ?? "session-test",
+    roleWorkspace: createAgentRoleWorkspace(cwd),
+    sessionConfiguration: { cwd },
     _emitted: emitted,
   } as unknown as ConstructorParameters<typeof AgentControl>[0]["session"];
 }
@@ -71,15 +85,26 @@ function openRolloutStore(opts: {
   return store;
 }
 
+function roleProvenance(control: AgentControl, roleName: string) {
+  return {
+    agentRoleWorkspaceId: control.roleWorkspace.id,
+    agentRoleFingerprint: agentRoleFingerprint(
+      requireAgentRole(control.roleWorkspace, roleName),
+    ),
+  };
+}
+
 beforeEach(() => {
   agencHome = mkdtempSync(join(tmpdir(), "agenc-control-home-"));
   originalAgencHome = process.env.AGENC_HOME ?? "";
   process.env.AGENC_HOME = agencHome;
+  _resetAgentRolesForTesting();
   _resetNicknamePoolForTesting();
 });
 
 afterEach(() => {
   _resetNicknamePoolForTesting();
+  _resetAgentRolesForTesting();
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
@@ -94,6 +119,7 @@ describe("AgentControl", () => {
     expect(live.agentPath.startsWith("/root/")).toBe(true);
     expect(live.nickname).toBeDefined();
     expect(live.depth).toBe(1);
+    expect(live.metadata.agentRoleWorkspaceId).toBe(control.roleWorkspace.id);
   });
 
   it("spawn() can use an explicit task-name path segment", async () => {
@@ -144,6 +170,324 @@ describe("AgentControl", () => {
       control.spawn({ parentPath: "/root", roleName: "missing-role" }),
     ).rejects.toThrow("unknown agent_type 'missing-role'");
     expect(registry.activeCount).toBe(0);
+  });
+
+  it("spawn() atomically rejects changed expected role provenance before mutation", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    registerAgentRole(control.roleWorkspace, {
+      name: "scanner",
+      config: { disallowlist: ["Edit", "Write"] },
+    });
+    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const expectedRoleProvenance = {
+      agentRole: expectedRole.name,
+      agentRoleWorkspaceId: control.roleWorkspace.id,
+      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+    };
+
+    registerAgentRole(control.roleWorkspace, {
+      name: "scanner",
+      config: { disallowlist: [] },
+    });
+
+    await expect(
+      control.spawn({
+        parentPath: "/root",
+        roleName: "scanner",
+        expectedRoleProvenance,
+      }),
+    ).rejects.toThrow("cannot resume changed agent role: scanner");
+    expect(registry.activeCount).toBe(0);
+    expect(
+      (session as unknown as { childInboxes: Map<string, unknown> }).childInboxes,
+    ).toHaveLength(0);
+  });
+
+  it("spawn() does not alias-fallback when an expected workspace role was removed", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    registerAgentRole(control.roleWorkspace, {
+      name: "scanner",
+      config: { disallowlist: ["Edit", "Write"] },
+    });
+    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const expectedRoleProvenance = {
+      agentRole: expectedRole.name,
+      agentRoleWorkspaceId: control.roleWorkspace.id,
+      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+    };
+    _resetAgentRolesForTesting();
+
+    await expect(
+      control.spawn({
+        parentPath: "/root",
+        roleName: "scanner",
+        expectedRoleProvenance,
+      }),
+    ).rejects.toThrow("cannot resume unknown agent role: scanner");
+    expect(registry.activeCount).toBe(0);
+    expect(
+      (session as unknown as { childInboxes: Map<string, unknown> }).childInboxes,
+    ).toHaveLength(0);
+  });
+
+  it("spawn() preserves live state when thread IDs or durable provenance conflict", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-persist-a-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "spawn-persistence-conflicts",
+    });
+    try {
+      const sessionA = stubSession({
+        rolloutStore,
+        cwd,
+        conversationId: "root-a",
+      });
+      const registryA = new AgentRegistry();
+      const controlA = new AgentControl({ session: sessionA, registry: registryA });
+      controlA.registerSessionRoot("root-a");
+      const existing = await controlA.spawn({
+        parentPath: "/root",
+        threadId: "duplicate-thread",
+        agentName: "existing",
+      });
+
+      await expect(
+        controlA.spawn({
+          parentPath: "/root",
+          threadId: "duplicate-thread",
+          agentName: "duplicate",
+        }),
+      ).rejects.toThrow("agent thread id already exists");
+      expect(registryA.activeCount).toBe(1);
+      expect(controlA.getLive(existing.agentId)).toBe(existing);
+      expect(registryA.agentIdForPath(existing.agentPath)).toBe(existing.agentId);
+      expect(registryA.agentIdForPath("/root/duplicate")).toBeUndefined();
+      expect(sessionA.childInboxes.size).toBe(1);
+
+      rolloutStore.upsertThreadSpawnEdge({
+        parentThreadId: "root-a",
+        childThreadId: "durable-conflict",
+        parentPath: "/root",
+        metadata: {
+          agentId: "durable-conflict",
+          agentPath: "/root/original",
+          agentNickname: "original",
+          agentRole: "default",
+          ...roleProvenance(controlA, "default"),
+          depth: 1,
+        },
+        status: "open",
+      });
+      const durableBefore = rolloutStore.getThreadSpawnEdge("durable-conflict");
+
+      const sessionB = stubSession({
+        rolloutStore,
+        cwd,
+        conversationId: "root-b",
+      });
+      const registryB = new AgentRegistry();
+      const controlB = new AgentControl({ session: sessionB, registry: registryB });
+      controlB.registerSessionRoot("root-b");
+      await expect(
+        controlB.spawn({
+          parentPath: "/root",
+          threadId: "durable-conflict",
+          agentName: "failed",
+        }),
+      ).rejects.toThrow("agent thread id already exists");
+      expect(registryB.activeCount).toBe(0);
+      expect(registryB.liveAgents()).toEqual([]);
+      expect(registryB.agentIdForPath("/root/failed")).toBeUndefined();
+      expect(controlB.getLive("durable-conflict")).toBeUndefined();
+      expect(sessionB.childInboxes.size).toBe(0);
+      expect(rolloutStore.getThreadSpawnEdge("durable-conflict")).toEqual(
+        durableBefore,
+      );
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("spawn() restores allocated and preferred nicknames after durable insert failure", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-nickname-rollback-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "nickname-persistence-rollback",
+    });
+    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    try {
+      const session = stubSession({
+        cwd,
+        conversationId: "nickname-root",
+        rolloutStore,
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("nickname-root");
+      registerAgentRole(control.roleWorkspace, {
+        name: "single-nickname",
+        config: { nicknameCandidates: ["only-nickname"] },
+      });
+      raw.exec(`
+        CREATE TRIGGER reject_control_spawn
+        BEFORE INSERT ON thread_spawn_edges
+        BEGIN
+          SELECT RAISE(ABORT, 'forced spawn persistence failure');
+        END;
+      `);
+
+      await expect(
+        control.spawn({
+          parentPath: "/root",
+          roleName: "single-nickname",
+          agentName: "allocated_failure",
+        }),
+      ).rejects.toThrow("forced spawn persistence failure");
+      expect(registry.hasNickname("only-nickname")).toBe(false);
+
+      await expect(
+        control.spawn({
+          parentPath: "/root",
+          preferredNickname: "preferred-failure",
+          agentName: "preferred_failure",
+        }),
+      ).rejects.toThrow("forced spawn persistence failure");
+      expect(registry.hasNickname("preferred-failure")).toBe(false);
+      expect(registry.activeCount).toBe(0);
+      expect(registry.liveAgents()).toEqual([]);
+      expect(control.listLive()).toEqual([]);
+      expect(
+        (session as unknown as { childInboxes: Map<string, unknown> })
+          .childInboxes.size,
+      ).toBe(0);
+    } finally {
+      raw.close();
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not publish a child when its parent is interrupted during edge persistence", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-persist-cancel-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "spawn-persistence-cancel",
+    });
+    try {
+      const session = stubSession({
+        cwd,
+        conversationId: "cancel-root",
+        rolloutStore,
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry, maxDepth: 2 });
+      control.registerSessionRoot("cancel-root");
+      const parent = await control.spawn({
+        parentPath: "/root",
+        threadId: "cancel-parent",
+        agentName: "parent",
+      });
+      const createEdge = rolloutStore.createThreadSpawnEdge.bind(rolloutStore);
+      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(edge => {
+        createEdge(edge);
+        if (edge.childThreadId === "cancel-child") {
+          control.interrupt(parent.agentId, "test persistence race");
+        }
+      });
+
+      await expect(
+        control.spawn({
+          parentPath: parent.agentPath,
+          threadId: "cancel-child",
+          agentName: "child",
+        }),
+      ).rejects.toThrow("interrupted mid-spawn");
+
+      expect(control.getLive("cancel-child")).toBeUndefined();
+      expect(registry.agentIdForPath("/root/parent/child")).toBeUndefined();
+      expect(registry.activeCount).toBe(1);
+      expect(
+        rolloutStore.getThreadSpawnEdge("cancel-child")?.status,
+      ).toBe("closed");
+      expect(
+        (session as unknown as { childInboxes: Map<string, unknown> })
+          .childInboxes.has("cancel-child"),
+      ).toBe(false);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a cancelled child registered when durable edge close fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-close-failure-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "spawn-close-failure",
+    });
+    try {
+      const session = stubSession({
+        cwd,
+        conversationId: "close-failure-root",
+        rolloutStore,
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry, maxDepth: 2 });
+      const threadManager = new ThreadManager({ control, registry });
+      control.bindThreadManager(threadManager);
+      control.registerSessionRoot("close-failure-root");
+      const parent = await control.spawn({
+        parentPath: "/root",
+        threadId: "close-failure-parent",
+        agentName: "parent",
+      });
+      const createEdge = rolloutStore.createThreadSpawnEdge.bind(rolloutStore);
+      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(edge => {
+        createEdge(edge);
+        if (edge.childThreadId === "close-failure-child") {
+          control.interrupt(parent.agentId, "test close failure");
+        }
+      });
+      const closeSpy = vi
+        .spyOn(rolloutStore, "setThreadSpawnEdgeStatus")
+        .mockImplementation((childThreadId, status) => {
+          if (childThreadId === "close-failure-child" && status === "closed") {
+            throw new Error("forced edge close failure");
+          }
+          throw new Error("unexpected edge status call");
+        });
+
+      await expect(
+        control.spawn({
+          parentPath: parent.agentPath,
+          threadId: "close-failure-child",
+          agentName: "child",
+        }),
+      ).rejects.toThrow("forced edge close failure");
+
+      const child = control.getLive("close-failure-child");
+      expect(rolloutStore.getThreadSpawnEdge("close-failure-child")?.status)
+        .toBe("open");
+      expect(child).toBeDefined();
+      expect(child?.abortController.signal.aborted).toBe(true);
+      expect(registry.agentIdForPath("/root/parent/child"))
+        .toBe("close-failure-child");
+      expect(threadManager.getThread("close-failure-child").threadId)
+        .toBe("close-failure-child");
+      expect(
+        (session as unknown as { childInboxes: Map<string, unknown> })
+          .childInboxes.has("close-failure-child"),
+      ).toBe(true);
+      closeSpy.mockRestore();
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("AgentControlOpts.maxDepth override is honored", async () => {
@@ -224,6 +568,56 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(0);
   });
 
+  it("keeps the live control plane intact when durable close fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-close-failure-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "shutdown-durability-first",
+    });
+    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    try {
+      const session = stubSession({
+        cwd,
+        conversationId: "root-close-failure",
+        rolloutStore,
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("root-close-failure");
+      const live = await control.spawn({
+        parentPath: "/root",
+        agentName: "durable_child",
+      });
+      raw.exec(`
+        CREATE TRIGGER reject_control_close
+        BEFORE UPDATE OF status ON thread_spawn_edges
+        WHEN OLD.child_thread_id = '${live.agentId}' AND NEW.status = 'closed'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced close failure');
+        END;
+      `);
+
+      await expect(
+        control.shutdown(live.agentId, "closed_by_tool"),
+      ).rejects.toThrow("forced close failure");
+      expect(control.getLive(live.agentId)).toBe(live);
+      expect(registry.agentIdForPath(live.agentPath)).toBe(live.agentId);
+      expect(registry.activeCount).toBe(1);
+      expect(live.upInbox.isClosed).toBe(false);
+      expect(live.downInbox.isClosed).toBe(false);
+      expect(live.abortController.signal.aborted).toBe(false);
+      expect(
+        (session as unknown as { childInboxes: Map<string, unknown> })
+          .childInboxes.get(live.agentId),
+      ).toBe(live.upInbox);
+      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.status).toBe("open");
+    } finally {
+      raw.close();
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("shutdownAll() cascades every live agent", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
@@ -258,6 +652,7 @@ describe("AgentControl", () => {
       agentPath: "/root/scout",
       agentNickname: "scout",
       agentRole: "explorer",
+      ...roleProvenance(control, "explorer"),
       depth: 1,
     };
     const live = await control.resume({ parentPath: "/root", metadata });
@@ -271,6 +666,107 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(1);
   });
 
+  it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    await expect(
+      control.resume({
+        parentPath: "/root",
+        metadata: {
+          agentId: "thread-legacy-role",
+          agentPath: "/root/legacy_role",
+          agentNickname: "legacy-role",
+          agentRole: "worker",
+          depth: 1,
+        },
+      }),
+    ).rejects.toThrow("agent role workspace provenance is missing");
+    expect(registry.activeCount).toBe(0);
+  });
+
+  it("resume() rejects malformed persisted roles before registry mutation", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    for (const [index, agentRole] of ["", null, false, 0].entries()) {
+      await expect(
+        control.resume({
+          parentPath: "/root",
+          metadata: {
+            agentId: `thread-malformed-role-${index}`,
+            agentPath: `/root/malformed_role_${index}`,
+            agentNickname: `malformed-role-${index}`,
+            agentRole: agentRole as never,
+            agentRoleWorkspaceId: control.roleWorkspace.id,
+            depth: 1,
+          },
+        }),
+      ).rejects.toThrow("invalid agent metadata agentRole");
+      expect(registry.activeCount).toBe(0);
+    }
+  });
+
+  it("resume() resolves same-named roles only inside the session workspace", async () => {
+    const workspaceA = mkdtempSync(join(tmpdir(), "agenc-resume-role-a-"));
+    const workspaceB = mkdtempSync(join(tmpdir(), "agenc-resume-role-b-"));
+    try {
+      registerAgentRole(createAgentRoleWorkspace(workspaceA), {
+        name: "shared-resume-role",
+        config: { systemPrompt: "Workspace A resume prompt." },
+      });
+      registerAgentRole(createAgentRoleWorkspace(workspaceB), {
+        name: "shared-resume-role",
+        config: { systemPrompt: "Workspace B resume prompt." },
+      });
+
+      const registryA = new AgentRegistry();
+      const registryB = new AgentRegistry();
+      const controlA = new AgentControl({
+        session: stubSession({ cwd: workspaceA, conversationId: "workspace-a" }),
+        registry: registryA,
+      });
+      const controlB = new AgentControl({
+        session: stubSession({ cwd: workspaceB, conversationId: "workspace-b" }),
+        registry: registryB,
+      });
+      const metadata = (marker: "a" | "b"): AgentMetadata => ({
+        agentId: `thread-resume-${marker}`,
+        agentPath: `/root/resume_${marker}`,
+        agentNickname: `resume-${marker}`,
+        agentRole: "shared-resume-role",
+        ...roleProvenance(
+          marker === "a" ? controlA : controlB,
+          "shared-resume-role",
+        ),
+        depth: 1,
+      });
+
+      const resumedA = await controlA.resume({
+        parentPath: "/root",
+        metadata: metadata("a"),
+      });
+      const resumedB = await controlB.resume({
+        parentPath: "/root",
+        metadata: metadata("b"),
+      });
+
+      expect(resumedA?.role.config.systemPrompt).toBe(
+        "Workspace A resume prompt.",
+      );
+      expect(resumedB?.role.config.systemPrompt).toBe(
+        "Workspace B resume prompt.",
+      );
+      await expect(
+        controlB.resume({ parentPath: "/root", metadata: metadata("a") }),
+      ).rejects.toThrow("agent role workspace mismatch");
+      expect(registryB.activeCount).toBe(1);
+    } finally {
+      rmSync(workspaceA, { recursive: true, force: true });
+      rmSync(workspaceB, { recursive: true, force: true });
+    }
+  });
+
   it("resume() is idempotent for an already-live path", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
@@ -281,6 +777,8 @@ describe("AgentControl", () => {
       agentPath: spawned.agentPath,
       agentNickname: spawned.nickname,
       agentRole: spawned.role.name,
+      agentRoleWorkspaceId: spawned.metadata.agentRoleWorkspaceId,
+      agentRoleFingerprint: spawned.metadata.agentRoleFingerprint,
       depth: spawned.depth,
     };
     const resumed = await control.resume({
@@ -289,6 +787,62 @@ describe("AgentControl", () => {
     });
     expect(resumed).toBe(spawned);
     expect(registry.activeCount).toBe(1);
+  });
+
+  it("resume() rejects root, id, path, and role identity conflicts without mutation", async () => {
+    const session = stubSession({ conversationId: "identity-root" });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    control.registerSessionRoot("identity-root");
+    const live = await control.spawn({
+      parentPath: "/root",
+      agentName: "identity_child",
+    });
+    const base = live.metadata;
+    const beforeInboxes = (
+      session as unknown as { childInboxes: Map<string, unknown> }
+    ).childInboxes.size;
+
+    await expect(
+      control.resume({
+        parentPath: "/root",
+        metadata: { ...base, agentId: "different-id" },
+      }),
+    ).rejects.toThrow(/identity conflicts/);
+    await expect(
+      control.resume({
+        parentPath: "/root",
+        metadata: { ...base, agentPath: "/root/different_path" },
+      }),
+    ).rejects.toThrow(/identity conflicts/);
+    await expect(
+      control.resume({
+        parentPath: "/root",
+        metadata: {
+          ...base,
+          agentRole: "explorer",
+          ...roleProvenance(control, "explorer"),
+        },
+      }),
+    ).rejects.toThrow(/does not match registered metadata/);
+    await expect(
+      control.resume({
+        parentPath: "/root",
+        metadata: {
+          ...base,
+          agentId: "identity-root",
+          agentPath: "/root/root_copy",
+        },
+      }),
+    ).rejects.toThrow(/session root/);
+
+    expect(control.listLive()).toEqual([live]);
+    expect(registry.activeCount).toBe(1);
+    expect(registry.agentIdForPath(live.agentPath)).toBe(live.agentId);
+    expect(
+      (session as unknown as { childInboxes: Map<string, unknown> })
+        .childInboxes.size,
+    ).toBe(beforeInboxes);
   });
 
   it("resume() respects I-1 depth cap", async () => {
@@ -300,11 +854,38 @@ describe("AgentControl", () => {
       agentPath: "/root/a/b/c",
       agentNickname: "too-deep",
       agentRole: "default",
+      ...roleProvenance(control, "default"),
       depth: 3,
     };
     await expect(
       control.resume({ parentPath: "/root/a/b", metadata }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
+  });
+
+  it("resume() rejects depth and parent lineage inconsistent with the agent path", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 4 });
+    const base: AgentMetadata = {
+      agentId: "thread-lineage",
+      agentPath: "/root/a/b/c",
+      agentNickname: "lineage",
+      agentRole: "default",
+      ...roleProvenance(control, "default"),
+      depth: 3,
+    };
+
+    await expect(
+      control.resume({
+        parentPath: "/root/a/b",
+        metadata: { ...base, depth: 0 },
+      }),
+    ).rejects.toThrow("does not match path depth");
+    await expect(
+      control.resume({ parentPath: "/root", metadata: base }),
+    ).rejects.toThrow("does not match path parent");
+    expect(registry.activeCount).toBe(0);
+    expect(control.listLive()).toEqual([]);
   });
 
   it("resume() attaches the upInbox to session.childInboxes", async () => {
@@ -316,6 +897,7 @@ describe("AgentControl", () => {
       agentPath: "/root/attach",
       agentNickname: "attach",
       agentRole: "default",
+      ...roleProvenance(control, "default"),
       depth: 1,
     };
     const live = await control.resume({ parentPath: "/root", metadata });
@@ -334,6 +916,7 @@ describe("AgentControl", () => {
       agentPath: "/root/emit",
       agentNickname: "emit",
       agentRole: "default",
+      ...roleProvenance(control, "default"),
       depth: 1,
     };
     await control.resume({ parentPath: "/root", metadata });
@@ -910,6 +1493,50 @@ describe("AgentControl", () => {
     }
   });
 
+  it("resumeAgentFromRollout() rejects an edge whose parent id and path name different live agents", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "resume-rejects-parent-identity-split",
+    });
+    try {
+      const session = stubSession({ rolloutStore });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry, maxDepth: 3 });
+      const root = await control.spawn({
+        parentPath: "/root",
+        threadId: "real-root-child",
+        agentName: "real_parent",
+      });
+      rolloutStore.createThreadSpawnEdge({
+        childThreadId: "orphan-child",
+        parentThreadId: root.agentId,
+        parentPath: "/root/missing",
+        metadata: {
+          agentId: "orphan-child",
+          agentPath: "/root/missing/orphan",
+          agentNickname: "orphan",
+          depth: 2,
+        },
+        status: "open",
+      });
+      await control.shutdownAll("manager_shutdown");
+
+      const result = await control.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(1);
+      expect(control.getLive("orphan-child")).toBeUndefined();
+      expect(registry.agentIdForPath("/root/missing/orphan")).toBeUndefined();
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   // ───────────────────────────────────────────────────────────
   // Priority-4 fork-mode spawn helpers
   // ───────────────────────────────────────────────────────────
@@ -947,6 +1574,31 @@ describe("AgentControl", () => {
     });
     expect(live.agentId).toBe("preset-thread-1");
     expect(live.role.name).toBe("worker");
+  });
+
+  it("spawnAgentWithMetadata() validates named metadata even with an explicit role", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const invalidMetadata = [
+      { agentRole: "worker" },
+      {
+        agentRole: "worker",
+        agentRoleWorkspaceId: createAgentRoleWorkspace(
+          join(agencHome, "other-workspace"),
+        ).id,
+      },
+    ] as const;
+
+    for (const metadata of invalidMetadata) {
+      await expect(
+        control.spawnAgentWithMetadata("/root", {
+          roleName: "worker",
+          metadata,
+        }),
+      ).rejects.toThrow(/workspace (provenance is missing|mismatch)/);
+      expect(registry.activeCount).toBe(0);
+    }
   });
 
   // ───────────────────────────────────────────────────────────

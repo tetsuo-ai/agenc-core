@@ -113,6 +113,14 @@ import {
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
+import {
+  assertAgentRoleWorkspaceMatches,
+  createAgentRoleWorkspace,
+  normalizeAgentRoleWorkspace,
+  type AgentRoleWorkspace,
+} from "../agents/role-workspace.js";
+import { listAgentRoleDefinitions } from "../agents/role-definitions.js";
+import { agentDefinitionFingerprint } from "../agents/agent-definition-fingerprint.js";
 import type { GuardianRejectionCircuitBreaker } from "../permissions/guardian/rejection-circuit-breaker.js";
 import type { GuardianApprovalReviewer } from "../permissions/guardian/reviewer.js";
 import {
@@ -1127,6 +1135,15 @@ export interface SessionOpts {
   readonly features: ManagedFeatures;
   readonly services: SessionServices;
   readonly jsRepl: JsReplHandle;
+  /** Immutable role trust-domain identity; distinct from mutable execution cwd. */
+  readonly roleWorkspace?: AgentRoleWorkspace;
+  /** Canonical executable agent catalog loaded for the immutable role workspace. */
+  readonly agentDefinitions?: {
+    readonly agentRoleWorkspaceId: string;
+    readonly activeAgents: readonly unknown[];
+    readonly allAgents?: readonly unknown[];
+    readonly allowedAgentTypes?: readonly unknown[];
+  };
   /** Session-level config snapshot used for per-turn TurnContext builders. */
   readonly config?: Config;
   /** Session-level model metadata used for per-turn TurnContext builders. */
@@ -1607,11 +1624,30 @@ function compactionMessage(result: CompactionResult): string {
 
 function activeAgentDefinitionsFromRoles(
   roles: readonly { readonly name: string; readonly description: string }[],
+  workspace: AgentRoleWorkspace,
 ): unknown[] {
-  return roles.map((role) => ({
-    agentType: role.name,
-    ...(role.description.length > 0 ? { whenToUse: role.description } : {}),
-  }));
+  const available = new Map(
+    listAgentRoleDefinitions(workspace.cwd).map((definition) => [
+      definition.agentType,
+      definition,
+    ]),
+  );
+  return roles.flatMap((role) => {
+    const definition = available.get(role.name);
+    if (definition === undefined) return [];
+    const configured = {
+      ...definition,
+      ...(role.description.length > 0
+        ? { whenToUse: role.description }
+        : {}),
+    };
+    return [
+      {
+        ...configured,
+        agentRoleFingerprint: agentDefinitionFingerprint(configured),
+      },
+    ];
+  });
 }
 
 /**
@@ -1622,6 +1658,9 @@ function activeAgentDefinitionsFromRoles(
 export class Session {
   /** agenc runtime: `conversation_id: ThreadId` */
   readonly conversationId: ThreadId;
+
+  /** Immutable workspace used for all role discovery and role provenance. */
+  readonly roleWorkspace: AgentRoleWorkspace;
 
   /**
    * Compatibility event stream. EventLog is the source-of-truth fanout path; this
@@ -1774,8 +1813,11 @@ export class Session {
   projectMemoryWarnings: readonly string[] = [];
 
   /** TUI agent-definition status surface. Populated by agent catalog wiring. */
-  readonly agentDefinitions: { activeAgents: unknown[] } = {
-    activeAgents: [],
+  readonly agentDefinitions: {
+    agentRoleWorkspaceId: string;
+    activeAgents: unknown[];
+    allAgents?: unknown[];
+    allowedAgentTypes?: unknown[];
   };
 
   /** Turn ids that have already emitted task-lifecycle abort events. */
@@ -1806,6 +1848,30 @@ export class Session {
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
+    this.roleWorkspace = opts.roleWorkspace
+      ? normalizeAgentRoleWorkspace(opts.roleWorkspace)
+      : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd);
+    if (opts.agentDefinitions !== undefined) {
+      assertAgentRoleWorkspaceMatches(
+        this.roleWorkspace,
+        opts.agentDefinitions.agentRoleWorkspaceId,
+      );
+      this.agentDefinitions = {
+        agentRoleWorkspaceId: this.roleWorkspace.id,
+        activeAgents: [...opts.agentDefinitions.activeAgents],
+        ...(opts.agentDefinitions.allAgents !== undefined
+          ? { allAgents: [...opts.agentDefinitions.allAgents] }
+          : {}),
+        ...(opts.agentDefinitions.allowedAgentTypes !== undefined
+          ? { allowedAgentTypes: [...opts.agentDefinitions.allowedAgentTypes] }
+          : {}),
+      };
+    } else {
+      this.agentDefinitions = {
+        agentRoleWorkspaceId: this.roleWorkspace.id,
+        activeAgents: [],
+      };
+    }
     this.txEvent =
       opts.eventQueue ??
       new AsyncQueue<Event>({ maxDepth: DEFAULT_LEGACY_EVENT_QUEUE_DEPTH });
@@ -1880,9 +1946,12 @@ export class Session {
       deriveMinimalModelInfo(
         opts.initialState.sessionConfiguration.collaborationMode?.model ?? "",
       );
-    this.agentDefinitions.activeAgents = activeAgentDefinitionsFromRoles(
-      this.config.agentRoles,
-    );
+    if (opts.agentDefinitions === undefined) {
+      this.agentDefinitions.activeAgents = activeAgentDefinitionsFromRoles(
+        this.config.agentRoles,
+        this.roleWorkspace,
+      );
+    }
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
     this.budgetTracker = opts.budgetTracker ?? null;

@@ -27,6 +27,8 @@ export interface PluginRuntimeLoadOptions {
   readonly config?: PluginLoaderOptions["config"];
   readonly extraPluginDirs?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
+  /** Bypass process-local discovery snapshots and re-read plugin sources. */
+  readonly fresh?: boolean;
 }
 
 export interface PluginRuntimeIdentityOptions {
@@ -64,7 +66,7 @@ export async function loadRuntimePlugins(
   options: PluginRuntimeLoadOptions = {},
 ): Promise<readonly LoadedPlugin[]> {
   const loaderOptions = toPluginLoaderOptions(options);
-  if (hasExplicitPluginDiscoveryInput(options)) {
+  if (options.fresh === true || hasExplicitPluginDiscoveryInput(options)) {
     const result = await loadPlugins(loaderOptions);
     return result.enabled;
   }

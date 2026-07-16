@@ -401,14 +401,20 @@ interface AgenCToolUseContext {
       readonly apiKey: string;
     };
     readonly querySource?: string;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents: readonly unknown[];
+    };
     readonly isNonInteractiveSession: boolean;
     readonly cwd?: string;
     readonly verbose: boolean;
   };
   readonly getAppState: () => {
     readonly toolPermissionContext: unknown;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents: readonly unknown[];
+    };
     readonly tasks: Record<string, unknown>;
   };
   readonly readFileState: Map<string, unknown>;
@@ -447,6 +453,13 @@ function buildAgenCToolUseContext(
   const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = {
+    ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !== undefined
+      ? {
+          agentRoleWorkspaceId: firstNonEmpty(
+            surface.agentDefinitions?.agentRoleWorkspaceId,
+          )!,
+        }
+      : {}),
     activeAgents: Array.isArray(surface.agentDefinitions?.activeAgents)
       ? [...surface.agentDefinitions.activeAgents]
       : [],
@@ -561,7 +574,10 @@ type SessionSurface = {
   readonly readFileState?: Map<string, unknown>;
   readonly loadedNestedMemoryPaths?: Set<string>;
   readonly mcpClients?: readonly unknown[];
-  readonly agentDefinitions?: { readonly activeAgents?: readonly unknown[] };
+  readonly agentDefinitions?: {
+    readonly agentRoleWorkspaceId?: string;
+    readonly activeAgents?: readonly unknown[];
+  };
   readonly tasks?: Record<string, unknown>;
   readonly queryTracking?: {
     readonly chainId?: string;
@@ -589,8 +605,10 @@ function readSessionSurface(session: Session): SessionSurface {
     readFileState: read<Map<string, unknown>>("readFileState"),
     loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
     mcpClients: read<readonly unknown[]>("mcpClients"),
-    agentDefinitions:
-      read<{ readonly activeAgents?: readonly unknown[] }>("agentDefinitions"),
+    agentDefinitions: read<{
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents?: readonly unknown[];
+    }>("agentDefinitions"),
     tasks: read<Record<string, unknown>>("tasks"),
     queryTracking: read<{ readonly chainId?: string; readonly depth?: number }>(
       "queryTracking",

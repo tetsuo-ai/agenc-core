@@ -541,14 +541,24 @@ interface AgentRunContext {
       readonly apiKey: string;
     };
     readonly querySource?: string;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents: readonly unknown[];
+      readonly allAgents?: readonly unknown[];
+      readonly allowedAgentTypes?: readonly unknown[];
+    };
     readonly isNonInteractiveSession: boolean;
     readonly cwd?: string;
     readonly verbose: boolean;
   };
   readonly getAppState: () => {
     readonly toolPermissionContext: unknown;
-    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents: readonly unknown[];
+      readonly allAgents?: readonly unknown[];
+      readonly allowedAgentTypes?: readonly unknown[];
+    };
     readonly tasks: Record<string, unknown>;
   };
   readonly readFileState: Map<string, unknown>;
@@ -591,7 +601,12 @@ type SessionSurface = {
   readonly readFileState?: Map<string, unknown>;
   readonly loadedNestedMemoryPaths?: Set<string>;
   readonly mcpClients?: readonly unknown[];
-  readonly agentDefinitions?: { readonly activeAgents?: readonly unknown[] };
+  readonly agentDefinitions?: {
+    readonly agentRoleWorkspaceId?: string;
+    readonly activeAgents?: readonly unknown[];
+    readonly allAgents?: readonly unknown[];
+    readonly allowedAgentTypes?: readonly unknown[];
+  };
   readonly tasks?: Record<string, unknown>;
   readonly queryTracking?: {
     readonly chainId?: string;
@@ -617,9 +632,22 @@ function buildAgentRunContext(
   const providerOverride = buildAgentProviderOverride(session, model.model);
   const surface = readAgentSessionSurface(session);
   const agentDefinitions = {
+    ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !== undefined
+      ? {
+          agentRoleWorkspaceId: firstNonEmpty(
+            surface.agentDefinitions?.agentRoleWorkspaceId,
+          )!,
+        }
+      : {}),
     activeAgents: Array.isArray(surface.agentDefinitions?.activeAgents)
       ? [...surface.agentDefinitions.activeAgents]
       : [],
+    ...(Array.isArray(surface.agentDefinitions?.allAgents)
+      ? { allAgents: [...surface.agentDefinitions.allAgents] }
+      : {}),
+    ...(Array.isArray(surface.agentDefinitions?.allowedAgentTypes)
+      ? { allowedAgentTypes: [...surface.agentDefinitions.allowedAgentTypes] }
+      : {}),
   };
   const cwd = ctx.cwd;
   return {
@@ -760,7 +788,12 @@ function readAgentSessionSurface(session: Session): SessionSurface {
     readFileState: read<Map<string, unknown>>("readFileState"),
     loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
     mcpClients: read<readonly unknown[]>("mcpClients"),
-    agentDefinitions: read<{ readonly activeAgents?: readonly unknown[] }>(
+    agentDefinitions: read<{
+      readonly agentRoleWorkspaceId?: string;
+      readonly activeAgents?: readonly unknown[];
+      readonly allAgents?: readonly unknown[];
+      readonly allowedAgentTypes?: readonly unknown[];
+    }>(
       "agentDefinitions",
     ),
     tasks: read<Record<string, unknown>>("tasks"),
@@ -1556,6 +1589,12 @@ function cloneSessionConfiguration(
         agentPath: live.agentPath,
         agentNickname: live.nickname,
         agentRole: live.role.name,
+        ...(live.metadata.agentRoleWorkspaceId !== undefined
+          ? { agentRoleWorkspaceId: live.metadata.agentRoleWorkspaceId }
+          : {}),
+        ...(live.metadata.agentRoleFingerprint !== undefined
+          ? { agentRoleFingerprint: live.metadata.agentRoleFingerprint }
+          : {}),
       },
     },
     ...(base.originalConfigDoNotUse
@@ -1699,6 +1738,25 @@ function buildChildSession(
 
   const childSession = new ChildSession({
     conversationId: params.live.agentId,
+    roleWorkspace: params.parent.roleWorkspace,
+    // A worktree changes execution cwd, never the role trust domain or its
+    // canonical executable catalog. Clone the complete parent envelope so a
+    // nested Agent call cannot silently fall back to built-ins/config roles.
+    agentDefinitions: {
+      agentRoleWorkspaceId:
+        params.parent.agentDefinitions.agentRoleWorkspaceId,
+      activeAgents: [...params.parent.agentDefinitions.activeAgents],
+      ...(params.parent.agentDefinitions.allAgents !== undefined
+        ? { allAgents: [...params.parent.agentDefinitions.allAgents] }
+        : {}),
+      ...(params.parent.agentDefinitions.allowedAgentTypes !== undefined
+        ? {
+            allowedAgentTypes: [
+              ...params.parent.agentDefinitions.allowedAgentTypes,
+            ],
+          }
+        : {}),
+    },
     initialState: {
       sessionConfiguration,
       history: [],

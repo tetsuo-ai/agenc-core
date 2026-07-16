@@ -35,7 +35,13 @@ import {
   getSessionReadSnapshot,
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
-import { _resetAgentRolesForTesting, registerAgentRole } from "../agents/role.js";
+import {
+  _resetAgentRolesForTesting,
+  createAgentRoleWorkspace,
+  registerAgentRole,
+} from "../agents/role.js";
+
+const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -73,7 +79,7 @@ function fakeMcpManager() {
   };
 }
 
-function fakeSession(): Session {
+function fakeSession(cwd = process.cwd()): Session {
   const modelInfo = {
     slug: "test-model",
     effectiveContextWindowPercent: 95,
@@ -92,12 +98,13 @@ function fakeSession(): Session {
   } as const;
   return {
     conversationId: "session-test",
+    roleWorkspace: createAgentRoleWorkspace(cwd),
     config: {
-      cwd: process.cwd(),
+      cwd,
     },
     modelInfo,
     sessionConfiguration: {
-      cwd: process.cwd(),
+      cwd,
       collaborationMode: {
         model: "test-model",
         reasoningEffort: "medium",
@@ -2486,7 +2493,7 @@ describe("model-facing tools", () => {
       getModelInfo: async (model: string) =>
         model === roleModelInfo.slug ? roleModelInfo : requestedModelInfo,
     };
-    registerAgentRole({
+    registerAgentRole(DEFAULT_ROLE_WORKSPACE, {
       name: "priority-reviewer",
       config: {
         description: "Review quickly.",
@@ -2570,7 +2577,7 @@ describe("model-facing tools", () => {
       listModels: async () => [roleModelInfo],
       getModelInfo: async () => roleModelInfo,
     };
-    registerAgentRole({
+    registerAgentRole(DEFAULT_ROLE_WORKSPACE, {
       name: "priority-reviewer",
       config: {
         description: "Review quickly.",
@@ -2700,6 +2707,8 @@ describe("model-facing tools", () => {
     const emit = vi.fn();
     (session as unknown as { emit: typeof emit }).emit = emit;
     const control = {
+      roleWorkspace: DEFAULT_ROLE_WORKSPACE,
+      assertRoleWorkspace: vi.fn(),
       getLive: vi.fn((threadId: string) =>
         threadId === "child-1"
           ? {
@@ -2965,11 +2974,7 @@ describe("model-facing tools", () => {
       ].join("\n"),
     );
 
-    const session = fakeSession();
-    (session.config as { cwd?: string }).cwd = workspaceRoot;
-    (
-      session.sessionConfiguration as { cwd?: string }
-    ).cwd = workspaceRoot;
+    const session = fakeSession(workspaceRoot);
     const joinThread = vi.fn(async () => ({
       threadId: "thread-custom",
       durationMs: 1,
@@ -3017,6 +3022,141 @@ describe("model-facing tools", () => {
       );
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps same-named role resolution inside each live spawn workspace", async () => {
+    const roots = await Promise.all([
+      mkdtemp(join(tmpdir(), "agenc-spawn-role-a-")),
+      mkdtemp(join(tmpdir(), "agenc-spawn-role-b-")),
+    ]);
+    const [workspaceA, workspaceB] = roots;
+    const writeRole = async (
+      root: string,
+      marker: "A" | "B",
+      effort: "low" | "high",
+    ): Promise<void> => {
+      const agentsDir = join(root, ".agenc", "agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, "reviewer.md"),
+        [
+          "---",
+          "name: shared-reviewer",
+          `description: Workspace ${marker} reviewer`,
+          `effort: ${effort}`,
+          "---",
+          `Workspace ${marker} prompt.`,
+        ].join("\n"),
+      );
+    };
+
+    await Promise.all([
+      writeRole(workspaceA, "A", "low"),
+      writeRole(workspaceB, "B", "high"),
+    ]);
+
+    const sessionA = fakeSession(workspaceA);
+    const sessionB = fakeSession(workspaceB);
+    (sessionA as { conversationId: string }).conversationId = "workspace-a";
+    (sessionB as { conversationId: string }).conversationId = "workspace-b";
+    const toolsA = createModelFacingTools({
+      workspaceRoot: workspaceA,
+      getSession: () => sessionA,
+    });
+    // Load B second. The removed process-global fallback returned B's role
+    // when A executed after this point.
+    const toolsB = createModelFacingTools({
+      workspaceRoot: workspaceB,
+      getSession: () => sessionB,
+    });
+
+    const observed: Array<{
+      readonly effort: unknown;
+      readonly prompt: string | undefined;
+    }> = [];
+    delegateMock.mockImplementation(async (input: unknown) => {
+      const request = input as {
+        readonly parentPath: string;
+        readonly agentName: string;
+        readonly role?: string;
+        readonly reasoningEffort?: unknown;
+        readonly control: AgentControl;
+      };
+      const live = await request.control.spawn({
+        parentPath: request.parentPath as never,
+        agentName: request.agentName,
+        roleName: request.role,
+      });
+      observed.push({
+        effort: request.reasoningEffort,
+        prompt: live.role.config.systemPrompt,
+      });
+      return {
+        kind: "async_launched",
+        thread: {
+          live,
+          join: vi.fn(async () => ({
+            threadId: live.agentId,
+            durationMs: 1,
+            outcome: "completed",
+            finalMessage: "done",
+          })),
+        },
+      };
+    });
+
+    try {
+      const execute = async (
+        tools: ReturnType<typeof createModelFacingTools>,
+        taskName: string,
+      ) =>
+        tools.find((tool) => tool.name === "spawn_agent")!.execute({
+          message: "inspect",
+          task_name: taskName,
+          agent_type: "shared-reviewer",
+          fork_turns: "none",
+        });
+
+      // Execution cwd is mutable (for example, when a worktree is entered),
+      // but the session's role trust domain is immutable.
+      (sessionA.sessionConfiguration as { cwd: string }).cwd = workspaceB;
+      (sessionA.config as { cwd: string }).cwd = workspaceB;
+
+      const resultA = await execute(toolsA, "workspace_a_review");
+      const resultB = await execute(toolsB, "workspace_b_review");
+
+      expect(resultA.isError).not.toBe(true);
+      expect(resultB.isError).not.toBe(true);
+      expect(observed).toEqual([
+        { effort: "low", prompt: "Workspace A prompt." },
+        { effort: "high", prompt: "Workspace B prompt." },
+      ]);
+
+      const coldMismatchedSession = fakeSession(workspaceB);
+      const mismatchedTools = createModelFacingTools({
+        workspaceRoot: workspaceA,
+        getSession: () => coldMismatchedSession,
+      });
+      const delegateCallsBeforeMismatch = delegateMock.mock.calls.length;
+      const mismatch = await execute(mismatchedTools, "workspace_mismatch");
+      expect(mismatch.isError).toBe(true);
+      expect(JSON.parse(mismatch.content).error).toContain(
+        "agent role workspace mismatch",
+      );
+      expect(delegateMock).toHaveBeenCalledTimes(delegateCallsBeforeMismatch);
+      const coldServices = coldMismatchedSession.services as unknown as {
+        readonly agentControl?: unknown;
+        readonly threadManager?: unknown;
+        readonly conversationThreadManager?: unknown;
+      };
+      expect(coldServices.agentControl).toBeUndefined();
+      expect(coldServices.threadManager).toBeUndefined();
+      expect(coldServices.conversationThreadManager).toBeUndefined();
+    } finally {
+      await Promise.all(
+        roots.map((root) => rm(root, { recursive: true, force: true })),
+      );
     }
   });
 

@@ -28,6 +28,7 @@ vi.mock("axios", () => {
     isAxiosError: () => false,
   };
 });
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { EventLog, type Event } from "./event-log.js";
 import {
   type AssistantMessageStreamParsersLike,
@@ -46,6 +47,8 @@ import type { TurnContext } from "./turn-context.js";
 // Session + ctx stubs
 // ─────────────────────────────────────────────────────────────────────
 
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
+
 function mkSession(): { session: Session; events: Event[] } {
   const events: Event[] = [];
   const eventLog = new EventLog();
@@ -53,6 +56,13 @@ function mkSession(): { session: Session; events: Event[] } {
   let subId = 0;
   const session = {
     conversationId: "conv-plan",
+    roleWorkspace: ROLE_WORKSPACE,
+    agentDefinitions: {
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      activeAgents: [],
+      allAgents: [],
+      allowedAgentTypes: [],
+    },
     eventLog,
     nextInternalSubId: () => `s-${++subId}`,
     emit: (event: Event) => {

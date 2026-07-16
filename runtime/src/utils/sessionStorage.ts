@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import type { UUID } from 'crypto'
+import { randomUUID, type UUID } from 'crypto'
 import type { Dirent } from 'fs'
 // Sync fs primitives for readFileTailSync — separate from fs/promises
 // imports above. Named (not wildcard) per AGENC.md style; no collisions
@@ -8,10 +8,13 @@ import { closeSync, fstatSync, openSync, readSync } from 'fs'
 import {
   appendFile as fsAppendFile,
   open as fsOpen,
+  lstat,
   mkdir,
+  rename,
   readdir,
   readFile,
   stat,
+  unlink,
   writeFile,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
@@ -64,7 +67,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { isFsInaccessible } from './errors.js'
+import { getErrnoCode, isFsInaccessible } from './errors.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -257,12 +260,49 @@ function getAgentMetadataPath(agentId: AgentId): string {
 
 export type AgentMetadata = {
   agentType: string
+  /** Immutable role trust domain captured when the agent was spawned. */
+  agentRoleWorkspaceId?: string
+  /** Content identity of the resolved role definition at spawn time. */
+  agentRoleFingerprint?: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
   /** Original task description from the AgentTool input. Persisted so a
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+}
+
+export type AgentMetadataWrite = AgentMetadata & {
+  agentRoleWorkspaceId: string
+  agentRoleFingerprint: string
+}
+
+export class InvalidAgentSidecarMetadataError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'InvalidAgentSidecarMetadataError'
+  }
+}
+
+type AgentMetadataWritePhase = 'temporary-file-synced'
+
+type AgentMetadataWritePhaseForTesting = (
+  phase: AgentMetadataWritePhase,
+  paths: {
+    readonly targetPath: string
+    readonly temporaryPath: string
+  },
+) => void | Promise<void>
+
+let agentMetadataWritePhaseForTesting:
+  | AgentMetadataWritePhaseForTesting
+  | undefined
+
+/** @internal Deterministic crash-ordering seam for sidecar persistence tests. */
+export function __setAgentMetadataWritePhaseForTesting(
+  callback: AgentMetadataWritePhaseForTesting | undefined,
+): void {
+  agentMetadataWritePhaseForTesting = callback
 }
 
 /**
@@ -276,15 +316,95 @@ export type AgentMetadata = {
  */
 export async function writeAgentMetadata(
   agentId: AgentId,
-  metadata: AgentMetadata,
+  metadata: AgentMetadataWrite,
 ): Promise<void> {
   const path = getAgentMetadataPath(agentId)
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(metadata))
+  const normalized = normalizeAgentSidecarMetadata(metadata)
+  const directory = dirname(path)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await writeAgentMetadataAtomically(
+    path,
+    JSON.stringify(normalized),
+    await existingAgentMetadataMode(path),
+  )
+}
+
+async function existingAgentMetadataMode(path: string): Promise<number> {
+  try {
+    const metadata = await lstat(path)
+    return metadata.isFile() ? metadata.mode & 0o777 : 0o600
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return 0o600
+    throw error
+  }
+}
+
+async function writeAgentMetadataAtomically(
+  path: string,
+  contents: string,
+  mode: number,
+): Promise<void> {
+  const directory = dirname(path)
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
+  let handle: Awaited<ReturnType<typeof fsOpen>> | undefined
+  let renamed = false
+  try {
+    // O_EXCL prevents a pre-existing link from redirecting the temporary
+    // write. A unique name lets concurrent writers publish only complete JSON.
+    handle = await fsOpen(temporaryPath, 'wx', mode)
+    await handle.writeFile(contents, { encoding: 'utf8' })
+    // open(2) applies the process umask even when replacing an existing file.
+    // Restore the captured mode explicitly before publishing the new inode.
+    await handle.chmod(mode)
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+
+    await agentMetadataWritePhaseForTesting?.('temporary-file-synced', {
+      targetPath: path,
+      temporaryPath,
+    })
+
+    await rename(temporaryPath, path)
+    renamed = true
+    await fsyncAgentMetadataDirectory(directory)
+  } catch (error) {
+    if (handle !== undefined) {
+      await handle.close().catch(() => {})
+    }
+    if (!renamed) {
+      await unlink(temporaryPath).catch(() => {})
+    }
+    throw error
+  }
+}
+
+async function fsyncAgentMetadataDirectory(directory: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof fsOpen>> | undefined
+  try {
+    handle = await fsOpen(directory, 'r')
+    await handle.sync()
+  } catch (error) {
+    // Directory handles are not supported by Node on Windows. The temporary
+    // file itself was fsynced before rename; NTFS rename durability is the
+    // strongest portable guarantee available there.
+    if (
+      process.platform === 'win32' &&
+      ['EISDIR', 'EINVAL', 'EPERM', 'ENOTSUP'].includes(
+        getErrnoCode(error) ?? '',
+      )
+    ) {
+      return
+    }
+    throw error
+  } finally {
+    await handle?.close().catch(() => {})
+  }
 }
 
 export async function readAgentMetadata(
   agentId: AgentId,
+  options: { readonly strict?: boolean } = {},
 ): Promise<AgentMetadata | null> {
   const path = getAgentMetadataPath(agentId)
   let raw: string
@@ -295,13 +415,81 @@ export async function readAgentMetadata(
     throw e
   }
   try {
-    return JSON.parse(raw) as AgentMetadata
+    return normalizeAgentSidecarMetadata(JSON.parse(raw) as unknown)
   } catch (e) {
-    // Skip corrupt files — a partial write from a crashed fire-and-forget
-    // persist shouldn't take down the whole resume.
+    if (options.strict) {
+      throw e instanceof InvalidAgentSidecarMetadataError
+        ? e
+        : new InvalidAgentSidecarMetadataError(
+            `invalid agent metadata sidecar: ${path}`,
+            { cause: e },
+          )
+    }
+    // Compatibility readers ignore legacy corrupt sidecars. Resume passes
+    // strict=true and fails closed instead; current writes publish atomically.
     logForDebugging(`readAgentMetadata: skipping ${path}: ${String(e)}`)
     return null
   }
+}
+
+function normalizeAgentSidecarMetadata(value: unknown): AgentMetadata {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new InvalidAgentSidecarMetadataError('agent metadata must be an object')
+  }
+  const record = value as Record<string, unknown>
+  const agentType = requiredNonEmptyMetadataString(record.agentType, 'agentType')
+  const agentRoleWorkspaceId = optionalNonEmptyMetadataString(
+    record.agentRoleWorkspaceId,
+    'agentRoleWorkspaceId',
+  )
+  const agentRoleFingerprint = optionalNonEmptyMetadataString(
+    record.agentRoleFingerprint,
+    'agentRoleFingerprint',
+  )
+  const worktreePath = optionalNonEmptyMetadataString(
+    record.worktreePath,
+    'worktreePath',
+  )
+  if (
+    record.description !== undefined &&
+    typeof record.description !== 'string'
+  ) {
+    throw new InvalidAgentSidecarMetadataError(
+      'agent metadata description must be a string',
+    )
+  }
+  return {
+    agentType,
+    ...(agentRoleWorkspaceId !== undefined ? { agentRoleWorkspaceId } : {}),
+    ...(agentRoleFingerprint !== undefined ? { agentRoleFingerprint } : {}),
+    ...(worktreePath !== undefined ? { worktreePath } : {}),
+    ...(record.description !== undefined
+      ? { description: record.description as string }
+      : {}),
+  }
+}
+
+function requiredNonEmptyMetadataString(value: unknown, field: string): string {
+  const normalized = optionalNonEmptyMetadataString(value, field)
+  if (normalized === undefined) {
+    throw new InvalidAgentSidecarMetadataError(
+      `agent metadata ${field} is required`,
+    )
+  }
+  return normalized
+}
+
+function optionalNonEmptyMetadataString(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new InvalidAgentSidecarMetadataError(
+      `agent metadata ${field} must be a non-empty string`,
+    )
+  }
+  return value
 }
 
 export function sessionIdExists(sessionId: string): boolean {

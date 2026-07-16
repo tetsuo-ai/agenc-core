@@ -24,6 +24,7 @@ import type {
   ThreadStore,
 } from "../thread-store/store.js";
 import { agentIdFromThreadSource } from "../thread-store/thread-source.js";
+import { normalizeAgentRoleWorkspace } from "../agents/role-workspace.js";
 import type {
   JsonObject,
   JsonValue,
@@ -132,9 +133,10 @@ export class AgenCDaemonSessionManager {
   async createSession(
     params: SessionCreateParams,
   ): Promise<SessionCreateResult> {
-    const sessionId = this.#createSessionId();
-    const createdAt = this.#now();
-    const agentId = nonEmptyString(params.agentId) ?? this.#defaultAgentId;
+    // Validate persisted trust-domain provenance before allocating or storing
+    // any session state. A malformed, present provenance field must never be
+    // treated as legacy absence and rebound to the execution cwd on attach.
+    sessionRoleWorkspaceFromMetadata(params.metadata);
     // DAE-02: cwd is required identity for new sessions (absolute workspace).
     let cwd: string;
     try {
@@ -145,6 +147,9 @@ export class AgenCDaemonSessionManager {
       }
       throw error;
     }
+    const sessionId = this.#createSessionId();
+    const createdAt = this.#now();
+    const agentId = nonEmptyString(params.agentId) ?? this.#defaultAgentId;
     const session: MutableSession = {
       sessionId,
       agentId,
@@ -182,6 +187,7 @@ export class AgenCDaemonSessionManager {
         "AgenC daemon session restore requires sessionId and agentId",
       );
     }
+    sessionRoleWorkspaceFromMetadata(record.metadata);
 
     const session: MutableSession = {
       sessionId,
@@ -429,18 +435,73 @@ export class AgenCDaemonSessionManager {
 }
 
 function toSessionSummary(session: MutableSession): SessionSummary {
+  const roleWorkspace = sessionRoleWorkspaceFromMetadata(session.metadata);
   return {
     sessionId: session.sessionId,
     agentId: session.agentId,
     status: session.status,
     createdAt: session.createdAt,
     ...(session.cwd !== undefined ? { cwd: session.cwd } : {}),
+    ...(roleWorkspace !== undefined ? { roleWorkspace } : {}),
     ...(session.metadata !== undefined ? { metadata: session.metadata } : {}),
     ...(session.attachments.size > 0
       ? { activeAttachmentIds: activeAttachmentIds(session) }
       : {}),
     ...(session.closedAt !== undefined ? { closedAt: session.closedAt } : {}),
   };
+}
+
+function sessionRoleWorkspaceFromMetadata(
+  metadata: JsonObject | undefined,
+): { readonly id: string; readonly cwd: string } | undefined {
+  if (metadata === undefined) return undefined;
+  const hasId = Object.prototype.hasOwnProperty.call(
+    metadata,
+    "agentRoleWorkspaceId",
+  );
+  const hasCwd = Object.prototype.hasOwnProperty.call(
+    metadata,
+    "agentRoleWorkspaceCwd",
+  );
+  if (!hasId && !hasCwd) return undefined;
+
+  const rawId = metadata.agentRoleWorkspaceId;
+  const id = typeof rawId === "string" ? nonEmptyString(rawId) : undefined;
+  if (id === undefined) {
+    throw invalidRoleWorkspaceProvenance(
+      "agentRoleWorkspaceId must be a non-empty absolute path",
+    );
+  }
+
+  const rawCwd = metadata.agentRoleWorkspaceCwd;
+  const cwd = hasCwd
+    ? typeof rawCwd === "string"
+      ? nonEmptyString(rawCwd)
+      : undefined
+    : id;
+  if (cwd === undefined) {
+    throw invalidRoleWorkspaceProvenance(
+      "agentRoleWorkspaceCwd must be a non-empty absolute path when present",
+    );
+  }
+
+  try {
+    const normalized = normalizeAgentRoleWorkspace({ id, cwd });
+    return { id: normalized.id, cwd: normalized.cwd };
+  } catch (error) {
+    throw invalidRoleWorkspaceProvenance(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+function invalidRoleWorkspaceProvenance(
+  detail: string,
+): AgenCSessionLifecycleError {
+  return new AgenCSessionLifecycleError(
+    "INVALID_ARGUMENT",
+    `Invalid agent role workspace provenance: ${detail}`,
+  );
 }
 
 function storedThreadToMutableSession(
@@ -521,6 +582,7 @@ function storedThreadToSessionSummary(
   thread: StoredThread,
   defaultAgentId: string,
 ): SessionSummary {
+  const roleWorkspace = roleWorkspaceFromThreadSource(thread.source);
   const metadata: JsonObject = {
     source:
       thread.source === undefined ? undefined : threadSourceToJson(thread.source),
@@ -528,6 +590,12 @@ function storedThreadToSessionSummary(
     modelProvider: thread.modelProvider,
     rolloutPath: thread.rolloutPath,
     recovered: true,
+    ...(roleWorkspace !== undefined
+      ? {
+          agentRoleWorkspaceId: roleWorkspace.id,
+          agentRoleWorkspaceCwd: roleWorkspace.cwd,
+        }
+      : {}),
   };
   return {
     sessionId: thread.threadId,
@@ -537,6 +605,42 @@ function storedThreadToSessionSummary(
     ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
     metadata,
   };
+}
+
+function roleWorkspaceFromThreadSource(
+  source: ThreadSource | undefined,
+): { readonly id: string; readonly cwd: string } | undefined {
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    return undefined;
+  }
+  const sourceRecord = source as Record<string, unknown>;
+  const nested = sourceRecord.source;
+  const spawnSource =
+    sourceRecord.kind === "thread_spawn"
+      ? sourceRecord
+      : typeof nested === "object" &&
+          nested !== null &&
+          !Array.isArray(nested) &&
+          (nested as Record<string, unknown>).kind === "thread_spawn"
+        ? (nested as Record<string, unknown>)
+        : undefined;
+  if (spawnSource === undefined) return undefined;
+  const rawId = spawnSource.agentRoleWorkspaceId;
+  if (rawId === undefined) return undefined;
+  if (typeof rawId !== "string" || nonEmptyString(rawId) === undefined) {
+    throw new AgenCSessionLifecycleError(
+      "INVALID_ARGUMENT",
+      "Recovered agent role workspace provenance is malformed",
+    );
+  }
+  try {
+    return normalizeAgentRoleWorkspace({ id: rawId, cwd: rawId });
+  } catch (error) {
+    throw new AgenCSessionLifecycleError(
+      "INVALID_ARGUMENT",
+      `Recovered agent role workspace provenance is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function threadSourceToJson(source: ThreadSource): JsonValue {

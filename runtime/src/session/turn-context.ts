@@ -440,6 +440,8 @@ export type SubAgentSource =
       readonly agentPath?: string;
       readonly agentNickname?: string;
       readonly agentRole?: string;
+      readonly agentRoleWorkspaceId?: string;
+      readonly agentRoleFingerprint?: string;
     }
   | { readonly kind: "memory_consolidation" }
   | { readonly kind: "other"; readonly label: string };

@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
 
+import {
+  createAgentRoleWorkspace,
+  type AgentRoleWorkspace,
+} from "../agents/role.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -44,6 +48,8 @@ import { asSystemPrompt } from "../utils/systemPromptType.js";
 import { addFunctionHook } from "../utils/hooks/sessionHooks.js";
 import { runWithCwdOverride } from "../utils/cwd.js";
 
+const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
+
 afterEach(() => {
   clearCurrentRuntimeSession();
   resetCommandQueue();
@@ -72,7 +78,11 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       JSON.stringify({ plan: "done" }),
       new AbortController().signal,
-      createToolUseContext({ setResponseLength, setStreamMode }),
+      createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        setResponseLength,
+        setStreamMode,
+      }),
       undefined,
       [],
     );
@@ -124,7 +134,7 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       "{}",
       new AbortController().signal,
-      createToolUseContext(),
+      createToolUseContext({ roleWorkspace: parent.roleWorkspace }),
       undefined,
       [],
     );
@@ -143,7 +153,7 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       "{}",
       new AbortController().signal,
-      createToolUseContext(),
+      createToolUseContext({ roleWorkspace: DEFAULT_ROLE_WORKSPACE }),
       undefined,
       [],
     );
@@ -180,7 +190,7 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       "{}",
       controller.signal,
-      createToolUseContext(),
+      createToolUseContext({ roleWorkspace: DEFAULT_ROLE_WORKSPACE }),
       undefined,
       [],
     );
@@ -207,7 +217,7 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       "{}",
       new AbortController().signal,
-      createToolUseContext(),
+      createToolUseContext({ roleWorkspace: DEFAULT_ROLE_WORKSPACE }),
       undefined,
       [],
     );
@@ -248,7 +258,10 @@ describe("execAgentHook run-turn integration", () => {
       "Stop" as never,
       "{}",
       new AbortController().signal,
-      createToolUseContext({ tools: [echoTool()] }),
+      createToolUseContext({
+        roleWorkspace: DEFAULT_ROLE_WORKSPACE,
+        tools: [echoTool()],
+      }),
       undefined,
       [],
     );
@@ -284,9 +297,9 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     setCurrentRuntimeSession(createParentSession(provider));
-    const appState = createMutableAppState();
+    const appState = createMutableAppState(DEFAULT_ROLE_WORKSPACE);
     const toolUseContext = {
-      ...createToolUseContext(),
+      ...createToolUseContext({ roleWorkspace: DEFAULT_ROLE_WORKSPACE }),
       getAppState: appState.getState,
       setAppState: appState.setAppState,
     } as unknown as ToolUseContext;
@@ -332,7 +345,10 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     const parent = createParentSession(provider);
-    const toolUseContext = createToolUseContext({ tools: [echoTool()] });
+    const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
+      tools: [echoTool()],
+    });
     const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 
     const events = [];
@@ -411,7 +427,10 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     const parent = createParentSession(provider);
-    const toolUseContext = createToolUseContext({ tools: [echoTool()] });
+    const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
+      tools: [echoTool()],
+    });
     const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 
     const events = [];
@@ -479,8 +498,13 @@ describe("execAgentHook run-turn integration", () => {
         finishReason: "stop",
       },
     ]);
-    const parent = createParentSession(provider, parentDir);
-    const toolUseContext = createToolUseContext();
+    const parent = createParentSession(
+      provider,
+      createAgentRoleWorkspace(parentDir),
+    );
+    const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
+    });
     const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 
     await runWithCwdOverride(childDir, async () => {
@@ -534,7 +558,10 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     const parent = createParentSession(provider);
-    const toolUseContext = createToolUseContext({ tools: [echoTool()] });
+    const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
+      tools: [echoTool()],
+    });
     const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 
     const events = [];
@@ -588,7 +615,9 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     const parent = createParentSession(provider);
-    const { getState, setAppState } = createMutableAppState();
+    const { getState, setAppState } = createMutableAppState(
+      parent.roleWorkspace,
+    );
     const captured: Message[][] = [];
     const agentId = "compat-stop-hook-agent";
     addFunctionHook(
@@ -603,6 +632,7 @@ describe("execAgentHook run-turn integration", () => {
       "missing tool result",
     );
     const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
       agentId,
       getAppState: getState,
       setAppState,
@@ -673,7 +703,9 @@ describe("execAgentHook run-turn integration", () => {
       },
     ]);
     const parent = createParentSession(provider);
-    const { getState, setAppState } = createMutableAppState();
+    const { getState, setAppState } = createMutableAppState(
+      parent.roleWorkspace,
+    );
     const captured: Message[][] = [];
     const agentId = "compat-stop-hook-error-agent";
     addFunctionHook(
@@ -688,6 +720,7 @@ describe("execAgentHook run-turn integration", () => {
       "missing failed tool result",
     );
     const toolUseContext = createToolUseContext({
+      roleWorkspace: parent.roleWorkspace,
       agentId,
       getAppState: getState,
       setAppState,
@@ -759,7 +792,10 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool,
-      toolUseContext: createToolUseContext({ tools: [errorTool()] }),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [errorTool()],
+      }),
       querySource: "hook_agent",
       maxTurns: 3,
     })) {
@@ -822,7 +858,10 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool,
-      toolUseContext: createToolUseContext({ tools: [echoTool()] }),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [echoTool()],
+      }),
       querySource: "sdk",
       maxTurns: 3,
     })) {
@@ -881,7 +920,9 @@ describe("execAgentHook run-turn integration", () => {
         userContext: {},
         systemContext: {},
         canUseTool,
-        toolUseContext: createToolUseContext(),
+        toolUseContext: createToolUseContext({
+          roleWorkspace: parent.roleWorkspace,
+        }),
         querySource: "hook_agent",
         maxTurns: 1,
       })) {
@@ -942,7 +983,9 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool,
-      toolUseContext: createToolUseContext(),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+      }),
       querySource: "hook_agent",
       maxTurns: 1,
     })) {
@@ -975,7 +1018,9 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool,
-      toolUseContext: createToolUseContext(),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+      }),
       querySource: "hook_agent",
       maxTurns: 1,
     })) {
@@ -1028,7 +1073,10 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool,
-      toolUseContext: createToolUseContext({ tools: [echoTool()] }),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+        tools: [echoTool()],
+      }),
       querySource: "hook_agent",
       maxTurns: 1,
     })) {
@@ -1079,7 +1127,9 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
-      toolUseContext: createToolUseContext(),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+      }),
       querySource: "hook_agent",
       maxTurns: 1,
     })) {
@@ -1131,7 +1181,9 @@ describe("execAgentHook run-turn integration", () => {
       userContext: {},
       systemContext: {},
       canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
-      toolUseContext: createToolUseContext(),
+      toolUseContext: createToolUseContext({
+        roleWorkspace: parent.roleWorkspace,
+      }),
       querySource: "hook_agent",
       maxTurns: 1,
     })) {
@@ -1164,7 +1216,9 @@ describe("execAgentHook run-turn integration", () => {
     } as unknown as LLMProvider;
     const parent = createParentSession(provider);
     setCurrentRuntimeSession(parent);
-    const { getState, setAppState } = createMutableAppState();
+    const { getState, setAppState } = createMutableAppState(
+      parent.roleWorkspace,
+    );
 
     const taskId = startBackgroundSession({
       messages: [createUserMessage({ content: "start" })],
@@ -1173,7 +1227,9 @@ describe("execAgentHook run-turn integration", () => {
         userContext: {},
         systemContext: {},
         canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
-        toolUseContext: createToolUseContext(),
+        toolUseContext: createToolUseContext({
+          roleWorkspace: parent.roleWorkspace,
+        }),
         querySource: "hook_agent",
         maxTurns: 1,
       },
@@ -1210,7 +1266,9 @@ describe("execAgentHook run-turn integration", () => {
     ]);
     const parent = createParentSession(provider);
     setCurrentRuntimeSession(parent);
-    const { getState, setAppState } = createMutableAppState();
+    const { getState, setAppState } = createMutableAppState(
+      parent.roleWorkspace,
+    );
 
     const taskId = startBackgroundSession({
       messages: [createUserMessage({ content: "start" })],
@@ -1219,7 +1277,10 @@ describe("execAgentHook run-turn integration", () => {
         userContext: {},
         systemContext: {},
         canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
-        toolUseContext: createToolUseContext({ tools: [echoTool()] }),
+        toolUseContext: createToolUseContext({
+          roleWorkspace: parent.roleWorkspace,
+          tools: [echoTool()],
+        }),
         querySource: "hook_agent",
         maxTurns: 1,
       },
@@ -1256,7 +1317,9 @@ describe("execAgentHook run-turn integration", () => {
           systemPrompt: asSystemPrompt(["system"]),
           userContext: {},
           systemContext: {},
-          toolUseContext: createToolUseContext(),
+          toolUseContext: createToolUseContext({
+            roleWorkspace: parent.roleWorkspace,
+          }),
           forkContextMessages: [],
         },
         canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
@@ -1304,7 +1367,9 @@ describe("execAgentHook run-turn integration", () => {
                 systemPrompt: asSystemPrompt(["system"]),
                 userContext: {},
                 systemContext: {},
-                toolUseContext: createToolUseContext(),
+                toolUseContext: createToolUseContext({
+                  roleWorkspace: DEFAULT_ROLE_WORKSPACE,
+                }),
                 forkContextMessages: [],
               },
               canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
@@ -1371,7 +1436,10 @@ describe("execAgentHook run-turn integration", () => {
         systemPrompt: asSystemPrompt(["system"]),
         userContext: {},
         systemContext: {},
-        toolUseContext: createToolUseContext({ tools: [echoTool()] }),
+        toolUseContext: createToolUseContext({
+          roleWorkspace: parent.roleWorkspace,
+          tools: [echoTool()],
+        }),
         forkContextMessages: [],
       },
       canUseTool: vi.fn(async () => ({ behavior: "allow" as const })),
@@ -1521,7 +1589,21 @@ function errorTool(): Tool {
   } as unknown as Tool;
 }
 
-function createParentSession(provider: LLMProvider, cwd = "/tmp"): Session {
+function createAgentDefinitions(roleWorkspace: AgentRoleWorkspace) {
+  return {
+    agentRoleWorkspaceId: roleWorkspace.id,
+    activeAgents: [],
+    allAgents: [],
+    allowedAgentTypes: [],
+  };
+}
+
+function createParentSession(
+  provider: LLMProvider,
+  roleWorkspace = DEFAULT_ROLE_WORKSPACE,
+): Session {
+  const cwd = roleWorkspace.cwd;
+  const agentDefinitions = createAgentDefinitions(roleWorkspace);
   const permissionModeRegistry = new PermissionModeRegistry(
     createEmptyToolPermissionContext({ mode: "dontAsk" }),
   );
@@ -1586,6 +1668,8 @@ function createParentSession(provider: LLMProvider, cwd = "/tmp"): Session {
   } as unknown as SessionServices;
   return new Session({
     conversationId: "parent-test",
+    roleWorkspace,
+    agentDefinitions,
     services,
     initialState: {
       sessionConfiguration: {
@@ -1650,7 +1734,7 @@ function createParentSession(provider: LLMProvider, cwd = "/tmp"): Session {
   });
 }
 
-function createMutableAppState() {
+function createMutableAppState(roleWorkspace: AgentRoleWorkspace) {
   let state: any = {
     tasks: {},
     todos: {},
@@ -1666,6 +1750,7 @@ function createMutableAppState() {
     },
     mcp: { clients: [], tools: [] },
     sessionHooks: new Map(),
+    agentDefinitions: createAgentDefinitions(roleWorkspace),
   };
 
   return {
@@ -1677,13 +1762,15 @@ function createMutableAppState() {
 }
 
 function createToolUseContext(opts: {
+  readonly roleWorkspace: AgentRoleWorkspace;
   readonly agentId?: string;
   readonly getAppState?: () => unknown;
   readonly setAppState?: (updater: (prev: any) => any) => void;
   readonly setResponseLength?: (updater: (value: number) => number) => void;
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly tools?: Tool[];
-} = {}): ToolUseContext {
+}): ToolUseContext {
+  const agentDefinitions = createAgentDefinitions(opts.roleWorkspace);
   return {
     ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
     options: {
@@ -1696,10 +1783,7 @@ function createToolUseContext(opts: {
       mcpClients: [],
       mcpResources: {},
       isNonInteractiveSession: true,
-      agentDefinitions: {
-        activeAgents: [],
-        allowedAgentTypes: [],
-      },
+      agentDefinitions,
     },
     abortController: new AbortController(),
     readFileState: createFileStateCacheWithSizeLimit(
@@ -1717,6 +1801,7 @@ function createToolUseContext(opts: {
         },
         sessionHooks: new Map(),
         tasks: {},
+        agentDefinitions,
       }))) as never,
     setAppState: (opts.setAppState ?? (() => {})) as never,
     setInProgressToolUseIDs: () => {},

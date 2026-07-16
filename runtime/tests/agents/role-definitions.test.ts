@@ -5,21 +5,25 @@ import { describe, it, expect } from "vitest";
 
 import {
   _resetAgentRolesForTesting,
+  createAgentRoleWorkspace,
   listAgentRoles,
   loadMarkdownAgentRoles,
 } from "./role.js";
 import { listAgentRoleDefinitions } from "./role-definitions.js";
 
+const DEFAULT_CWD = process.cwd();
+const DEFAULT_WORKSPACE = createAgentRoleWorkspace(DEFAULT_CWD);
+
 describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   it("returns one entry per registered agent role", () => {
-    const roleCount = listAgentRoles().length;
-    const list = listAgentRoleDefinitions();
+    const roleCount = listAgentRoles(DEFAULT_WORKSPACE).length;
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
     expect(list.length).toBe(roleCount);
     expect(list.length).toBeGreaterThan(0);
   });
 
   it("every entry is shaped as a BuiltInAgentDefinition", () => {
-    const list = listAgentRoleDefinitions();
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
     for (const def of list) {
       expect(typeof def.agentType).toBe("string");
       expect(def.agentType.length).toBeGreaterThan(0);
@@ -34,14 +38,14 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   });
 
   it("agentType matches the AgentRole.name", () => {
-    const roleNames = listAgentRoles().map((r) => r.name);
-    const got = listAgentRoleDefinitions().map((d) => d.agentType);
+    const roleNames = listAgentRoles(DEFAULT_WORKSPACE).map((r) => r.name);
+    const got = listAgentRoleDefinitions(DEFAULT_CWD).map((d) => d.agentType);
     expect(got).toEqual(roleNames);
   });
 
   it("whenToUse falls back to role name when description is absent", () => {
-    const list = listAgentRoleDefinitions();
-    const roles = listAgentRoles();
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
+    const roles = listAgentRoles(DEFAULT_WORKSPACE);
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);
       expect(projected).toBeDefined();
@@ -51,8 +55,8 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   });
 
   it("tools are populated only when the role has an allowlist", () => {
-    const list = listAgentRoleDefinitions();
-    const roles = listAgentRoles();
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
+    const roles = listAgentRoles(DEFAULT_WORKSPACE);
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);
       expect(projected).toBeDefined();
@@ -69,18 +73,18 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
       "./role.js"
     );
     _resetAgentRolesForTesting();
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "empty-allowlist-role",
       config: {
         description: "role with explicit empty allowlist",
         allowlist: [],
       },
     });
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "no-allowlist-role",
       config: { description: "role with no allowlist at all" },
     });
-    const list = listAgentRoleDefinitions();
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
     const empty = list.find((d) => d.agentType === "empty-allowlist-role");
     const missing = list.find((d) => d.agentType === "no-allowlist-role");
     expect(empty?.tools).toEqual([]);
@@ -89,8 +93,8 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   });
 
   it("getSystemPrompt returns the role's systemPrompt or empty string", () => {
-    const list = listAgentRoleDefinitions();
-    const roles = listAgentRoles();
+    const list = listAgentRoleDefinitions(DEFAULT_CWD);
+    const roles = listAgentRoles(DEFAULT_WORKSPACE);
     for (const role of roles) {
       const projected = list.find((d) => d.agentType === role.name);
       expect(projected).toBeDefined();
@@ -118,9 +122,10 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
       ].join("\n"),
     );
 
-    loadMarkdownAgentRoles(root);
+    const workspace = createAgentRoleWorkspace(root);
+    loadMarkdownAgentRoles(workspace);
 
-    const projected = listAgentRoleDefinitions().find(
+    const projected = listAgentRoleDefinitions(root).find(
       (role) => role.agentType === "audit-role",
     );
     expect(projected).toBeDefined();

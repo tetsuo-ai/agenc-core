@@ -1,9 +1,16 @@
 import { join } from "node:path";
 
+import {
+  assertAgentRoleWorkspaceMatches,
+  type AgentRoleWorkspace,
+} from "../../agents/role.js";
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../../config/schema.js";
 import type { Command } from "../../commands.js";
 import type { SlashCommandContext } from "../../commands/types.js";
-import type { PluginAgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
+import {
+  requireAgentDefinitionRoleFingerprint,
+  type PluginAgentDefinition,
+} from "../../tools/AgentTool/loadAgentsDir.js";
 import { isRecord } from "../../utils/record.js";
 import { loadPlugins, type LoadedPlugin, type PluginLoadIssue, type PluginLoadResult } from "../loader.js";
 import {
@@ -122,22 +129,40 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? [...value] : [];
 }
 
+function agentRoleWorkspaceEnvelopeId(value: unknown): string | undefined {
+  if (!isRecord(value) && !Array.isArray(value)) return undefined;
+  const record = value as unknown as Record<string, unknown>;
+  return typeof record.agentRoleWorkspaceId === "string"
+    ? record.agentRoleWorkspaceId
+    : undefined;
+}
+
 function mergeAgentDefinitions(
   current: Record<string, unknown>,
   pluginAgents: readonly PluginAgentDefinition[],
+  workspace: AgentRoleWorkspace,
 ): Record<string, unknown> {
-  const currentDefinitions = isRecord(current.agentDefinitions)
-    ? current.agentDefinitions
-    : {};
+  const rawDefinitions = current.agentDefinitions;
+  const recordedWorkspaceId = agentRoleWorkspaceEnvelopeId(rawDefinitions);
+  assertAgentRoleWorkspaceMatches(
+    workspace,
+    recordedWorkspaceId,
+  );
+  const currentDefinitions = isRecord(rawDefinitions) ? rawDefinitions : {};
+  const scopedPluginAgents = pluginAgents.map((agent) => ({
+    ...agent,
+    agentRoleFingerprint: requireAgentDefinitionRoleFingerprint(agent),
+  }));
   return {
     ...currentDefinitions,
+    agentRoleWorkspaceId: workspace.id,
     allAgents: [
       ...arrayValue(currentDefinitions.allAgents).filter((agent) => !isPluginAgent(agent)),
-      ...pluginAgents,
+      ...scopedPluginAgents,
     ],
     activeAgents: [
       ...arrayValue(currentDefinitions.activeAgents).filter((agent) => !isPluginAgent(agent)),
-      ...pluginAgents,
+      ...scopedPluginAgents,
     ],
   };
 }
@@ -295,6 +320,7 @@ function mergePluginErrors(
 function updatePluginAppState(
   setAppState: ((updater: (prev: unknown) => unknown) => void) | undefined,
   snapshot: PluginRegistrationSnapshot,
+  workspace: AgentRoleWorkspace,
 ): void {
   if (!setAppState) return;
   setAppState((prev) => {
@@ -320,7 +346,7 @@ function updatePluginAppState(
         errors,
         needsRefresh: false,
       },
-      agentDefinitions: mergeAgentDefinitions(current, snapshot.agents),
+      agentDefinitions: mergeAgentDefinitions(current, snapshot.agents, workspace),
       mcp: {
         ...currentMcp,
         pluginReconnectKey: currentReconnectKey + 1,
@@ -337,9 +363,10 @@ function pluginRuntimeOptionsFromContext(
   ctx: SlashCommandContext,
 ): PluginRuntimeLoadOptions {
   const config = currentConfig(ctx);
+  const workspace = ctx.session.roleWorkspace;
   return {
-    cwd: ctx.cwd,
-    workspaceRoot: ctx.cwd,
+    cwd: workspace.cwd,
+    workspaceRoot: workspace.cwd,
     agencHome: ctx.agencHome ?? join(ctx.home, ".agenc"),
     ...(config !== undefined ? { config } : {}),
   };
@@ -348,17 +375,33 @@ function pluginRuntimeOptionsFromContext(
 export async function refreshActivePlugins(
   ctx: SlashCommandContext,
 ): Promise<PluginRegistrationSnapshot> {
+  const workspace = ctx.session.roleWorkspace;
+  if (ctx.appState !== undefined) {
+    const liveState = ctx.appState.getAppState?.();
+    if (!isRecord(liveState) || !isRecord(liveState.agentDefinitions)) {
+      throw new Error(
+        "Cannot refresh plugins: live agent catalog provenance is unavailable",
+      );
+    }
+    assertAgentRoleWorkspaceMatches(
+      workspace,
+      agentRoleWorkspaceEnvelopeId(liveState.agentDefinitions),
+    );
+  }
   const options = pluginRuntimeOptionsFromContext(ctx);
   const snapshot = await refreshPluginRegistrations(options);
   const activeIdentity = {
-    cwd: ctx.cwd,
+    cwd: workspace.cwd,
     ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
   };
   setActivePluginCommandSnapshot(activeIdentity, snapshot.commands);
   setActivePluginSkillSnapshot(activeIdentity, snapshot.skills);
-  setActivePluginAgentSnapshot(activeIdentity, snapshot.agents);
+  setActivePluginAgentSnapshot(
+    { ...options, cwd: workspace.cwd },
+    snapshot.agents,
+  );
   registerPluginHooksWithRuntime(ctx, snapshot.hooks);
-  updatePluginAppState(ctx.appState?.setAppState, snapshot);
+  updatePluginAppState(ctx.appState?.setAppState, snapshot, workspace);
   return snapshot;
 }
 

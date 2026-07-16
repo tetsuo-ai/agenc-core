@@ -7,10 +7,15 @@ import {
   type ResolvedAgent,
 } from "../tools/AgentTool/agentDisplay.js";
 import {
+  bindAgentDefinitionToWorkspace,
   getActiveAgentsFromList,
   type AgentDefinition,
   type SettingSource,
 } from "../tools/AgentTool/loadAgentsDir.js";
+import {
+  assertAgentRoleWorkspaceMatches,
+  type AgentRoleWorkspace,
+} from "../agents/role.js";
 import type { Tools } from "../tools/Tool.js";
 import { Box, useInput } from "../tui/ink.js";
 import { agentRolePresentation } from "../agents/role-presentation.js";
@@ -744,9 +749,11 @@ function AgentFormModal({
 function AgentsMenuModal({
   onDone,
   initialTools = [],
+  roleWorkspace,
 }: {
   readonly onDone: Done;
   readonly initialTools?: readonly unknown[];
+  readonly roleWorkspace: AgentRoleWorkspace;
 }): React.ReactNode {
   const agentDefinitions = useAppState((state: AppState) => state.agentDefinitions);
   const setAppState = useSetAppState();
@@ -843,8 +850,16 @@ function AgentsMenuModal({
     const parsedModel = modelValue(form.model);
 
     try {
+      assertAgentRoleWorkspaceMatches(
+        roleWorkspace,
+        agentDefinitions.agentRoleWorkspaceId,
+      );
       if (mode.name === "create") {
         await saveAgentToFile(
+          {
+            roleWorkspace,
+            catalogWorkspaceId: agentDefinitions.agentRoleWorkspaceId,
+          },
           form.source,
           trimmedName,
           trimmedDescription,
@@ -854,7 +869,7 @@ function AgentsMenuModal({
           undefined,
           parsedModel,
         );
-        const created: AgentDefinition = {
+        const created = bindAgentDefinitionToWorkspace({
           agentType: trimmedName,
           source: form.source,
           filename: trimmedName,
@@ -862,7 +877,7 @@ function AgentsMenuModal({
           tools: parsedTools,
           ...(parsedModel ? { model: parsedModel } : {}),
           getSystemPrompt: () => trimmedPrompt,
-        };
+        }, roleWorkspace);
         setAppState((state: unknown) => {
           const appState = state as AppState;
           const allAgents = [
@@ -888,6 +903,10 @@ function AgentsMenuModal({
         return;
       }
       await updateAgentFile(
+        {
+          roleWorkspace,
+          catalogWorkspaceId: agentDefinitions.agentRoleWorkspaceId,
+        },
         modeAgent,
         trimmedDescription,
         parsedTools,
@@ -897,13 +916,13 @@ function AgentsMenuModal({
         modeAgent.memory,
         modeAgent.effort as never,
       );
-      const updated: AgentDefinition = {
+      const updated = bindAgentDefinitionToWorkspace({
         ...modeAgent,
         whenToUse: trimmedDescription,
         tools: parsedTools,
         model: parsedModel,
         getSystemPrompt: () => trimmedPrompt,
-      };
+      }, roleWorkspace);
       setAppState((state: unknown) => {
         const appState = state as AppState;
         const allAgents = appState.agentDefinitions.allAgents.map(agent =>
@@ -930,6 +949,7 @@ function AgentsMenuModal({
     formMode,
     mode.name,
     modeAgent,
+    roleWorkspace,
     setAppState,
   ]);
 
@@ -939,7 +959,17 @@ function AgentsMenuModal({
       return;
     }
     try {
-      await deleteAgentFromFile(modeAgent);
+      assertAgentRoleWorkspaceMatches(
+        roleWorkspace,
+        agentDefinitions.agentRoleWorkspaceId,
+      );
+      await deleteAgentFromFile(
+        {
+          roleWorkspace,
+          catalogWorkspaceId: agentDefinitions.agentRoleWorkspaceId,
+        },
+        modeAgent,
+      );
       setAppState((state: unknown) => {
         const appState = state as AppState;
         const allAgents = appState.agentDefinitions.allAgents.filter(
@@ -959,7 +989,7 @@ function AgentsMenuModal({
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : String(error));
     }
-  }, [modeAgent, setAppState]);
+  }, [agentDefinitions.agentRoleWorkspaceId, modeAgent, roleWorkspace, setAppState]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -1136,6 +1166,10 @@ function AgentsMenuModal({
 
 export function openAgentsMenu(ctx: SlashCommandContext): boolean {
   return openLocalJsxCommand(ctx, close => (
-    <AgentsMenuModal onDone={close} initialTools={ctx.appState?.tools ?? []} />
+    <AgentsMenuModal
+      onDone={close}
+      initialTools={ctx.appState?.tools ?? []}
+      roleWorkspace={ctx.session.roleWorkspace}
+    />
   ));
 }

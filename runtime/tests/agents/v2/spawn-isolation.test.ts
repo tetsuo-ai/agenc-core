@@ -8,6 +8,9 @@ import { createSpawnAgentTool } from "./spawn.js";
 import { delegate } from "../delegate.js";
 import type { MultiAgentV2Options } from "./common.js";
 import type { Session } from "../../session/session.js";
+import { createAgentRoleWorkspace } from "../role.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 
 const mockDelegate = vi.mocked(delegate);
 
@@ -48,10 +51,12 @@ function makeSession(): Session {
   const emitted: unknown[] = [];
   return {
     conversationId: "conv-1",
+    roleWorkspace: ROLE_WORKSPACE,
     emit: (event: unknown) => emitted.push(event),
     nextInternalSubId: () => `sub-${emitted.length}`,
     modelInfo: { slug: "test-model" },
     sessionConfiguration: {
+      cwd: "/repo",
       collaborationMode: { model: "test-model" },
     },
     config: { multiAgentV2: { hideSpawnAgentMetadata: false } },
@@ -68,8 +73,13 @@ function makeSession(): Session {
 function makeOptions(session: Session): MultiAgentV2Options {
   return {
     getSession: () => session,
+    workspace: ROLE_WORKSPACE,
     ensureAgentControl: () => ({
-      control: { getLive: () => undefined },
+      control: {
+        roleWorkspace: ROLE_WORKSPACE,
+        assertRoleWorkspace: () => {},
+        getLive: () => undefined,
+      },
       registry: {},
     }),
   } as unknown as MultiAgentV2Options;

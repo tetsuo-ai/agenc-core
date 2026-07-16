@@ -376,6 +376,14 @@ export function startBackgroundSession({
     agentType: 'subagent',
     subagentName: 'main-session',
     isBuiltIn: true,
+    ...(agentDefinition?.memory !== undefined
+      ? {
+          memoryAuthorization: {
+            agentType: agentDefinition.agentType,
+            scope: agentDefinition.memory,
+          },
+        }
+      : {}),
   }
 
   void runWithAgentContext(agentContext, async () => {

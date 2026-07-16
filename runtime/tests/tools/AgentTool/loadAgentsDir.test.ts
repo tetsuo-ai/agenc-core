@@ -1,8 +1,15 @@
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  linkSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { getAgentColor } from './agentColorManager.js'
 import {
@@ -13,17 +20,26 @@ import {
   __setMarkdownAgentDirsForTesting,
   __setPluginAgentCacheClearerForTesting,
   __setPluginAgentsLoaderForTesting,
+  bindAgentDefinitionToWorkspace,
   clearAgentDefinitionsCache,
   filterAgentsByMcpRequirements,
+  findAgentDefinitionByType,
   getActiveAgentsFromList,
   getAgentDefinitionsWithOverrides,
+  loadFreshAgentDefinitions,
   parseAgentFromJson,
   parseAgentFromMarkdown,
   parseAgentsFromJson,
+  requireAgentDefinitionRoleFingerprint,
   type AgentDefinition,
   type PluginAgentDefinition,
 } from './loadAgentsDir.js'
 import { getPrompt } from './prompt.js'
+import {
+  _resetAgentRolesForTesting,
+  createAgentRoleWorkspace,
+  registerAgentRole,
+} from '../../agents/role.js'
 
 const allSettingSources = [
   'userSettings',
@@ -34,6 +50,8 @@ const allSettingSources = [
 ] as const
 
 type SettingSourceForTesting = (typeof allSettingSources)[number]
+
+const temporaryRoots: string[] = []
 
 function agent(agentType: string, source: AgentDefinition['source']): AgentDefinition {
   return {
@@ -47,9 +65,16 @@ function agent(agentType: string, source: AgentDefinition['source']): AgentDefin
 
 function tempAgentDir(): string {
   const root = mkdtempSync(join(tmpdir(), 'agenc-agent-loader-'))
+  temporaryRoots.push(root)
   const dir = join(root, '.agenc', 'agents')
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+function tempWorkspaceRoot(label: string): string {
+  const root = mkdtempSync(join(tmpdir(), `agenc-agent-${label}-`))
+  temporaryRoots.push(root)
+  return root
 }
 
 async function getAllowedSettingSourcesForTesting(): Promise<
@@ -70,9 +95,136 @@ afterEach(async () => {
   __setPluginAgentCacheClearerForTesting(undefined)
   __setPluginAgentsLoaderForTesting(undefined)
   clearAgentDefinitionsCache()
+  _resetAgentRolesForTesting()
+  vi.unstubAllEnvs()
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 describe('AgentTool loadAgentsDir adapter', () => {
+  test('prefers an exact restrictive public name over an earlier canonical alias', () => {
+    const explorer = agent('explorer', 'built-in')
+    const exactScanner = {
+      ...agent('scanner', 'projectSettings'),
+      disallowedTools: ['Write'],
+      permissionMode: 'plan' as const,
+    }
+
+    expect(
+      findAgentDefinitionByType([explorer, exactScanner], 'scanner'),
+    ).toBe(exactScanner)
+  })
+
+  test('binds rendered prompt bytes so later memory changes cannot alter execution', () => {
+    let prompt = 'snapshot one'
+    const bound = bindAgentDefinitionToWorkspace(
+      {
+        ...agent('mutable-memory', 'projectSettings'),
+        getSystemPrompt: () => prompt,
+      },
+      createAgentRoleWorkspace('/workspace/a'),
+    )
+    const fingerprint = requireAgentDefinitionRoleFingerprint(bound)
+
+    prompt = 'snapshot two'
+
+    expect(bound.getSystemPrompt()).toBe('snapshot one')
+    expect(requireAgentDefinitionRoleFingerprint(bound)).toBe(fingerprint)
+  })
+
+  test('includes executable callback identity in built-in fingerprints', () => {
+    const base = {
+      ...agent('callback-agent', 'built-in'),
+      callback: () => undefined,
+    }
+    const changed = {
+      ...base,
+      callback: function changedCallback() {
+        return undefined
+      },
+    }
+
+    expect(
+      requireAgentDefinitionRoleFingerprint(base),
+    ).not.toBe(requireAgentDefinitionRoleFingerprint(changed))
+  })
+
+  test('never imports agent files through cross-workspace file or directory symlinks', async () => {
+    const workspaceA = mkdtempSync(join(tmpdir(), 'agenc-agent-authority-a-'))
+    const workspaceB = mkdtempSync(join(tmpdir(), 'agenc-agent-authority-b-'))
+    const configDir = mkdtempSync(join(tmpdir(), 'agenc-agent-config-'))
+    try {
+      vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+      __setPluginAgentsLoaderForTesting(async () => [])
+      const agentsA = join(workspaceA, '.agenc', 'agents')
+      const agentsB = join(workspaceB, '.agenc', 'agents')
+      mkdirSync(agentsA, { recursive: true })
+      mkdirSync(agentsB, { recursive: true })
+      writeFileSync(
+        join(agentsA, 'local.md'),
+        `---\nname: authority-local\ndescription: Local role\n---\nLocal prompt.\n`,
+      )
+      writeFileSync(
+        join(agentsB, 'external-file.md'),
+        `---\nname: authority-external-file\ndescription: External role\n---\nExternal prompt.\n`,
+      )
+      writeFileSync(
+        join(agentsB, 'external-directory.md'),
+        `---\nname: authority-external-directory\ndescription: External directory role\n---\nExternal directory prompt.\n`,
+      )
+      symlinkSync(
+        join(agentsB, 'external-file.md'),
+        join(agentsA, 'linked-file.md'),
+      )
+      symlinkSync(agentsB, join(agentsA, 'linked-directory'), 'dir')
+
+      const assertCatalog = async (): Promise<void> => {
+        const catalog = await loadFreshAgentDefinitions(workspaceA)
+        const types = catalog.activeAgents.map(definition => definition.agentType)
+        expect(types).toContain('authority-local')
+        expect(types).not.toContain('authority-external-file')
+        expect(types).not.toContain('authority-external-directory')
+      }
+
+      vi.stubEnv('AGENC_USE_NATIVE_FILE_SEARCH', '1')
+      await assertCatalog()
+      vi.stubEnv('AGENC_USE_NATIVE_FILE_SEARCH', '')
+      clearAgentDefinitionsCache()
+      await assertCatalog()
+      __setMarkdownAgentDirsForTesting([
+        { dir: agentsA, source: 'projectSettings' },
+      ])
+      await assertCatalog()
+    } finally {
+      rmSync(workspaceA, { recursive: true, force: true })
+      rmSync(workspaceB, { recursive: true, force: true })
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  test('never imports a hardlinked markdown agent into a workspace catalog', async () => {
+    const workspace = tempWorkspaceRoot('hardlinked-catalog')
+    const external = tempWorkspaceRoot('hardlinked-external')
+    const configDir = tempWorkspaceRoot('hardlinked-config')
+    const agentsDir = join(workspace, '.agenc', 'agents')
+    const externalFile = join(external, 'outside.md')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      externalFile,
+      `---\nname: hardlinked-external\ndescription: External role\n---\nExternal prompt.\n`,
+    )
+    linkSync(externalFile, join(agentsDir, 'hardlinked.md'))
+    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    __setPluginAgentsLoaderForTesting(async () => [])
+
+    const catalog = await loadFreshAgentDefinitions(workspace)
+
+    expect(
+      catalog.allAgents.map(definition => definition.agentType),
+    ).not.toContain('hardlinked-external')
+  })
+
   test('applies source precedence when active agents collide by type', () => {
     const active = getActiveAgentsFromList([
       agent('same', 'built-in'),
@@ -317,7 +469,7 @@ Should be disabled with project settings.
     )
   })
 
-  test('deduplicates symlinked markdown agents through shared discovery', async () => {
+  test('skips symlinked markdown agents instead of granting link-tier authority', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agenc-agent-symlink-dedupe-'))
     const config = join(root, 'config')
     const userDir = join(config, 'agents')
@@ -346,7 +498,7 @@ Only load once.
         agent => agent.agentType === 'deduped-agent',
       )
       expect(deduped).toHaveLength(1)
-      expect(deduped[0]?.source).toBe('userSettings')
+      expect(deduped[0]?.source).toBe('projectSettings')
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.AGENC_CONFIG_DIR
@@ -401,6 +553,55 @@ Review local changes.
     expect(getAgentColor('plugin-helper')).toBe('red_FOR_SUBAGENTS_ONLY')
   })
 
+  test('fingerprints the exact executable definition and rejects stale metadata', () => {
+    const workspace = createAgentRoleWorkspace('/tmp')
+    const original = bindAgentDefinitionToWorkspace(
+      {
+        ...agent('guarded', 'projectSettings'),
+        disallowedTools: ['Write'],
+        permissionMode: 'plan',
+      },
+      workspace,
+    )
+    expect(requireAgentDefinitionRoleFingerprint(original)).toMatch(
+      /^[a-f0-9]{64}$/u,
+    )
+
+    const changed = {
+      ...original,
+      disallowedTools: [],
+      permissionMode: 'acceptEdits' as const,
+    }
+    expect(() => requireAgentDefinitionRoleFingerprint(changed)).toThrow(
+      'stale or invalid role fingerprint metadata',
+    )
+  })
+
+  test('keeps a same-named plugin definition distinct from the built-in role', async () => {
+    const pluginAgent: PluginAgentDefinition = {
+      agentType: 'worker',
+      whenToUse: 'Plugin worker',
+      source: 'plugin',
+      plugin: 'same-name',
+      disallowedTools: ['Write'],
+      permissionMode: 'plan',
+      getSystemPrompt: () => 'plugin worker prompt',
+    }
+    __setMarkdownAgentDirsForTesting([])
+    __setPluginAgentsLoaderForTesting(async () => [pluginAgent])
+
+    const catalog = await loadFreshAgentDefinitions('/tmp')
+    const selected = catalog.activeAgents.find(a => a.agentType === 'worker')
+    expect(selected).toMatchObject({
+      source: 'plugin',
+      plugin: 'same-name',
+      disallowedTools: ['Write'],
+    })
+    expect(() =>
+      requireAgentDefinitionRoleFingerprint(selected!),
+    ).not.toThrow()
+  })
+
   test('keeps built-ins and reports malformed markdown files', async () => {
     const dir = tempAgentDir()
     writeFileSync(
@@ -439,7 +640,7 @@ Broken prompt.
     expect(cleared).toBe(1)
   })
 
-  test('projects registered AgenC roles into built-in agent definitions', async () => {
+  test('projects built-in AgenC roles into built-in agent definitions', async () => {
     __setPluginAgentsLoaderForTesting(async () => [])
     __setMarkdownAgentDirsForTesting([])
 
@@ -448,6 +649,93 @@ Broken prompt.
     expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
       true,
     )
+  })
+
+  test('merges workspace-scoped programmatic roles into the canonical fresh catalog', async () => {
+    const workspaceA = tempWorkspaceRoot('programmatic-a')
+    const workspaceB = tempWorkspaceRoot('programmatic-b')
+    const roleA = createAgentRoleWorkspace(workspaceA)
+    const roleB = createAgentRoleWorkspace(workspaceB)
+    registerAgentRole(roleA, {
+      name: 'programmatic-reviewer',
+      config: {
+        description: 'Reviewer for A',
+        systemPrompt: 'A strict prompt',
+        model: 'model-a',
+        allowlist: ['FileRead'],
+        disallowlist: ['Write'],
+        reasoningEffort: 'high',
+      },
+    })
+    registerAgentRole(roleB, {
+      name: 'programmatic-reviewer',
+      config: {
+        description: 'Reviewer for B',
+        systemPrompt: 'B isolated prompt',
+        model: 'model-b',
+      },
+    })
+    __setPluginAgentsLoaderForTesting(async () => [])
+    __setMarkdownAgentDirsForTesting([])
+
+    const [catalogA, catalogB] = await Promise.all([
+      loadFreshAgentDefinitions(workspaceA),
+      loadFreshAgentDefinitions(workspaceB),
+    ])
+    const selectedA = findAgentDefinitionByType(
+      catalogA.activeAgents,
+      'programmatic-reviewer',
+    )
+    const selectedB = findAgentDefinitionByType(
+      catalogB.activeAgents,
+      'programmatic-reviewer',
+    )
+
+    expect(catalogA.agentRoleWorkspaceId).toBe(roleA.id)
+    expect(selectedA).toMatchObject({
+      source: 'projectSettings',
+      whenToUse: 'Reviewer for A',
+      model: 'model-a',
+      tools: ['FileRead'],
+      disallowedTools: ['Write'],
+      effort: 'high',
+    })
+    expect(selectedA?.getSystemPrompt()).toBe('A strict prompt')
+    expect(selectedB).toMatchObject({ model: 'model-b' })
+    expect(selectedB?.getSystemPrompt()).toBe('B isolated prompt')
+    expect(selectedA?.agentRoleFingerprint).not.toBe(
+      selectedB?.agentRoleFingerprint,
+    )
+  })
+
+  test('keeps workspace programmatic roles in the simple-mode catalog', async () => {
+    const workspace = tempWorkspaceRoot('programmatic-simple')
+    const roleWorkspace = createAgentRoleWorkspace(workspace)
+    registerAgentRole(roleWorkspace, {
+      name: 'programmatic-simple-reviewer',
+      config: {
+        description: 'Simple-mode reviewer',
+        systemPrompt: 'Review without writing.',
+        allowlist: ['FileRead'],
+        disallowlist: ['Write'],
+      },
+    })
+    vi.stubEnv('AGENC_SIMPLE', '1')
+
+    const catalog = await loadFreshAgentDefinitions(workspace)
+    const selected = findAgentDefinitionByType(
+      catalog.activeAgents,
+      'programmatic-simple-reviewer',
+    )
+
+    expect(catalog.agentRoleWorkspaceId).toBe(roleWorkspace.id)
+    expect(selected).toMatchObject({
+      source: 'projectSettings',
+      tools: ['FileRead'],
+      disallowedTools: ['Write'],
+      agentRoleFingerprint: expect.any(String),
+    })
+    expect(selected?.getSystemPrompt()).toBe('Review without writing.')
   })
 
   test('renders full AgentTool guidance for non-coordinator prompts', async () => {

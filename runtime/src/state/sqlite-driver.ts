@@ -1,4 +1,16 @@
-import { existsSync, mkdirSync, readdirSync, type Dirent } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  unlinkSync,
+  type Dirent,
+} from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -12,6 +24,7 @@ import {
   STATE_DB_MIGRATIONS,
   type SqlMigration,
 } from "./migrations/index.js";
+import { AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION } from "./migrations/012_agent_role_workspace_provenance.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
 export interface OpenStateDatabaseOptions {
@@ -28,6 +41,7 @@ export interface StateDatabasePaths {
 
 export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
 export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
+export const STATE_PRE_V12_BACKUP_FILENAME = "agenc-state_1.pre-v12.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 export type SqliteStatement<
@@ -46,13 +60,22 @@ export class StateSqliteDriver {
     this.projectDir = paths.projectDir;
     this.stateDbPath = paths.stateDbPath;
     this.logsDbPath = paths.logsDbPath;
-    this.state = new Database(paths.stateDbPath);
-    this.logs = new Database(paths.logsDbPath);
-    configureDatabase(this.state);
-    configureDatabase(this.logs);
-    applyMigrations(this.state, STATE_DB_MIGRATIONS);
-    applyMigrations(this.logs, LOGS_DB_MIGRATIONS);
-    replayAtomicSessionSnapshotWrites(this.state, this.projectDir);
+    const state = new Database(paths.stateDbPath);
+    let logs: SqliteDatabase | undefined;
+    try {
+      logs = new Database(paths.logsDbPath);
+      configureDatabase(state);
+      configureDatabase(logs);
+      applyStateMigrations(state, paths);
+      applyMigrations(logs, LOGS_DB_MIGRATIONS);
+      replayAtomicSessionSnapshotWrites(state, this.projectDir);
+    } catch (error) {
+      if (state.open) state.close();
+      if (logs?.open) logs.close();
+      throw error;
+    }
+    this.state = state;
+    this.logs = logs;
   }
 
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
@@ -203,6 +226,152 @@ function configureReadOnlyDatabase(db: SqliteDatabase): void {
   db.pragma("temp_store = MEMORY");
 }
 
+function applyStateMigrations(
+  db: SqliteDatabase,
+  paths: StateDatabasePaths,
+): void {
+  // Acquire the writer reservation before inspecting the schema. Otherwise a
+  // concurrently starting v11 process can initialize/populate the file after
+  // an existence/version check and make us migrate it without a backup.
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (
+      hasUserStateTables(db) &&
+      maxAppliedMigrationVersion(db) <
+        AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION
+    ) {
+      createPreV12StateBackupLocked(paths);
+    }
+    applyMigrations(db, STATE_DB_MIGRATIONS);
+    db.exec("COMMIT");
+  } catch (error) {
+    if (db.inTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function createPreV12StateBackupLocked(paths: StateDatabasePaths): void {
+  const backupPath = join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME);
+  const tempPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
+  let snapshotSource: SqliteDatabase | undefined;
+  try {
+    // VACUUM INTO runs on a second connection because the primary connection
+    // intentionally holds BEGIN IMMEDIATE. The lock prevents all source
+    // writers while SQLite itself produces a transactionally consistent file.
+    snapshotSource = new Database(paths.stateDbPath);
+    snapshotSource.pragma("busy_timeout = 5000");
+    snapshotSource.exec(`VACUUM main INTO ${sqliteStringLiteral(tempPath)}`);
+    snapshotSource.close();
+    snapshotSource = undefined;
+
+    chmodSync(tempPath, 0o600);
+    validatePreV12StateBackup(tempPath);
+    fsyncFile(tempPath);
+
+    // Refresh a stale artifact from an earlier failed attempt while the source
+    // write lock is still held. A crash before publication leaves v11 intact;
+    // a crash after publication leaves a fresh, fsynced rollback artifact.
+    try {
+      unlinkSync(backupPath);
+      fsyncDirectory(paths.projectDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    linkSync(tempPath, backupPath);
+    fsyncDirectory(paths.projectDir);
+  } finally {
+    if (snapshotSource?.open) snapshotSource.close();
+    try {
+      unlinkSync(tempPath);
+      fsyncDirectory(paths.projectDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function hasUserStateTables(db: SqliteDatabase): boolean {
+  const row = db
+    .prepare<[], { count: number }>(
+      `SELECT COUNT(*) AS count
+       FROM sqlite_master
+       WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%'
+         AND name <> 'schema_migrations'`,
+    )
+    .get();
+  return (row?.count ?? 0) > 0;
+}
+
+function maxAppliedMigrationVersion(db: SqliteDatabase): number {
+  const table = db
+    .prepare<[], { name: string }>(
+      `SELECT name
+       FROM sqlite_master
+       WHERE type = 'table' AND name = 'schema_migrations'`,
+    )
+    .get();
+  if (!table) return 0;
+  return (
+    db
+      .prepare<[], { version: number | null }>(
+        "SELECT MAX(version) AS version FROM schema_migrations",
+      )
+      .get()?.version ?? 0
+  );
+}
+
+function validatePreV12StateBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup
+      .prepare<[], { integrity_check: string }>("PRAGMA integrity_check")
+      .all();
+    if (
+      integrity.length !== 1 ||
+      integrity[0]?.integrity_check.toLowerCase() !== "ok"
+    ) {
+      throw new Error(`state backup failed integrity check: ${path}`);
+    }
+    if (
+      maxAppliedMigrationVersion(backup) >=
+      AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION
+    ) {
+      throw new Error(`state backup is not a pre-v12 database: ${path}`);
+    }
+  } finally {
+    backup.close();
+  }
+}
+
+function fsyncFile(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    fsyncSync(fd);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "EPERM" && code !== "EISDIR") {
+      throw error;
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function sqliteStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
 export function applyMigrations(
   db: SqliteDatabase,
   migrations: readonly SqlMigration[],
@@ -241,7 +410,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
   );
 
-  const migrate = db.transaction(() => {
+  const migrate = () => {
     for (const migration of migrations) {
       if (applied.has(migration.version)) continue;
       try {
@@ -255,6 +424,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         );
       }
     }
-  });
-  migrate();
+  };
+  // better-sqlite3 implements nested transactions with a savepoint. Keep the
+  // savepoint even when a caller already owns an outer transaction so a caught
+  // migration error cannot leave partial DDL/data for that caller to commit.
+  db.transaction(migrate)();
 }

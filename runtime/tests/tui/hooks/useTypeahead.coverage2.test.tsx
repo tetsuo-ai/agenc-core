@@ -107,6 +107,7 @@ vi.mock('../../utils/sessionStorage.js', () => ({
   getSessionIdFromLog: (log: { readonly sessionId?: string }) =>
     log.sessionId ?? 'session-1',
   searchSessionsByCustomTitle: vi.fn(async () => []),
+  writeAgentMetadata: vi.fn(async () => undefined),
 }))
 
 vi.mock('../../utils/suggestions/directoryCompletion.js', () => ({

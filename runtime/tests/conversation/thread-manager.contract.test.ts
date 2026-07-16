@@ -11,18 +11,26 @@ import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { AgenCThread } from "../agents/thread-manager.js";
 import { Mailbox } from "../agents/mailbox.js";
 import { AgentRegistry, type AgentMetadata } from "../agents/registry.js";
-import { resolveAgentRole } from "../agents/role.js";
+import {
+  createAgentRoleWorkspace,
+  resolveAgentRole,
+} from "../agents/role.js";
 import { AgentStatusTracker } from "../agents/status.js";
 import { ConversationThreadManager } from "./thread-manager.js";
 
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
+
 function makeSession(conversationId = "root-thread") {
   const state = new AsyncLock<SessionState>({
-    sessionConfiguration: {} as SessionState["sessionConfiguration"],
+    sessionConfiguration: {
+      cwd: ROLE_WORKSPACE.cwd,
+    } as SessionState["sessionConfiguration"],
     history: [],
   });
   let rolloutPersistenceSuspendDepth = 0;
   return {
     conversationId,
+    roleWorkspace: ROLE_WORKSPACE,
     state,
     agentStatus: {
       value: { status: "pending_init" },
@@ -69,12 +77,13 @@ function makeLive(): LiveAgent {
     agentPath: "/root/task_1",
     agentNickname: "worker",
     agentRole: "default",
+    agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId: "child-thread",
     agentPath: "/root/task_1",
-    role: resolveAgentRole("default"),
+    role: resolveAgentRole(ROLE_WORKSPACE, "default"),
     depth: 1,
     nickname: "worker",
     status: new AgentStatusTracker(),

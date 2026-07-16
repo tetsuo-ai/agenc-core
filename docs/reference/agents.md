@@ -121,6 +121,25 @@ session so one conversation maps to one agent = one session. Details:
 | Job orchestrator (CSV multi-spawn etc.) | `runtime/src/agents/jobs/` |
 | TUI Agents rail | `runtime/src/tui/workbench/` (Agents pane at wide widths) |
 
+### Workspace-scoped custom roles
+
+Role discovery is tied to the session's immutable absolute workspace. The
+execution cwd may move into a worktree, but role lookup, the model-facing role
+catalog, nested spawn, resume, restart, and the TUI picker continue to use the
+original session identity. Two live workspaces may therefore define the same
+role name without sharing prompts or configuration.
+
+New child metadata records the originating role-workspace ID. AgenC rejects a
+named resume/restart when that ID is missing or does not match the session,
+instead of silently selecting a same-named role from the current workspace.
+Named custom-role teammates currently require in-process teammate mode. Pane
+processes are rejected before launch because their startup protocol cannot yet
+consume the complete exact-role prompt, policy, memory, workspace, and
+fingerprint envelope; AgenC will not silently launch a default/unrestricted
+agent in its place.
+See [workspace-scoped agent-role identity](../design/workspace-scoped-agent-roles.md)
+for the boundary and compatibility contract.
+
 ## Related slash commands
 
 - `/agents` — interactive agent listing / management menu

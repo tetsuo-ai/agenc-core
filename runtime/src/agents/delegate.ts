@@ -115,6 +115,7 @@ export async function delegate(
   // Set up worktree if requested.
   let worktree: WorktreeHandle | undefined;
   let baseCommit: string | null = null;
+  let preserveLiveAfterRoleProvenanceFailure = false;
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
@@ -236,6 +237,9 @@ export async function delegate(
       ...(opts.onProgress !== undefined
         ? { onProgress: opts.onProgress }
         : {}),
+      onRoleProvenanceFailure: () => {
+        preserveLiveAfterRoleProvenanceFailure = true;
+      },
     });
 
   if (!opts.forceSynchronous && (runInBackground || live.role.config.background)) {
@@ -247,25 +251,30 @@ export async function delegate(
         asyncResult = await execute(thread);
         return asyncResult;
       } finally {
-        await markAsyncThreadSpawnEdgeClosed({
-          control: opts.control,
-          thread,
-          parent: opts.parent,
-        });
+        if (!preserveLiveAfterRoleProvenanceFailure) {
+          await markAsyncThreadSpawnEdgeClosed({
+            control: opts.control,
+            thread,
+            parent: opts.parent,
+          });
+        }
         // On a terminal non-completed outcome (or a thrown run), release the
         // agent so its registry path/slot are freed and a re-spawn at the same
         // path does not collide with a leaked reservation. A clean completion
         // keeps the prior fire-and-forget behavior (no delegate-scoped shutdown).
         const shutdownAgent =
-          asyncResult === undefined || asyncResult.outcome !== "completed";
-        await teardown({
-          thread,
-          control: opts.control,
-          registry: opts.registry,
-          parent: opts.parent,
-          shutdownAgent,
-          ...(baseCommit !== null ? { baseCommit } : {}),
-        });
+          !preserveLiveAfterRoleProvenanceFailure &&
+          (asyncResult === undefined || asyncResult.outcome !== "completed");
+        if (!preserveLiveAfterRoleProvenanceFailure) {
+          await teardown({
+            thread,
+            control: opts.control,
+            registry: opts.registry,
+            parent: opts.parent,
+            shutdownAgent,
+            ...(baseCommit !== null ? { baseCommit } : {}),
+          });
+        }
       }
     });
     thread = buildThread({ joinPromise });
@@ -278,14 +287,16 @@ export async function delegate(
   try {
     result = await execute(thread);
   } finally {
-    await teardown({
-      thread,
-      control: opts.control,
-      registry: opts.registry,
-      parent: opts.parent,
-      shutdownAgent: true,
-      ...(baseCommit !== null ? { baseCommit } : {}),
-    });
+    if (!preserveLiveAfterRoleProvenanceFailure) {
+      await teardown({
+        thread,
+        control: opts.control,
+        registry: opts.registry,
+        parent: opts.parent,
+        shutdownAgent: true,
+        ...(baseCommit !== null ? { baseCommit } : {}),
+      });
+    }
   }
 
   return {
@@ -357,6 +368,7 @@ async function runDelegateAgentLoop(opts: {
     event: RunAgentProgressEvent,
     thread: AgentThread,
   ) => void | Promise<void>;
+  readonly onRoleProvenanceFailure: () => void;
 }): Promise<RunAgentResult> {
   while (true) {
     const live = opts.thread.live;
@@ -422,6 +434,7 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         parentPath: opts.parentPath,
         control: opts.control,
+        onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
       });
       if (!restarted) {
         return result;
@@ -445,6 +458,7 @@ async function runDelegateAgentLoop(opts: {
       parent: opts.parent,
       parentPath: opts.parentPath,
       control: opts.control,
+      onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
     });
     if (!nextLive) {
       return result;
@@ -458,8 +472,21 @@ async function recoverLiveAgent(opts: {
   readonly parent: Session;
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
+  readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
+  try {
+    opts.control.assertAgentMetadataRoleWorkspace(live.metadata);
+  } catch (err) {
+    opts.onRoleProvenanceFailure();
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_resume_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
   emitWarning(
     opts.parent.eventLog,
     opts.parent.nextInternalSubId(),
@@ -498,8 +525,21 @@ async function restartLiveAgent(opts: {
   readonly parent: Session;
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
+  readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
+  try {
+    opts.control.assertAgentMetadataRoleWorkspace(live.metadata);
+  } catch (err) {
+    opts.onRoleProvenanceFailure();
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_restart_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
   emitWarning(
     opts.parent.eventLog,
     opts.parent.nextInternalSubId(),
@@ -515,6 +555,7 @@ async function restartLiveAgent(opts: {
       roleName: live.metadata.agentRole ?? live.role.name,
       agentPath: live.agentPath,
       preferredNickname: live.nickname,
+      expectedRoleProvenance: live.metadata,
     });
   } catch (err) {
     emitWarning(

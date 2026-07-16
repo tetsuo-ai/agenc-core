@@ -29,6 +29,7 @@ import {
 import { FILE_EDIT_TOOL_NAME } from "../tools/system/file-edit.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import { FILE_WRITE_TOOL_NAME } from "../tools/system/file-write.js";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 
 const PLUGIN_MCP_ENV_SERVER_FIXTURE = sourcePath(
   "plugins/test-fixtures/plugin-mcp-env-server.cjs",
@@ -629,6 +630,7 @@ describe("plugin registration", () => {
 
   test("active refresh registers hooks, preserves AppState shapes, and publishes active discovery snapshots", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const roleWorkspace = createAgentRoleWorkspace(root);
       const hooksRuntime = { load: vi.fn() };
       const configStore = {
         current: () => ({
@@ -674,6 +676,7 @@ describe("plugin registration", () => {
           needsRefresh: true,
         },
         agentDefinitions: {
+          agentRoleWorkspaceId: roleWorkspace.id,
           allAgents: [builtInAgent],
           activeAgents: [builtInAgent],
         },
@@ -686,11 +689,13 @@ describe("plugin registration", () => {
         argsRaw: "",
         configStore,
         appState: {
+          getAppState: () => appState,
           setAppState: (updater: (prev: unknown) => unknown) => {
             appState = updater(appState) as Record<string, unknown>;
           },
         },
         session: {
+          roleWorkspace,
           services: {
             configStore,
             hooksRuntime,
@@ -750,16 +755,18 @@ describe("plugin registration", () => {
 
   test("active refresh treats array-shaped AppState containers as malformed", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const roleWorkspace = createAgentRoleWorkspace(root);
       const configStore = {
-        current: () => ({
+        current: vi.fn(() => ({
           plugins: {
             enabled: true,
             plugins: {
               sample: { path: pluginRoot },
             },
           },
-        }),
+        })),
       };
+      const hooksRuntime = { load: vi.fn() };
       const staleError = {
         type: "lsp-manager",
         server: "stale",
@@ -770,6 +777,7 @@ describe("plugin registration", () => {
         needsRefresh: true,
       });
       const arrayAgentDefinitions = Object.assign(["stale-agent-entry"], {
+        agentRoleWorkspaceId: roleWorkspace.id,
         allAgents: [{ agentType: "built-in", source: "built-in" }],
         activeAgents: [{ agentType: "built-in", source: "built-in" }],
       });
@@ -781,6 +789,10 @@ describe("plugin registration", () => {
         agentDefinitions: arrayAgentDefinitions,
         mcp: arrayMcp,
       };
+      const initialAppState = appState;
+      const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
+        appState = updater(appState) as Record<string, unknown>;
+      });
       const ctx = {
         cwd: root,
         home: root,
@@ -788,29 +800,114 @@ describe("plugin registration", () => {
         argsRaw: "",
         configStore,
         appState: {
+          getAppState: () => appState,
+          setAppState,
+        },
+        session: {
+          roleWorkspace,
+          services: {
+            configStore,
+            hooksRuntime,
+          },
+        },
+      } as unknown as SlashCommandContext;
+
+      await expect(refreshActivePlugins(ctx)).rejects.toThrow(
+        "live agent catalog provenance is unavailable",
+      );
+      expect(configStore.current).not.toHaveBeenCalled();
+      expect(hooksRuntime.load).not.toHaveBeenCalled();
+      expect(setAppState).not.toHaveBeenCalled();
+      expect(appState).toBe(initialAppState);
+    });
+  });
+
+  test("active refresh refuses a write-only AppState bridge before loading plugins", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const roleWorkspace = createAgentRoleWorkspace(root);
+      const configStore = {
+        current: vi.fn(() => ({
+          plugins: { plugins: { sample: { path: pluginRoot } } },
+        })),
+      };
+      const hooksRuntime = { load: vi.fn() };
+      const setAppState = vi.fn();
+      const ctx = {
+        cwd: root,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        appState: { setAppState },
+        session: {
+          roleWorkspace,
+          services: { configStore, hooksRuntime },
+        },
+      } as unknown as SlashCommandContext;
+
+      await expect(refreshActivePlugins(ctx)).rejects.toThrow(
+        "live agent catalog provenance is unavailable",
+      );
+      expect(configStore.current).not.toHaveBeenCalled();
+      expect(hooksRuntime.load).not.toHaveBeenCalled();
+      expect(setAppState).not.toHaveBeenCalled();
+    });
+  });
+
+  test("binds plugin refresh to the immutable role workspace instead of execution cwd", async () => {
+    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+      const executionCwd = join(root, "worktree");
+      await mkdir(executionCwd, { recursive: true });
+      const roleWorkspace = createAgentRoleWorkspace(root);
+      const configStore = {
+        current: () => ({
+          plugins: {
+            enabled: true,
+            plugins: { sample: { path: pluginRoot } },
+          },
+        }),
+      };
+      let appState: Record<string, unknown> = {
+        agentDefinitions: {
+          agentRoleWorkspaceId: roleWorkspace.id,
+          allAgents: [],
+          activeAgents: [],
+        },
+        plugins: {},
+        mcp: {},
+      };
+      const ctx = {
+        cwd: executionCwd,
+        home: root,
+        agencHome: options.agencHome,
+        argsRaw: "",
+        configStore,
+        appState: {
+          getAppState: () => appState,
           setAppState: (updater: (prev: unknown) => unknown) => {
             appState = updater(appState) as Record<string, unknown>;
           },
         },
         session: {
-          services: {
-            configStore,
-          },
+          roleWorkspace,
+          services: { configStore },
         },
       } as unknown as SlashCommandContext;
 
       await refreshActivePlugins(ctx);
 
-      expect(appState.plugins).toMatchObject({
-        needsRefresh: false,
+      expect(appState.agentDefinitions).toMatchObject({
+        agentRoleWorkspaceId: roleWorkspace.id,
+        activeAgents: [expect.objectContaining({ agentType: "sample:review" })],
       });
-      expect(appState.plugins).not.toHaveProperty("0");
-      expect((appState.plugins as { errors: unknown[] }).errors)
-        .not.toContainEqual(staleError);
-      expect(appState.mcp).toEqual({ pluginReconnectKey: 1 });
-      expect(appState.agentDefinitions).not.toHaveProperty("0");
-      expect((appState.agentDefinitions as { activeAgents: Array<{ agentType: string }> }).activeAgents)
-        .toEqual([expect.objectContaining({ agentType: "sample:review" })]);
+      await expect(
+        loadPluginAgents({ cwd: roleWorkspace.cwd, agencHome: options.agencHome }),
+      ).resolves.toEqual([
+        expect.objectContaining({ agentType: "sample:review" }),
+      ]);
+      await expect(
+        loadPluginAgents({ cwd: executionCwd, agencHome: options.agencHome }),
+      ).resolves.toEqual([]);
     });
   });
 
@@ -818,6 +915,7 @@ describe("plugin registration", () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const cwd = join(root, "workspace-without-default-plugin");
       await mkdir(cwd, { recursive: true });
+      const roleWorkspace = createAgentRoleWorkspace(cwd);
       const configStore = {
         current: () => ({
           plugins: {
@@ -835,6 +933,7 @@ describe("plugin registration", () => {
         argsRaw: "",
         configStore,
         session: {
+          roleWorkspace,
           services: {
             configStore,
           },
@@ -879,6 +978,7 @@ describe("plugin registration", () => {
         argsRaw: "",
         configStore,
         session: {
+          roleWorkspace: createAgentRoleWorkspace(root),
           services: {
             configStore,
           },

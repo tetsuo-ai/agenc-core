@@ -13,6 +13,7 @@ import {
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
   resolveAgenCAgentAttachCwd,
+  resolveAgenCAgentAttachRoleWorkspace,
   type AgenCJsonLineDaemonTuiClient,
 } from "../app-server/agent-cli.js";
 import type {
@@ -32,6 +33,12 @@ import {
 } from "../session/mcp-startup.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { projectMcpManagerToConnections } from "../mcp-client/tui-connections.js";
+import {
+  createAgentRoleWorkspace,
+  normalizeAgentRoleWorkspace,
+  type AgentRoleWorkspace,
+} from "../agents/role-workspace.js";
+import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import type {
   AgenCBridgeSession,
   ConfigStoreLike,
@@ -43,6 +50,7 @@ export {
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
   resolveAgenCAgentAttachCwd,
+  resolveAgenCAgentAttachRoleWorkspace,
   type AgenCJsonLineDaemonTuiClient,
 };
 
@@ -158,6 +166,8 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly conversationId: string;
+  /** Immutable daemon-owned role authority, separate from execution cwd. */
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
@@ -186,6 +196,9 @@ export async function createAgenCDaemonOnlyTuiContext(
   options: AgenCDaemonOnlyTuiContextOptions,
 ): Promise<AgenCDaemonOnlyTuiContext> {
   const env = options.env ?? process.env;
+  const roleWorkspace = options.roleWorkspace
+    ? normalizeAgentRoleWorkspace(options.roleWorkspace)
+    : createAgentRoleWorkspace(options.cwd);
   const agencHome = resolveAgencHome(env);
   const configStore = new ConfigStore({
     home: agencHome,
@@ -218,7 +231,7 @@ export async function createAgenCDaemonOnlyTuiContext(
   };
   const skillsServices = createLocalSkillsServices({
     agencHome,
-    workspaceRoot: options.cwd,
+    workspaceRoot: roleWorkspace.cwd,
     config: effectiveConfig,
     env: {
       HOME: env.HOME,
@@ -230,12 +243,13 @@ export async function createAgenCDaemonOnlyTuiContext(
     effectiveConfig,
     env,
     {
-      cwd: options.cwd,
+      cwd: roleWorkspace.cwd,
       includeProjectMcpServers: options.permissionMode === "bypassPermissions",
     },
   );
   await mcpRuntimeManager.start();
   const mcpService = createSessionMcpService(mcpRuntimeManager, { env });
+  const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
   const abortController = new AbortController();
   let nextEventId = 0;
   const sessionConfiguration = {
@@ -245,6 +259,8 @@ export async function createAgenCDaemonOnlyTuiContext(
   };
   const session: AgenCBridgeSession = {
     conversationId: options.conversationId,
+    roleWorkspace,
+    agentDefinitions,
     cwd: options.cwd,
     home: agencHome,
     sessionConfiguration,

@@ -1,9 +1,9 @@
 import { feature } from 'bun:bundle'
-import { statSync } from 'fs'
-import { readdir, readFile, realpath, stat } from 'fs/promises'
+import { constants, statSync } from 'fs'
+import { lstat, open, readdir, realpath, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
-import { dirname, join, resolve, sep } from 'path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
@@ -290,11 +290,10 @@ export function getProjectDirsUpToHome(
  * @param cwd Current working directory for project directory traversal
  * @returns Array of parsed markdown files with metadata
  */
-export const loadMarkdownFilesForSubdir = memoize(
-  async function (
-    subdir: AgenCConfigDirectory,
-    cwd: string,
-  ): Promise<MarkdownFile[]> {
+async function loadMarkdownFilesForSubdirUncached(
+  subdir: AgenCConfigDirectory,
+  cwd: string,
+): Promise<MarkdownFile[]> {
     const userDir = join(getAgenCConfigHomeDir(), subdir)
     const managedDir = join(getManagedFilePath(), '.agenc', subdir)
     const projectDirs = getProjectDirsUpToHome(subdir, cwd)
@@ -409,10 +408,21 @@ export const loadMarkdownFilesForSubdir = memoize(
     }
 
     return deduplicatedFiles
-  },
+}
+
+export const loadMarkdownFilesForSubdir = memoize(
+  loadMarkdownFilesForSubdirUncached,
   // Custom resolver creates cache key from both subdir and cwd parameters
   (subdir: AgenCConfigDirectory, cwd: string) => `${subdir}:${cwd}`,
 )
+
+/** Read through every discovery layer without consulting the UI catalog cache. */
+export function loadMarkdownFilesForSubdirFresh(
+  subdir: AgenCConfigDirectory,
+  cwd: string,
+): Promise<MarkdownFile[]> {
+  return loadMarkdownFilesForSubdirUncached(subdir, cwd)
+}
 
 /**
  * Native implementation to find markdown files using Node.js fs APIs
@@ -423,9 +433,9 @@ export const loadMarkdownFilesForSubdir = memoize(
  * 3. Can be explicitly enabled via AGENC_USE_NATIVE_FILE_SEARCH env var
  *
  * Symlink handling:
- * - Follows symlinks (equivalent to ripgrep's --follow flag)
- * - Uses device+inode tracking to detect cycles (same as ripgrep's same_file library)
- * - Falls back to realpath on systems without inode support
+ * - Does not follow symlinked files or directories across a configuration
+ *   tier boundary. Callers bind discovered content to that tier's authority.
+ * - Uses device+inode tracking as defense in depth for unusual filesystems.
  *
  * Does not respect .gitignore (matches ripgrep with --no-ignore flag)
  *
@@ -483,22 +493,11 @@ async function findMarkdownFilesNative(
         const fullPath = join(currentDir, entry.name)
 
         try {
-          // Handle symlinks: isFile() and isDirectory() return false for symlinks
+          // Never traverse or read symlinks from a configuration tier. A
+          // project-controlled link must not import role/prompt content from
+          // another workspace or a network mount.
           if (entry.isSymbolicLink()) {
-            try {
-              const stats = await stat(fullPath) // stat() follows symlinks
-              if (stats.isDirectory()) {
-                await walk(fullPath)
-              } else if (stats.isFile() && entry.name.endsWith('.md')) {
-                files.push(fullPath)
-              }
-            } catch (error) {
-              const errorMessage =
-                error instanceof Error ? error.message : String(error)
-              logForDebugging(
-                `Failed to follow symlink ${fullPath}: ${errorMessage}`,
-              )
-            }
+            continue
           } else if (entry.isDirectory()) {
             await walk(fullPath)
           } else if (entry.isFile() && entry.name.endsWith('.md')) {
@@ -535,6 +534,17 @@ async function loadMarkdownFiles(dir: string): Promise<
     content: string
   }[]
 > {
+  let canonicalDir: string
+  try {
+    const lexicalDir = await lstat(dir)
+    if (!lexicalDir.isDirectory() || lexicalDir.isSymbolicLink()) return []
+    const canonicalAnchor = await realpath(dirname(dirname(dir)))
+    canonicalDir = await realpath(dir)
+    if (!isSameOrChildPath(canonicalAnchor, canonicalDir)) return []
+  } catch (error) {
+    if (isFsInaccessible(error)) return []
+    throw error
+  }
   // File search strategy:
   // - Default: ripgrep (faster, battle-tested)
   // - Fallback: native Node.js (when AGENC_USE_NATIVE_FILE_SEARCH is set)
@@ -547,7 +557,7 @@ async function loadMarkdownFiles(dir: string): Promise<
     files = useNative
       ? await findMarkdownFilesNative(dir, signal)
       : await ripGrep(
-          ['--files', '--hidden', '--follow', '--no-ignore', '--glob', '*.md'],
+          ['--files', '--hidden', '--no-ignore', '--glob', '*.md'],
           dir,
           signal,
         )
@@ -561,8 +571,50 @@ async function loadMarkdownFiles(dir: string): Promise<
 
   const results = await Promise.all(
     files.map(async filePath => {
+      let handle: Awaited<ReturnType<typeof open>> | undefined
       try {
-        const rawContent = await readFile(filePath, { encoding: 'utf-8' })
+        const lexicalFile = await lstat(filePath)
+        if (
+          !lexicalFile.isFile() ||
+          lexicalFile.isSymbolicLink() ||
+          lexicalFile.nlink !== 1
+        ) return null
+        const canonicalFile = await realpath(filePath)
+        if (!isSameOrChildPath(canonicalDir, canonicalFile)) return null
+        handle = await open(
+          filePath,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        )
+        const opened = await handle.stat()
+        if (
+          !opened.isFile() ||
+          opened.nlink !== 1 ||
+          opened.dev !== lexicalFile.dev ||
+          opened.ino !== lexicalFile.ino
+        ) {
+          return null
+        }
+        const rawContent = await handle.readFile({ encoding: 'utf-8' })
+        const [afterRead, pathAfterRead, canonicalAfterRead] = await Promise.all([
+          handle.stat(),
+          lstat(filePath),
+          realpath(filePath),
+        ])
+        if (
+          !afterRead.isFile() ||
+          afterRead.nlink !== 1 ||
+          afterRead.dev !== opened.dev ||
+          afterRead.ino !== opened.ino ||
+          !pathAfterRead.isFile() ||
+          pathAfterRead.isSymbolicLink() ||
+          pathAfterRead.nlink !== 1 ||
+          pathAfterRead.dev !== opened.dev ||
+          pathAfterRead.ino !== opened.ino ||
+          canonicalAfterRead !== canonicalFile ||
+          !isSameOrChildPath(canonicalDir, canonicalAfterRead)
+        ) {
+          return null
+        }
         const { frontmatter, content } = parseFrontmatter(rawContent, filePath)
 
         return {
@@ -577,9 +629,20 @@ async function loadMarkdownFiles(dir: string): Promise<
           `Failed to read/parse markdown file:  ${filePath}: ${errorMessage}`,
         )
         return null
+      } finally {
+        await handle?.close().catch(() => {})
       }
     }),
   )
 
   return results.filter(_ => _ !== null)
+}
+
+function isSameOrChildPath(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate)
+  return child === '' || (
+    child !== '..' &&
+    !child.startsWith(`..${sep}`) &&
+    !isAbsolute(child)
+  )
 }

@@ -40,7 +40,10 @@ import type {
 import type { Session } from "../session/session.js";
 import { Mailbox, MailboxClosedError } from "./mailbox.js";
 import {
+  AgentIdExistsError,
   AgentPathExistsError,
+  InvalidAgentMetadataError,
+  ROOT_AGENT_PATH,
   type AgentPath,
   type AgentRegistry,
   type AgentMetadata,
@@ -48,40 +51,65 @@ import {
   buildChildMetadata,
   depthOfAgentPath,
   joinAgentPath,
+  normalizeAgentMetadata,
   normalizeAgentNameForPath,
+  normalizeAgentRoleMetadata,
   resolveAgentPath,
 } from "./registry.js";
 import {
+  agentRoleFingerprint,
   allocateNickname,
   applyRoleToConfig,
-  getAgentRole,
+  assertAgentRoleWorkspaceMatches,
+  createAgentRoleWorkspace,
+  getAgentRoleByExactName,
   releaseNickname,
   requireAgentRole,
+  normalizeAgentRoleWorkspace,
   resolveAgentRole,
   type AgentRole,
+  type AgentRoleWorkspace,
   type RoleShapedConfig,
 } from "./role.js";
 import { canonicalAgentRoleName } from "./role-presentation.js";
-import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
 
 /**
  * Resolve the role for a RESUMED agent fail-closed. A named-but-unknown
- * persisted role (renamed/removed role, or a markdown role not registered in
- * this cwd at resume time) must NOT silently resume as the unrestricted default
- * role — that would drop a read-only role's tool denylist (fail-open in a
- * tool-denial control). Resume such agents under a read-only deny config
- * instead, so they cannot mutate files or sub-spawn. Built-in roles always
- * round-trip (their names are registered at module load), so this only affects
- * stale/external role names.
+ * persisted role (renamed/removed role, or a workspace override that fell
+ * through to a built-in with the same name) must NOT silently resume with a
+ * different prompt or tool policy.
  */
-function resolveResumedAgentRole(roleName: string | undefined): AgentRole {
-  if (!roleName) return resolveAgentRole(roleName);
-  const known = getAgentRole(roleName);
-  if (known) return known;
-  return {
-    name: roleName,
-    config: { disallowlist: BUILTIN_READONLY_DISALLOWLIST },
-  };
+function resolveResumedAgentRole(
+  workspace: AgentRoleWorkspace,
+  metadata: Pick<
+    AgentMetadata,
+    "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+  >,
+): AgentRole {
+  const normalized = normalizeAgentRoleMetadata(metadata);
+  const roleName = normalized.agentRole;
+  if (roleName === undefined) return resolveAgentRole(workspace, roleName);
+  assertAgentRoleWorkspaceMatches(
+    workspace,
+    normalized.agentRoleWorkspaceId,
+  );
+  const known = getAgentRoleByExactName(workspace, roleName);
+  if (!known) {
+    throw new InvalidAgentMetadataError(
+      `cannot resume unknown agent role: ${roleName}`,
+    );
+  }
+  const expectedFingerprint = normalized.agentRoleFingerprint;
+  const actualFingerprint = agentRoleFingerprint(known);
+  if (
+    expectedFingerprint === undefined ||
+    expectedFingerprint !== actualFingerprint
+  ) {
+    throw new InvalidAgentMetadataError(
+      `cannot resume changed agent role: ${roleName}`,
+    );
+  }
+  return known;
 }
 import {
   AgentStatusTracker,
@@ -284,6 +312,8 @@ export class AgentControl {
   private readonly session: Session;
   private readonly registry: AgentRegistry;
   private readonly maxDepth: number;
+  /** Immutable role trust domain; execution cwd may move independently. */
+  readonly roleWorkspace: AgentRoleWorkspace;
   private readonly live = new Map<ThreadId, LiveAgent>();
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
@@ -297,6 +327,12 @@ export class AgentControl {
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
+    const sessionRoleWorkspace = (
+      opts.session as Session & { readonly roleWorkspace?: AgentRoleWorkspace }
+    ).roleWorkspace;
+    this.roleWorkspace = sessionRoleWorkspace
+      ? normalizeAgentRoleWorkspace(sessionRoleWorkspace)
+      : createAgentRoleWorkspace(opts.session.sessionConfiguration.cwd);
     this.maxDepth =
       opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
@@ -305,6 +341,29 @@ export class AgentControl {
   bindThreadManager(threadManager: ThreadManager): void {
     this.threadManager = threadManager;
     threadManager.bindAgentControl(this);
+  }
+
+  assertRoleWorkspace(workspace: AgentRoleWorkspace): void {
+    assertAgentRoleWorkspaceMatches(this.roleWorkspace, workspace.id);
+  }
+
+  /**
+   * Validate the complete persisted role identity before lifecycle mutation.
+   * Exact-name lookup deliberately excludes public alias fallback.
+   */
+  assertAgentMetadataRoleWorkspace(
+    metadata: Pick<
+      AgentMetadata,
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+    >,
+  ): string {
+    const normalized = normalizeAgentRoleMetadata(metadata);
+    if (normalized.agentRole === undefined) {
+      throw new InvalidAgentMetadataError(
+        "agent role provenance is missing",
+      );
+    }
+    return resolveResumedAgentRole(this.roleWorkspace, normalized).name;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -323,6 +382,8 @@ export class AgentControl {
    *      interrupted mid-spawn; if so, release slot + throw.
    *   6. Wire up mailboxes + status tracker + abortController.
    *   7. Finalize reservation (registers metadata).
+   *   8. Persist the spawn edge; roll back the finalized reservation on error.
+   *   9. Publish the live handle and mailboxes.
    *
    * Returns a `LiveAgent` handle the caller (run-agent.ts) uses to
    * drive the child session.
@@ -335,6 +396,11 @@ export class AgentControl {
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
     readonly depthCap?: number;
+    /** Fail-closed role identity for restart/rehydration spawns. */
+    readonly expectedRoleProvenance?: Pick<
+      AgentMetadata,
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+    >;
   }): Promise<LiveAgent> {
     if (this.threadManager) {
       return this.threadManager.spawnLiveAgent(opts);
@@ -350,13 +416,53 @@ export class AgentControl {
     readonly agentPath?: AgentPath;
     readonly preferredNickname?: string;
     readonly depthCap?: number;
+    readonly expectedRoleProvenance?: Pick<
+      AgentMetadata,
+      "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+    >;
   }): Promise<LiveAgent> {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
     const depthCap = opts.depthCap ?? this.maxDepth;
-    const role = requireAgentRole(opts.roleName);
+    const expectedRoleProvenance =
+      opts.expectedRoleProvenance !== undefined
+        ? normalizeAgentRoleMetadata(opts.expectedRoleProvenance)
+        : undefined;
+    if (
+      expectedRoleProvenance !== undefined &&
+      expectedRoleProvenance.agentRole === undefined
+    ) {
+      throw new InvalidAgentMetadataError(
+        "agent role provenance is missing",
+      );
+    }
+    const role =
+      expectedRoleProvenance !== undefined
+        ? resolveResumedAgentRole(
+            this.roleWorkspace,
+            expectedRoleProvenance,
+          )
+        : requireAgentRole(this.roleWorkspace, opts.roleName);
+    if (
+      opts.roleName !== undefined &&
+      expectedRoleProvenance !== undefined &&
+      role.name !== opts.roleName
+    ) {
+      throw new InvalidAgentMetadataError(
+        `expected agent role ${role.name} does not match requested role ${opts.roleName}`,
+      );
+    }
     const baseChildConfig = getChildBaseConfig(this.session) ?? {};
     void applyRoleToConfig(role, baseChildConfig);
+    const roleFingerprint = agentRoleFingerprint(role);
+    if (
+      expectedRoleProvenance !== undefined &&
+      roleFingerprint !== expectedRoleProvenance.agentRoleFingerprint
+    ) {
+      throw new InvalidAgentMetadataError(
+        `cannot resume changed agent role: ${role.name}`,
+      );
+    }
     const explicitAgentPath =
       opts.agentPath ??
       (opts.agentName !== undefined
@@ -371,22 +477,41 @@ export class AgentControl {
       throw new MaxDepthExceededError(childDepth, depthCap);
     }
 
+    // An explicit id is part of the durable edge identity, not merely an
+    // in-process registry key. Preflight gives a deterministic error; the
+    // create-only SQLite insert remains the race-proof commit check.
+    if (
+      opts.threadId !== undefined &&
+      this.session.rolloutStore?.getThreadSpawnEdge(opts.threadId) !== undefined
+    ) {
+      throw new AgentIdExistsError(opts.threadId);
+    }
+
     // I-63: atomic slot acquisition.
     const reservation = await this.registry.reserveSpawnSlot();
 
     let nickname!: string;
+    let releaseNicknameOnRollback = false;
     let threadId!: ThreadId;
     let metadata!: AgentMetadata;
     try {
       if (explicitAgentPath !== undefined) {
         reservation.reserveAgentPath(explicitAgentPath);
       }
-      nickname = opts.preferredNickname ?? allocateNickname(role, this.registry);
+      if (opts.preferredNickname !== undefined) {
+        nickname = opts.preferredNickname;
+        releaseNicknameOnRollback = !this.registry.hasNickname(nickname);
+      } else {
+        nickname = allocateNickname(role, this.registry);
+        releaseNicknameOnRollback = true;
+      }
       threadId = opts.threadId ?? crypto.randomUUID();
       metadata = buildChildMetadata({
         agentId: threadId,
         parentPath: opts.parentPath,
         role,
+        roleWorkspaceId: this.roleWorkspace.id,
+        roleFingerprint,
         nickname,
         depth: childDepth,
         ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
@@ -419,7 +544,7 @@ export class AgentControl {
       // preferredNickname) leaks into the registry's usedNicknames pool on
       // any rollback (I-32 abort, path collision). Release it on the failure
       // path so it returns to the pool.
-      if (opts.preferredNickname === undefined && nickname) {
+      if (releaseNicknameOnRollback && nickname) {
         releaseNickname(this.registry, nickname);
       }
       if (err instanceof AgentPathExistsError) {
@@ -470,29 +595,81 @@ export class AgentControl {
       tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     };
 
-    // I-5: wire the child's upInbox into the session's childInboxes
-    // Map so parent-side consumers (TUI, commit phase) can drain.
-    this.session.childInboxes.set(threadId, upInbox as unknown as never);
-    this.live.set(threadId, agent);
+    const publishAgent = (): void => {
+      this.session.childInboxes.set(threadId, upInbox as unknown as never);
+      this.live.set(threadId, agent);
+      const parentId = this.agentIdForPath(opts.parentPath);
+      if (parentId) {
+        this.parentOf.set(threadId, parentId);
+      }
+      if (!this.parentTokens.has(agent.agentPath)) {
+        this.parentTokens.set(agent.agentPath, agent.abortController);
+      }
+    };
 
-    // Track parent linkage for the in-memory subtree helpers.
-    const parentId = this.agentIdForPath(opts.parentPath);
-    if (parentId) {
-      this.parentOf.set(threadId, parentId);
-    }
-    // Register a per-agent parent cancellation token so nested
-    // spawns (grandchildren) observe the parent's token.
-    if (!this.parentTokens.has(agent.agentPath)) {
-      this.parentTokens.set(agent.agentPath, agent.abortController);
+    // Durability is the commit point. Do not publish any live maps until the
+    // edge is safely stored; a rejected provenance rebind or SQLite failure
+    // must leave the registry and control plane exactly as they were.
+    try {
+      await this.persistThreadSpawnEdgeForSource(
+        opts.parentPath,
+        threadId,
+        metadata,
+      );
+    } catch (error) {
+      upInbox.close("spawn_persistence_failed");
+      downInbox.close("spawn_persistence_failed");
+      await this.registry.releaseSpawnedThread(threadId);
+      if (releaseNicknameOnRollback) {
+        releaseNickname(this.registry, nickname);
+      }
+      throw error;
     }
 
-    // Persist the spawn edge through the rollout-store-owned snapshot
-    // so a fresh control plane can restore descendants later.
-    await this.persistThreadSpawnEdgeForSource(
-      opts.parentPath,
-      threadId,
-      metadata,
-    );
+    // Persistence may yield to an interrupt. A child must never become live
+    // after its parent was cancelled while the durable edge was committing.
+    const parentTokenAfterPersistence = this.parentTokens.get(opts.parentPath);
+    if (parentTokenAfterPersistence?.signal.aborted) {
+      let closeError: unknown;
+      try {
+        await this.setThreadSpawnEdgeStatus(threadId, "closed");
+      } catch (error) {
+        closeError = error;
+      }
+      if (closeError !== undefined) {
+        agent.abortController.abort("spawn_rollback_failed");
+        agent.status.markInterrupted(threadId, "spawn_rollback_failed");
+        publishAgent();
+        const parentThreadId = this.agentIdForPath(opts.parentPath);
+        this.threadManager?.registerLiveAgent(agent, {
+          ...(parentThreadId !== undefined ? { parentThreadId } : {}),
+        });
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "spawn_rollback_failed",
+          `cancelled child ${threadId} remains registered because its durable edge could not be closed`,
+        );
+        throw closeError;
+      }
+      upInbox.close("spawn_race_aborted");
+      downInbox.close("spawn_race_aborted");
+      await this.registry.releaseSpawnedThread(threadId);
+      if (releaseNicknameOnRollback) {
+        releaseNickname(this.registry, nickname);
+      }
+      emitWarning(
+        this.session.eventLog,
+        this.session.nextInternalSubId(),
+        "spawn_race_aborted",
+        `parent ${opts.parentPath} interrupted while spawn provenance was persisted`,
+      );
+      throw new SpawnRaceAbortedError(opts.parentPath);
+    }
+
+    // I-5: publish only after the durable commit and post-commit cancellation
+    // check have both completed.
+    publishAgent();
 
     return agent;
   }
@@ -511,11 +688,13 @@ export class AgentControl {
     options: SpawnAgentOptions,
   ): Promise<LiveAgent> {
     const spawnOpts: Parameters<AgentControl["spawn"]>[0] = { parentPath };
+    const metadataRole = options.metadata
+      ? this.assertAgentMetadataRoleWorkspace(options.metadata)
+      : undefined;
     if (options.roleName !== undefined) {
       (spawnOpts as { roleName?: string }).roleName = options.roleName;
-    } else if (options.metadata?.agentRole) {
-      (spawnOpts as { roleName?: string }).roleName =
-        options.metadata.agentRole;
+    } else if (metadataRole !== undefined) {
+      (spawnOpts as { roleName?: string }).roleName = metadataRole;
     }
     if (options.threadId !== undefined) {
       (spawnOpts as { threadId?: ThreadId }).threadId = options.threadId;
@@ -538,6 +717,16 @@ export class AgentControl {
     }
     if (options.depthCap !== undefined) {
       (spawnOpts as { depthCap?: number }).depthCap = options.depthCap;
+    }
+    if (options.metadata !== undefined) {
+      (
+        spawnOpts as {
+          expectedRoleProvenance?: Pick<
+            AgentMetadata,
+            "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+          >;
+        }
+      ).expectedRoleProvenance = options.metadata;
     }
     const live = await this.spawn(spawnOpts);
     // Fork annotation: the live handle is already wired; the parent-
@@ -781,6 +970,13 @@ export class AgentControl {
       await this.shutdown(descendant.agentId, `cascade: ${reason}`);
     }
 
+    // Durable state is the commit point. If closing the edge fails, keep this
+    // live handle, its registry slot, and its mailboxes intact so callers can
+    // retry instead of leaving an open durable edge backed by torn-down state.
+    if (edgeStatus !== null) {
+      await this.setThreadSpawnEdgeStatus(threadId, edgeStatus);
+    }
+
     agent.upInbox.close(reason);
     agent.downInbox.close(reason);
     agent.status.markShutdown();
@@ -798,9 +994,6 @@ export class AgentControl {
     this.parentOf.delete(threadId);
     this.live.delete(threadId);
     this.threadManager?.removeThread(threadId);
-    if (edgeStatus !== null) {
-      await this.setThreadSpawnEdgeStatus(threadId, edgeStatus);
-    }
   }
 
   async closeAgent(threadId: ThreadId): Promise<void> {
@@ -854,16 +1047,31 @@ export class AgentControl {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
   }): Promise<LiveAgent | null> {
-    const { metadata, parentPath } = opts;
+    const metadata = normalizeAgentMetadata(opts.metadata);
+    const { parentPath } = opts;
     const threadId = metadata.agentId;
     const agentPath = metadata.agentPath;
     if (!threadId || !agentPath) return null;
+    if (threadId === this.rootThreadId || agentPath === ROOT_AGENT_PATH) {
+      throw new InvalidAgentMetadataError(
+        "cannot resume the session root as a child agent",
+      );
+    }
 
-    // I-1: depth cap. Use metadata.depth as authority, fall back to
-    // parent-path-derived depth + 1 if metadata is missing depth.
-    // Rejects when depth exceeds the cap (`depth > this.maxDepth`).
-    const depth =
-      metadata.depth ?? depthOfAgentPath(parentPath) + 1;
+    const pathDepth = depthOfAgentPath(agentPath);
+    if (metadata.depth !== pathDepth) {
+      throw new InvalidAgentMetadataError(
+        `agent resume depth ${metadata.depth} does not match path depth ${pathDepth}`,
+      );
+    }
+    const expectedParentPath = parentAgentPathFor(agentPath);
+    if (expectedParentPath === undefined || expectedParentPath !== parentPath) {
+      throw new InvalidAgentMetadataError(
+        `agent resume parent ${parentPath} does not match path parent ${expectedParentPath ?? "missing"}`,
+      );
+    }
+    // I-1: the validated path depth is the sole depth-cap authority.
+    const depth = pathDepth;
     if (depth > this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
@@ -872,13 +1080,40 @@ export class AgentControl {
       throw new MaxDepthExceededError(depth, this.maxDepth);
     }
 
-    // Idempotency: if already live on this agentPath, return it.
-    const existing = this.getLiveByPath(agentPath);
-    if (existing) return existing;
+    const role = resolveResumedAgentRole(this.roleWorkspace, metadata);
 
-    // Registry: if unknown, reserve a slot + finalize with the metadata.
-    // If registry already knows the thread, the slot is already charged.
-    if (!this.registry.agentMetadataForThread(threadId)) {
+    // Idempotency is exact identity, never merely a matching id or path. A
+    // partial match would let resume overwrite one live map while leaving the
+    // registry indexed under another identity.
+    const liveById = this.live.get(threadId);
+    const liveByPath = this.getLiveByPath(agentPath);
+    if (liveById !== undefined || liveByPath !== undefined) {
+      if (
+        liveById === undefined ||
+        liveByPath === undefined ||
+        liveById !== liveByPath
+      ) {
+        throw new InvalidAgentMetadataError(
+          "agent resume identity conflicts with a live agent",
+        );
+      }
+      assertSameAgentIdentity(metadata, liveById.metadata);
+      return liveById;
+    }
+
+    const registeredById = this.registry.agentMetadataForThread(threadId);
+    const registeredIdAtPath = this.registry.agentIdForPath(agentPath);
+    if (registeredById !== undefined) {
+      assertSameAgentIdentity(metadata, registeredById);
+      if (registeredIdAtPath !== threadId) {
+        throw new InvalidAgentMetadataError(
+          "agent resume registry indexes disagree",
+        );
+      }
+    } else {
+      if (registeredIdAtPath !== undefined) {
+        throw new AgentPathExistsError(agentPath);
+      }
       const reservation = await this.registry.reserveSpawnSlot();
       try {
         reservation.finalize(metadata);
@@ -888,7 +1123,6 @@ export class AgentControl {
       }
     }
 
-    const role = resolveResumedAgentRole(metadata.agentRole);
     const nickname = metadata.agentNickname ?? `resumed-${threadId}`;
     const upInbox = new Mailbox({
       threadId,
@@ -972,6 +1206,11 @@ export class AgentControl {
     readonly resumedCount: number;
     readonly rootLive: LiveAgent | null;
   }> {
+    if (opts.metadata.agentId !== opts.rootThreadId) {
+      throw new InvalidAgentMetadataError(
+        "rollout root thread id does not match agent metadata",
+      );
+    }
     const rootLive = await this.resumeSingleAgentFromRollout({
       parentPath: opts.parentPath,
       metadata: opts.metadata,
@@ -1004,13 +1243,12 @@ export class AgentControl {
       for (const edge of children) {
         if (seen.has(edge.childThreadId)) continue;
         seen.add(edge.childThreadId);
-        const existing = this.live.get(edge.childThreadId);
-        if (existing) {
-          resumeQueue.push(existing.agentId);
-          continue;
-        }
-
         try {
+          if (this.agentIdForPath(edge.parentPath) !== parentThreadId) {
+            throw new InvalidAgentMetadataError(
+              `spawn edge parent thread ${parentThreadId} does not match live parent path ${edge.parentPath}`,
+            );
+          }
           const childLive = await this.resumeSingleAgentFromRollout({
             parentPath: edge.parentPath,
             metadata: edge.metadata,
@@ -1434,7 +1672,7 @@ export class AgentControl {
     readonly roleName?: string;
     readonly preferredNickname?: string;
   }): { readonly metadata: AgentMetadata; readonly role: AgentRole } {
-    const role = requireAgentRole(opts.roleName);
+    const role = requireAgentRole(this.roleWorkspace, opts.roleName);
     const nickname =
       opts.preferredNickname ?? allocateNickname(role, this.registry);
     const depth = depthOfAgentPath(opts.parentPath) + 1;
@@ -1442,6 +1680,8 @@ export class AgentControl {
       agentId: "pending",
       parentPath: opts.parentPath,
       role,
+      roleWorkspaceId: this.roleWorkspace.id,
+      roleFingerprint: agentRoleFingerprint(role),
       nickname,
       depth,
     });
@@ -1557,7 +1797,7 @@ export class AgentControl {
     if (!rolloutStore) return;
     const storedMetadata = metadata ?? this.registry.agentMetadataForThread(childThreadId);
     if (!storedMetadata) return;
-    rolloutStore.upsertThreadSpawnEdge({
+    rolloutStore.createThreadSpawnEdge({
       childThreadId,
       parentThreadId,
       parentPath,
@@ -1675,18 +1915,29 @@ export function renderInputPreview(input: string): string {
 function cloneAgentMetadata(
   metadata: AgentMetadata | undefined,
 ): AgentMetadata {
-  return {
-    ...(metadata?.agentId !== undefined ? { agentId: metadata.agentId } : {}),
-    ...(metadata?.agentPath !== undefined ? { agentPath: metadata.agentPath } : {}),
-    ...(metadata?.agentNickname !== undefined
-      ? { agentNickname: metadata.agentNickname }
-      : {}),
-    ...(metadata?.agentRole !== undefined ? { agentRole: metadata.agentRole } : {}),
-    ...(metadata?.lastTaskMessage !== undefined
-      ? { lastTaskMessage: metadata.lastTaskMessage }
-      : {}),
-    depth: metadata?.depth ?? 0,
-  };
+  return normalizeAgentMetadata(metadata ?? { depth: 0 });
+}
+
+function assertSameAgentIdentity(
+  expected: AgentMetadata,
+  actual: AgentMetadata,
+): void {
+  const normalizedExpected = normalizeAgentMetadata(expected);
+  const normalizedActual = normalizeAgentMetadata(actual);
+  if (
+    normalizedExpected.agentId !== normalizedActual.agentId ||
+    normalizedExpected.agentPath !== normalizedActual.agentPath ||
+    normalizedExpected.agentRole !== normalizedActual.agentRole ||
+    normalizedExpected.agentRoleWorkspaceId !==
+      normalizedActual.agentRoleWorkspaceId ||
+    normalizedExpected.agentRoleFingerprint !==
+      normalizedActual.agentRoleFingerprint ||
+    normalizedExpected.depth !== normalizedActual.depth
+  ) {
+    throw new InvalidAgentMetadataError(
+      "agent resume identity does not match registered metadata",
+    );
+  }
 }
 
 function edgeStatusForShutdownReason(

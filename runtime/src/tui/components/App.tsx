@@ -59,6 +59,11 @@ import { AgenCPermissionOverlay as PermissionOverlay, buildToolUseConfirmQueue, 
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
 import { findCommand, getCommands, isCommandEnabled, listTuiCommandList } from "../../commands.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
+import { getAgentDefinitionsWithOverrides } from "../../tools/AgentTool/loadAgentsDir.js";
+import {
+  createAgentRoleWorkspace,
+  normalizeAgentRoleWorkspace,
+} from "../../agents/role.js";
 import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { PromptInputContext } from "../input/inputContext.js";
@@ -1067,18 +1072,51 @@ async function persistOnboardingSelection(props: AgenCTuiProps, agencHome: strin
   await props.configStore.reload?.();
   await props.session.services.configStore?.reload?.();
 }
-function initialState(props: AgenCTuiProps): any {
-  const agentDefinitions = listAgentRoleDefinitions();
+function initialState(
+  props: AgenCTuiProps,
+  roleWorkspaceCwd: string,
+): any {
+  const roleWorkspace = createAgentRoleWorkspace(roleWorkspaceCwd);
+  const sessionCatalog = props.session.agentDefinitions;
+  if (
+    sessionCatalog !== undefined &&
+    sessionCatalog.agentRoleWorkspaceId !== roleWorkspace.id
+  ) {
+    throw new Error(
+      `agent catalog workspace mismatch: expected ${roleWorkspace.id}, received ${sessionCatalog.agentRoleWorkspaceId}`,
+    );
+  }
+  const agentDefinitions = sessionCatalog ?? (() => {
+    const fallbackDefinitions = listAgentRoleDefinitions(roleWorkspaceCwd);
+    return {
+      agentRoleWorkspaceId: roleWorkspace.id,
+      activeAgents: fallbackDefinitions,
+      allAgents: fallbackDefinitions,
+    };
+  })();
   return {
     ...getDefaultAppState(),
     mainLoopModel: startupModel(props),
     mainLoopModelForSession: startupModel(props),
     toolPermissionContext: initialPermissionContext(props),
     agentDefinitions: {
-      activeAgents: [...agentDefinitions],
-      allAgents: [...agentDefinitions],
+      ...agentDefinitions,
+      agentRoleWorkspaceId: roleWorkspace.id,
+      activeAgents: [...agentDefinitions.activeAgents],
+      allAgents: [...(agentDefinitions.allAgents ?? agentDefinitions.activeAgents)],
     }
   };
+}
+
+function requireTuiRoleWorkspaceCwd(props: AgenCTuiProps): string {
+  if (props.session.roleWorkspace !== undefined) {
+    return normalizeAgentRoleWorkspace(props.session.roleWorkspace).cwd;
+  }
+  const cwd = props.session.cwd ?? props.session.sessionConfiguration?.cwd;
+  if (typeof cwd !== "string" || cwd.length === 0) {
+    throw new Error("TUI agent roles require an explicit session workspace cwd");
+  }
+  return createAgentRoleWorkspace(cwd).cwd;
 }
 
 type SetToolPermissionContext = (next: ToolPermissionContext) => void;
@@ -1438,7 +1476,11 @@ function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
   if (model) return `AgenC ${model}`;
   return "AgenC";
 }
-function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
+type AgenCTuiShellProps = AgenCTuiProps & {
+  readonly roleWorkspaceCwd: string;
+};
+
+function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const {
     exit
   } = useApp();
@@ -1526,6 +1568,44 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
+  useEffect(() => {
+    if (props.session.agentDefinitions !== undefined) {
+      return;
+    }
+    let cancelled = false;
+    void getAgentDefinitionsWithOverrides(props.roleWorkspaceCwd)
+      .then(agentDefinitions => {
+        if (cancelled) return;
+        const roleWorkspace = createAgentRoleWorkspace(props.roleWorkspaceCwd);
+        if (agentDefinitions.agentRoleWorkspaceId !== roleWorkspace.id) {
+          throw new Error(
+            `agent catalog workspace mismatch: expected ${roleWorkspace.id}, received ${agentDefinitions.agentRoleWorkspaceId ?? "missing"}`,
+          );
+        }
+        setAppState(state => ({
+          ...state,
+          agentDefinitions,
+        }));
+      })
+      .catch(error => {
+        if (!cancelled) {
+          addNotification({
+            key: "agent-catalog-load-error",
+            text: error instanceof Error ? error.message : String(error),
+            color: "error",
+            priority: "high",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addNotification,
+    props.roleWorkspaceCwd,
+    props.session.agentDefinitions,
+    setAppState,
+  ]);
   const getBridgeAppState = useCallback(() => appStateStore.getState(), [appStateStore]);
   useEffect(() => {
     const subscribe = props.session.subscribeToEvents;
@@ -1658,7 +1738,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     const extras = dynamicTuiCommands.filter((cmd) => !seen.has(cmd.name.toLowerCase()));
     return [...builtinTuiCommands, ...extras];
   }, [builtinTuiCommands, dynamicTuiCommands]);
-  const agents = useMemo(() => listAgentRoleDefinitions(), []);
+  const agents = useAppState(state => state.agentDefinitions.activeAgents);
   const appTasks = useAppState(s => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
   const hasActiveSessionTurn = hasActiveConversationTurn(props.session);
@@ -2690,11 +2770,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   return <Box flexDirection="column" width="100%">{body}</Box>;
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
-  const initial = useMemo(() => initialState(props), []);
+  const roleWorkspaceCwd = useMemo(
+    () => requireTuiRoleWorkspaceCwd(props),
+    [],
+  );
+  const initial = useMemo(
+    () => initialState(props, roleWorkspaceCwd),
+    [roleWorkspaceCwd],
+  );
   return <App initialState={initial} getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}>
       <PromptOverlayProvider>
         <KeybindingSetup>
-          <AgenCTuiShell {...props} />
+          <AgenCTuiShell {...props} roleWorkspaceCwd={roleWorkspaceCwd} />
         </KeybindingSetup>
       </PromptOverlayProvider>
     </App>;

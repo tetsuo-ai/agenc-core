@@ -36,6 +36,7 @@ import {
   redactSecrets,
   scanForSecrets,
 } from './privacy.js'
+import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 
 let tempRoot = ''
 let oldProjectRoot = ''
@@ -100,6 +101,11 @@ describe('memory privacy', () => {
     expect(memoryScopeForPath(teamMemoryFile)).toBe('team')
     expect(isAutoManagedMemoryFile(projectMemoryFile)).toBe(true)
     expect(isAutoManagedMemoryFile(teamMemoryFile)).toBe(true)
+    expect(
+      isAutoManagedMemoryFile(
+        join(getAgentMemoryDir('privacy-worker', 'user'), 'MEMORY.md'),
+      ),
+    ).toBe(true)
     expect(detectSessionFileType(sessionSummary)).toBe('session_memory')
     expect(detectSessionFileType(transcript)).toBe('session_transcript')
     expect(detectSessionPatternType('session-memory/*.md')).toBe(

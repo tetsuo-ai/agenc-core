@@ -14,7 +14,12 @@ import { afterEach, expect, test } from 'bun:test'
 import { clearSystemPromptSections } from '../../src/constants/systemPromptSections.ts'
 import { getSystemPrompt, DEFAULT_AGENT_PROMPT } from '../../src/constants/prompts.ts'
 import { CLI_SYSPROMPT_PREFIXES, getCLISyspromptPrefix } from '../../src/constants/system.ts'
-import { requireAgentRole } from '../../src/agents/role.ts'
+import {
+  createAgentRoleWorkspace,
+  requireAgentRole,
+} from '../../src/agents/role.ts'
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd())
 
 const originalSimpleEnv = process.env.AGENC_SIMPLE
 const originalMcpInstructionsDeltaEnv = process.env.AGENC_MCP_INSTR_DELTA
@@ -93,16 +98,16 @@ test('built-in agent prompts describe AgenC', () => {
   // The built-in agents are now first-class roles; their prompts live on the
   // role config. Resolve via aliases to also assert alias→role wiring.
   // (The default/general-purpose role intentionally carries no system prompt.)
-  const explorePrompt = requireAgentRole('scanner').config.systemPrompt ?? ''
+  const explorePrompt = requireAgentRole(ROLE_WORKSPACE, 'scanner').config.systemPrompt ?? ''
   expect(explorePrompt).toContain('AgenC')
   expect(explorePrompt).not.toContain("provider's official CLI for AgenC")
 
-  const planPrompt = requireAgentRole('Plan').config.systemPrompt ?? ''
+  const planPrompt = requireAgentRole(ROLE_WORKSPACE, 'Plan').config.systemPrompt ?? ''
   expect(planPrompt).toContain('AgenC')
   expect(planPrompt).not.toContain("provider's official CLI for AgenC")
 
   // The verification prompt does not use the "for AgenC" domain phrasing, but it
   // must still be free of stray upstream branding.
-  const verificationPrompt = requireAgentRole('verification').config.systemPrompt ?? ''
+  const verificationPrompt = requireAgentRole(ROLE_WORKSPACE, 'verification').config.systemPrompt ?? ''
   expect(verificationPrompt).not.toContain("provider's official CLI for AgenC")
 })

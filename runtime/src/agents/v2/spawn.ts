@@ -9,6 +9,7 @@ import {
   depthOfAgentPath,
 } from "../registry.js";
 import {
+  assertAgentRoleWorkspaceMatches,
   formatRoleList,
   listAgentRoles,
   requireAgentRole,
@@ -325,8 +326,9 @@ function roleServiceTier(role: AgentRole | undefined): string | undefined {
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
+  const workspaceRoles = listAgentRoles(opts.workspace);
   const roleNames = [...new Set(
-    listAgentRoles().flatMap((role) => [
+    workspaceRoles.flatMap((role) => [
       formatAgentRolePublicName(role.name) ?? role.name,
       role.name,
     ]),
@@ -345,7 +347,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         enum: roleNames,
         description:
           [
-            formatRoleList(listAgentRoles()),
+            formatRoleList(workspaceRoles),
             "Use only a listed role name. For implementation, edits, or tests use `runner`. For codebase reconnaissance use `scanner`. Omit this field for a general `netrunner` fork. Do not invent role names such as `code-implementer` or `reviewer` unless they are listed here.",
           ].join("\n\n"),
       },
@@ -419,7 +421,26 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         true,
       );
     }
+    try {
+      assertAgentRoleWorkspaceMatches(
+        session.roleWorkspace,
+        opts.workspace.id,
+      );
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
     const { control, registry } = opts.ensureAgentControl(session);
+    try {
+      control.assertRoleWorkspace(opts.workspace);
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
     const current = currentAgentContext(session, args, opts);
     const rawRole = stringValue(args.agent_type);
     const role =
@@ -508,7 +529,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let resolvedRole: AgentRole | undefined;
     try {
       if (role !== undefined) {
-        resolvedRole = requireAgentRole(role);
+        resolvedRole = requireAgentRole(control.roleWorkspace, role);
       }
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));

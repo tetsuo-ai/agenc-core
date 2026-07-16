@@ -66,7 +66,11 @@ import { AgentControl } from "../agents/control.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
-import { listAgentRoles } from "../agents/role.js";
+import {
+  createAgentRoleWorkspace,
+  listAgentRoles,
+} from "../agents/role.js";
+import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
@@ -700,7 +704,7 @@ function buildDeferredConfig(
     /** T-future: ghost-snapshot state machine (agenc runtime workspace restore). */
     ghostSnapshot: { enabled: false },
     /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
-    agentRoles: listAgentRoles().map((role) => ({
+    agentRoles: listAgentRoles(createAgentRoleWorkspace(cwd)).map((role) => ({
       name: role.name,
       description: role.config.description ?? "",
     })),
@@ -1376,6 +1380,10 @@ export async function bootstrapLocalRuntimeSession(
   };
 
   try {
+    const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
+    const agentDefinitions = await loadFreshAgentDefinitions(
+      roleWorkspace.cwd,
+    );
     // Construct the session through `bootstrapSession` so shell
     // discovery, SessionConfigured emit, startup prewarm, and
     // resume-history recording all flow through the shared entry
@@ -1389,6 +1397,8 @@ export async function bootstrapLocalRuntimeSession(
     // that work instead.
     const session = await bootstrapSession({
       conversationId,
+      roleWorkspace,
+      agentDefinitions,
       initialState,
       features: config.features,
       services: bootstrapServices.services,

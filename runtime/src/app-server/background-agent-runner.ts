@@ -20,6 +20,7 @@ import { runTurn } from "../session/run-turn.js";
 import {
   ROOT_AGENT_PATH,
   joinAgentPath,
+  normalizeAgentMetadata,
   normalizeAgentNameForPath,
   type AgentMetadata,
   type AgentPath,
@@ -3549,17 +3550,23 @@ function restoredAgentMetadata(
     metadataStringField(metadata, "agentPath") ??
     metadataStringField(metadata, "agent_path") ??
     joinAgentPath(ROOT_AGENT_PATH, normalizeAgentNameForPath(params.agentId));
-  return {
+  return normalizeAgentMetadata({
     agentId: params.agentId,
     agentPath,
-    ...(metadataStringField(metadata, "agentNickname") !== undefined
-      ? { agentNickname: metadataStringField(metadata, "agentNickname") }
+    ...(metadata?.agentNickname !== undefined
+      ? { agentNickname: metadata.agentNickname }
       : {}),
-    ...(metadataStringField(metadata, "agentRole") !== undefined
-      ? { agentRole: metadataStringField(metadata, "agentRole") }
+    ...(metadata?.agentRole !== undefined
+      ? { agentRole: metadata.agentRole }
       : {}),
-    depth: metadataNumberField(metadata, "depth") ?? 1,
-  };
+    ...(metadata?.agentRoleWorkspaceId !== undefined
+      ? { agentRoleWorkspaceId: metadata.agentRoleWorkspaceId }
+      : {}),
+    ...(metadata?.agentRoleFingerprint !== undefined
+      ? { agentRoleFingerprint: metadata.agentRoleFingerprint }
+      : {}),
+    depth: metadata?.depth ?? 1,
+  });
 }
 
 function metadataStringField(
@@ -3569,16 +3576,6 @@ function metadataStringField(
   const field = value?.[key];
   return typeof field === "string" && field.trim().length > 0
     ? field.trim()
-    : undefined;
-}
-
-function metadataNumberField(
-  value: JsonObject | undefined,
-  key: string,
-): number | undefined {
-  const field = value?.[key];
-  return typeof field === "number" && Number.isFinite(field)
-    ? field
     : undefined;
 }
 

@@ -10,7 +10,12 @@ import {
   isAutoMemPath,
   isGlobalMemoryPath,
 } from 'src/memory/index.js'
-import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
+import {
+  isAnyAgentMemoryPath,
+  isAuthorizedAgentMemoryPath,
+} from 'src/tools/AgentTool/agentMemory.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import { getAgentMemoryAuthorization } from '../agentContext.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
   FILE_EDIT_TOOL_NAME,
@@ -1181,6 +1186,14 @@ function computeReadDecision(
     }
   }
 
+  // Agent-memory namespaces are private to one exact workspace role. Enforce
+  // this before generic working-directory and edit-implies-read allowances;
+  // otherwise a project/local memory hardlink or sibling role file inside the
+  // workspace would bypass the identity check. A safetyCheck result remains
+  // fail-closed even under bypassPermissions.
+  const agentMemoryDecision = checkAgentMemoryBoundary(pathsToCheck, input)
+  if (agentMemoryDecision !== null) return agentMemoryDecision
+
   // 5. Edit access implies read access (but only if no read-specific deny/ask rules exist)
   // We check this after read-specific rules so that explicit read restrictions take precedence
   const editResult = checkWritePermissionForTool(
@@ -1212,7 +1225,11 @@ function computeReadDecision(
 
   // 7. Allow reads from internal harness paths (session-memory, plans, tool-results)
   const absolutePath = expandPath(path)
-  const internalReadResult = checkReadableInternalPath(absolutePath, input)
+  const internalReadResult = checkReadableInternalPath(
+    absolutePath,
+    input,
+    pathsToCheck,
+  )
   if (internalReadResult.behavior !== 'passthrough') {
     return internalReadResult
   }
@@ -1298,12 +1315,17 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     }
   }
 
+
+  const agentMemoryDecision = checkAgentMemoryBoundary(pathsToCheck, input)
+  if (agentMemoryDecision !== null) return agentMemoryDecision
+
   // 1.5. Allow writes to internal editable paths (plan files, scratchpad)
   // This MUST come before isDangerousFilePathToAutoEdit check since .agenc is a dangerous directory
   const absolutePathForEdit = expandPath(path)
   const internalEditResult = checkEditableInternalPath(
     absolutePathForEdit,
     input,
+    pathsToCheck,
   )
   if (internalEditResult.behavior !== 'passthrough') {
     return internalEditResult
@@ -1471,6 +1493,51 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   }
 }
 
+function checkAgentMemoryBoundary(
+  pathsToCheck: readonly string[],
+  input: { [key: string]: unknown },
+): PermissionDecision | null {
+  const roleWorkspaceCwd =
+    peekAmbientRuntimeSession()?.roleWorkspace.cwd ?? getOriginalCwd()
+  if (
+    !pathsToCheck.some(path =>
+      isAnyAgentMemoryPath(path, roleWorkspaceCwd),
+    )
+  ) {
+    return null
+  }
+
+  const authorization = getAgentMemoryAuthorization()
+  if (
+    pathsToCheck.length > 0 &&
+    pathsToCheck.every(path =>
+      isAuthorizedAgentMemoryPath(
+        path,
+        roleWorkspaceCwd,
+        authorization,
+      ),
+    )
+  ) {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: { type: 'mode', mode: 'default' },
+    }
+  }
+
+  const message =
+    'Agent memory access requires the exact authorized workspace role and a private regular file.'
+  return {
+    behavior: 'ask',
+    message,
+    decisionReason: {
+      type: 'safetyCheck',
+      reason: message,
+      classifierApprovable: false,
+    },
+  }
+}
+
 export function generateSuggestions(
   filePath: string,
   operationType: 'read' | 'write' | 'create',
@@ -1539,6 +1606,7 @@ export function generateSuggestions(
 export function checkEditableInternalPath(
   absolutePath: string,
   input: { [key: string]: unknown },
+  pathsToCheck?: readonly string[],
 ): PermissionResult {
   // SECURITY: Normalize path to prevent traversal bypasses via .. segments
   // This is defense-in-depth; individual helper functions also normalize
@@ -1611,7 +1679,21 @@ export function checkEditableInternalPath(
   }
 
   // Agent memory directory (for self-improving agents)
-  if (isAgentMemoryPath(normalizedPath)) {
+  const roleWorkspaceCwd =
+    peekAmbientRuntimeSession()?.roleWorkspace.cwd ?? null
+  const memoryAuthorization = getAgentMemoryAuthorization()
+  const agentMemoryPathForms =
+    pathsToCheck ?? getPathsForPermissionCheck(normalizedPath)
+  if (
+    agentMemoryPathForms.length > 0 &&
+    agentMemoryPathForms.every(path =>
+      isAuthorizedAgentMemoryPath(
+        path,
+        roleWorkspaceCwd,
+        memoryAuthorization,
+      )
+    )
+  ) {
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -1674,6 +1756,7 @@ export function checkEditableInternalPath(
 export function checkReadableInternalPath(
   absolutePath: string,
   input: { [key: string]: unknown },
+  pathsToCheck?: readonly string[],
 ): PermissionResult {
   // SECURITY: Normalize path to prevent traversal bypasses via .. segments
   // This is defense-in-depth; individual helper functions also normalize
@@ -1764,7 +1847,21 @@ export function checkReadableInternalPath(
   }
 
   // Agent memory directory (for self-improving agents)
-  if (isAgentMemoryPath(normalizedPath)) {
+  const roleWorkspaceCwd =
+    peekAmbientRuntimeSession()?.roleWorkspace.cwd ?? null
+  const memoryAuthorization = getAgentMemoryAuthorization()
+  const agentMemoryPathForms =
+    pathsToCheck ?? getPathsForPermissionCheck(normalizedPath)
+  if (
+    agentMemoryPathForms.length > 0 &&
+    agentMemoryPathForms.every(path =>
+      isAuthorizedAgentMemoryPath(
+        path,
+        roleWorkspaceCwd,
+        memoryAuthorization,
+      )
+    )
+  ) {
     return {
       behavior: 'allow',
       updatedInput: input,

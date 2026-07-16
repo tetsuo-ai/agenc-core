@@ -1,13 +1,22 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateSchemaMismatchError } from "./errors.js";
 import {
+  applyMigrations,
   openStateDatabases,
   resolveStateDatabasePaths,
+  STATE_PRE_V12_BACKUP_FILENAME,
 } from "./sqlite-driver.js";
+import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
 
 let home = "";
 let cwd = "";
@@ -122,5 +131,192 @@ describe("openStateDatabases", () => {
     }
 
     expect(() => openStateDatabases({ cwd })).toThrow(StateSchemaMismatchError);
+  });
+
+  it("creates a verified pre-v12 backup that an older runtime can restore", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const raw = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(raw, STATE_DB_MIGRATIONS.slice(0, -1));
+      const insertEdge = raw.prepare(
+        `INSERT INTO thread_spawn_edges (
+          child_thread_id, parent_thread_id, parent_path, metadata_json, status
+        ) VALUES (?, ?, ?, ?, ?)`,
+      );
+      insertEdge.run(
+        "backup-child",
+        "backup-root",
+        "/root",
+        JSON.stringify({
+          agentId: "backup-child",
+          agentPath: "/root/backup-child",
+          agentRole: "reviewer",
+          agentRoleWorkspaceId: cwd,
+          depth: 1,
+        }),
+        "open",
+      );
+
+      // Model a prior upgrade attempt that published a backup but died before
+      // committing v12. State can continue changing under v11; the next
+      // attempt must refresh, not trust, this now-stale artifact.
+      const staleBackupPath = join(
+        paths.projectDir,
+        STATE_PRE_V12_BACKUP_FILENAME,
+      );
+      raw.exec(`VACUUM main INTO '${staleBackupPath.replaceAll("'", "''")}'`);
+      insertEdge.run(
+        "after-stale-backup",
+        "backup-root",
+        "/root",
+        JSON.stringify({
+          agentId: "after-stale-backup",
+          agentPath: "/root/after-stale-backup",
+          agentRole: "reviewer",
+          agentRoleWorkspaceId: cwd,
+          depth: 1,
+        }),
+        "open",
+      );
+    } finally {
+      raw.close();
+    }
+
+    const driver = openStateDatabases({ cwd });
+    try {
+      expect(
+        driver
+          .prepareState<[], { version: number }>(
+            "SELECT MAX(version) AS version FROM schema_migrations",
+          )
+          .get()?.version,
+      ).toBe(12);
+    } finally {
+      driver.close();
+    }
+
+    const backupPath = join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME);
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = new Database(backupPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(
+        backup
+          .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+          .get(),
+      ).toEqual({ version: 11 });
+      expect(
+        backup
+          .prepare("PRAGMA table_info(thread_spawn_edges)")
+          .all()
+          .some(
+            (column) =>
+              (column as { name?: unknown }).name === "agent_role_workspace_id",
+          ),
+      ).toBe(false);
+      expect(
+        backup
+          .prepare(
+            `SELECT parent_thread_id, metadata_json, status
+             FROM thread_spawn_edges
+             WHERE child_thread_id = ?`,
+          )
+          .get("backup-child"),
+      ).toMatchObject({
+        parent_thread_id: "backup-root",
+        status: "open",
+      });
+      expect(
+        backup
+          .prepare(
+            "SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+          )
+          .get("after-stale-backup"),
+      ).toEqual({ child_thread_id: "after-stale-backup" });
+      expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({
+        integrity_check: "ok",
+      });
+    } finally {
+      backup.close();
+    }
+
+    const restoredPath = join(paths.projectDir, "restored-pre-v12.sqlite");
+    copyFileSync(backupPath, restoredPath);
+    const restored = new Database(restoredPath);
+    try {
+      expect(() =>
+        applyMigrations(restored, STATE_DB_MIGRATIONS.slice(0, -1)),
+      ).not.toThrow();
+      expect(
+        restored
+          .prepare(
+            "SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+          )
+          .get("backup-child"),
+      ).toEqual({ child_thread_id: "backup-child" });
+      expect(
+        restored
+          .prepare(
+            "SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+          )
+          .get("after-stale-backup"),
+      ).toEqual({ child_thread_id: "after-stale-backup" });
+    } finally {
+      restored.close();
+    }
+  });
+
+  it("decides the pre-v12 backup under the writer lock with a v11 connection open", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const v11 = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(v11, STATE_DB_MIGRATIONS.slice(0, -1));
+      v11.prepare(
+        `INSERT INTO thread_spawn_edges (
+          child_thread_id, parent_thread_id, parent_path, metadata_json, status
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        "concurrent-child",
+        "root-1",
+        "/root",
+        JSON.stringify({
+          agentId: "concurrent-child",
+          agentPath: "/root/concurrent",
+          agentRole: "default",
+          depth: 1,
+        }),
+        "open",
+      );
+
+      const upgraded = openStateDatabases({ cwd });
+      upgraded.close();
+
+      const backup = new Database(
+        join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME),
+        { readonly: true, fileMustExist: true },
+      );
+      try {
+        expect(
+          backup
+            .prepare(
+              "SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+            )
+            .get("concurrent-child"),
+        ).toEqual({ child_thread_id: "concurrent-child" });
+        expect(
+          backup
+            .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+            .get(),
+        ).toEqual({ version: 11 });
+      } finally {
+        backup.close();
+      }
+    } finally {
+      v11.close();
+    }
   });
 });

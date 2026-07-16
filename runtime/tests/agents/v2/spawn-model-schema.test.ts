@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createSpawnAgentTool } from "./spawn.js";
 import type { MultiAgentV2Options } from "./common.js";
 import type { Session } from "../../session/session.js";
+import { createAgentRoleWorkspace } from "../role.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 
 interface FakeSchema {
   readonly type: string;
@@ -27,6 +30,7 @@ function makeOptions(opts: {
   } as unknown as Session;
   return {
     getSession: () => session,
+    workspace: ROLE_WORKSPACE,
     ensureAgentControl: () => {
       throw new Error("not used in schema test");
     },

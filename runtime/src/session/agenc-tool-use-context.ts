@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
+import { assertAgentRoleWorkspaceMatches } from "../agents/role-workspace.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
 import {
@@ -39,6 +40,7 @@ export interface AgenCToolUseContext {
     };
     readonly querySource?: string;
     readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
       readonly activeAgents: readonly unknown[];
       readonly allowedAgentTypes?: readonly unknown[];
     };
@@ -49,6 +51,7 @@ export interface AgenCToolUseContext {
   readonly getAppState: () => {
     readonly toolPermissionContext: unknown;
     readonly agentDefinitions: {
+      readonly agentRoleWorkspaceId?: string;
       readonly activeAgents: readonly unknown[];
       readonly allowedAgentTypes?: readonly unknown[];
     };
@@ -103,6 +106,7 @@ type SessionSurface = {
   readonly loadedNestedMemoryPaths?: Set<string>;
   readonly mcpClients?: readonly unknown[];
   readonly agentDefinitions?: {
+    readonly agentRoleWorkspaceId?: string;
     readonly activeAgents?: readonly unknown[];
     readonly allowedAgentTypes?: readonly unknown[];
   };
@@ -167,7 +171,11 @@ export function buildAgenCToolUseContext(
   const model = toAgenCModelContext(ctx);
   const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
-  const agentDefinitions = normalizeAgentDefinitions(surface.agentDefinitions);
+  const agentDefinitions = resolveAgentDefinitionsForContext(
+    session,
+    surface,
+    surface.getAppState?.(),
+  );
   const cwd = ctx.cwd;
   const llmTools = opts.llmTools ?? session.services.registry.toLLMTools();
   const setAppState = surface.setAppState;
@@ -283,6 +291,9 @@ function normalizeAgentDefinitions(
   definitions: SessionSurface["agentDefinitions"],
 ): NonNullable<AppStateShape["agentDefinitions"]> {
   return {
+    ...(readString(definitions?.agentRoleWorkspaceId) !== undefined
+      ? { agentRoleWorkspaceId: readString(definitions?.agentRoleWorkspaceId) }
+      : {}),
     activeAgents: Array.isArray(definitions?.activeAgents)
       ? [...definitions.activeAgents]
       : [],
@@ -290,6 +301,33 @@ function normalizeAgentDefinitions(
       ? [...definitions.allowedAgentTypes]
       : [],
   };
+}
+
+function resolveAgentDefinitionsForContext(
+  session: Session,
+  surface: SessionSurface,
+  state: unknown,
+): NonNullable<AppStateShape["agentDefinitions"]> {
+  const fallback = normalizeAgentDefinitions(surface.agentDefinitions);
+  assertAgentRoleWorkspaceMatches(
+    session.roleWorkspace,
+    fallback.agentRoleWorkspaceId,
+  );
+  if (
+    !isRecord(state) ||
+    !isRecord(state.agentDefinitions) ||
+    !Array.isArray(state.agentDefinitions.activeAgents)
+  ) {
+    return fallback;
+  }
+  const live = normalizeAgentDefinitions(
+    state.agentDefinitions as SessionSurface["agentDefinitions"],
+  );
+  assertAgentRoleWorkspaceMatches(
+    session.roleWorkspace,
+    live.agentRoleWorkspaceId,
+  );
+  return live;
 }
 
 function createFallbackAppState(
@@ -333,19 +371,18 @@ function createAppStateReader(
     const fallback = createFallbackAppState(session, surface, agentDefinitions);
     const state = surface.getAppState?.();
     if (!isRecord(state)) return fallback;
+    const liveAgentDefinitions = resolveAgentDefinitionsForContext(
+      session,
+      surface,
+      state,
+    );
 
     return {
       ...state,
       toolPermissionContext:
         readToolPermissionContext(state.toolPermissionContext) ??
         fallback.toolPermissionContext,
-      agentDefinitions:
-        isRecord(state.agentDefinitions) &&
-        Array.isArray(state.agentDefinitions.activeAgents)
-          ? normalizeAgentDefinitions(
-              state.agentDefinitions as SessionSurface["agentDefinitions"],
-            )
-          : fallback.agentDefinitions,
+      agentDefinitions: liveAgentDefinitions,
       tasks: isRecord(state.tasks)
         ? (state.tasks as Record<string, unknown>)
         : fallback.tasks,

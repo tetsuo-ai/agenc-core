@@ -11,6 +11,7 @@ vi.mock("../bootstrap/state.js", () => ({
 
 vi.mock("./sessionStorage.js", () => ({
   recordQueueOperation: vi.fn(),
+  writeAgentMetadata: vi.fn(async () => undefined),
 }));
 
 import {

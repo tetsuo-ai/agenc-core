@@ -16,6 +16,7 @@ import {
   formatAgenCAgentStopResult,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
+  resolveAgenCAgentAttachRoleWorkspace,
   runAgenCAgentCli,
   type AgenCAgentCliIo,
 } from "./agent-cli.js";
@@ -527,6 +528,32 @@ describe("agenc agent start CLI", () => {
         "/local/workspace",
       ),
     ).toBe("/daemon/workspace");
+    expect(
+      resolveAgenCAgentAttachRoleWorkspace(
+        {
+          agentId: "agent_3",
+          attachmentId: "attachment_3",
+          sessionIds: ["session_remote"],
+          sessions: [
+            {
+              sessionId: "session_remote",
+              agentId: "agent_3",
+              status: "idle",
+              createdAt: "2026-05-01T12:00:00.000Z",
+              cwd: "/daemon/worktree",
+              roleWorkspace: {
+                id: "/daemon/authority",
+                cwd: "/daemon/authority",
+              },
+            },
+          ],
+        },
+        "/local/workspace",
+      ),
+    ).toMatchObject({
+      id: "/daemon/authority",
+      cwd: "/daemon/authority",
+    });
     expect(io.stderrText()).toBe("");
   });
 
@@ -1868,6 +1895,97 @@ autostart = false
     expect(io.stderrText()).toContain(
       "Daemon connection closed before response",
     );
+  });
+});
+
+describe("resolveAgenCAgentAttachRoleWorkspace", () => {
+  function attachmentWithMetadata(
+    metadata?: Record<string, string | number | undefined>,
+  ) {
+    return {
+      agentId: "agent_1",
+      attachmentId: "attachment_1",
+      sessionIds: ["session_1"],
+      sessions: [
+        {
+          sessionId: "session_1",
+          agentId: "agent_1",
+          status: "idle" as const,
+          createdAt: "2026-05-01T12:00:00.000Z",
+          cwd: "/daemon/worktree",
+          ...(metadata === undefined ? {} : { metadata }),
+        },
+      ],
+    };
+  }
+
+  it("uses the execution cwd only for legacy sessions without role provenance", () => {
+    expect(
+      resolveAgenCAgentAttachRoleWorkspace(
+        attachmentWithMetadata(),
+        "/local/workspace",
+      ),
+    ).toMatchObject({
+      id: "/daemon/worktree",
+      cwd: "/daemon/worktree",
+    });
+  });
+
+  it("accepts complete persisted role provenance", () => {
+    expect(
+      resolveAgenCAgentAttachRoleWorkspace(
+        attachmentWithMetadata({
+          agentRoleWorkspaceId: "/daemon/authority",
+          agentRoleWorkspaceCwd: "/daemon/authority",
+        }),
+        "/local/workspace",
+      ),
+    ).toMatchObject({
+      id: "/daemon/authority",
+      cwd: "/daemon/authority",
+    });
+  });
+
+  it.each([
+    ["an empty ID", { agentRoleWorkspaceId: "" }],
+    ["a non-string ID", { agentRoleWorkspaceId: 42 }],
+    ["a cwd without an ID", { agentRoleWorkspaceCwd: "/daemon/authority" }],
+    [
+      "an empty present cwd",
+      {
+        agentRoleWorkspaceId: "/daemon/authority",
+        agentRoleWorkspaceCwd: "",
+      },
+    ],
+    [
+      "a non-string present cwd",
+      {
+        agentRoleWorkspaceId: "/daemon/authority",
+        agentRoleWorkspaceCwd: 42,
+      },
+    ],
+    ["a relative ID", { agentRoleWorkspaceId: "relative/authority" }],
+    [
+      "a relative present cwd",
+      {
+        agentRoleWorkspaceId: "/daemon/authority",
+        agentRoleWorkspaceCwd: "relative/authority",
+      },
+    ],
+    [
+      "mismatched ID and cwd",
+      {
+        agentRoleWorkspaceId: "/daemon/authority-a",
+        agentRoleWorkspaceCwd: "/daemon/authority-b",
+      },
+    ],
+  ])("rejects %s instead of falling back", (_label, metadata) => {
+    expect(() =>
+      resolveAgenCAgentAttachRoleWorkspace(
+        attachmentWithMetadata(metadata),
+        "/local/workspace",
+      ),
+    ).toThrow();
   });
 });
 

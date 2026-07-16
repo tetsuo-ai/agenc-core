@@ -1,0 +1,321 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
+import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
+import type { Session } from '../../../src/session/session.js'
+import {
+  __setPluginAgentsLoaderForTesting,
+  clearAgentDefinitionsCache,
+  type AgentDefinition,
+} from '../../../src/tools/AgentTool/loadAgentsDir.js'
+import {
+  __setSpawnTeammateBackendForTesting,
+  assertTeammateSpawnRoleWorkspace,
+  spawnTeammate,
+  type SpawnTeammateBackend,
+  type SpawnTeammateConfig,
+} from '../../../src/tools/shared/spawnMultiAgent.js'
+import type { ToolUseContext } from '../../../src/tools/Tool.js'
+import { getDefaultAppState } from '../../../src/tui/state/AppStateStore.js'
+import { setIsInteractive } from '../../../src/bootstrap/state.js'
+import {
+  captureTeammateModeSnapshot,
+  clearCliTeammateModeOverride,
+  setCliTeammateModeOverride,
+} from '../../../src/utils/swarm/backends/teammateModeSnapshot.js'
+
+const roots: string[] = []
+
+afterEach(() => {
+  __setSpawnTeammateBackendForTesting(undefined)
+  __setPluginAgentsLoaderForTesting(undefined)
+  clearAgentDefinitionsCache()
+  clearCliTeammateModeOverride('auto')
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function tempWorkspace(label: string): string {
+  const workspace = mkdtempSync(join(tmpdir(), `agenc-${label}-`))
+  roots.push(workspace)
+  return workspace
+}
+
+function contextFor(
+  workspace: string,
+  activeAgents: AgentDefinition[] = [],
+  deniedAgentTypes: string[] = [],
+): ToolUseContext {
+  const agentDefinitions = {
+    agentRoleWorkspaceId: createAgentRoleWorkspace(workspace).id,
+    activeAgents,
+    allAgents: activeAgents,
+  }
+  const defaultState = getDefaultAppState()
+  const appState = {
+    ...defaultState,
+    mainLoopModel: 'leader-model',
+    agentDefinitions,
+    toolPermissionContext: {
+      ...defaultState.toolPermissionContext,
+      alwaysDenyRules: deniedAgentTypes.length === 0
+        ? {}
+        : {
+            projectSettings: deniedAgentTypes.map(
+              agentType => `spawn_agent(${agentType})`,
+            ),
+          },
+    },
+  }
+  return {
+    options: {
+      agentDefinitions,
+      tools: [],
+      mainLoopModel: 'leader-model',
+      mcpClients: [],
+    },
+    getAppState: () => appState,
+    setAppState: vi.fn(),
+  } as unknown as ToolUseContext
+}
+
+function configFor(
+  workspace: string,
+  agentType: string,
+): SpawnTeammateConfig {
+  const roleWorkspace = createAgentRoleWorkspace(workspace)
+  return {
+    name: 'boundary-worker',
+    prompt: 'Exercise the public teammate spawn boundary.',
+    team_name: 'boundary-team',
+    cwd: workspace,
+    agent_type: agentType,
+    agent_role_workspace_id: roleWorkspace.id,
+    agent_role_workspace_cwd: roleWorkspace.cwd,
+  }
+}
+
+function sessionFor(workspace: string): Session {
+  return {
+    roleWorkspace: createAgentRoleWorkspace(workspace),
+  } as unknown as Session
+}
+
+function successfulBackend(
+  inspect: (
+    config: SpawnTeammateConfig,
+    context: ToolUseContext,
+  ) => void,
+): SpawnTeammateBackend {
+  return async (config, context) => {
+    inspect(config, context)
+    return {
+      data: {
+        teammate_id: 'boundary-worker@boundary-team',
+        agent_id: 'boundary-worker@boundary-team',
+        agent_type: config.agent_type,
+        model: config.model,
+        name: config.name,
+        tmux_session_name: 'test',
+        tmux_window_name: 'test',
+        tmux_pane_id: 'test',
+      },
+    }
+  }
+}
+
+describe('teammate role workspace preflight', () => {
+  const workspaceA = createAgentRoleWorkspace('/workspace/a')
+
+  it('rejects a pane teammate before spawn when execution cwd changes authority', () => {
+    expect(() =>
+      assertTeammateSpawnRoleWorkspace({
+        parentWorkspace: workspaceA,
+        suppliedWorkspaceId: workspaceA.id,
+        suppliedWorkspaceCwd: workspaceA.cwd,
+        catalogWorkspaceId: workspaceA.id,
+        executionCwd: '/workspace/b',
+        inProcess: false,
+      }),
+    ).toThrow('does not match role workspace')
+  })
+
+  it('allows in-process execution to inherit the validated parent authority', () => {
+    expect(() =>
+      assertTeammateSpawnRoleWorkspace({
+        parentWorkspace: workspaceA,
+        suppliedWorkspaceId: workspaceA.id,
+        suppliedWorkspaceCwd: workspaceA.cwd,
+        catalogWorkspaceId: workspaceA.id,
+        executionCwd: '/workspace/b',
+        inProcess: true,
+      }),
+    ).not.toThrow()
+  })
+
+  it('rejects a foreign or unscoped catalog for every backend', () => {
+    for (const catalogWorkspaceId of ['/workspace/b', undefined]) {
+      expect(() =>
+        assertTeammateSpawnRoleWorkspace({
+          parentWorkspace: workspaceA,
+          suppliedWorkspaceId: workspaceA.id,
+          suppliedWorkspaceCwd: workspaceA.cwd,
+          catalogWorkspaceId,
+          executionCwd: workspaceA.cwd,
+          inProcess: true,
+        }),
+      ).toThrow(/workspace (mismatch|provenance is missing)/)
+    }
+  })
+
+  it('fresh-loads the selected role model and restrictions before backend spawn', async () => {
+    const workspace = tempWorkspace('teammate-fresh-model')
+    const agentsDir = join(workspace, '.agenc', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    const rolePath = join(agentsDir, 'boundary-worker.md')
+    writeFileSync(
+      rolePath,
+      `---
+name: boundary-worker
+description: Stale cached definition
+model: stale-model
+permissionMode: default
+---
+Stale prompt.
+`,
+    )
+    __setPluginAgentsLoaderForTesting(async () => [])
+    const staleDefinition: AgentDefinition = {
+      agentType: 'boundary-worker',
+      whenToUse: 'Stale cached role',
+      source: 'projectSettings',
+      baseDir: agentsDir,
+      model: 'stale-model',
+      permissionMode: 'default',
+      getSystemPrompt: () => 'Stale prompt.',
+    }
+    const context = contextFor(workspace, [staleDefinition])
+    writeFileSync(
+      rolePath,
+      `---
+name: boundary-worker
+description: Fresh restrictive definition
+model: fresh-role-model
+permissionMode: plan
+disallowedTools:
+  - Write
+---
+Fresh restrictive prompt.
+`,
+    )
+
+    const backend = vi.fn(successfulBackend((config, effectiveContext) => {
+      expect(config.model).toBe('fresh-role-model')
+      expect(
+        effectiveContext.options.agentDefinitions.activeAgents.find(
+          agent => agent.agentType === 'boundary-worker',
+        ),
+      ).toMatchObject({
+        model: 'fresh-role-model',
+        permissionMode: 'plan',
+        disallowedTools: ['Write'],
+      })
+    }))
+    __setSpawnTeammateBackendForTesting(backend)
+
+    await runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+      spawnTeammate(
+        configFor(workspace, 'boundary-worker'),
+        context,
+      ),
+    )
+    expect(backend).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a validated role-bearing pane spawn before any backend mutation', async () => {
+    const workspace = tempWorkspace('teammate-pane-role')
+    const agentsDir = join(workspace, '.agenc', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'boundary-worker.md'),
+      `---
+name: boundary-worker
+description: Exact pane boundary role
+permissionMode: plan
+---
+Do not execute without exact role provenance.
+`,
+    )
+    __setPluginAgentsLoaderForTesting(async () => [])
+    setCliTeammateModeOverride('tmux')
+    captureTeammateModeSnapshot()
+    setIsInteractive(true)
+    const backend = vi.fn(successfulBackend(() => {
+      throw new Error('pane backend must not run for a role-bearing spawn')
+    }))
+    __setSpawnTeammateBackendForTesting(backend)
+
+    try {
+      await expect(
+        runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+          spawnTeammate(
+            configFor(workspace, 'boundary-worker'),
+            contextFor(workspace),
+          ),
+        ),
+      ).rejects.toThrow(
+        "requires in-process teammate mode; pane teammates cannot enforce exact agent-role provenance",
+      )
+      expect(backend).not.toHaveBeenCalled()
+    } finally {
+      setIsInteractive(false)
+    }
+  })
+
+  it.each([
+    {
+      label: 'requested exact plugin role',
+      requested: 'security-plugin:auditor',
+      denied: 'security-plugin:auditor',
+      pluginAgent: {
+        agentType: 'security-plugin:auditor',
+        whenToUse: 'Plugin auditor',
+        source: 'plugin' as const,
+        plugin: 'security-plugin',
+        getSystemPrompt: () => 'Audit safely.',
+      },
+    },
+    {
+      label: 'selected canonical alias',
+      requested: 'scanner',
+      denied: 'explorer',
+      pluginAgent: undefined,
+    },
+  ])('rejects a denied $label before any backend call', async ({
+    requested,
+    denied,
+    pluginAgent,
+  }) => {
+    const workspace = tempWorkspace('teammate-deny')
+    __setPluginAgentsLoaderForTesting(async () =>
+      pluginAgent === undefined ? [] : [pluginAgent],
+    )
+    const context = contextFor(workspace, [], [denied])
+    const backend = vi.fn(successfulBackend(() => {
+      throw new Error('backend must not run after denial')
+    }))
+    __setSpawnTeammateBackendForTesting(backend)
+
+    await expect(
+      runWithCurrentRuntimeSession(sessionFor(workspace), () =>
+        spawnTeammate(configFor(workspace, requested), context),
+      ),
+    ).rejects.toThrow(`Agent type '${requested}' has been denied`)
+    expect(backend).not.toHaveBeenCalled()
+  })
+})

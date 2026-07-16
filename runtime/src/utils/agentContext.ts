@@ -25,6 +25,18 @@ import { AsyncLocalStorage } from 'async_hooks'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 
 /**
+ * Exact persistent-memory grant for one agent role.
+ *
+ * This is deliberately separate from AgentContext identity: a foreground
+ * main-thread turn may select an agent role without becoming a subagent (and
+ * without changing request attribution or telemetry).
+ */
+export type AgentMemoryAuthorization = {
+  readonly agentType: string
+  readonly scope: 'user' | 'project' | 'local'
+}
+
+/**
  * Context for subagents (Agent tool agents).
  * Subagents run in-process for quick, delegated tasks.
  */
@@ -50,6 +62,8 @@ export type SubagentContext = {
    *  Reset to false on each spawn/resume; flipped true by
    *  consumeInvokingRequestId() on the first terminal API event. */
   invocationEmitted?: boolean
+  /** Exact persistent-memory directory this agent may access implicitly. */
+  memoryAuthorization?: AgentMemoryAuthorization
 }
 
 /**
@@ -81,6 +95,8 @@ export type TeammateAgentContext = {
   invocationKind?: 'spawn' | 'resume'
   /** Mutable flag: see SubagentContext.invocationEmitted. */
   invocationEmitted?: boolean
+  /** Exact persistent-memory directory this teammate may access implicitly. */
+  memoryAuthorization?: AgentMemoryAuthorization
 }
 
 /**
@@ -90,6 +106,14 @@ export type TeammateAgentContext = {
 export type AgentContext = SubagentContext | TeammateAgentContext
 
 const agentContextStorage = new AsyncLocalStorage<AgentContext>()
+
+type AgentMemoryAuthorizationScope = {
+  /** Undefined is an explicit fail-closed override inside this scope. */
+  readonly authorization: AgentMemoryAuthorization | undefined
+}
+
+const agentMemoryAuthorizationStorage =
+  new AsyncLocalStorage<AgentMemoryAuthorizationScope>()
 
 /**
  * Get the current agent context, if any.
@@ -106,6 +130,34 @@ export function getAgentContext(): AgentContext | undefined {
  */
 export function runWithAgentContext<T>(context: AgentContext, fn: () => T): T {
   return agentContextStorage.run(context, fn)
+}
+
+/**
+ * Get the persistent-memory grant for the current async execution chain.
+ *
+ * A dedicated foreground scope takes precedence, including an explicit
+ * undefined grant. Outside such a scope, background AgentTool/teammate work
+ * continues to inherit the grant carried by its AgentContext.
+ */
+export function getAgentMemoryAuthorization():
+  | AgentMemoryAuthorization
+  | undefined {
+  const foregroundScope = agentMemoryAuthorizationStorage.getStore()
+  if (foregroundScope !== undefined) {
+    return foregroundScope.authorization
+  }
+  return getAgentContext()?.memoryAuthorization
+}
+
+/**
+ * Run work with a foreground role's exact memory grant without assigning a
+ * subagent/teammate identity or changing main-thread request attribution.
+ */
+export function runWithAgentMemoryAuthorization<T>(
+  authorization: AgentMemoryAuthorization | undefined,
+  fn: () => T,
+): T {
+  return agentMemoryAuthorizationStorage.run({ authorization }, fn)
 }
 
 /**

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentStatusTracker } from "./status.js";
 import { Mailbox } from "./mailbox.js";
-import { resolveAgentRole } from "./role.js";
+import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 import { ThreadManager } from "./thread-manager.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 function makeSession() {
   return {
@@ -27,12 +29,13 @@ function makeLive(): LiveAgent {
     agentPath: "/root/task_1",
     agentNickname: "scout",
     agentRole: "explorer",
+    agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId: "child-thread",
     agentPath: "/root/task_1",
-    role: resolveAgentRole("explorer"),
+    role: resolveAgentRole(ROLE_WORKSPACE, "explorer"),
     depth: 1,
     nickname: "scout",
     status: new AgentStatusTracker(),

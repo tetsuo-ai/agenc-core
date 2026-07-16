@@ -6,6 +6,7 @@ import { z } from 'zod/v4';
 import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from '../../constants/prompts.js';
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
+import { requireCurrentRuntimeSession } from '../../session/current-session.js';
 import { startAgentSummarization, toSummaryCacheSafeParams } from '../../services/AgentSummary/agentSummary.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateAgentSummary as updateAsyncAgentSummary, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
@@ -24,7 +25,10 @@ import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMes
 import { getAgentModel } from '../../utils/model/agent.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
-import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
+import {
+  filterDeniedAgents,
+  getDenyRuleForAgent,
+} from '../../utils/permissions/permissions.js';
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js';
 import { writeAgentMetadata } from '../../utils/sessionStorage.js';
 import { sleep } from '../../utils/sleep.js';
@@ -43,12 +47,22 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
-import { getDefaultAgentRole } from 'src/agents/role.js';
+import {
+  assertAgentRoleWorkspaceMatches,
+  getDefaultAgentRole,
+} from 'src/agents/role.js';
 import { canonicalAgentRoleName } from 'src/agents/role-presentation.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from 'src/tools/AgentTool/constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
+import {
+  filterAgentsByMcpRequirements,
+  findAgentDefinitionByType,
+  hasRequiredMcpServers,
+  isBuiltInAgent,
+  loadFreshAgentDefinitions,
+  requireAgentDefinitionRoleFingerprint,
+} from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getPrompt } from 'src/tools/AgentTool/prompt.js';
 import { runAgent } from './runAgent.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
@@ -60,6 +74,37 @@ import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorM
 // against `never`.
 const proactiveModule = ((): { isProactiveActive(): boolean } | null => null)();
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+export type AgentToolLaunchPreflight = {
+  readonly selectedAgent: AgentDefinition;
+  readonly agentRoleFingerprint: string;
+};
+
+type AgentToolLaunchPreflightForTesting = (
+  preflight: AgentToolLaunchPreflight,
+) => void;
+
+let agentToolLaunchPreflightForTesting:
+  | AgentToolLaunchPreflightForTesting
+  | undefined;
+
+type AgentMetadataWriter = typeof writeAgentMetadata;
+
+let agentMetadataWriter: AgentMetadataWriter = writeAgentMetadata;
+
+/** @internal Observes the post-policy boundary in focused tests. */
+export function __setAgentToolLaunchPreflightForTesting(
+  preflight: AgentToolLaunchPreflightForTesting | undefined,
+): void {
+  agentToolLaunchPreflightForTesting = preflight;
+}
+
+/** @internal Injects a durable sidecar writer for launch-ordering tests. */
+export function __setAgentMetadataWriterForTesting(
+  writer: AgentMetadataWriter | undefined,
+): void {
+  agentMetadataWriter = writer ?? writeAgentMetadata;
+}
 
 // Progress display constants (for showing background hint)
 const PROGRESS_THRESHOLD_MS = 2000; // Show background hint after 2 seconds
@@ -241,9 +286,19 @@ export const AgentTool = buildTool({
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     const startTime = Date.now();
     const model = isCoordinatorMode() ? undefined : modelParam;
+    const parentSession = requireCurrentRuntimeSession('subagent spawn');
+    assertAgentRoleWorkspaceMatches(
+      parentSession.roleWorkspace,
+      toolUseContext.options.agentDefinitions.agentRoleWorkspaceId,
+    );
+    const agentRoleWorkspaceId = parentSession.roleWorkspace.id;
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
+    assertAgentRoleWorkspaceMatches(
+      parentSession.roleWorkspace,
+      appState.agentDefinitions.agentRoleWorkspaceId,
+    );
     const permissionMode = appState.toolPermissionContext.mode;
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
@@ -273,11 +328,6 @@ export const AgentTool = buildTool({
     // Check if this is a multi-agent spawn request
     // Spawn is triggered when team_name is set (from param or context) and name is provided
     if (teamName && name) {
-      // Set agent definition color for grouped UI display before spawning
-      const agentDef = subagent_type ? toolUseContext.options.agentDefinitions.activeAgents.find(a => a.agentType === subagent_type) : undefined;
-      if (agentDef?.color) {
-        setAgentColor(subagent_type!, agentDef.color);
-      }
       const result = await spawnTeammate({
         name,
         prompt,
@@ -285,8 +335,11 @@ export const AgentTool = buildTool({
         team_name: teamName,
         use_splitpane: true,
         plan_mode_required: spawnMode === 'plan',
-        model: model ?? agentDef?.model,
+        model,
         agent_type: subagent_type,
+        cwd,
+        agent_role_workspace_id: agentRoleWorkspaceId,
+        agent_role_workspace_cwd: parentSession.roleWorkspace.cwd,
         invokingRequestId: assistantMessage?.requestId
       }, toolUseContext);
 
@@ -325,34 +378,47 @@ export const AgentTool = buildTool({
       }
       selectedAgent = FORK_AGENT;
     } else {
-      // Filter agents to exclude those denied via Agent(AgentName) syntax
-      const allAgents = toolUseContext.options.agentDefinitions.activeAgents;
+      const freshCatalog = await loadFreshAgentDefinitions(
+        parentSession.roleWorkspace.cwd,
+      );
+      assertAgentRoleWorkspaceMatches(
+        parentSession.roleWorkspace,
+        freshCatalog.agentRoleWorkspaceId,
+      );
+      const allAgents = freshCatalog.activeAgents;
       const {
         allowedAgentTypes
       } = toolUseContext.options.agentDefinitions;
-      const agents = filterDeniedAgents(
-      // When allowedAgentTypes is set (from Agent(x,y) tool spec), restrict to those types
-      allowedAgentTypes ? allAgents.filter(a => allowedAgentTypes.includes(a.agentType)) : allAgents, appState.toolPermissionContext, AGENT_TOOL_NAME);
-      // Match by exact agentType or canonical role name, mirroring the live v2
-      // spawn resolver (canonicalAgentRoleName -> requireAgentRole), so public
-      // names / aliases (scanner, runner, netrunner, general-purpose, plan, ...)
-      // routed here via the hook-chain fallback resolve like everywhere else.
-      const canonicalEffectiveType = canonicalAgentRoleName(effectiveType);
-      const matchesEffectiveType = (agentType: string): boolean =>
-        agentType === effectiveType ||
-        canonicalAgentRoleName(agentType) === canonicalEffectiveType;
-      const found = agents.find(agent => matchesEffectiveType(agent.agentType));
+      const found = findAgentDefinitionByType(allAgents, effectiveType);
       if (!found) {
-        // Check if the agent exists but is denied by permission rules
-        const agentExistsButDenied = allAgents.find(agent => matchesEffectiveType(agent.agentType));
-        if (agentExistsButDenied) {
-          const denyRule = getDenyRuleForAgent(appState.toolPermissionContext, AGENT_TOOL_NAME, effectiveType);
-          throw new Error(`Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${effectiveType})' from ${denyRule?.source ?? 'settings'}.`);
-        }
-        throw new Error(`Agent type '${effectiveType}' not found. Available agents: ${agents.map(a => a.agentType).join(', ')}`);
+        throw new Error(`Agent type '${effectiveType}' not found. Available agents: ${allAgents.map(a => a.agentType).join(', ')}`);
+      }
+      if (allowedAgentTypes !== undefined && !allowedAgentTypes.some(
+        allowedType => allowedType === found.agentType ||
+          (found.agentType !== effectiveType &&
+            canonicalAgentRoleName(allowedType) ===
+              canonicalAgentRoleName(found.agentType))
+      )) {
+        throw new Error(`Agent type '${effectiveType}' not found. Available agents: ${allowedAgentTypes.join(', ')}`);
+      }
+      const denyRule = getDenyRuleForAgent(
+        appState.toolPermissionContext,
+        AGENT_TOOL_NAME,
+        effectiveType,
+      ) ?? (found.agentType !== effectiveType
+        ? getDenyRuleForAgent(
+            appState.toolPermissionContext,
+            AGENT_TOOL_NAME,
+            found.agentType,
+          )
+        : null);
+      if (denyRule !== null) {
+        throw new Error(`Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${denyRule.ruleValue.ruleContent ?? effectiveType})' from ${denyRule.source ?? 'settings'}.`);
       }
       selectedAgent = found;
     }
+    const selectedAgentRoleFingerprint =
+      requireAgentDefinitionRoleFingerprint(selectedAgent);
 
     // Same lifecycle constraint as the run_in_background guard above, but for
     // agent definitions that force background via `background: true`. Checked
@@ -412,6 +478,11 @@ export const AgentTool = buildTool({
     if (selectedAgent.color) {
       setAgentColor(selectedAgent.agentType, selectedAgent.color);
     }
+
+    agentToolLaunchPreflightForTesting?.({
+      selectedAgent,
+      agentRoleFingerprint: selectedAgentRoleFingerprint,
+    });
 
     // Resolve agent params (these are already resolved in runAgent)
     const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
@@ -493,16 +564,10 @@ export const AgentTool = buildTool({
     // below (registerAsyncAgentTask + notifyOnCompletion).
     const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
     const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
-    // Assemble the worker's tool pool independently of the parent's.
-    // Workers always get their tools from assembleToolPool with their own
-    // permission mode, so they aren't affected by the parent's tool
-    // restrictions. This is computed here so that runAgent doesn't need to
-    // import from tools.ts (which would create a circular dependency).
     const workerPermissionContext = {
       ...appState.toolPermissionContext,
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
-    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
@@ -540,6 +605,55 @@ export const AgentTool = buildTool({
         content: buildWorktreeNotice(getCwd(), worktreeInfo.worktreePath)
       }));
     }
+
+    // Persist exact role provenance before either registerAsyncAgent or
+    // registerAgentForeground can publish task state. A failed persistence
+    // therefore cannot leave a visible/running agent whose resume authority
+    // is missing. Worktrees created during preflight are removed before the
+    // persistence error is returned.
+    try {
+      await agentMetadataWriter(asAgentId(earlyAgentId), {
+        agentType: selectedAgent.agentType,
+        agentRoleWorkspaceId,
+        agentRoleFingerprint: selectedAgentRoleFingerprint,
+        ...(worktreeInfo?.worktreePath ? {
+          worktreePath: worktreeInfo.worktreePath
+        } : {}),
+        description
+      });
+    } catch (persistenceError) {
+      const unpublishedWorktree = worktreeInfo;
+      worktreeInfo = null;
+      if (unpublishedWorktree) {
+        try {
+          const removed = await removeAgentWorktree(
+            unpublishedWorktree.worktreePath,
+            unpublishedWorktree.worktreeBranch,
+            unpublishedWorktree.gitRoot,
+            unpublishedWorktree.hookBased
+          );
+          if (!removed) {
+            throw new Error(
+              `Failed to remove unpublished agent worktree: ${unpublishedWorktree.worktreePath}`
+            );
+          }
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [persistenceError, cleanupError],
+            'Failed to persist agent role metadata and clean up its unpublished worktree'
+          );
+        }
+      }
+      throw persistenceError;
+    }
+
+    // Assemble the worker's tool pool independently of the parent's.
+    // Workers always get their tools from assembleToolPool with their own
+    // permission mode, so they aren't affected by the parent's tool
+    // restrictions. This is computed here so that runAgent doesn't need to
+    // import from tools.ts (which would create a circular dependency).
+    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
+
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
       promptMessages,
@@ -574,6 +688,7 @@ export const AgentTool = buildTool({
       worktreePath: worktreeInfo?.worktreePath,
       description,
       agentName: name,
+      agentMetadataAlreadyPersisted: true,
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
@@ -608,13 +723,15 @@ export const AgentTool = buildTool({
         const changed = await hasWorktreeChanges(worktreePath, headCommit);
         if (!changed) {
           await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
-          // Clear worktreePath from metadata so resume doesn't try to use
-          // a deleted directory. Fire-and-forget to match runAgent's
-          // writeAgentMetadata handling.
-          void writeAgentMetadata(asAgentId(earlyAgentId), {
+          // Clear worktreePath from metadata before returning cleanup. The
+          // awaited atomic write prevents later resumes from racing a partial
+          // sidecar or observing a deleted worktree as the current location.
+          await agentMetadataWriter(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
+            agentRoleWorkspaceId,
+            agentRoleFingerprint: selectedAgentRoleFingerprint,
             description
-          }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
+          });
           return {};
         }
       }
@@ -624,6 +741,7 @@ export const AgentTool = buildTool({
         worktreeBranch
       };
     };
+
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
       const agentBackgroundTask = registerAsyncAgent({
@@ -663,7 +781,13 @@ export const AgentTool = buildTool({
         isBuiltIn: isBuiltInAgent(selectedAgent),
         invokingRequestId: assistantMessage?.requestId,
         invocationKind: 'spawn' as const,
-        invocationEmitted: false
+        invocationEmitted: false,
+        ...(selectedAgent.memory !== undefined ? {
+          memoryAuthorization: {
+            agentType: selectedAgent.agentType,
+            scope: selectedAgent.memory
+          }
+        } : {})
       };
 
       // Workload propagation: handlePromptSubmit wraps the entire turn in
@@ -718,7 +842,13 @@ export const AgentTool = buildTool({
         isBuiltIn: isBuiltInAgent(selectedAgent),
         invokingRequestId: assistantMessage?.requestId,
         invocationKind: 'spawn' as const,
-        invocationEmitted: false
+        invocationEmitted: false,
+        ...(selectedAgent.memory !== undefined ? {
+          memoryAuthorization: {
+            agentType: selectedAgent.agentType,
+            scope: selectedAgent.memory
+          }
+        } : {})
       };
 
       // Wrap entire sync agent execution in context for request attribution

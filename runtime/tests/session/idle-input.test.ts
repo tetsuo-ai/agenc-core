@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   MAILBOX_SOURCE_IDLE_INPUT,
@@ -14,6 +15,10 @@ import {
   type Event,
   type SessionOpts,
 } from "./session.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace(
+  "/tmp/agenc-idle-input-test",
+);
 
 function buildSession(): Session {
   const eventQueue = new AsyncQueue<Event>();
@@ -33,8 +38,17 @@ function buildSession(): Session {
   } as unknown as SessionOpts["services"];
   const opts: SessionOpts = {
     conversationId: "conv-test",
+    roleWorkspace: ROLE_WORKSPACE,
+    agentDefinitions: {
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      activeAgents: [],
+      allAgents: [],
+      allowedAgentTypes: [],
+    },
     initialState: {
-      sessionConfiguration: {} as SessionOpts["initialState"]["sessionConfiguration"],
+      sessionConfiguration: {
+        cwd: ROLE_WORKSPACE.cwd,
+      } as SessionOpts["initialState"]["sessionConfiguration"],
       history: [],
     },
     features: {} as SessionOpts["features"],

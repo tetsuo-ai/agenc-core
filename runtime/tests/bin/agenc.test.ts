@@ -74,6 +74,7 @@ function stubSession() {
     nextInternalSubId: () => "sub-1",
     services: {},
     conversationId: "conv-stub-1",
+    sessionConfiguration: { cwd: process.cwd() },
   } as unknown as Session;
 }
 
@@ -112,7 +113,7 @@ function createMockSignalProcess(): {
 function trustWorkspaceForTest(agencHome: string, workspace: string): void {
   trustProjectSync({
     agencHome,
-    projectRoot: workspace,
+    cwd: workspace,
     env: process.env,
   });
 }
@@ -137,6 +138,7 @@ function installDaemonCliDepsForTest(
     readonly sessionId?: string;
     readonly runtimeSessionId?: string;
     readonly cwd?: string;
+    readonly roleWorkspaceCwd?: string;
     readonly oneShotEvents?: readonly unknown[];
     /**
      * Causality-faithful hook for tests that model the production daemon: the
@@ -177,6 +179,7 @@ function installDaemonCliDepsForTest(
   const sessionId = options.sessionId ?? "session_test";
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
+  const roleWorkspaceCwd = options.roleWorkspaceCwd ?? cwd;
   const requests: Array<{ method: string; params: unknown }> = [];
   const requestErrorQueues = new Map<string, Error[]>(
     Object.entries(options.requestErrors ?? {}).map(([method, error]) => [
@@ -247,6 +250,19 @@ function installDaemonCliDepsForTest(
           attachmentId: "attachment_test",
           sessionIds: [sessionId],
           runtimeSessionId,
+          sessions: [
+            {
+              sessionId,
+              agentId,
+              status: "idle",
+              createdAt: "2026-05-06T00:00:00.000Z",
+              cwd,
+              roleWorkspace: {
+                id: roleWorkspaceCwd,
+                cwd: roleWorkspaceCwd,
+              },
+            },
+          ],
         };
       }
       if (method === "session.snapshot") {
@@ -339,6 +355,7 @@ function installDaemonCliDepsForTest(
   const createTuiContext = vi.fn(async (params: {
     env?: NodeJS.ProcessEnv;
     cwd: string;
+    roleWorkspace?: { readonly id: string; readonly cwd: string };
     conversationId: string;
   }) => {
     const abortController = new AbortController();
@@ -355,6 +372,7 @@ function installDaemonCliDepsForTest(
       },
       baseSession: {
         conversationId: params.conversationId,
+        roleWorkspace: params.roleWorkspace,
         cwd: params.cwd,
         home: params.env?.HOME ?? "/tmp/agenc-test-user",
         sessionConfiguration: {
@@ -1031,6 +1049,37 @@ describe("resolveCliCwdForStartup", () => {
     );
 
     expect(result).toEqual({ ok: true, cwd: "/tmp/agenc-workspace" });
+  });
+
+  it("resolves a relative AGENC_WORKSPACE against the startup cwd", () => {
+    const result = resolveCliCwdForStartup(
+      { AGENC_WORKSPACE: "nested/workspace" },
+      { cwdFn: () => "/tmp/agenc-parent" },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      cwd: "/tmp/agenc-parent/nested/workspace",
+    });
+  });
+
+  it("rejects a relative AGENC_WORKSPACE when the startup cwd is unavailable", () => {
+    const result = resolveCliCwdForStartup(
+      { AGENC_WORKSPACE: "nested/workspace" },
+      {
+        cwdFn: () => {
+          throw Object.assign(new Error("ENOENT: no such file or directory, uv_cwd"), {
+            syscall: "uv_cwd",
+          });
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "AGENC_WORKSPACE must be absolute when the current working directory is unavailable.",
+    });
   });
 
   it("returns the concise deleted-directory message when no workspace is configured", () => {
@@ -2577,6 +2626,51 @@ describe("main() smoke", () => {
       Object.assign(process.env, prevEnv);
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("attaches a worktree child with separate execution and role workspaces", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-role-home-"));
+    const authority = await mkdtemp(join(tmpdir(), "agenc-tui-role-authority-"));
+    const worktree = await mkdtemp(join(tmpdir(), "agenc-tui-role-worktree-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = worktree;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_worktree_child",
+      sessionId: "session_worktree_child",
+      cwd: worktree,
+      roleWorkspaceCwd: authority,
+    });
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => ({
+        unmount: vi.fn(),
+        waitUntilExit: vi.fn().mockResolvedValue(undefined),
+      })),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, worktree);
+      trustWorkspaceForTest(tmpHome, authority);
+      await expect(bootTUIEntry({ initialPrompt: "inspect" })).resolves.toBe(0);
+      expect(daemon.createTuiContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: worktree,
+          roleWorkspace: { id: authority, cwd: authority },
+        }),
+      );
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(authority, { recursive: true, force: true });
+      await rm(worktree, { recursive: true, force: true });
     }
   });
 

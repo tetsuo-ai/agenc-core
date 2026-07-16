@@ -40,8 +40,111 @@ export interface AgentMetadata {
   readonly agentPath?: AgentPath;
   readonly agentNickname?: string;
   readonly agentRole?: string;
+  readonly agentRoleWorkspaceId?: string;
+  readonly agentRoleFingerprint?: string;
   readonly lastTaskMessage?: string;
   readonly depth: number;
+}
+
+export class InvalidAgentMetadataError extends Error {
+  constructor(message = "invalid agent metadata", options?: ErrorOptions) {
+    super(message, options);
+    this.name = "InvalidAgentMetadataError";
+  }
+}
+
+export function normalizeAgentRoleMetadata(
+  metadata: unknown,
+): Pick<
+  AgentMetadata,
+  "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint"
+> {
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    Array.isArray(metadata)
+  ) {
+    throw new InvalidAgentMetadataError();
+  }
+  const record = metadata as Record<string, unknown>;
+  const agentRole = optionalMetadataString(record.agentRole, "agentRole", true);
+  const agentRoleWorkspaceId = optionalMetadataString(
+    record.agentRoleWorkspaceId,
+    "agentRoleWorkspaceId",
+    true,
+  );
+  const agentRoleFingerprint = optionalMetadataString(
+    record.agentRoleFingerprint,
+    "agentRoleFingerprint",
+    true,
+  );
+  if (
+    (agentRoleWorkspaceId !== undefined || agentRoleFingerprint !== undefined) &&
+    agentRole === undefined
+  ) {
+    throw new InvalidAgentMetadataError(
+      "invalid agent metadata role provenance without agentRole",
+    );
+  }
+  return {
+    ...(agentRole !== undefined ? { agentRole } : {}),
+    ...(agentRoleWorkspaceId !== undefined ? { agentRoleWorkspaceId } : {}),
+    ...(agentRoleFingerprint !== undefined ? { agentRoleFingerprint } : {}),
+  };
+}
+
+export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    Array.isArray(metadata)
+  ) {
+    throw new InvalidAgentMetadataError();
+  }
+  const record = metadata as Record<string, unknown>;
+  if (
+    typeof record.depth !== "number" ||
+    !Number.isSafeInteger(record.depth) ||
+    record.depth < 0
+  ) {
+    throw new InvalidAgentMetadataError("invalid agent metadata depth");
+  }
+  const roleMetadata = normalizeAgentRoleMetadata(record);
+  const agentId = optionalMetadataString(record.agentId, "agentId", true);
+  const agentPath = optionalMetadataString(record.agentPath, "agentPath", true);
+  const agentNickname = optionalMetadataString(
+    record.agentNickname,
+    "agentNickname",
+    true,
+  );
+  const lastTaskMessage = optionalMetadataString(
+    record.lastTaskMessage,
+    "lastTaskMessage",
+    false,
+  );
+  return {
+    depth: record.depth,
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(agentPath !== undefined ? { agentPath } : {}),
+    ...(agentNickname !== undefined ? { agentNickname } : {}),
+    ...roleMetadata,
+    ...(lastTaskMessage !== undefined ? { lastTaskMessage } : {}),
+  };
+}
+
+function optionalMetadataString(
+  value: unknown,
+  field: string,
+  requireNonEmpty: boolean,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    (requireNonEmpty && value.trim().length === 0)
+  ) {
+    throw new InvalidAgentMetadataError(`invalid agent metadata ${field}`);
+  }
+  return value;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -52,6 +155,13 @@ export class AgentPathExistsError extends Error {
   constructor(public readonly path: AgentPath) {
     super(`agent path already exists: ${path}`);
     this.name = "AgentPathExistsError";
+  }
+}
+
+export class AgentIdExistsError extends Error {
+  constructor(public readonly threadId: ThreadId) {
+    super(`agent thread id already exists: ${threadId}`);
+    this.name = "AgentIdExistsError";
   }
 }
 
@@ -170,6 +280,9 @@ export class AgentRegistry {
     metadata: AgentMetadata,
     reservation: SpawnReservation,
   ): void {
+    if (metadata.agentId && this.findEntryByThreadId(metadata.agentId)) {
+      throw new AgentIdExistsError(metadata.agentId);
+    }
     if (metadata.agentPath) {
       assertValidAgentPath(metadata.agentPath);
       if (
@@ -435,6 +548,8 @@ export function buildChildMetadata(opts: {
   readonly agentId: ThreadId;
   readonly parentPath: AgentPath;
   readonly role: AgentRole;
+  readonly roleWorkspaceId: string;
+  readonly roleFingerprint: string;
   readonly nickname: string;
   readonly depth: number;
   readonly agentName?: string;
@@ -452,6 +567,8 @@ export function buildChildMetadata(opts: {
     agentPath,
     agentNickname: opts.nickname,
     agentRole: opts.role.name,
+    agentRoleWorkspaceId: opts.roleWorkspaceId,
+    agentRoleFingerprint: opts.roleFingerprint,
     depth: opts.depth,
   };
 }
