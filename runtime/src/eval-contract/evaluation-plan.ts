@@ -65,6 +65,10 @@ function canonicalSnapshot<T>(value: T, label: string): T {
   }
 }
 
+function isDocumentObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function assertPlanInput(value: EvaluationPlanInput): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new EvaluationPlanValidationError(["evaluation plan input must be an object"]);
@@ -79,15 +83,23 @@ function assertPlanInput(value: EvaluationPlanInput): void {
     (key) => `evaluation plan input contains unknown property ${key}`,
   );
   requirePlan(
-    typeof value.suite === "object" && value.suite !== null && !Array.isArray(value.suite),
+    isDocumentObject(value.suite),
     "evaluation plan suite must be a document object",
     issues,
   );
   requirePlan(
-    typeof value.preregistration === "object" &&
-      value.preregistration !== null &&
-      !Array.isArray(value.preregistration),
+    isDocumentObject(value.preregistration),
     "evaluation plan preregistration must be a document object",
+    issues,
+  );
+  requirePlan(
+    value.holdoutDescriptor === undefined || isDocumentObject(value.holdoutDescriptor),
+    "evaluation plan holdout descriptor must be a document object when supplied",
+    issues,
+  );
+  requirePlan(
+    value.powerAnalysis === undefined || isDocumentObject(value.powerAnalysis),
+    "evaluation plan power analysis must be a document object when supplied",
     issues,
   );
   if (issues.length > 0) throw new EvaluationPlanValidationError(issues);
@@ -109,7 +121,7 @@ function validateDocumentKinds(
   };
   validate(suite, "agenc.eval.suite-manifest", "suite");
   validate(preregistration, "agenc.eval.preregistration", "preregistration");
-  if (holdoutDescriptor) {
+  if (holdoutDescriptor !== undefined) {
     validate(holdoutDescriptor, "agenc.eval.holdout-descriptor", "holdout descriptor");
   }
   if (issues.length > 0) throw new EvaluationPlanValidationError(issues);

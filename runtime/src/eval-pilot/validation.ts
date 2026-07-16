@@ -557,6 +557,20 @@ export function validateEvaluationPilotCurationDocument(
     "hidden verifier and reference-solution artifact digests must be unique per task",
     issues,
   );
+  const qualificationSupportDigests = new Set(
+    artifacts
+      .filter(({ role }) => role === "qualification_support")
+      .map(({ artifact }) => artifact.digest),
+  );
+  const reservedArtifactAliases = artifacts.filter(
+    ({ role, artifact }) =>
+      role !== "qualification_support" && qualificationSupportDigests.has(artifact.digest),
+  );
+  requireCondition(
+    reservedArtifactAliases.length === 0,
+    "qualification supporting artifacts must not alias source, curation, setup, hidden-verifier, or reference-solution artifacts",
+    issues,
+  );
   const sizeByDigest = new Map<string, number>();
   for (const { artifact } of artifacts) {
     const priorSize = sizeByDigest.get(artifact.digest);
@@ -628,6 +642,8 @@ function expectSupportingArtifactDigest(
   label: string,
   supportingDigests: ReadonlySet<string>,
   referencedDigests: Set<string>,
+  claimedDigestRoles: Map<string, string>,
+  role: string,
   issues: string[],
 ): value is Sha256Digest {
   if (!expectDigest(value, label, issues)) return false;
@@ -636,7 +652,16 @@ function expectSupportingArtifactDigest(
     `${label} must resolve to a declared qualification supporting artifact`,
     issues,
   );
-  if (supportingDigests.has(value)) referencedDigests.add(value);
+  if (supportingDigests.has(value)) {
+    const priorRole = claimedDigestRoles.get(value);
+    requireCondition(
+      priorRole === undefined || priorRole === role,
+      `${label} reuses bytes already claimed for incompatible qualification role ${priorRole ?? "unknown"}`,
+      issues,
+    );
+    if (priorRole === undefined) claimedDigestRoles.set(value, role);
+    referencedDigests.add(value);
+  }
   return true;
 }
 
@@ -723,6 +748,7 @@ function validatePreflight(
   task: OperatorTaskDocument,
   supportingDigests: ReadonlySet<string>,
   referencedDigests: Set<string>,
+  claimedDigestRoles: Map<string, string>,
   issues: string[],
 ): EvaluationPilotUpstreamPreflightEvidence | undefined {
   const label = `${curated.taskId}.upstream preflight evidence`;
@@ -765,6 +791,8 @@ function validatePreflight(
       `${label}.runs[${index}].environmentDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "preflight_environment",
       issues,
     );
     expectSupportingArtifactDigest(
@@ -772,6 +800,8 @@ function validatePreflight(
       `${label}.runs[${index}].evidenceDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "preflight_run_evidence",
       issues,
     );
   }
@@ -784,6 +814,7 @@ function validateIndependentSolve(
   task: OperatorTaskDocument,
   supportingDigests: ReadonlySet<string>,
   referencedDigests: Set<string>,
+  claimedDigestRoles: Map<string, string>,
   issues: string[],
 ): EvaluationPilotIndependentSolveEvidence | undefined {
   const label = `${curated.taskId}.independent solve evidence`;
@@ -817,6 +848,8 @@ function validateIndependentSolve(
     `${label}.solutionPatchDigest`,
     supportingDigests,
     referencedDigests,
+    claimedDigestRoles,
+    "independent_solution_patch",
     issues,
   );
   expectSupportingArtifactDigest(
@@ -824,6 +857,8 @@ function validateIndependentSolve(
     `${label}.reviewEvidenceDigest`,
     supportingDigests,
     referencedDigests,
+    claimedDigestRoles,
+    "independent_review_evidence",
     issues,
   );
   return record as unknown as EvaluationPilotIndependentSolveEvidence;
@@ -835,6 +870,7 @@ function validateNegativePatches(
   task: OperatorTaskDocument,
   supportingDigests: ReadonlySet<string>,
   referencedDigests: Set<string>,
+  claimedDigestRoles: Map<string, string>,
   issues: string[],
 ): EvaluationPilotNegativePatchEvidence | undefined {
   const label = `${curated.taskId}.negative patch evidence`;
@@ -883,6 +919,8 @@ function validateNegativePatches(
       `${label}.negativePatches[${index}].patchDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "negative_patch",
       issues,
     )) {
       patchDigests.push(patch.patchDigest);
@@ -892,6 +930,8 @@ function validateNegativePatches(
       `${label}.negativePatches[${index}].rejectionEvidenceDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "negative_rejection_evidence",
       issues,
     );
     requireCondition(
@@ -912,6 +952,7 @@ function validateStressorEvidence(
   task: OperatorTaskDocument,
   supportingDigests: ReadonlySet<string>,
   referencedDigests: Set<string>,
+  claimedDigestRoles: Map<string, string>,
   issues: string[],
 ): EvaluationPilotStressorEvidence | undefined {
   const label = `${curated.taskId}.stressor evidence`;
@@ -998,6 +1039,8 @@ function validateStressorEvidence(
       `${label}.mechanisms[${index}].implementationDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "stressor_implementation",
       issues,
     );
     expectSupportingArtifactDigest(
@@ -1005,6 +1048,8 @@ function validateStressorEvidence(
       `${label}.mechanisms[${index}].policyDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "stressor_policy",
       issues,
     );
     expectSupportingArtifactDigest(
@@ -1012,6 +1057,8 @@ function validateStressorEvidence(
       `${label}.mechanisms[${index}].evidenceDigest`,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
+      "stressor_evidence",
       issues,
     );
     if (typedStressor === "repository_prompt_injection") {
@@ -1052,6 +1099,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       curated.qa.supportingArtifacts.map((artifact) => artifact.digest),
     );
     const referencedDigests = new Set<string>();
+    const claimedDigestRoles = new Map<string, string>();
     const sourceRow = validateSourceRow(joined.sourceRow, document, curated, task, issues);
     const upstreamTriplePreflight = validatePreflight(
       joined.upstreamTriplePreflight,
@@ -1059,6 +1107,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
       issues,
     );
     const independentSolveReview = validateIndependentSolve(
@@ -1067,6 +1116,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
       issues,
     );
     const negativePatchReview = validateNegativePatches(
@@ -1075,6 +1125,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
       issues,
     );
     const stressorEvidence = validateStressorEvidence(
@@ -1083,6 +1134,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
+      claimedDigestRoles,
       issues,
     );
     requireCondition(

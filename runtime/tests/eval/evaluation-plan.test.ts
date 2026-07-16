@@ -439,6 +439,26 @@ describe("pre-run evaluation plan validation", () => {
     })).toThrow(/private holdout plan requires its public descriptor/u);
   });
 
+  test("rejects falsey non-document holdout and power artifacts", () => {
+    const { suite, descriptor, preregistration, powerAnalysis } = makeSuperiorityPlan();
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration,
+      holdoutDescriptor: false,
+      powerAnalysis,
+    } as unknown as EvaluationPlanInput)).toThrow(
+      /holdout descriptor must be a document object when supplied/u,
+    );
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: false,
+    } as unknown as EvaluationPlanInput)).toThrow(
+      /power analysis must be a document object when supplied/u,
+    );
+  });
+
   test("binds superiority descriptor counts, commitments, and lifecycle ordering", () => {
     const { suite, descriptor, preregistration, powerAnalysis } = makeSuperiorityPlan();
     const wrongCountDescriptor = withDocumentDigest<HoldoutDescriptorDocument>({

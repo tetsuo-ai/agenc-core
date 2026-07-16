@@ -764,6 +764,28 @@ describe("evaluation development pilot curation protocol", () => {
     );
   });
 
+  it("keeps qualification support disjoint from protected operator artifacts", () => {
+    const fixture = buildPilotFixture();
+    const protectedArtifacts = [
+      fixture.suite.tasks[0].hiddenVerifier.bundle,
+      fixture.suite.tasks[0].referenceSolution.patch,
+      fixture.suite.tasks[0].referenceSolution.validationEvidence,
+    ];
+    for (const protectedArtifact of protectedArtifacts) {
+      const draft = jsonClone(fixture.document) as unknown as Record<string, unknown>;
+      const task = (draft.tasks as Array<Record<string, unknown>>)[0];
+      const qa = task.qa as Record<string, unknown>;
+      (qa.supportingArtifacts as ContentArtifact[])[0] = protectedArtifact;
+      const aliased = finalizePilotDocument(
+        draft as unknown as EvaluationPilotCurationDocument,
+        fixture.suite,
+      );
+      expect(() => validateEvaluationPilotCurationDocument(aliased, fixture.suite)).toThrow(
+        /qualification supporting artifacts must not alias/u,
+      );
+    }
+  });
+
   it("rejects schema drift, digest drift, suite substitution, and non-public tasks", () => {
     const fixture = buildPilotFixture();
     const unknown = resignContract(fixture.document, (draft) => {
@@ -915,6 +937,35 @@ describe("evaluation development pilot curation protocol", () => {
       fabricatedDigest,
     )).toThrow(/must resolve to a declared qualification supporting artifact/u);
 
+    const aliasedIndependentEvidence = mutateEvidence(
+      fixture,
+      taskId,
+      "independentSolveReview",
+      (draft) => {
+        draft.reviewEvidenceDigest = draft.solutionPatchDigest;
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      aliasedIndependentEvidence,
+    )).toThrow(/incompatible qualification role independent_solution_patch/u);
+
+    const aliasedNegativeEvidence = mutateEvidence(
+      fixture,
+      taskId,
+      "negativePatchReview",
+      (draft) => {
+        const patch = (draft.negativePatches as Array<Record<string, unknown>>)[0];
+        patch.rejectionEvidenceDigest = patch.patchDigest;
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      aliasedNegativeEvidence,
+    )).toThrow(/incompatible qualification role negative_patch/u);
+
     const excessNegatives = mutateEvidence(fixture, taskId, "negativePatchReview", (draft) => {
       const patches = draft.negativePatches as Array<Record<string, unknown>>;
       draft.negativePatches = Array.from({ length: 9 }, (_, index) => ({
@@ -932,7 +983,9 @@ describe("evaluation development pilot curation protocol", () => {
     const curated = (unreferencedDraft.tasks as Array<Record<string, unknown>>)
       .find((task) => task.taskId === taskId)!;
     const qa = curated.qa as Record<string, unknown>;
-    (qa.supportingArtifacts as ContentArtifact[]).push(fixture.suite.tasks[0].setupPatch);
+    (qa.supportingArtifacts as ContentArtifact[]).push(
+      fixture.document.tasks[1].qa.supportingArtifacts[0],
+    );
     const unreferenced = finalizePilotDocument(
       unreferencedDraft as unknown as EvaluationPilotCurationDocument,
       fixture.suite,
