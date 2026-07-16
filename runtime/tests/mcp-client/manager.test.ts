@@ -75,7 +75,10 @@ function makeMockPromptBridge(
   };
 }
 
-function makeConfig(name: string, overrides?: Partial<MCPServerConfig>): MCPServerConfig {
+function makeConfig(
+  name: string,
+  overrides?: Partial<MCPServerConfig>,
+): MCPServerConfig {
   return { name, command: "npx", args: ["-y", `@test/${name}`], ...overrides };
 }
 
@@ -113,8 +116,12 @@ describe("MCPManager", () => {
     const bridge1 = makeMockBridge("srv1", ["toolA"]);
     const bridge2 = makeMockBridge("srv2", ["toolB", "toolC"]);
 
-    mockCreateMCPConnection.mockResolvedValueOnce("client1").mockResolvedValueOnce("client2");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge1).mockResolvedValueOnce(bridge2);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("client1")
+      .mockResolvedValueOnce("client2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
 
     const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
     await manager.start();
@@ -222,6 +229,42 @@ describe("MCPManager", () => {
       requireOneReady: true,
       requiredServers: ["srv1"],
     });
+    expect(manager.getConnectionState("srv1")).toEqual({ type: "connected" });
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("fails a sandbox transition when strict MCP teardown cannot prove shutdown", async () => {
+    const oldCwd = resolve("stable-workspace");
+    const newCwd = resolve("next-workspace");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const failingBridge = makeMockBridge("srv1", ["toolA"]);
+    failingBridge.dispose.mockRejectedValueOnce(
+      new Error("process tree survived"),
+    );
+    const recoveredBridge = makeMockBridge("srv1", ["toolA"]);
+
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(failingBridge)
+      .mockResolvedValueOnce(recoveredBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start({ requireOneReady: true });
+
+    await expect(
+      transitionSandboxExecutionBroker(broker, newCwd),
+    ).rejects.toThrow(/old authority restored/);
+
+    expect(broker.cwd).toBe(oldCwd);
+    expect(failingBridge.dispose).toHaveBeenCalledOnce();
     expect(manager.getConnectionState("srv1")).toEqual({ type: "connected" });
 
     await manager.stop();
@@ -351,8 +394,12 @@ describe("MCPManager", () => {
     const bridge1 = makeMockBridge("srv1", ["a"]);
     const bridge2 = makeMockBridge("srv2", ["b"]);
 
-    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge1).mockResolvedValueOnce(bridge2);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
 
     const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
     await manager.start();
@@ -413,8 +460,12 @@ describe("MCPManager", () => {
     const bridge1 = makeMockBridge("srv1", ["a", "b"]);
     const bridge2 = makeMockBridge("srv2", ["c"]);
 
-    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge1).mockResolvedValueOnce(bridge2);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
 
     const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
     await manager.start();
@@ -444,8 +495,12 @@ describe("MCPManager", () => {
     const bridge1 = makeMockBridge("alpha", []);
     const bridge2 = makeMockBridge("beta", []);
 
-    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
-    mockCreateToolBridge.mockResolvedValueOnce(bridge1).mockResolvedValueOnce(bridge2);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
 
     const manager = new MCPManager([makeConfig("alpha"), makeConfig("beta")]);
     await manager.start();
@@ -509,9 +564,7 @@ describe("MCPManager", () => {
   });
 
   it("rejects reconnect for unknown or disabled servers", async () => {
-    const manager = new MCPManager([
-      makeConfig("srv1", { enabled: false }),
-    ]);
+    const manager = new MCPManager([makeConfig("srv1", { enabled: false })]);
 
     await expect(manager.reconnectServer("missing")).resolves.toEqual({
       serverName: "missing",
@@ -572,7 +625,9 @@ describe("MCPManager", () => {
 
   it("disables a configured server and disposes all live bridges", async () => {
     const bridge = makeMockBridge("srv1", ["toolA"]);
-    const resourceBridge = makeMockResourceBridge("srv1", [{ uri: "file://a" }]);
+    const resourceBridge = makeMockResourceBridge("srv1", [
+      { uri: "file://a" },
+    ]);
     const promptBridge = makeMockPromptBridge("srv1", [{ name: "prompt" }]);
     mockCreateMCPConnection.mockResolvedValueOnce("client1");
     mockCreateToolBridge.mockResolvedValueOnce(bridge);
@@ -610,7 +665,11 @@ describe("MCPManager", () => {
     });
 
     await expect(
-      manager.addServer({ name: "added", command: "node", args: ["server.js"] }),
+      manager.addServer({
+        name: "added",
+        command: "node",
+        args: ["server.js"],
+      }),
     ).resolves.toEqual({
       serverName: "added",
       success: true,
@@ -648,7 +707,11 @@ describe("MCPManager", () => {
     expect(manager.getServerConfig("added")).toBeUndefined();
 
     await expect(
-      manager.addServer({ name: "added", command: "node", args: ["server.js"] }),
+      manager.addServer({
+        name: "added",
+        command: "node",
+        args: ["server.js"],
+      }),
     ).resolves.toEqual({
       serverName: "added",
       success: true,
@@ -681,7 +744,9 @@ describe("MCPManager", () => {
       .mockResolvedValueOnce("client");
     mockCreateToolBridge.mockResolvedValueOnce(bridge);
     const manager = new MCPManager([makeConfig("a"), makeConfig("b")]);
-    await expect(manager.start({ requireOneReady: true })).resolves.toBeUndefined();
+    await expect(
+      manager.start({ requireOneReady: true }),
+    ).resolves.toBeUndefined();
   });
 
   it("I-20: requiredServers hard-fails when a named server is missing", async () => {
@@ -691,9 +756,9 @@ describe("MCPManager", () => {
       .mockRejectedValueOnce(new Error("missing b"));
     mockCreateToolBridge.mockResolvedValueOnce(bridge);
     const manager = new MCPManager([makeConfig("a"), makeConfig("b")]);
-    await expect(
-      manager.start({ requiredServers: ["b"] }),
-    ).rejects.toThrow(/required server\(s\) not ready/);
+    await expect(manager.start({ requiredServers: ["b"] })).rejects.toThrow(
+      /required server\(s\) not ready/,
+    );
   });
 
   it("I-50: aborted signal throws before first connect", async () => {
@@ -711,7 +776,10 @@ describe("MCPManager", () => {
     mockCreateMCPConnection
       .mockResolvedValueOnce("fast")
       .mockImplementationOnce(
-        () => new Promise(() => { /* never resolves */ }),
+        () =>
+          new Promise(() => {
+            /* never resolves */
+          }),
       );
     mockCreateToolBridge.mockResolvedValueOnce(bridge);
     const manager = new MCPManager([makeConfig("fast"), makeConfig("slow")]);
@@ -758,6 +826,66 @@ describe("MCPManager", () => {
     expect(manager.getConnectedServers()).toEqual(["fast"]);
     expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);
     expect(slowClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop cancels an in-flight start and closes a client that arrives late", async () => {
+    let resolveClient:
+      ((value: { close: ReturnType<typeof vi.fn> }) => void) | undefined;
+    const lateClient = { close: vi.fn().mockResolvedValue(undefined) };
+    mockCreateMCPConnection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClient = resolve;
+        }),
+    );
+
+    const manager = new MCPManager([makeConfig("late")]);
+    const started = manager.start();
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    });
+
+    await manager.stop();
+    await expect(started).resolves.toBeUndefined();
+
+    resolveClient?.(lateClient);
+    await vi.waitFor(() => {
+      expect(lateClient.close).toHaveBeenCalledOnce();
+    });
+
+    expect(mockCreateToolBridge).not.toHaveBeenCalled();
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getTools()).toEqual([]);
+  });
+
+  it("does not publish a tool bridge that finishes after stop", async () => {
+    let resolveBridge:
+      ((value: ReturnType<typeof makeMockBridge>) => void) | undefined;
+    const client = { close: vi.fn().mockResolvedValue(undefined) };
+    const lateBridge = makeMockBridge("late", ["tool"]);
+    mockCreateMCPConnection.mockResolvedValueOnce(client);
+    mockCreateToolBridge.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveBridge = resolve;
+        }),
+    );
+
+    const manager = new MCPManager([makeConfig("late")]);
+    const started = manager.start();
+    await vi.waitFor(() => {
+      expect(mockCreateToolBridge).toHaveBeenCalledOnce();
+    });
+
+    await manager.stop();
+    await expect(started).resolves.toBeUndefined();
+    resolveBridge?.(lateBridge);
+
+    await vi.waitFor(() => {
+      expect(client.close).toHaveBeenCalledOnce();
+    });
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getTools()).toEqual([]);
   });
 
   it("I-73: rejects a bridge with a tool name already registered", async () => {
@@ -812,7 +940,9 @@ describe("MCPManager", () => {
     const bridge = makeMockBridge("srv1", ["tool"]);
     mockCreateMCPConnection.mockResolvedValueOnce("client1");
     mockCreateToolBridge.mockResolvedValueOnce(bridge);
-    mockCreateResourceBridge.mockRejectedValueOnce(new Error("resource rpc gone"));
+    mockCreateResourceBridge.mockRejectedValueOnce(
+      new Error("resource rpc gone"),
+    );
 
     const logger = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
     const manager = new MCPManager([makeConfig("srv1")], logger as any);
@@ -838,7 +968,9 @@ describe("MCPManager", () => {
       { uri: "file:///c.txt" },
     ]);
 
-    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
     mockCreateToolBridge
       .mockResolvedValueOnce(bridge1)
       .mockResolvedValueOnce(bridge2);
@@ -893,9 +1025,7 @@ describe("MCPManager", () => {
 
   it("renderPrompt routes by namespaced name and listPrompts fans out", async () => {
     const bridge = makeMockBridge("srv1", ["t"]);
-    const promptBridge = makeMockPromptBridge("srv1", [
-      { name: "summarize" },
-    ]);
+    const promptBridge = makeMockPromptBridge("srv1", [{ name: "summarize" }]);
     promptBridge.renderPrompt.mockResolvedValueOnce({
       promptName: "summarize",
       messages: [{ role: "user", text: "hi" }],
@@ -912,10 +1042,9 @@ describe("MCPManager", () => {
     expect(prompts).toHaveLength(1);
     expect(prompts[0].namespacedName).toBe("mcp.srv1.summarize");
 
-    const rendered = await manager.renderPrompt(
-      "mcp.srv1.summarize",
-      { topic: "x" },
-    );
+    const rendered = await manager.renderPrompt("mcp.srv1.summarize", {
+      topic: "x",
+    });
     expect(rendered).toEqual({
       promptName: "summarize",
       messages: [{ role: "user", text: "hi" }],
@@ -935,7 +1064,9 @@ describe("MCPManager", () => {
     const promptBridge1 = makeMockPromptBridge("srv1");
     const promptBridge2 = makeMockPromptBridge("srv2");
 
-    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
     mockCreateToolBridge
       .mockResolvedValueOnce(bridge1)
       .mockResolvedValueOnce(bridge2);

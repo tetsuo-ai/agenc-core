@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -65,6 +65,44 @@ describe("AgenCStdioClientTransport", () => {
           "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/cwd',params:{cwd:process.cwd()}})+'\\n'); setTimeout(() => {}, 1000);",
         ],
         env: createStdioMCPEnvironment(undefined, undefined),
+      },
+      undefined,
+      broker,
+    );
+    const message = new Promise((resolve) => {
+      transport.onmessage = resolve;
+    });
+
+    try {
+      await transport.start();
+      await expect(message).resolves.toMatchObject({
+        method: "server/cwd",
+        params: { cwd: expectedCwd },
+      });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("resolves a configured relative cwd from the sandbox broker authority", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-relative-cwd-"));
+    tempDirs.add(dir);
+    const relativeCwd = "server-workspace";
+    const expectedCwd = join(dir, relativeCwd);
+    await mkdir(expectedCwd);
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: dir,
+    });
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/cwd',params:{cwd:process.cwd()}})+'\\n'); setTimeout(() => {}, 1000);",
+        ],
+        env: createStdioMCPEnvironment(undefined, undefined),
+        cwd: relativeCwd,
       },
       undefined,
       broker,
@@ -181,7 +219,79 @@ describe("AgenCStdioClientTransport", () => {
       expect(isPidAlive(childPid)).toBe(true);
 
       await transport.close();
-      await waitFor(() => !isPidAlive(childPid), `child process ${childPid} exit`);
+      await waitFor(
+        () => !isPidAlive(childPid),
+        `child process ${childPid} exit`,
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reaps residual process-group members after the stdio leader exits unexpectedly",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-residual-"));
+      tempDirs.add(dir);
+      const pidFile = join(dir, "child.pid");
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: "/bin/sh",
+          args: [
+            "-c",
+            'sleep 300 </dev/null >/dev/null 2>&1 & child_pid=$!; echo "$child_pid" > "$PID_FILE"; exit 0',
+          ],
+          env: createStdioMCPEnvironment({ PID_FILE: pidFile }, undefined),
+        },
+        undefined,
+        explicitDangerBroker,
+      );
+      const closed = new Promise<void>((resolve) => {
+        transport.onclose = resolve;
+      });
+
+      await transport.start();
+      const childPid = await waitForPidFile(pidFile);
+
+      await closed;
+      await waitFor(
+        () => !isPidAlive(childPid),
+        `residual child process ${childPid} exit`,
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "kills the stdio process tree when a newline-less stdout frame exceeds the cap",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-stdout-cap-"));
+      tempDirs.add(dir);
+      const pidFile = join(dir, "server.pid");
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: process.execPath,
+          args: [
+            "-e",
+            "require('node:fs').writeFileSync(process.env.PID_FILE, String(process.pid)); process.stdout.write(Buffer.alloc(1024 * 1024 + 1, 0x61)); setInterval(() => {}, 1000);",
+          ],
+          env: createStdioMCPEnvironment({ PID_FILE: pidFile }, undefined),
+        },
+        undefined,
+        explicitDangerBroker,
+      );
+      const protocolError = new Promise<Error>((resolve) => {
+        transport.onerror = resolve;
+      });
+      const closed = new Promise<void>((resolve) => {
+        transport.onclose = resolve;
+      });
+
+      await transport.start();
+      const pid = await waitForPidFile(pidFile);
+      expect((await protocolError).message).toMatch(/stdout frame exceeded/i);
+      await closed;
+      await waitFor(
+        () => !isPidAlive(pid),
+        `overflowing stdio process ${pid} exit`,
+      );
     },
   );
 });

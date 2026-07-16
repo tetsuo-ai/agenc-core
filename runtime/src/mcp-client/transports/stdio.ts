@@ -16,8 +16,11 @@
 import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
-import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
+import {
+  deserializeMessage,
+  serializeMessage,
+} from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -34,12 +37,10 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
-import {
-  isProcessTreeAlive,
-  signalProcessTree,
-} from "../../utils/supervisedProcess.js";
+import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
+const STDOUT_FRAME_MAX_BYTES = 1024 * 1024;
 
 /**
  * Upper bound on the unflushed stderr buffer. A trusted local child is the
@@ -137,7 +138,8 @@ function resolveStdioProgram(
   }
 
   const pathValue = env.PATH ?? process.env.PATH ?? "";
-  const pathExtValue = env.PATHEXT ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const pathExtValue =
+    env.PATHEXT ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
   const extensions = pathExtValue
     .split(";")
     .map((entry) => entry.trim())
@@ -172,9 +174,13 @@ export class AgenCStdioClientTransport implements Transport {
   readonly server: StdioTransportServerParameters;
 
   private child: ChildProcess | undefined;
-  private readonly readBuffer = new ReadBuffer();
+  private stdoutBuffer = Buffer.alloc(0);
   private stderrBuffer = Buffer.alloc(0);
   private closedNotified = false;
+  private stdoutProtocolFailed = false;
+  private shutdownState:
+    | { readonly child: ChildProcess; readonly promise: Promise<void> }
+    | undefined;
 
   onclose?: () => void;
   onerror?: (error: Error) => void;
@@ -189,22 +195,33 @@ export class AgenCStdioClientTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    if (this.child !== undefined) {
+    if (this.child !== undefined || this.shutdownState !== undefined) {
       throw new Error("AgenCStdioClientTransport already started");
     }
 
-    const env = { ...(this.server.env ?? {}) };
-    const cwd = this.server.cwd ?? this.sandboxExecutionBroker?.cwd ?? process.cwd();
-    const command = resolveStdioProgram(this.server.command, env, cwd);
-    if (this.sandboxExecutionBroker === undefined) {
+    const broker = this.sandboxExecutionBroker;
+    if (broker === undefined) {
       throw missingSandboxExecutionBoundary("mcp_stdio");
     }
-    const spawnCommand = this.sandboxExecutionBroker.prepareSpawn("mcp_stdio", {
+    const env = { ...(this.server.env ?? {}) };
+    const cwd =
+      this.server.cwd === undefined
+        ? broker.cwd
+        : isAbsolute(this.server.cwd)
+          ? this.server.cwd
+          : resolve(broker.cwd, this.server.cwd);
+    const command = resolveStdioProgram(this.server.command, env, cwd);
+    const spawnCommand = broker.prepareSpawn("mcp_stdio", {
       program: command,
       args: this.server.args ?? [],
       cwd,
       env,
     });
+
+    this.stdoutBuffer = Buffer.alloc(0);
+    this.stderrBuffer = Buffer.alloc(0);
+    this.stdoutProtocolFailed = false;
+    this.closedNotified = false;
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(spawnCommand.program, [...spawnCommand.args], {
@@ -220,18 +237,15 @@ export class AgenCStdioClientTransport implements Transport {
       });
 
       this.child = child;
-      this.closedNotified = false;
 
       child.once("spawn", () => resolve());
       child.once("error", (error) => {
         reject(error);
         this.onerror?.(error);
+        this.handleUnexpectedChildClose(child);
       });
       child.once("close", () => {
-        if (this.child === child) {
-          this.child = undefined;
-        }
-        this.notifyClosed();
+        this.handleUnexpectedChildClose(child);
       });
       child.stdin?.on("error", (error) => this.onerror?.(error));
       child.stdout?.on("data", this.onStdoutData);
@@ -242,39 +256,13 @@ export class AgenCStdioClientTransport implements Transport {
   }
 
   async close(): Promise<void> {
-    const child = this.child;
+    const child = this.child ?? this.shutdownState?.child;
     if (child === undefined) {
-      this.readBuffer.clear();
+      this.stdoutBuffer = Buffer.alloc(0);
       this.notifyClosed();
       return;
     }
-
-    this.child = undefined;
-    try {
-      child.stdin?.end();
-    } catch {
-      // best-effort
-    }
-
-    signalProcessTree(child, "SIGTERM");
-    await waitForChildClose(child, PROCESS_GROUP_TERM_GRACE_MS);
-    if (isProcessTreeAlive(child)) {
-      signalProcessTree(child, "SIGKILL");
-      await waitForChildClose(child, PROCESS_GROUP_TERM_GRACE_MS);
-    }
-    const terminationError = isProcessTreeAlive(child)
-      ? new Error("MCP stdio process tree survived forced shutdown")
-      : undefined;
-
-    this.flushStderr();
-    this.readBuffer.clear();
-    this.notifyClosed();
-    if (terminationError !== undefined) {
-      child.stdin?.destroy();
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      throw terminationError;
-    }
+    await this.terminateChild(child);
   }
 
   async send(message: JSONRPCMessage): Promise<void> {
@@ -304,24 +292,63 @@ export class AgenCStdioClientTransport implements Transport {
   }
 
   private readonly onStdoutData = (chunk: Buffer): void => {
-    this.readBuffer.append(chunk);
-    for (;;) {
+    if (this.stdoutProtocolFailed) return;
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf(0x0a, offset);
+      const end = newline === -1 ? chunk.length : newline;
+      const segment = chunk.subarray(offset, end);
+      if (this.stdoutBuffer.length + segment.length > STDOUT_FRAME_MAX_BYTES) {
+        this.failOversizedStdoutFrame();
+        return;
+      }
+      if (segment.length > 0) {
+        this.stdoutBuffer =
+          this.stdoutBuffer.length === 0
+            ? Buffer.from(segment)
+            : Buffer.concat([this.stdoutBuffer, segment]);
+      }
+      if (newline === -1) return;
+
+      const line = this.stdoutBuffer.toString("utf8").replace(/\r$/, "");
+      this.stdoutBuffer = Buffer.alloc(0);
       try {
-        const message = this.readBuffer.readMessage();
-        if (message === null) break;
-        this.onmessage?.(message);
+        this.onmessage?.(deserializeMessage(line));
       } catch (error) {
         this.onerror?.(toError(error));
       }
+      offset = newline + 1;
     }
   };
+
+  private failOversizedStdoutFrame(): void {
+    if (this.stdoutProtocolFailed) return;
+    this.stdoutProtocolFailed = true;
+    this.stdoutBuffer = Buffer.alloc(0);
+    const error = new Error(
+      `MCP stdio stdout frame exceeded ${STDOUT_FRAME_MAX_BYTES} bytes without a newline`,
+    );
+    this.onerror?.(error);
+    const child = this.child;
+    child?.stdout?.pause();
+    if (child === undefined) {
+      this.notifyClosed();
+      return;
+    }
+    void this.terminateChild(child).catch((terminationError: unknown) => {
+      this.onerror?.(toError(terminationError));
+    });
+  }
 
   private readonly onStderrData = (chunk: Buffer): void => {
     this.stderrBuffer = Buffer.concat([this.stderrBuffer, chunk]);
     for (;;) {
       const index = this.stderrBuffer.indexOf("\n");
       if (index === -1) break;
-      const line = this.stderrBuffer.subarray(0, index).toString("utf8").replace(/\r$/, "");
+      const line = this.stderrBuffer
+        .subarray(0, index)
+        .toString("utf8")
+        .replace(/\r$/, "");
       this.stderrBuffer = this.stderrBuffer.subarray(index + 1);
       this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
     }
@@ -331,7 +358,9 @@ export class AgenCStdioClientTransport implements Transport {
     // memory stays bounded; any trailing bytes keep accumulating toward the
     // next newline as before.
     if (this.stderrBuffer.length > STDERR_BUFFER_MAX_BYTES) {
-      const truncated = this.stderrBuffer.subarray(0, STDERR_BUFFER_MAX_BYTES).toString("utf8");
+      const truncated = this.stderrBuffer
+        .subarray(0, STDERR_BUFFER_MAX_BYTES)
+        .toString("utf8");
       this.stderrBuffer = this.stderrBuffer.subarray(STDERR_BUFFER_MAX_BYTES);
       this.logger.info(
         `MCP server stderr (${this.server.command}) [truncated ${STDERR_BUFFER_MAX_BYTES} bytes, no newline]: ${truncated}`,
@@ -344,6 +373,52 @@ export class AgenCStdioClientTransport implements Transport {
     const line = this.stderrBuffer.toString("utf8").replace(/\r$/, "");
     this.stderrBuffer = Buffer.alloc(0);
     this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
+  }
+
+  private handleUnexpectedChildClose(child: ChildProcess): void {
+    if (this.shutdownState?.child === child) return;
+    void this.terminateChild(child).catch((error: unknown) => {
+      this.onerror?.(toError(error));
+    });
+  }
+
+  private terminateChild(child: ChildProcess): Promise<void> {
+    if (this.shutdownState?.child === child) {
+      return this.shutdownState.promise;
+    }
+
+    const promise = this.performChildTermination(child);
+    this.shutdownState = { child, promise };
+    const clearShutdownState = (): void => {
+      if (this.shutdownState?.promise === promise) {
+        this.shutdownState = undefined;
+      }
+    };
+    void promise.then(clearShutdownState, clearShutdownState);
+    return promise;
+  }
+
+  private async performChildTermination(child: ChildProcess): Promise<void> {
+    try {
+      try {
+        child.stdin?.end();
+      } catch {
+        // The leader may already have closed its stdio handles.
+      }
+      await terminateProcessTreeAndWait(child, {
+        terminateGraceMs: PROCESS_GROUP_TERM_GRACE_MS,
+        killGraceMs: PROCESS_GROUP_TERM_GRACE_MS,
+        label: "MCP stdio process",
+      });
+    } finally {
+      if (this.child === child) this.child = undefined;
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      this.flushStderr();
+      this.stdoutBuffer = Buffer.alloc(0);
+      this.notifyClosed();
+    }
   }
 
   private notifyClosed(): void {
@@ -436,24 +511,4 @@ export async function createStdioMCPConnection(
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-async function waitForChildClose(
-  child: ChildProcess,
-  timeoutMs: number,
-): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return true;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      child.off("close", onClose);
-      resolve(false);
-    }, timeoutMs);
-    timer.unref?.();
-
-    const onClose = () => {
-      clearTimeout(timer);
-      resolve(true);
-    };
-    child.once("close", onClose);
-  });
 }
