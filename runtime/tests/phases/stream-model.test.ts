@@ -320,6 +320,80 @@ describe("streamModel — live assistant text sanitization", () => {
     });
   });
 
+  test("prewarm fallback rebuilds the exact prompt payload from the request snapshot", async () => {
+    const ctx = mkCtx("chat");
+    const systemSentinel = "PREWARM_SYSTEM_SENTINEL_1b85";
+    const developerSentinel = "PREWARM_DEVELOPER_SENTINEL_9d33";
+    const payloads: Array<{
+      readonly messages: LLMMessage[];
+      readonly systemPrompt: string;
+    }> = [];
+    const capturePayload = (
+      messages: LLMMessage[],
+      options?: LLMChatOptions,
+    ): void => {
+      payloads.push({
+        messages: structuredClone(messages),
+        systemPrompt: options?.systemPrompt ?? "",
+      });
+    };
+    const provider = mkProvider(async (messages, _onChunk, options) => {
+      capturePayload(messages, options);
+      return {
+        content: "direct fallback",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+    session.services.startupPrewarm = {
+      setProviderHandle: () => {},
+      setProviderTask: () => {},
+      consumeProviderHandle: async () => ({
+        chatStream: async (messages, _onChunk, options) => {
+          capturePayload(messages, options);
+          messages.push({
+            role: "developer",
+            content: developerSentinel,
+          });
+          if (options) {
+            (options as { systemPrompt?: string }).systemPrompt =
+              `${options.systemPrompt ?? ""}\n${systemSentinel}`;
+          }
+          throw Object.assign(new Error("prewarmed socket closed"), {
+            code: "ECONNRESET",
+          });
+        },
+      }),
+      expireProviderHandle: async () => {},
+      clear: async () => {},
+    };
+    const request: StreamModelRequestContract = {
+      ...mkRequest([
+        { role: "developer", content: developerSentinel },
+        { role: "user", content: "hello" },
+      ]),
+      baseInstructions: systemSentinel,
+    };
+
+    await streamModel(mkState(ctx), ctx, session, request);
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[1]).toEqual(payloads[0]);
+    for (const payload of payloads) {
+      expect(payload.systemPrompt.match(new RegExp(systemSentinel, "g"))).toHaveLength(1);
+      expect(payload.messages.filter((message) => message.role === "system")).toHaveLength(0);
+      const developerMessages = payload.messages.filter(
+        (message) => message.role === "developer",
+      );
+      expect(developerMessages).toEqual([
+        { role: "developer", content: developerSentinel },
+      ]);
+    }
+  });
+
   test("requires a tool choice in plan mode when tools are available", async () => {
     const ctx = mkCtx("plan");
     const state = mkState(ctx);

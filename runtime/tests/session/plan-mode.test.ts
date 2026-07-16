@@ -548,6 +548,29 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     (session as unknown as { budgetTracker: null }).budgetTracker = null;
     (
       session as unknown as {
+        permissionModeRegistry: {
+          current: () => {
+            mode: "default";
+            additionalWorkingDirectories: ReadonlyMap<string, never>;
+            alwaysAllowRules: Record<string, never>;
+            alwaysDenyRules: Record<string, never>;
+            alwaysAskRules: Record<string, never>;
+            isBypassPermissionsModeAvailable: false;
+          };
+        };
+      }
+    ).permissionModeRegistry = {
+      current: () => ({
+        mode: "default",
+        additionalWorkingDirectories: new Map(),
+        alwaysAllowRules: {},
+        alwaysDenyRules: {},
+        alwaysAskRules: {},
+        isBypassPermissionsModeAvailable: false,
+      }),
+    };
+    (
+      session as unknown as {
         hasPendingInput: () => boolean;
       }
     ).hasPendingInput = () => false;

@@ -302,7 +302,7 @@ boundary. They are higher leverage than new surface area.
       broken links, special files, exact-path approval scope, noninteractive
       denial, repository self-approval rejection, and duplicate injection.
 
-[ ] Make provider retries idempotent at the prompt boundary.
+[x] Make provider retries idempotent at the prompt boundary.
     - A retry must contain the assembled system/developer prompt exactly once,
       never 2x, 4x, or cumulatively more.
     - Add canned transport failures and capture every retry payload.

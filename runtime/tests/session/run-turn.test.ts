@@ -121,6 +121,7 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
 } from "../tools/system/filesystem.js";
+import { getAttachmentTrackingState } from "./attachment-state.js";
 
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
@@ -3332,6 +3333,102 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
+  });
+
+  test("reconnects reuse one prompt snapshot across every transport attempt", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const systemSentinel = "RETRY_SYSTEM_SENTINEL_2f91";
+    const developerSentinel = "RETRY_DEVELOPER_SENTINEL_7c40";
+    const payloads: Array<{
+      readonly messages: LLMMessage[];
+      readonly systemPrompt: string;
+    }> = [];
+    let attempts = 0;
+    let session!: Session;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages, _onChunk, options) => {
+        attempts += 1;
+        payloads.push({
+          messages: structuredClone(messages),
+          systemPrompt: options?.systemPrompt ?? "",
+        });
+        if (attempts < 3) {
+          // Model realistic state drift between attempts. Re-running the
+          // attachment producers would inject a date-change reminder into
+          // attempt 2/3; a provider normalizing its input in place must not
+          // mutate either the durable turn state or the retry snapshot.
+          getAttachmentTrackingState(session).lastEmittedDate = "1900-01-01";
+          const developerMessage = messages.find(
+            (message) => message.role === "developer",
+          );
+          if (developerMessage && typeof developerMessage.content === "string") {
+            developerMessage.content += "\nPROVIDER_LOCAL_MUTATION";
+          }
+          if (options) {
+            (options as { systemPrompt?: string }).systemPrompt =
+              `${options.systemPrompt ?? ""}\n${systemSentinel}`;
+          }
+          if (attempts === 1) {
+            throw Object.assign(new Error("socket hang up"), {
+              code: "ECONNRESET",
+            });
+          }
+          throw Object.assign(new Error("Service Unavailable"), {
+            statusCode: 503,
+          });
+        }
+        return {
+          content: "retry complete",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const built = mkSession({ provider, registry: mkRegistry() });
+    session = built.session;
+    const state = built.getState();
+    state.history = [
+      { role: "user", content: "before" },
+      { role: "assistant", content: "before answer" },
+    ];
+    state.referenceContextItem = {
+      model: "test-model",
+      realtimeActive: false,
+    };
+    const ctx = {
+      ...mkCtx(),
+      realtimeActive: true,
+      config: {
+        ...mkConfig(),
+        experimental_realtime_start_instructions: developerSentinel,
+      },
+    } as TurnContext;
+
+    await drain(
+      session.runTurn("voice transcript", {
+        ctx,
+        systemPrompt: systemSentinel,
+      }),
+    );
+
+    expect(payloads).toHaveLength(3);
+    expect(payloads[1]).toEqual(payloads[0]);
+    expect(payloads[2]).toEqual(payloads[0]);
+    for (const payload of payloads) {
+      expect(payload.messages.some((message) => message.role === "system")).toBe(false);
+      expect(payload.systemPrompt.match(new RegExp(systemSentinel, "g"))).toHaveLength(1);
+      const developerMessages = payload.messages.filter(
+        (message) => message.role === "developer",
+      );
+      expect(developerMessages).toHaveLength(1);
+      expect(testMessageText(developerMessages[0]!).match(
+        new RegExp(developerSentinel, "g"),
+      )).toHaveLength(1);
+    }
   });
 
   test("does not retry a partial provider-error response as streaming fallback", async () => {

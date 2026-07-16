@@ -173,13 +173,29 @@ describe("ProviderHttpClientSession", () => {
     });
 
     const pending = session.requestJson<{ ok: boolean }>({
-      body: { ping: "pong" },
+      body: {
+        model: "test-model",
+        instructions: "REQUEST_RETRY_SYSTEM_SENTINEL",
+        input: [
+          {
+            role: "developer",
+            content: "REQUEST_RETRY_DEVELOPER_SENTINEL",
+          },
+          { role: "user", content: "hello" },
+        ],
+      },
     });
     await vi.runOnlyPendingTimersAsync();
     const response = await pending;
 
     expect(response.data.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const requestBodies = fetchImpl.mock.calls.map(([, init]) =>
+      String((init as RequestInit | undefined)?.body),
+    );
+    expect(requestBodies[1]).toBe(requestBodies[0]);
+    expect(requestBodies[0]?.match(/REQUEST_RETRY_SYSTEM_SENTINEL/g)).toHaveLength(1);
+    expect(requestBodies[0]?.match(/REQUEST_RETRY_DEVELOPER_SENTINEL/g)).toHaveLength(1);
   });
 
   test("retries TLS validation failures once with a fresh handshake even when transport retries are disabled", async () => {
@@ -821,7 +837,18 @@ describe("ProviderHttpClientSession", () => {
     });
 
     const stream = await session.requestStream({
-      body: { stream: true },
+      body: {
+        model: "test-model",
+        instructions: "STREAM_RETRY_SYSTEM_SENTINEL",
+        input: [
+          {
+            role: "developer",
+            content: "STREAM_RETRY_DEVELOPER_SENTINEL",
+          },
+          { role: "user", content: "hello" },
+        ],
+        stream: true,
+      },
     });
 
     const decoder = new TextDecoder();
@@ -832,6 +859,12 @@ describe("ProviderHttpClientSession", () => {
 
     expect(chunks).toEqual(["part-2"]);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const requestBodies = fetchImpl.mock.calls.map(([, init]) =>
+      String((init as RequestInit | undefined)?.body),
+    );
+    expect(requestBodies[1]).toBe(requestBodies[0]);
+    expect(requestBodies[0]?.match(/STREAM_RETRY_SYSTEM_SENTINEL/g)).toHaveLength(1);
+    expect(requestBodies[0]?.match(/STREAM_RETRY_DEVELOPER_SENTINEL/g)).toHaveLength(1);
   });
 
   test("requestStream does not splice a second body after partial yield (LLM-01)", async () => {
