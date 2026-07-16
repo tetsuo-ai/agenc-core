@@ -13,14 +13,15 @@
  *     the same way it gates in-process model invocation.
  *   - Resources: memory files (via the same scanner the runtime uses)
  *     plus explicitly-passed instruction files (AGENC.md tiers).
- *     Path-bounded by construction: `readResource` only serves URIs
- *     minted by its own listing — it never resolves client-supplied
- *     paths. Contents pass through the memory secret redactor.
+ *     Canonical containment rejects symlink escapes, and `readResource`
+ *     only serves URIs minted by a fresh listing — it never resolves
+ *     client-supplied paths. Only the selected resource body is read,
+ *     then its contents pass through the memory secret redactor.
  *
  * @module
  */
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 import {
   detectSessionFileType,
@@ -43,6 +44,8 @@ import type {
 export interface SkillPromptProviderOptions {
   /** Directories whose children are skills (`<dir>/<name>/SKILL.md` or `<dir>/<name>.md`). */
   readonly skillRoots: readonly string[];
+  /** Canonical containment root; candidates resolving outside it are omitted. */
+  readonly scopeRoot?: string;
 }
 
 interface DiscoveredSkill {
@@ -50,13 +53,68 @@ interface DiscoveredSkill {
   readonly filePath: string;
   readonly description: string;
   readonly argumentHint: string | undefined;
+  readonly rawContent: string;
+}
+
+async function canonicalScopeRoot(
+  scopeRoot: string | undefined,
+): Promise<string | null> {
+  if (scopeRoot === undefined) return null;
+  try {
+    return await realpath(scopeRoot);
+  } catch {
+    return null;
+  }
+}
+
+function isSameOrChildPath(scopeRoot: string, candidate: string): boolean {
+  const offset = relative(scopeRoot, candidate);
+  return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
+}
+
+async function readScopedRegularFile(
+  filePath: string,
+  scopeRoot: string | null,
+  readContent: (canonicalPath: string) => Promise<string> = async (
+    canonicalPath,
+  ) => await readFile(canonicalPath, "utf8"),
+): Promise<{
+  readonly canonicalPath: string;
+  readonly rawContent: string;
+} | null> {
+  const canonicalPath = await resolveScopedRegularFile(filePath, scopeRoot);
+  if (canonicalPath === null) return null;
+  try {
+    return { canonicalPath, rawContent: await readContent(canonicalPath) };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveScopedRegularFile(
+  filePath: string,
+  scopeRoot: string | null,
+): Promise<string | null> {
+  try {
+    const fileStat = await lstat(filePath);
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) return null;
+    const canonicalPath = await realpath(filePath);
+    if (scopeRoot !== null && !isSameOrChildPath(scopeRoot, canonicalPath)) {
+      return null;
+    }
+    return canonicalPath;
+  } catch {
+    return null;
+  }
 }
 
 async function discoverSkills(
-  roots: readonly string[],
+  options: SkillPromptProviderOptions,
 ): Promise<Map<string, DiscoveredSkill>> {
   const skills = new Map<string, DiscoveredSkill>();
-  for (const root of roots) {
+  const scopeRoot = await canonicalScopeRoot(options.scopeRoot);
+  if (options.scopeRoot !== undefined && scopeRoot === null) return skills;
+  for (const root of options.skillRoots) {
     let entries;
     try {
       entries = await readdir(root, { withFileTypes: true });
@@ -73,19 +131,18 @@ async function discoverSkills(
             }
           : null;
       if (candidate === null || skills.has(candidate.name)) continue;
-      let raw: string;
-      try {
-        raw = await readFile(candidate.filePath, "utf8");
-      } catch {
-        continue;
-      }
-      const { frontmatter } = parseFrontmatter(raw, candidate.filePath);
+      const file = await readScopedRegularFile(candidate.filePath, scopeRoot);
+      if (file === null) continue;
+      const { frontmatter } = parseFrontmatter(
+        file.rawContent,
+        file.canonicalPath,
+      );
       if (parseBooleanFrontmatter(frontmatter["disable-model-invocation"])) {
         continue;
       }
       skills.set(candidate.name, {
         name: candidate.name,
-        filePath: candidate.filePath,
+        filePath: file.canonicalPath,
         description:
           typeof frontmatter.description === "string"
             ? frontmatter.description
@@ -94,6 +151,7 @@ async function discoverSkills(
           frontmatter["argument-hint"] != null
             ? String(frontmatter["argument-hint"])
             : undefined,
+        rawContent: file.rawContent,
       });
     }
   }
@@ -105,7 +163,7 @@ export function createSkillPromptProvider(
 ): McpPromptProvider {
   return {
     async listPrompts(): Promise<readonly McpPromptDefinition[]> {
-      const skills = await discoverSkills(options.skillRoots);
+      const skills = await discoverSkills(options);
       return [...skills.values()].map((skill) => ({
         name: skill.name,
         description: skill.description,
@@ -123,16 +181,13 @@ export function createSkillPromptProvider(
       name: string,
       args?: Readonly<Record<string, string>>,
     ): Promise<McpGetPromptResult | null> {
-      const skills = await discoverSkills(options.skillRoots);
+      const skills = await discoverSkills(options);
       const skill = skills.get(name);
       if (skill === undefined) return null;
-      let raw: string;
-      try {
-        raw = await readFile(skill.filePath, "utf8");
-      } catch {
-        return null;
-      }
-      const { content } = parseFrontmatter(raw, skill.filePath);
+      const { content } = parseFrontmatter(
+        skill.rawContent,
+        skill.filePath,
+      );
       const argumentText = args?.arguments ?? "";
       const text = content.includes("$ARGUMENTS")
         ? content.replaceAll("$ARGUMENTS", argumentText)
@@ -152,6 +207,10 @@ export interface MemoryResourceProviderOptions {
   readonly memoryDirs: readonly string[];
   /** Explicit instruction files (AGENC.md tiers). Listed only if they exist. */
   readonly instructionFiles?: readonly string[];
+  /** Canonical containment root; candidates resolving outside it are omitted. */
+  readonly scopeRoot?: string;
+  /** Resource body reader. Exposed for deterministic embedding and tests. */
+  readonly readResourceContent?: (canonicalPath: string) => Promise<string>;
 }
 
 const MEMORY_URI_SCHEME = "agenc-memory://";
@@ -166,12 +225,19 @@ async function listMemoryResources(
   options: MemoryResourceProviderOptions,
 ): Promise<Map<string, ListedResource>> {
   const resources = new Map<string, ListedResource>();
+  const scopeRoot = await canonicalScopeRoot(options.scopeRoot);
+  if (options.scopeRoot !== undefined && scopeRoot === null) return resources;
   for (const [dirIndex, dir] of options.memoryDirs.entries()) {
     const headers = await scanMemoryFiles(dir);
     for (const header of headers) {
       // Session memory/transcripts are excluded outright — same boundary
       // the permission layer enforces for in-process reads.
       if (detectSessionFileType(header.filePath) !== null) continue;
+      const canonicalPath = await resolveScopedRegularFile(
+        header.filePath,
+        scopeRoot,
+      );
+      if (canonicalPath === null) continue;
       const uri = `${MEMORY_URI_SCHEME}${dirIndex}/${header.filename}`;
       resources.set(uri, {
         definition: {
@@ -182,35 +248,32 @@ async function listMemoryResources(
             : {}),
           mimeType: "text/markdown",
         },
-        filePath: header.filePath,
+        filePath: canonicalPath,
       });
     }
     const entrypoint = join(dir, "MEMORY.md");
-    try {
-      if ((await stat(entrypoint)).isFile()) {
-        const uri = `${MEMORY_URI_SCHEME}${dirIndex}/MEMORY.md`;
-        resources.set(uri, {
-          definition: {
-            uri,
-            name: "MEMORY.md",
-            description: "Memory index",
-            mimeType: "text/markdown",
-          },
-          filePath: entrypoint,
-        });
-      }
-    } catch {
-      /* no entrypoint */
+    const canonicalEntrypoint = await resolveScopedRegularFile(
+      entrypoint,
+      scopeRoot,
+    );
+    if (canonicalEntrypoint !== null) {
+      const uri = `${MEMORY_URI_SCHEME}${dirIndex}/MEMORY.md`;
+      resources.set(uri, {
+        definition: {
+          uri,
+          name: "MEMORY.md",
+          description: "Memory index",
+          mimeType: "text/markdown",
+        },
+        filePath: canonicalEntrypoint,
+      });
     }
   }
   for (const [fileIndex, filePath] of (
     options.instructionFiles ?? []
   ).entries()) {
-    try {
-      if (!(await stat(filePath)).isFile()) continue;
-    } catch {
-      continue;
-    }
+    const canonicalPath = await resolveScopedRegularFile(filePath, scopeRoot);
+    if (canonicalPath === null) continue;
     if (detectSessionFileType(filePath) !== null) continue;
     const uri = `${INSTRUCTIONS_URI_SCHEME}${fileIndex}/${basename(filePath)}`;
     resources.set(uri, {
@@ -220,7 +283,7 @@ async function listMemoryResources(
         description: `Project instructions (${filePath})`,
         mimeType: "text/markdown",
       },
-      filePath,
+      filePath: canonicalPath,
     });
   }
   return resources;
@@ -240,18 +303,20 @@ export function createMemoryResourceProvider(
       const resources = await listMemoryResources(options);
       const resource = resources.get(uri);
       if (resource === undefined) return null;
-      let raw: string;
-      try {
-        raw = await readFile(resource.filePath, "utf8");
-      } catch {
-        return null;
-      }
+      const scopeRoot = await canonicalScopeRoot(options.scopeRoot);
+      if (options.scopeRoot !== undefined && scopeRoot === null) return null;
+      const file = await readScopedRegularFile(
+        resource.filePath,
+        scopeRoot,
+        options.readResourceContent,
+      );
+      if (file === null) return null;
       return {
         contents: [
           {
             uri,
             mimeType: "text/markdown",
-            text: redactSecrets(raw),
+            text: redactSecrets(file.rawContent),
           },
         ],
       };

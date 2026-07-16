@@ -518,7 +518,7 @@ agenc mcp xaa
 
 | Command | Meaning |
 | --- | --- |
-| `serve` | Expose AgenC tools as an MCP server |
+| `serve` | Expose workspace-scoped read-only AgenC tools as an MCP server |
 | `add` | Add an MCP server |
 | `list` | List configured MCP servers |
 | `get` | Show one MCP server |
@@ -542,6 +542,11 @@ agenc mcp xaa
 agenc mcp serve --transport stdio
 agenc mcp list
 ```
+
+Inbound serve advertises only explicitly non-mutating, idempotent read tools.
+Environment flags cannot authorize mutations. Daemon SSE autostart additionally
+requires an absolute `mcp.server.workspace`; foreground serve uses its working
+directory.
 
 ---
 

@@ -183,6 +183,7 @@ enabled = false
 transport = "stdio"   # stdio | sse
 # port = 0
 # host = "127.0.0.1"
+# workspace = "/absolute/path/to/project" # required for daemon SSE autostart
 
 [mcp_servers.docs]
 transport = "stdio"
@@ -192,6 +193,10 @@ args = ["-y", "some-mcp-server"]
 # required = false
 # timeout = 30000
 ```
+
+Daemon-autostarted SSE requires an explicit absolute `mcp.server.workspace`.
+The path is canonicalized and must resolve to a directory before the endpoint
+starts.
 
 Full MCP surface: [mcp.md](mcp.md).
 

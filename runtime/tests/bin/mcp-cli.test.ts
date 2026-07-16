@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -25,13 +25,35 @@ const SAMPLE_TOOL: Tool = {
   name: "sample.echo",
   description: "Echo text back to the caller.",
   isReadOnly: true,
+  metadata: { mutating: false },
+  requiresApproval: false,
+  recoveryCategory: "idempotent",
   inputSchema: {
     type: "object",
     properties: { text: { type: "string" } },
   },
   async execute(args) {
-    return { content: String(args.text ?? "") };
+    return {
+      content: `echo:${String(args.text ?? "")}`,
+      codeModeResult: { tool: "sample.echo" },
+    };
   },
+};
+
+const MUTATING_TOOL: Tool = {
+  ...SAMPLE_TOOL,
+  name: "sample.write",
+  description: "Mutates state.",
+  isReadOnly: false,
+  metadata: { mutating: true },
+  recoveryCategory: "side-effecting",
+};
+
+const CONTRADICTORY_TOOL: Tool = {
+  ...SAMPLE_TOOL,
+  name: "sample.contradictory",
+  description: "Claims read-only while declaring a mutation.",
+  metadata: { mutating: true },
 };
 
 const RUNTIME_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -48,7 +70,7 @@ function request(id: number, method: string, params?: unknown) {
 
 function createToolRegistry(): ToolRegistry {
   return {
-    tools: [SAMPLE_TOOL],
+    tools: [SAMPLE_TOOL, MUTATING_TOOL, CONTRADICTORY_TOOL],
     toLLMTools(): LLMTool[] {
       return [];
     },
@@ -444,9 +466,25 @@ describe("AgenC MCP CLI", () => {
       }),
     );
 
+    input.write(`${JSON.stringify(request(2, "tools/list"))}\n`);
+    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [
+          {
+            name: SAMPLE_TOOL.name,
+            description: SAMPLE_TOOL.description,
+            inputSchema: SAMPLE_TOOL.inputSchema,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+
     input.write(
       `${JSON.stringify(
-        request(2, "tools/call", {
+        request(3, "tools/call", {
           name: "sample.echo",
           arguments: { text: "hello" },
         }),
@@ -454,10 +492,34 @@ describe("AgenC MCP CLI", () => {
     );
     await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual({
       jsonrpc: "2.0",
-      id: 2,
+      id: 3,
       result: {
         content: [{ type: "text", text: "echo:hello" }],
         structuredContent: { tool: "sample.echo" },
+      },
+    });
+
+    input.write(
+      `${JSON.stringify(
+        request(4, "tools/call", {
+          name: CONTRADICTORY_TOOL.name,
+          arguments: {},
+        }),
+      )}\n`,
+    );
+    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: expect.stringContaining(
+              "only explicitly read-only, non-mutating, idempotent tools",
+            ),
+          },
+        ],
+        isError: true,
       },
     });
 
@@ -465,6 +527,67 @@ describe("AgenC MCP CLI", () => {
     await expect(withTimeout(result)).resolves.toBe(0);
     expect(stderr.text()).toBe("");
     lines.close();
+  });
+
+  test("pins foreground stdio workspace before lazy tool creation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-mcp-pinned-stdio-"));
+    const workspaceA = join(root, "workspace-a");
+    const workspaceB = join(root, "workspace-b");
+    mkdirSync(workspaceA);
+    mkdirSync(workspaceB);
+    writeFileSync(join(workspaceA, "only-a.txt"), "a");
+    writeFileSync(join(workspaceB, "only-b.txt"), "b");
+    const originalCwd = process.cwd();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const stderr = createWritableCapture();
+    const lines = createOutputLines(output);
+    let result: Promise<number> | undefined;
+    try {
+      process.chdir(workspaceA);
+      result = runAgenCMcpCli(
+        {
+          kind: "serve",
+          transport: "stdio",
+          host: "127.0.0.1",
+          port: 3334,
+        },
+        { io: createIo(input, output, stderr) },
+      );
+      process.chdir(workspaceB);
+
+      input.write(`${JSON.stringify(request(1, "initialize"))}\n`);
+      await lines.nextLine();
+      input.write(
+        `${JSON.stringify(
+          request(2, "tools/call", {
+            name: "system.listDir",
+            arguments: { path: workspaceA },
+          }),
+        )}\n`,
+      );
+      expect(await lines.nextLine()).toContain("only-a.txt");
+      input.write(
+        `${JSON.stringify(
+          request(3, "tools/call", {
+            name: "system.listDir",
+            arguments: { path: workspaceB },
+          }),
+        )}\n`,
+      );
+      expect(await lines.nextLine()).toContain(
+        "Path is outside allowed directories",
+      );
+      input.end();
+      await expect(result).resolves.toBe(0);
+      expect(stderr.text()).toBe("");
+    } finally {
+      input.end();
+      await result?.catch(() => {});
+      lines.close();
+      process.chdir(originalCwd);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("starts an MCP streamable HTTP server for SSE transport", async () => {
@@ -512,6 +635,36 @@ describe("AgenC MCP CLI", () => {
         result: {
           content: [{ type: "text", text: "echo:hello" }],
           structuredContent: { tool: "sample.echo" },
+        },
+      });
+
+      const deniedResponse = await fetch(started.url, {
+        method: "POST",
+        headers: streamablePostHeaders(sessionId ?? undefined),
+        body: JSON.stringify(
+          request(3, "tools/call", {
+            name: MUTATING_TOOL.name,
+            arguments: {},
+          }),
+        ),
+      });
+      expect(deniedResponse.status).toBe(200);
+      const deniedMessage = JSON.parse(
+        parseSseData(await deniedResponse.text()),
+      );
+      expect(deniedMessage).toEqual({
+        jsonrpc: "2.0",
+        id: 3,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: expect.stringContaining(
+                "Environment overrides are not authorization",
+              ),
+            },
+          ],
+          isError: true,
         },
       });
     } finally {

@@ -93,7 +93,6 @@ class HttpError extends Error {
 
 export class McpHttpSseServerTransport {
   readonly #options: {
-    readonly serverFactory: () => McpServerFramework;
     readonly httpPath: string;
     readonly ssePath: string;
     readonly legacyMessagePath: string;
@@ -102,11 +101,12 @@ export class McpHttpSseServerTransport {
     readonly onError?: (error: Error) => void;
     readonly streamableIdleMs: number;
   };
+  #serverFactory: () => McpServerFramework;
   readonly #sessions = new Map<string, McpHttpSseSession>();
 
   constructor(options: McpHttpSseServerTransportOptions) {
+    this.#serverFactory = options.serverFactory;
     this.#options = {
-      serverFactory: options.serverFactory,
       httpPath: options.httpPath ?? DEFAULT_HTTP_PATH,
       ssePath: options.ssePath ?? DEFAULT_SSE_PATH,
       legacyMessagePath:
@@ -125,6 +125,22 @@ export class McpHttpSseServerTransport {
       hasSseStream: session.getStreams.size > 0 || session.postStreams.size > 0,
       initialized: session.server.snapshot().initialized,
     }));
+  }
+
+  /**
+   * Atomically changes the factory used for future sessions and revokes every
+   * session admitted under the previous factory. The swap happens before the
+   * synchronous revocation loop, so a future session cannot acquire the
+   * previous workspace context. Requests already executing keep the context
+   * under which they were admitted.
+   */
+  replaceServerFactory(serverFactory: () => McpServerFramework): number {
+    const sessionIds = [...this.#sessions.keys()];
+    this.#serverFactory = serverFactory;
+    for (const sessionId of sessionIds) {
+      this.closeSession(sessionId);
+    }
+    return sessionIds.length;
   }
 
   createNodeServer(): Server {
@@ -240,10 +256,18 @@ export class McpHttpSseServerTransport {
     // session has already been removed.
     this.#clearIdleTimer(session);
     for (const stream of session.getStreams.values()) {
-      stream.response.end();
+      try {
+        stream.response.end();
+      } catch (error) {
+        this.#options.onError?.(asError(error));
+      }
     }
     for (const stream of session.postStreams.values()) {
-      stream.response.end();
+      try {
+        stream.response.end();
+      } catch (error) {
+        this.#options.onError?.(asError(error));
+      }
     }
     this.#sessions.delete(sessionId);
     return true;
@@ -263,7 +287,7 @@ export class McpHttpSseServerTransport {
     const session: McpHttpSseSession = {
       id,
       kind,
-      server: this.#options.serverFactory(),
+      server: this.#serverFactory(),
       getStreams: new Map(),
       postStreams: new Map(),
       requestPostStreams: new Map(),
@@ -307,7 +331,7 @@ export class McpHttpSseServerTransport {
     if (shouldCreateSession) {
       session = this.#createSession("streamable-http");
     }
-    const server = session?.server ?? this.#options.serverFactory();
+    const server = session?.server ?? this.#serverFactory();
     if (session !== null && shouldUsePostSse(request, parsed)) {
       const stream = this.#attachPostSseStream(session, response);
       if (parsed.kind === "request") {

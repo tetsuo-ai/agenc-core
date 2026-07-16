@@ -132,7 +132,9 @@ describe("MCP prompts backed by skills", () => {
 });
 
 describe("MCP resources backed by memory + instruction files", () => {
-  async function makeResourceServer(): Promise<{
+  async function makeResourceServer(
+    readResourceContent?: (canonicalPath: string) => Promise<string>,
+  ): Promise<{
     server: McpServerFramework;
     memoryDir: string;
   }> {
@@ -162,6 +164,7 @@ describe("MCP resources backed by memory + instruction files", () => {
       resourceProvider: createMemoryResourceProvider({
         memoryDirs: [memoryDir, sessionDir],
         instructionFiles: [join(root, "AGENC.md")],
+        readResourceContent,
       }),
     });
     return { server, memoryDir };
@@ -185,6 +188,23 @@ describe("MCP resources backed by memory + instruction files", () => {
     expect(names).toContain("MEMORY.md");
     expect(names).toContain("AGENC.md");
     expect(names).not.toContain("leak.md");
+  });
+
+  it("does not read resource bodies while listing", async () => {
+    const readResourceContent = vi.fn(async () => "selected body");
+    const { server } = await makeResourceServer(readResourceContent);
+    await initialized(server);
+
+    const list = await request(server, "resources/list");
+    expect(list.result.resources.length).toBeGreaterThan(0);
+    expect(readResourceContent).not.toHaveBeenCalled();
+
+    const note = list.result.resources.find(
+      (resource: any) => resource.name === "deploy-notes.md",
+    );
+    const read = await request(server, "resources/read", { uri: note.uri });
+    expect(read.result.contents[0].text).toBe("selected body");
+    expect(readResourceContent).toHaveBeenCalledOnce();
   });
 
   it("reads a memory file with secrets redacted", async () => {

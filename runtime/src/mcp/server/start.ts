@@ -7,16 +7,15 @@
  */
 
 import type { Server } from "node:http";
-import { join } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { cwd as processCwd } from "node:process";
 import type { Readable, Writable } from "node:stream";
 import {
-  getMemoryBaseDir,
   MEMORY_DIRNAME,
   PROJECT_INSTRUCTION_FILE,
   PROJECT_MEMORY_DIR,
 } from "../../memory/index.js";
-import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
 import {
   createMemoryResourceProvider,
   createSkillPromptProvider,
@@ -60,6 +59,10 @@ export interface McpServerStartCommand {
 export interface StartedMcpSseServer {
   readonly server: Server;
   readonly url: string;
+  readonly configuredHost: string;
+  readonly configuredPort: number;
+  /** Prepare without applying; the returned synchronous swap cannot fail. */
+  prepareContextReplacement(cwd: string): () => number;
   close(): Promise<void>;
   waitUntilClosed(): Promise<void>;
 }
@@ -69,6 +72,13 @@ export interface ResolvedMcpServeDefaults {
   readonly transport: "stdio" | "sse";
   readonly host: string;
   readonly port: number;
+  readonly workspace?: string;
+}
+
+export interface PreparedMcpSseServerReconfiguration {
+  readonly defaults: ResolvedMcpServeDefaults;
+  /** Applies the validated context and returns the number of revoked sessions. */
+  apply(): number;
 }
 
 export type ConfiguredMcpServerStartResult =
@@ -90,11 +100,13 @@ export type ConfiguredMcpServerStartResult =
 export function resolveMcpServeDefaults(
   config: McpServerModeConfig | undefined,
 ): ResolvedMcpServeDefaults {
+  const workspace = readMcpServeWorkspace(config?.workspace);
   return {
     enabled: config?.enabled === true,
     transport: config?.transport === "sse" ? "sse" : "stdio",
     host: readMcpServeHost(config?.host),
     port: readMcpServePort(config?.port),
+    ...(workspace !== undefined ? { workspace } : {}),
   };
 }
 
@@ -114,15 +126,61 @@ export async function startMcpServerFromConfig(
     };
   }
 
-  const server = await startMcpSseServe(defaults, options);
+  if (defaults.workspace === undefined) {
+    return {
+      kind: "unsupported",
+      defaults,
+      reason:
+        "daemon MCP autostart requires an explicit absolute mcp.server.workspace; " +
+        "use foreground `agenc mcp serve` from the target workspace otherwise",
+    };
+  }
+
+  const workspace = await resolveMcpServeWorkspace(defaults.workspace);
+  const server = await startMcpSseServe(defaults, {
+    ...options,
+    cwd: workspace,
+  });
   return { kind: "started", defaults, server };
+}
+
+export async function prepareMcpSseServerReconfigurationFromConfig(
+  server: StartedMcpSseServer,
+  config: Pick<AgenCConfig, "mcp"> | undefined,
+): Promise<PreparedMcpSseServerReconfiguration> {
+  const defaults = resolveMcpServeDefaults(config?.mcp?.server);
+  if (!defaults.enabled || defaults.transport !== "sse") {
+    throw new Error(
+      "MCP SSE listener reconfiguration requires enabled SSE config",
+    );
+  }
+  const host = normalizeMcpSseLoopbackHost(defaults.host);
+  if (
+    host !== server.configuredHost ||
+    defaults.port !== server.configuredPort
+  ) {
+    throw new Error("MCP SSE listener binding changed and cannot be reused");
+  }
+  if (defaults.workspace === undefined) {
+    throw new Error(
+      "daemon MCP autostart requires an explicit absolute mcp.server.workspace",
+    );
+  }
+
+  const workspace = await resolveMcpServeWorkspace(defaults.workspace);
+  const apply = server.prepareContextReplacement(workspace);
+  return { defaults, apply };
 }
 
 export async function runMcpStdioServe(
   io: McpServerStartIo,
   options: McpServerStartOptions = {},
 ): Promise<void> {
-  const server = createMcpFramework(createLazyMcpToolProvider(options), options.cwd);
+  const pinnedOptions = await pinMcpServerStartOptions(options);
+  const server = createMcpFramework(
+    createLazyMcpToolProvider(pinnedOptions),
+    pinnedOptions.cwd,
+  );
   await new Promise<void>((resolve, reject) => {
     const transport = new McpStdioServerTransport({
       input: io.stdin,
@@ -139,11 +197,10 @@ export async function startMcpSseServe(
   command: McpServerStartCommand,
   options: McpServerStartOptions = {},
 ): Promise<StartedMcpSseServer> {
-  const registry = resolveToolRegistry(options);
+  const pinnedOptions = await pinMcpServerStartOptions(options);
   const host = normalizeMcpSseLoopbackHost(command.host);
   const transport = new McpHttpSseServerTransport({
-    serverFactory: () =>
-      createMcpFramework(mcpToolRegistryFromAgenCTools(registry), options.cwd),
+    serverFactory: createMcpFrameworkFactory(pinnedOptions),
   });
   const server = transport.createNodeServer();
   await new Promise<void>((resolve, reject) => {
@@ -160,6 +217,15 @@ export async function startMcpSseServe(
   return {
     server,
     url,
+    configuredHost: host,
+    configuredPort: command.port,
+    prepareContextReplacement(cwd) {
+      const replacementFactory = createMcpFrameworkFactory({
+        ...pinnedOptions,
+        cwd,
+      });
+      return () => transport.replaceServerFactory(replacementFactory);
+    },
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => {
@@ -199,6 +265,46 @@ function readMcpServePort(port: unknown): number {
   return valid ? port : 3334;
 }
 
+function readMcpServeWorkspace(workspace: unknown): string | undefined {
+  return typeof workspace === "string" && workspace.trim().length > 0
+    ? workspace.trim()
+    : undefined;
+}
+
+async function resolveMcpServeWorkspace(workspace: string): Promise<string> {
+  if (!isAbsolute(workspace)) {
+    throw new Error("mcp.server.workspace must be an absolute filesystem path");
+  }
+  const canonical = await realpath(workspace).catch((error: unknown) => {
+    throw new Error(
+      `mcp.server.workspace cannot be resolved: ${formatMcpWorkspaceError(error)}`,
+    );
+  });
+  const workspaceStat = await stat(canonical).catch((error: unknown) => {
+    throw new Error(
+      `mcp.server.workspace cannot be inspected: ${formatMcpWorkspaceError(error)}`,
+    );
+  });
+  if (!workspaceStat.isDirectory()) {
+    throw new Error("mcp.server.workspace must resolve to a directory");
+  }
+  return canonical;
+}
+
+function formatMcpWorkspaceError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function pinMcpServerStartOptions(
+  options: McpServerStartOptions,
+): Promise<McpServerStartOptions & { readonly cwd: string }> {
+  // Capture before the first await so process.chdir() cannot change the scope
+  // between transport startup and lazy provider/session creation.
+  const requestedCwd = options.cwd ?? processCwd();
+  const cwd = await resolveMcpServeWorkspace(requestedCwd);
+  return { ...options, cwd };
+}
+
 function normalizeMcpSseLoopbackHost(host: string): string {
   const trimmed = host.trim();
   if (trimmed === "127.0.0.1" || trimmed === "localhost" || trimmed === "::1") {
@@ -210,7 +316,19 @@ function normalizeMcpSseLoopbackHost(host: string): string {
 function resolveToolRegistry(options: McpServerStartOptions): ToolRegistry {
   return options.toolRegistry ?? buildToolRegistry({
     workspaceRoot: options.cwd ?? processCwd(),
+    // Symbol indexing persists snapshots and git reads may refresh index state.
+    // Neither family belongs on a literally non-mutating inbound boundary.
+    codeIntelligenceTools: false,
   });
+}
+
+function createMcpFrameworkFactory(
+  options: McpServerStartOptions,
+): () => McpServerFramework {
+  // Snapshot and audit the tool instances before a prepared reload is applied.
+  // The returned function is allocation-only and cannot rebind tool names.
+  const toolProvider = mcpToolRegistryFromAgenCTools(resolveToolRegistry(options));
+  return () => createMcpFramework(toolProvider, options.cwd);
 }
 
 function createLazyMcpToolProvider(
@@ -239,25 +357,22 @@ function createMcpFramework(
   cwd?: string,
 ): McpServerFramework {
   const workspaceRoot = cwd ?? processCwd();
-  const configHome = getAgenCConfigHomeDir();
   return new McpServerFramework({
     serverInfo: { version: VERSION },
     toolProvider,
     promptProvider: createSkillPromptProvider({
+      scopeRoot: workspaceRoot,
       skillRoots: [
-        join(configHome, "skills"),
-        join(configHome, "commands"),
         join(workspaceRoot, PROJECT_MEMORY_DIR, "skills"),
         join(workspaceRoot, PROJECT_MEMORY_DIR, "commands"),
       ],
     }),
     resourceProvider: createMemoryResourceProvider({
+      scopeRoot: workspaceRoot,
       memoryDirs: [
-        join(getMemoryBaseDir(), MEMORY_DIRNAME),
         join(workspaceRoot, PROJECT_MEMORY_DIR, MEMORY_DIRNAME),
       ],
       instructionFiles: [
-        join(configHome, PROJECT_INSTRUCTION_FILE),
         join(workspaceRoot, PROJECT_INSTRUCTION_FILE),
       ],
     }),

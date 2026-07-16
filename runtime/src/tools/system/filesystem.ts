@@ -1053,6 +1053,9 @@ function createListDirTool(allowedPaths: readonly string[]): Tool {
     name: "system.listDir",
     description:
       "List directory contents. Returns entry names, types (file/dir), and sizes. Gated by path allowlist.",
+    metadata: { mutating: false },
+    isReadOnly: true,
+    requiresApproval: false,
     recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",
@@ -1144,6 +1147,9 @@ function createStatTool(allowedPaths: readonly string[]): Tool {
     name: "system.stat",
     description:
       "Get file or directory metadata including size, timestamps, and type. Gated by path allowlist.",
+    metadata: { mutating: false },
+    isReadOnly: true,
+    requiresApproval: false,
     recoveryCategory: "idempotent",
     inputSchema: {
       type: "object",

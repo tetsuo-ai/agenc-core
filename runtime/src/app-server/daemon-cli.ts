@@ -93,8 +93,10 @@ import { resolveProviderBaseURL } from "../config/env.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
 import {
+  prepareMcpSseServerReconfigurationFromConfig,
   resolveMcpServeDefaults,
   startMcpServerFromConfig,
+  type StartedMcpSseServer,
 } from "../mcp/server/start.js";
 import {
   recoverDaemonStateOnStartup,
@@ -1521,11 +1523,12 @@ async function runAgenCDaemonForeground(
           throw new Error("daemon is shutting down");
         }
         const next = await resolveAgenCDaemonAuthStartup(host, io);
-        const nextMcpServer =
-          activeMcpServer.fingerprint === daemonMcpServerFingerprint(next.config)
-            ? activeMcpServer
-            : await startConfiguredDaemonMcpServer(next.config, io);
         const previousMcpServer = activeMcpServer;
+        const preparedMcpChange = await prepareConfiguredDaemonMcpServerChange(
+          previousMcpServer,
+          next.config,
+          io,
+        );
         let adopted = false;
         try {
           reloadableAuthBackend.replace(next.authBackend);
@@ -1540,14 +1543,14 @@ async function runAgenCDaemonForeground(
             next.config.agent?.retention,
           );
           activeConfig = next.config;
-          activeMcpServer = nextMcpServer;
+          activeMcpServer = preparedMcpChange.adopt();
           adopted = true;
         } finally {
-          if (!adopted && nextMcpServer !== previousMcpServer) {
-            await closeDaemonMcpServerAfterReloadFailure(nextMcpServer, io);
+          if (!adopted) {
+            await preparedMcpChange.reject();
           }
         }
-        if (previousMcpServer !== nextMcpServer) {
+        if (preparedMcpChange.closePreviousAfterAdoption) {
           await closeReplacedDaemonMcpServer(previousMcpServer, io);
         }
         const result: DaemonReloadResult = {
@@ -1868,9 +1871,65 @@ async function runAgenCDaemonForeground(
 
 interface AgenCDaemonMcpServerHandle {
   readonly fingerprint: string;
+  readonly bindingFingerprint: string;
   readonly status: "disabled" | "unsupported" | "listening";
   readonly url?: string;
+  readonly server?: StartedMcpSseServer;
   close(): Promise<void>;
+}
+
+interface PreparedDaemonMcpServerChange {
+  readonly closePreviousAfterAdoption: boolean;
+  adopt(): AgenCDaemonMcpServerHandle;
+  reject(): Promise<void>;
+}
+
+async function prepareConfiguredDaemonMcpServerChange(
+  active: AgenCDaemonMcpServerHandle,
+  config: AgenCConfig,
+  io: AgenCDaemonCliIo,
+): Promise<PreparedDaemonMcpServerChange> {
+  const fingerprint = daemonMcpServerFingerprint(config);
+  if (active.fingerprint === fingerprint) {
+    return {
+      closePreviousAfterAdoption: false,
+      adopt: () => active,
+      reject: async () => {},
+    };
+  }
+
+  const defaults = resolveMcpServeDefaults(config.mcp?.server);
+  if (
+    active.server !== undefined &&
+    defaults.enabled &&
+    defaults.transport === "sse" &&
+    defaults.workspace !== undefined &&
+    active.bindingFingerprint === daemonMcpServerBindingFingerprint(config)
+  ) {
+    const prepared = await prepareMcpSseServerReconfigurationFromConfig(
+      active.server,
+      config,
+    );
+    const next = listeningDaemonMcpServerHandle(config, active.server);
+    return {
+      closePreviousAfterAdoption: false,
+      adopt() {
+        const revokedSessions = prepared.apply();
+        io.stderr.write(
+          `AgenC MCP server workspace reconfigured; revoked ${revokedSessions} session${revokedSessions === 1 ? "" : "s"}\n`,
+        );
+        return next;
+      },
+      reject: async () => {},
+    };
+  }
+
+  const next = await startConfiguredDaemonMcpServer(config, io);
+  return {
+    closePreviousAfterAdoption: next !== active,
+    adopt: () => next,
+    reject: () => closeDaemonMcpServerAfterReloadFailure(next, io),
+  };
 }
 
 async function startConfiguredDaemonMcpServer(
@@ -1878,10 +1937,7 @@ async function startConfiguredDaemonMcpServer(
   io: AgenCDaemonCliIo,
 ): Promise<AgenCDaemonMcpServerHandle> {
   try {
-    const result = await startMcpServerFromConfig(config, {
-      cwd: process.cwd(),
-    });
-    const fingerprint = daemonMcpServerFingerprint(config);
+    const result = await startMcpServerFromConfig(config);
     if (result.kind === "disabled") {
       return inactiveDaemonMcpServerHandle(config, "disabled");
     }
@@ -1893,12 +1949,7 @@ async function startConfiguredDaemonMcpServer(
     }
 
     io.stderr.write(`AgenC MCP server listening on ${result.server.url}\n`);
-    return {
-      fingerprint,
-      status: "listening",
-      url: result.server.url,
-      close: () => result.server.close(),
-    };
+    return listeningDaemonMcpServerHandle(config, result.server);
   } catch (error) {
     io.stderr.write(
       `agenc: daemon MCP server start failed: ${formatCleanupError(error)}\n`,
@@ -1913,13 +1964,41 @@ function inactiveDaemonMcpServerHandle(
 ): AgenCDaemonMcpServerHandle {
   return {
     fingerprint: config === undefined ? "unconfigured" : daemonMcpServerFingerprint(config),
+    bindingFingerprint:
+      config === undefined
+        ? "unconfigured"
+        : daemonMcpServerBindingFingerprint(config),
     status,
     close: async () => {},
   };
 }
 
+function listeningDaemonMcpServerHandle(
+  config: AgenCConfig,
+  server: StartedMcpSseServer,
+): AgenCDaemonMcpServerHandle {
+  return {
+    fingerprint: daemonMcpServerFingerprint(config),
+    bindingFingerprint: daemonMcpServerBindingFingerprint(config),
+    status: "listening",
+    url: server.url,
+    server,
+    close: () => server.close(),
+  };
+}
+
 function daemonMcpServerFingerprint(config: AgenCConfig): string {
   return JSON.stringify(resolveMcpServeDefaults(config.mcp?.server));
+}
+
+function daemonMcpServerBindingFingerprint(config: AgenCConfig): string {
+  const defaults = resolveMcpServeDefaults(config.mcp?.server);
+  return JSON.stringify({
+    enabled: defaults.enabled,
+    transport: defaults.transport,
+    host: defaults.host,
+    port: defaults.port,
+  });
 }
 
 function daemonMcpServerReloadResult(

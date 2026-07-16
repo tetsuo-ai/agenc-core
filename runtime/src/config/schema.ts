@@ -9,6 +9,8 @@
 //
 // Unknown keys are preserved on a `_unknown` side table (I-26 forward-compat).
 
+import { isAbsolute } from "node:path";
+
 // ─────────────────────────────────────────────────────────────────────
 // Core enums / unions
 // ─────────────────────────────────────────────────────────────────────
@@ -318,6 +320,8 @@ export interface McpServerModeConfig {
   readonly transport?: McpServerModeTransport;
   readonly port?: number;
   readonly host?: string;
+  /** Absolute workspace exposed by daemon-autostarted read-only MCP tools. */
+  readonly workspace?: string;
 }
 
 export interface McpConfig {
@@ -2082,6 +2086,7 @@ const MCP_SERVER_MODE_KEYS: ReadonlySet<string> = new Set([
   "transport",
   "port",
   "host",
+  "workspace",
 ]);
 
 export function validateMcpServerModeConfig(
@@ -2134,6 +2139,20 @@ export function validateMcpServerModeConfig(
     (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
   );
   if (host !== undefined) out.host = host;
+  const workspace = optionalString(
+    record.workspace,
+    "workspace",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  if (workspace !== undefined) {
+    if (!isAbsolute(workspace)) {
+      throw new InvalidMcpServerModeConfigError(
+        "workspace",
+        "expected an absolute filesystem path",
+      );
+    }
+    out.workspace = workspace;
+  }
   return Object.freeze(out as McpServerModeConfig);
 }
 
