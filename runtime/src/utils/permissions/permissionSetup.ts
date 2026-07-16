@@ -17,8 +17,8 @@ import { isEnvTruthy } from '../envUtils.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
-  getSettings_DEPRECATED,
   getSettingsFilePathForSource,
+  getSettingsForSource,
   getUseAutoModeDuringPlan,
   hasAllowBypassPermissionsMode,
   hasAutoModeOptIn,
@@ -35,6 +35,50 @@ import * as autoModeState from './autoModeState.js'
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? autoModeState
   : null
+
+const AUTHORITATIVE_PERMISSION_SETTING_SOURCES = [
+  'userSettings',
+  'flagSettings',
+  'policySettings',
+] as const
+
+const ALL_PERMISSION_SETTING_SOURCES = [
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'flagSettings',
+  'policySettings',
+] as const
+
+function getAuthoritativeDefaultPermissionMode(): PermissionMode | undefined {
+  let mode: PermissionMode | undefined
+  for (const source of AUTHORITATIVE_PERMISSION_SETTING_SOURCES) {
+    const value = getSettingsForSource(source)?.permissions?.defaultMode
+    if (typeof value === 'string') mode = value as PermissionMode
+  }
+  return mode
+}
+
+function getAuthoritativeAdditionalDirectories(): string[] {
+  const directories: string[] = []
+  for (const source of AUTHORITATIVE_PERMISSION_SETTING_SOURCES) {
+    const values = getSettingsForSource(source)?.permissions
+      ?.additionalDirectories
+    if (!Array.isArray(values)) continue
+    directories.push(...values.filter(value => typeof value === 'string'))
+  }
+  return [...new Set(directories)]
+}
+
+function anySettingDisables(
+  key: 'disableAutoMode' | 'disableBypassPermissionsMode',
+): boolean {
+  return ALL_PERMISSION_SETTING_SOURCES.some(source => {
+    const settings = getSettingsForSource(source)
+    return settings?.permissions?.[key] === 'disable' ||
+      (key === 'disableAutoMode' && settings?.disableAutoMode === 'disable')
+  })
+}
 
 import { resolve } from 'path'
 import {
@@ -685,14 +729,15 @@ export function initialPermissionModeFromCLI({
   permissionModeCli: string | undefined
   dangerouslySkipPermissions: boolean | undefined
 }): { mode: PermissionMode; notification?: string } {
-  const settings = getSettings_DEPRECATED() || {}
+  const settingsDefaultMode = getAuthoritativeDefaultPermissionMode()
 
   // Check GrowthBook gate first - highest precedence
   const growthBookDisableBypassPermissionsMode = false
 
   // Then check settings - lower precedence
-  const settingsDisableBypassPermissionsMode =
-    settings.permissions?.disableBypassPermissionsMode === 'disable'
+  const settingsDisableBypassPermissionsMode = anySettingDisables(
+    'disableBypassPermissionsMode',
+  )
 
   // Organization policy takes precedence over settings.
   const disableBypassPermissionsMode =
@@ -729,8 +774,8 @@ export function initialPermissionModeFromCLI({
       orderedModes.push(parsedMode)
     }
   }
-  if (settings.permissions?.defaultMode) {
-    const settingsMode = settings.permissions.defaultMode as PermissionMode
+  if (settingsDefaultMode) {
+    const settingsMode = settingsDefaultMode
     // CCR only supports acceptEdits and plan — ignore other defaultModes from
     // settings (e.g. bypassPermissions would otherwise silently grant full
     // access in a remote environment).
@@ -859,9 +904,9 @@ export async function initializeToolPermissionContext({
   // Check if bypassPermissions mode is available (not disabled by policy or settings).
   // Use cached values to avoid blocking on startup
   const growthBookDisableBypassPermissionsMode = false
-  const settings = getSettings_DEPRECATED() || {}
-  const settingsDisableBypassPermissionsMode =
-    settings.permissions?.disableBypassPermissionsMode === 'disable'
+  const settingsDisableBypassPermissionsMode = anySettingDisables(
+    'disableBypassPermissionsMode',
+  )
   const settingsAllowBypassPermissionsMode = hasAllowBypassPermissionsMode()
   const isBypassPermissionsModeAvailable =
     (permissionMode === 'bypassPermissions' ||
@@ -920,7 +965,7 @@ export async function initializeToolPermissionContext({
 
   // Add directories from settings and --add-dir
   const allAdditionalDirectories = [
-    ...(settings.permissions?.additionalDirectories || []),
+    ...getAuthoritativeAdditionalDirectories(),
     ...addDirs,
   ]
   // Parallelize fs validation; apply updates serially (cumulative context).
@@ -1198,13 +1243,7 @@ export function shouldDisableBypassPermissions(): Promise<boolean> {
 }
 
 function isAutoModeDisabledBySettings(): boolean {
-  const settings = getSettings_DEPRECATED() || {}
-  return (
-    (settings as { disableAutoMode?: 'disable' }).disableAutoMode ===
-      'disable' ||
-    (settings.permissions as { disableAutoMode?: 'disable' } | undefined)
-      ?.disableAutoMode === 'disable'
-  )
+  return anySettingDisables('disableAutoMode')
 }
 
 /**
@@ -1296,9 +1335,9 @@ export function hasAutoModeOptInAnySource(): boolean {
  */
 export function isBypassPermissionsModeDisabled(): boolean {
   const growthBookDisableBypassPermissionsMode = false
-  const settings = getSettings_DEPRECATED() || {}
-  const settingsDisableBypassPermissionsMode =
-    settings.permissions?.disableBypassPermissionsMode === 'disable'
+  const settingsDisableBypassPermissionsMode = anySettingDisables(
+    'disableBypassPermissionsMode',
+  )
 
   return (
     growthBookDisableBypassPermissionsMode ||
@@ -1355,8 +1394,7 @@ export async function checkAndDisableBypassPermissions(
 
 export function isDefaultPermissionModeAuto(): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
-    const settings = getSettings_DEPRECATED() || {}
-    return settings.permissions?.defaultMode === 'auto'
+    return getAuthoritativeDefaultPermissionMode() === 'auto'
   }
   return false
 }

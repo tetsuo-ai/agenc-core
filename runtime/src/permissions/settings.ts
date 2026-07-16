@@ -311,16 +311,26 @@ export async function loadAllPermissionRulesFromDisk(
   return rules;
 }
 
-export function filterRulesForProjectTrust(
+export function filterRepositoryControlledPermissionGrants(
   rules: readonly PermissionRule[],
-  projectTrust?: "trusted" | "untrusted",
 ): PermissionRule[] {
-  if (projectTrust !== "untrusted") return [...rules];
   return rules.filter(
     (rule) =>
       rule.ruleBehavior !== "allow" ||
       (rule.source !== "projectSettings" && rule.source !== "localSettings"),
   );
+}
+
+/**
+ * @deprecated Project path trust never turns repository settings into an
+ * authority channel. Kept as a source-compatible alias for callers migrating
+ * from the old path-trust policy.
+ */
+export function filterRulesForProjectTrust(
+  rules: readonly PermissionRule[],
+  _projectTrust?: "trusted" | "untrusted",
+): PermissionRule[] {
+  return filterRepositoryControlledPermissionGrants(rules);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -339,7 +349,9 @@ export async function syncPermissionRulesFromDisk(
   env?: DiskEnv,
 ): Promise<ToolPermissionContext> {
   let out = ctx;
-  const rules = await loadAllPermissionRulesFromDisk(env);
+  const rules = filterRepositoryControlledPermissionGrants(
+    await loadAllPermissionRulesFromDisk(env),
+  );
 
   // Clear the three editable disk-origin sources before re-apply so
   // deletes on disk propagate into memory. `flagSettings` and
@@ -399,6 +411,14 @@ export async function addPermissionRulesToSettings(
 ): Promise<boolean> {
   const { destination, behavior, rules, env } = opts;
   if (rules.length === 0) return true;
+  if (
+    behavior === "allow" &&
+    (destination === "projectSettings" || destination === "localSettings")
+  ) {
+    // Repository files are mutable inputs, not approval records. Persisting an
+    // allow rule here would let a later checkout edit impersonate the operator.
+    return false;
+  }
 
   // Policy gate short-circuit.
   const policyPath = getSettingsFilePathForSource("policySettings", env);
@@ -686,7 +706,6 @@ function getAutoModeDisableSetting(
 
 async function loadModeSettingsInputs(
   env?: DiskEnv,
-  opts?: { readonly ignoreProjectLocalDefaults?: boolean },
 ): Promise<{
   readonly policySettings: SettingsJson | null;
   readonly defaultMode?: string;
@@ -701,7 +720,8 @@ async function loadModeSettingsInputs(
   ];
 
   let defaultMode: string | undefined;
-  let autoModeDisabled = false;
+  let authoritativeAutoModeDisabled = false;
+  let repositoryAutoModeRestricted = false;
   let policySettings: SettingsJson | null = null;
 
   for (const source of sources) {
@@ -712,11 +732,10 @@ async function loadModeSettingsInputs(
     if (source === "policySettings") {
       policySettings = json;
     }
-    const defaultModeAllowed =
-      opts?.ignoreProjectLocalDefaults !== true ||
-      (source !== "projectSettings" && source !== "localSettings");
+    const repositoryControlled =
+      source === "projectSettings" || source === "localSettings";
     if (
-      defaultModeAllowed &&
+      !repositoryControlled &&
       typeof json.permissions?.defaultMode === "string" &&
       json.permissions.defaultMode.length > 0
     ) {
@@ -724,11 +743,22 @@ async function loadModeSettingsInputs(
     }
     const autoSetting = getAutoModeDisableSetting(json);
     if (autoSetting !== null) {
-      autoModeDisabled = autoSetting === "disable";
+      // Repository settings may tighten execution by disabling auto mode, but
+      // cannot enable it or undo an authoritative source's restriction.
+      if (repositoryControlled) {
+        repositoryAutoModeRestricted ||= autoSetting === "disable";
+      } else {
+        authoritativeAutoModeDisabled = autoSetting === "disable";
+      }
     }
   }
 
-  return { policySettings, defaultMode, autoModeDisabled };
+  return {
+    policySettings,
+    defaultMode,
+    autoModeDisabled:
+      authoritativeAutoModeDisabled || repositoryAutoModeRestricted,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -766,9 +796,7 @@ export async function initializeToolPermissionContext(
   const warnings: string[] = [];
   const untrustedProject = opts.projectTrust === "untrusted";
   const { policySettings, defaultMode, autoModeDisabled } =
-    await loadModeSettingsInputs(opts.env, {
-      ignoreProjectLocalDefaults: untrustedProject,
-    });
+    await loadModeSettingsInputs(opts.env);
 
   const { mode: resolvedMode, notification } = initialPermissionModeFromCLI({
     permissionModeCli: opts.permissionMode,
@@ -828,10 +856,14 @@ export async function initializeToolPermissionContext(
   ]);
 
   // Then pull disk rules.
-  const diskRules = filterRulesForProjectTrust(
-    await loadAllPermissionRulesFromDisk(opts.env),
-    opts.projectTrust,
-  );
+  const rawDiskRules = await loadAllPermissionRulesFromDisk(opts.env);
+  const diskRules = filterRepositoryControlledPermissionGrants(rawDiskRules);
+  const ignoredGrantCount = rawDiskRules.length - diskRules.length;
+  if (ignoredGrantCount > 0) {
+    warnings.push(
+      `Ignored ${ignoredGrantCount} repository-controlled permission allow ${ignoredGrantCount === 1 ? "rule" : "rules"}; project/local settings may restrict but cannot grant capabilities`,
+    );
+  }
   ctx = applyPermissionRulesToPermissionContext(ctx, diskRules);
 
   // Apply the config snapshot's permissions overlay after disk rules. The

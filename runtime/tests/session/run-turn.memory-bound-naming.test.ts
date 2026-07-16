@@ -67,6 +67,8 @@ import type { Tool } from "../../src/tools/types.js";
 const LARGE_TOOL_OUTPUT_BYTES = 80_000; // > clear threshold (6_000).
 const KEEP_RECENT = 5; // mirrors the in-memory keep-recent window.
 const CLEARED_MARKER = "[Old tool result content cleared]";
+const UNTRUSTED_TOOL_RESULT_BOUNDARY =
+  "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 // The shell tool registers as "exec_command" in the live registry. Mirrored
 // here (no exported source constant) so the test keys on the LIVE name.
 const EXEC_COMMAND_TOOL_NAME = "exec_command";
@@ -401,11 +403,18 @@ describe("runTurn — memory-bound-naming in-memory bound (FileRead)", () => {
       );
       expect(fullResults.length).toBeGreaterThan(0);
       expect(fullResults.length).toBeLessThanOrEqual(KEEP_RECENT + 1);
+      const latestResult = fullResults.find(
+        (message) => message.toolCallId === `tool_call_turn_${MANY_TURNS}`,
+      );
+      expect(latestResult).toBeDefined();
+      const latestResultText = messageText(latestResult!);
+      expect(latestResultText).toContain(
+        "untrusted workspace data from FileRead",
+      );
+      expect(latestResultText).toContain(`TOOLOUT_${MANY_TURNS}_`);
       expect(
-        fullResults.some((m) =>
-          messageText(m).startsWith(`TOOLOUT_${MANY_TURNS}_`),
-        ),
-      ).toBe(true);
+        latestResultText.split(UNTRUSTED_TOOL_RESULT_BOUNDARY),
+      ).toHaveLength(3);
 
       // Older large results were cleared to the marker.
       const clearedMarkers = history.filter(

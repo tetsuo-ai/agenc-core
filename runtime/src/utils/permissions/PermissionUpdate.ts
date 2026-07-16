@@ -233,6 +233,22 @@ export function supportsPersistence(
 export function persistPermissionUpdate(update: PermissionUpdate): void {
   if (!supportsPersistence(update.destination)) return
 
+  const repositoryControlledDestination =
+    update.destination === 'projectSettings' ||
+    update.destination === 'localSettings'
+  const createsCapability =
+    update.type === 'setMode' ||
+    update.type === 'addDirectories' ||
+    ((update.type === 'addRules' || update.type === 'replaceRules') &&
+      update.behavior === 'allow')
+  if (repositoryControlledDestination && createsCapability) {
+    logForDebugging(
+      `Skipped ${update.type} capability persistence to repository-controlled source '${update.destination}'; use a session or user approval`,
+      { level: 'warn' },
+    )
+    return
+  }
+
   logForDebugging(
     `Persisting permission update: ${update.type} to source '${update.destination}'`,
   )

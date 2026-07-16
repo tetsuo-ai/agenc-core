@@ -14,7 +14,8 @@
  *   /permissions                    — list rules grouped by behavior + source
  *   /permissions list               — alias of the above
  *   /permissions add <rule>         — add to session source (default)
- *     • optional: "--persist user|project|local" persists to disk too.
+ *     • optional: "--persist user" persists allow rules globally.
+ *       Project/local files may persist deny/ask restrictions, not approvals.
  *     • rule syntax: "<behavior> <rule-string>"   (behavior: allow|deny|ask)
  *   /permissions remove <rule>      — remove matching rule from session
  *     • optional: "--persist user|project|local" deletes from disk too.
@@ -375,15 +376,20 @@ async function addRuleFromCommand(
   // 2) Optional persist to disk.
   let persistNote = "";
   if (persistTo) {
-    const wrote = await addPermissionRulesToSettings({
-      destination: persistTo,
-      behavior,
-      rules: [ruleValue],
-      env: diskEnvForCtx(ctx),
-    });
-    persistNote = wrote
-      ? ` (persisted to ${persistTo})`
-      : ` (persist skipped — managed settings or no writable target)`;
+    if (behavior === "allow" && persistTo !== "userSettings") {
+      persistNote =
+        " (session only — repository files cannot store permission approvals)";
+    } else {
+      const wrote = await addPermissionRulesToSettings({
+        destination: persistTo,
+        behavior,
+        rules: [ruleValue],
+        env: diskEnvForCtx(ctx),
+      });
+      persistNote = wrote
+        ? ` (persisted to ${persistTo})`
+        : ` (persist skipped — managed settings or no writable target)`;
+    }
   }
 
   const display = serializeRuleValue(ruleValue);

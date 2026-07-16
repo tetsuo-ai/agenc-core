@@ -1,24 +1,13 @@
 import chalk from 'chalk'
 import { spawnSync } from 'child_process'
-import {
-  copyFile,
-  mkdir,
-  readdir,
-  readFile,
-  stat,
-  symlink,
-  utimes,
-} from 'fs/promises'
-import ignore from 'ignore'
-import { basename, dirname, join } from 'path'
+import { mkdir, readdir, stat, symlink, utimes } from 'fs/promises'
+import { basename, join } from 'path'
 import { saveCurrentProjectConfig } from './config.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 import { execFileNoThrow, execFileNoThrowWithCwd } from './execFileNoThrow.js'
-import { parseGitConfigValue } from './git/gitConfigParser.js'
 import {
-  getCommonDir,
   readWorktreeHeadSha,
   resolveGitDir,
   resolveRef,
@@ -37,10 +26,7 @@ import {
 } from './hooks.js'
 import { containsPathTraversal } from './path.js'
 import { getPlatform } from './platform.js'
-import {
-  getInitialSettings,
-  getRelativeSettingsFilePathForSource,
-} from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { isInITerm2 } from './swarm/backends/detection.js'
 
@@ -83,11 +69,6 @@ export function validateWorktreeSlug(slug: string): void {
       )
     }
   }
-}
-
-// Helper function to create directories recursively
-async function mkdirRecursive(dirPath: string): Promise<void> {
-  await mkdir(dirPath, { recursive: true })
 }
 
 /**
@@ -358,7 +339,7 @@ async function getOrCreateWorktree(
       baseSha = stdout.trim()
     }
 
-    const sparsePaths = getInitialSettings().worktree?.sparsePaths
+    const sparsePaths = getExecutionAuthoritySettings().worktree?.sparsePaths
     const addArgs = ['worktree', 'add']
     if (sparsePaths?.length) {
       addArgs.push('--no-checkout')
@@ -416,218 +397,40 @@ async function getOrCreateWorktree(
 }
 
 /**
- * Copy gitignored files specified in .worktreeinclude from base repo to worktree.
+ * Compatibility shim for the retired repository-controlled
+ * `.worktreeinclude` manifest.
  *
- * Only copies files that are BOTH:
- * 1. Matched by patterns in .worktreeinclude (uses .gitignore syntax)
- * 2. Gitignored (not tracked by git)
- *
- * Uses `git ls-files --others --ignored --exclude-standard --directory` to list
- * gitignored entries with fully-ignored dirs collapsed to single entries (so large
- * build outputs like node_modules/ don't force a full tree walk), then filters
- * against .worktreeinclude patterns in-process using the `ignore` library. If a
- * .worktreeinclude pattern explicitly targets a path inside a collapsed directory,
- * that directory is expanded with a second scoped `ls-files` call.
+ * A tracked manifest could select arbitrary gitignored credentials or other
+ * private files and copy them into every agent worktree. Repository content is
+ * guidance-only, so it cannot authorize that data movement. Keep the export for
+ * callers compiled against older runtime versions, but fail closed.
  */
 export async function copyWorktreeIncludeFiles(
-  repoRoot: string,
-  worktreePath: string,
+  _repoRoot: string,
+  _worktreePath: string,
 ): Promise<string[]> {
-  let includeContent: string
-  try {
-    includeContent = await readFile(join(repoRoot, '.worktreeinclude'), 'utf-8')
-  } catch {
-    return []
-  }
-
-  const patterns = includeContent
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.startsWith('#'))
-  if (patterns.length === 0) {
-    return []
-  }
-
-  // Single pass with --directory: collapses fully-gitignored dirs (node_modules/,
-  // .turbo/, etc.) into single entries instead of listing every file inside.
-  // In a large repo this cuts ~500k entries/~7s down to ~hundreds of entries/~100ms.
-  const gitignored = await execFileNoThrowWithCwd(
-    gitExe(),
-    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'],
-    { cwd: repoRoot },
-  )
-  if (gitignored.code !== 0 || !gitignored.stdout.trim()) {
-    return []
-  }
-
-  const entries = gitignored.stdout.trim().split('\n').filter(Boolean)
-  const matcher = ignore().add(includeContent)
-
-  // --directory emits collapsed dirs with a trailing slash; everything else is
-  // an individual file.
-  const collapsedDirs = entries.filter(e => e.endsWith('/'))
-  const files = entries.filter(e => !e.endsWith('/') && matcher.ignores(e))
-
-  // Edge case: a .worktreeinclude pattern targets a path inside a collapsed dir
-  // (e.g. pattern `config/secrets/api.key` when all of `config/secrets/` is
-  // gitignored with no tracked siblings). Expand only dirs where a pattern has
-  // that dir as its explicit path prefix (stripping redundant leading `/`), the
-  // dir falls under an anchored glob's literal prefix (e.g. `config/**/*.key`
-  // expands `config/secrets/`), or the dir itself matches a pattern. We don't
-  // expand for `**/` or anchorless patterns -- those match files in tracked dirs
-  // (already listed individually) and expanding every collapsed dir for them
-  // would defeat the perf win.
-  const dirsToExpand = collapsedDirs.filter(dir => {
-    if (
-      patterns.some(p => {
-        const normalized = p.startsWith('/') ? p.slice(1) : p
-        // Literal prefix match: pattern starts with the collapsed dir path
-        if (normalized.startsWith(dir)) return true
-        // Anchored glob: dir falls under the pattern's literal (non-glob) prefix
-        // e.g. `config/**/*.key` has literal prefix `config/` → expand `config/secrets/`
-        const globIdx = normalized.search(/[*?[]/)
-        if (globIdx > 0) {
-          const literalPrefix = normalized.slice(0, globIdx)
-          if (dir.startsWith(literalPrefix)) return true
-        }
-        return false
-      })
-    )
-      return true
-    if (matcher.ignores(dir.slice(0, -1))) return true
-    return false
-  })
-  if (dirsToExpand.length > 0) {
-    const expanded = await execFileNoThrowWithCwd(
-      gitExe(),
-      [
-        'ls-files',
-        '--others',
-        '--ignored',
-        '--exclude-standard',
-        '--',
-        ...dirsToExpand,
-      ],
-      { cwd: repoRoot },
-    )
-    if (expanded.code === 0 && expanded.stdout.trim()) {
-      for (const f of expanded.stdout.trim().split('\n').filter(Boolean)) {
-        if (matcher.ignores(f)) {
-          files.push(f)
-        }
-      }
-    }
-  }
-  const copied: string[] = []
-
-  for (const relativePath of files) {
-    const srcPath = join(repoRoot, relativePath)
-    const destPath = join(worktreePath, relativePath)
-    try {
-      await mkdir(dirname(destPath), { recursive: true })
-      await copyFile(srcPath, destPath)
-      copied.push(relativePath)
-    } catch (e: unknown) {
-      logForDebugging(
-        `Failed to copy ${relativePath} to worktree: ${(e as Error).message}`,
-        { level: 'warn' },
-      )
-    }
-  }
-
-  if (copied.length > 0) {
-    logForDebugging(
-      `Copied ${copied.length} files from .worktreeinclude: ${copied.join(', ')}`,
-    )
-  }
-
-  return copied
+  return []
 }
 
 /**
  * Post-creation setup for a newly created worktree.
- * Propagates settings.local.json, configures git hooks, and symlinks directories.
+ * Applies only operator-authorized directory sharing.
  */
 async function performPostCreationSetup(
   repoRoot: string,
   worktreePath: string,
 ): Promise<void> {
-  // Copy settings.local.json to the worktree's .agenc directory
-  // This propagates local settings (which may contain secrets) to the worktree
-  const localSettingsRelativePath =
-    getRelativeSettingsFilePathForSource('localSettings')
-  const sourceSettingsLocal = join(repoRoot, localSettingsRelativePath)
-  try {
-    const destSettingsLocal = join(worktreePath, localSettingsRelativePath)
-    await mkdirRecursive(dirname(destSettingsLocal))
-    await copyFile(sourceSettingsLocal, destSettingsLocal)
-    logForDebugging(
-      `Copied settings.local.json to worktree: ${destSettingsLocal}`,
-    )
-  } catch (e: unknown) {
-    const code = getErrnoCode(e)
-    if (code !== 'ENOENT') {
-      logForDebugging(
-        `Failed to copy settings.local.json: ${(e as Error).message}`,
-        { level: 'warn' },
-      )
-    }
-  }
+  // Git configuration is shared by linked worktrees. Never install a tracked
+  // `.husky` directory as `core.hooksPath` here: that would let repository
+  // content turn worktree creation into future command execution. Existing
+  // operator-configured hooks are inherited by Git without runtime mutation.
 
-  // Configure the worktree to use hooks from the main repository
-  // This solves issues with .husky and other git hooks that use relative paths
-  const huskyPath = join(repoRoot, '.husky')
-  const gitHooksPath = join(repoRoot, '.git', 'hooks')
-  let hooksPath: string | null = null
-  for (const candidatePath of [huskyPath, gitHooksPath]) {
-    try {
-      const s = await stat(candidatePath)
-      if (s.isDirectory()) {
-        hooksPath = candidatePath
-        break
-      }
-    } catch {
-      // Path doesn't exist or can't be accessed
-    }
-  }
-  if (hooksPath) {
-    // `git config` (no --worktree flag) writes to the main repo's .git/config,
-    // shared by all worktrees. Once set, every subsequent worktree create is a
-    // no-op — skip the subprocess (~14ms spawn) when the value already matches.
-    const gitDir = await resolveGitDir(repoRoot)
-    const configDir = gitDir ? ((await getCommonDir(gitDir)) ?? gitDir) : null
-    const existing = configDir
-      ? await parseGitConfigValue(configDir, 'core', null, 'hooksPath')
-      : null
-    if (existing !== hooksPath) {
-      const { code: configCode, stderr: configError } =
-        await execFileNoThrowWithCwd(
-          gitExe(),
-          ['config', 'core.hooksPath', hooksPath],
-          { cwd: worktreePath },
-        )
-      if (configCode === 0) {
-        logForDebugging(
-          `Configured worktree to use hooks from main repository: ${hooksPath}`,
-        )
-      } else {
-        logForDebugging(`Failed to configure hooks path: ${configError}`, {
-          level: 'error',
-        })
-      }
-    }
-  }
-
-  // Symlink directories to avoid disk bloat (opt-in via settings)
-  const settings = getInitialSettings()
+  // Symlink directories only when an operator-controlled settings source opts in.
+  const settings = getExecutionAuthoritySettings()
   const dirsToSymlink = settings.worktree?.symlinkDirectories ?? []
   if (dirsToSymlink.length > 0) {
     await symlinkDirectories(repoRoot, worktreePath, dirsToSymlink)
   }
-
-  // Copy gitignored files specified in .worktreeinclude (best-effort)
-  await copyWorktreeIncludeFiles(repoRoot, worktreePath)
-
 }
 
 /**
@@ -771,7 +574,8 @@ export async function createWorktreeForSession(
       tmuxSessionName,
       creationDurationMs,
       usedSparsePaths:
-        (getInitialSettings().worktree?.sparsePaths?.length ?? 0) > 0,
+        (getExecutionAuthoritySettings().worktree?.sparsePaths?.length ?? 0) >
+        0,
     }
   }
 

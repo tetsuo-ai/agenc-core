@@ -72,12 +72,6 @@ interface MutableMigrationResult {
   readonly skipped: string[];
 }
 
-const SETTINGS_MCP_KEYS = Object.freeze([
-  "enableAllProjectMcpServers",
-  "enabledMcpjsonServers",
-  "disabledMcpjsonServers",
-] as const);
-
 function hasOwn(record: JsonRecord, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
@@ -247,20 +241,6 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function mergeStringArrays(
-  existing: unknown,
-  additions: unknown,
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const item of [...stringArray(existing), ...stringArray(additions)]) {
-    if (seen.has(item)) continue;
-    seen.add(item);
-    out.push(item);
-  }
-  return out;
-}
-
 function addWorkspaceAcceptance(
   settings: JsonRecord,
   workspacePath: string,
@@ -345,120 +325,6 @@ async function runUserSettingsMigrations(params: {
   }
 }
 
-function hasProjectMcpLegacyKeys(projectSettings: JsonRecord): boolean {
-  return SETTINGS_MCP_KEYS.some((key) => hasOwn(projectSettings, key));
-}
-
-function applyProjectMcpSettings(
-  localSettings: JsonRecord,
-  projectSettings: JsonRecord,
-): JsonRecord {
-  const next = cloneRecord(localSettings);
-  if (
-    hasOwn(projectSettings, "enableAllProjectMcpServers") &&
-    !hasOwn(next, "enableAllProjectMcpServers")
-  ) {
-    next.enableAllProjectMcpServers = Boolean(
-      projectSettings.enableAllProjectMcpServers,
-    );
-  }
-  if (hasOwn(projectSettings, "enabledMcpjsonServers")) {
-    next.enabledMcpjsonServers = mergeStringArrays(
-      next.enabledMcpjsonServers,
-      projectSettings.enabledMcpjsonServers,
-    );
-  }
-  if (hasOwn(projectSettings, "disabledMcpjsonServers")) {
-    next.disabledMcpjsonServers = mergeStringArrays(
-      next.disabledMcpjsonServers,
-      projectSettings.disabledMcpjsonServers,
-    );
-  }
-  return next;
-}
-
-function removeProjectMcpSettings(projectSettings: JsonRecord): JsonRecord {
-  const next = cloneRecord(projectSettings);
-  for (const key of SETTINGS_MCP_KEYS) {
-    delete next[key];
-  }
-  return next;
-}
-
-async function runProjectSettingsMigrations(params: {
-  readonly projectPath: string | null;
-  readonly localPath: string | null;
-  readonly readSettingsFileLenient: SettingsReader;
-  readonly onWarn: (message: string) => void;
-  readonly result: MutableMigrationResult;
-}): Promise<void> {
-  const local = await readSettingsRecord({
-    label: "local settings migrations",
-    path: params.localPath,
-    readSettingsFileLenient: params.readSettingsFileLenient,
-    onWarn: params.onWarn,
-  });
-  if (local === null) {
-    params.result.skipped.push("localSettings");
-    return;
-  }
-
-  if (readConfigMigrationVersion(local.value) >= CURRENT_CONFIG_MIGRATION_VERSION) {
-    params.result.skipped.push("localSettings:current");
-    return;
-  }
-
-  const project = await readSettingsRecord({
-    label: "project settings migrations",
-    path: params.projectPath,
-    readSettingsFileLenient: params.readSettingsFileLenient,
-    onWarn: params.onWarn,
-  });
-  if (project === null) {
-    params.result.skipped.push("projectSettings");
-    return;
-  }
-
-  const localOriginal = cloneRecord(local.value);
-  const hasMcpLegacy = hasProjectMcpLegacyKeys(project.value);
-
-  if (!hasMcpLegacy) {
-    if (!local.exists && !didChange(localOriginal, local.value)) return;
-    markConfigMigrationVersion(local.value);
-    try {
-      writeJsonAtomic(local.path, local.value);
-      params.result.wrote = true;
-    } catch (error) {
-      params.onWarn(
-        `[agenc:config-migrations] failed to write ${local.path}: ${String(error)}`,
-      );
-      params.result.skipped.push("localSettings:write-failed");
-    }
-    return;
-  }
-
-  const localWithMcp = applyProjectMcpSettings(local.value, project.value);
-  const projectCleaned = removeProjectMcpSettings(project.value);
-
-  try {
-    if (didChange(local.value, localWithMcp) || local.exists) {
-      writeJsonAtomic(local.path, localWithMcp);
-      params.result.wrote = true;
-    }
-    writeJsonAtomic(project.path, projectCleaned);
-    params.result.wrote = true;
-    markConfigMigrationVersion(localWithMcp);
-    writeJsonAtomic(local.path, localWithMcp);
-    params.result.wrote = true;
-    params.result.applied.push("localSettings:mcpProjectApprovals");
-  } catch (error) {
-    params.onWarn(
-      `[agenc:config-migrations] failed to migrate MCP project approvals: ${String(error)}`,
-    );
-    params.result.skipped.push("localSettings:mcpProjectApprovals");
-  }
-}
-
 function buildDiskEnv(
   opts: StartupConfigMigrationsOptions,
 ): DiskEnv {
@@ -492,16 +358,9 @@ export async function runStartupConfigMigrations(
   }
 
   let userPath: string | null;
-  let projectPath: string | null;
-  let localPath: string | null;
   try {
     const diskEnv = buildDiskEnv(opts);
     userPath = settings.getSettingsFilePathForSource("userSettings", diskEnv);
-    projectPath = settings.getSettingsFilePathForSource(
-      "projectSettings",
-      diskEnv,
-    );
-    localPath = settings.getSettingsFilePathForSource("localSettings", diskEnv);
   } catch (error) {
     onWarn(
       `[agenc:config-migrations] failed to resolve settings paths: ${String(error)}`,
@@ -517,13 +376,11 @@ export async function runStartupConfigMigrations(
     onWarn,
     result,
   });
-  await runProjectSettingsMigrations({
-    projectPath,
-    localPath,
-    readSettingsFileLenient: settings.readSettingsFileLenient,
-    onWarn,
-    result,
-  });
+  // Legacy repository MCP flags are intentionally inert. Migrating them before
+  // workspace trust both mutated an untrusted checkout and laundered repository
+  // content into local approval state. Exact config-digest approvals now live
+  // outside the repository and are created only by an explicit operator action.
+  result.skipped.push("projectSettings:mcp-approval-migration-retired");
 
   return Object.freeze({
     wrote: result.wrote,

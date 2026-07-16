@@ -32,6 +32,7 @@ vi.mock("axios", () => {
 import { drainInFlight } from "./run-turn.js";
 import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { EXCLUSIVE } from "../tools/concurrency.js";
+import { frameUntrustedToolResultContent } from "../tools/untrusted-tool-result-framing.js";
 import { findToolTurnValidationIssue } from "../llm/tool-turn-validator.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
@@ -67,6 +68,7 @@ function mkCtxAndSession() {
   const emitted: Array<{ type: string; payload?: unknown }> = [];
   const session = {
     eventLog: { subscribe: () => () => {} },
+    services: { registry: { tools: [] } },
     nextInternalSubId: () => `sub-${emitted.length}`,
     emit: (evt: { msg: { type: string; payload?: unknown } }) => {
       emitted.push({ type: evt.msg.type, payload: evt.msg.payload });
@@ -108,7 +110,7 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
     expect((toolMsgs[0] as { toolCallId: string }).toolCallId).toBe("u1");
     expect((toolMsgs[1] as { toolCallId: string }).toolCallId).toBe("u2");
     expect(findToolTurnValidationIssue(state.messages)).toBeNull();
-    // state.toolResults mirrors with user-side records.
+    // state.toolResults mirrors the same model-safe records.
     expect(state.toolResults).toHaveLength(2);
     expect((state.toolResults[0] as UserMessage).toolCallId).toBe("u1");
     // tool_call_completed events emitted with isError=true.
@@ -161,7 +163,7 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
     const state = mkState();
     (state as unknown as { streamingToolExecutor: unknown })
       .streamingToolExecutor = exec;
-    const { ctx, session } = mkCtxAndSession();
+    const { ctx, session, emitted } = mkCtxAndSession();
 
     // Resolve the in-flight tool shortly after drainInFlight starts
     // so getRemainingResults sees one completed result.
@@ -178,8 +180,13 @@ describe("drainInFlight — AgenC behavior (T6)", () => {
     ).toBe("w1");
     expect(
       (toolMsgs[0] as { toolCallId: string; content: string }).content,
-    ).toBe("real-w1");
+    ).toBe(frameUntrustedToolResultContent("Write", "real-w1", "workspace"));
     expect(findToolTurnValidationIssue(state.messages)).toBeNull();
+    expect(
+      (emitted.find((event) => event.type === "tool_call_completed")?.payload as {
+        result: string;
+      }).result,
+    ).toBe("real-w1");
   });
 
   test("emits warning on drain failure without throwing", async () => {

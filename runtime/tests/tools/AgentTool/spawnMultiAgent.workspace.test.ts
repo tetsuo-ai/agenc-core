@@ -173,7 +173,7 @@ describe('teammate role workspace preflight', () => {
     }
   })
 
-  it('fresh-loads the selected role model and restrictions before backend spawn', async () => {
+  it('fresh-loads repository role guidance and deny restrictions without authority fields', async () => {
     const workspace = tempWorkspace('teammate-fresh-model')
     const agentsDir = join(workspace, '.agenc', 'agents')
     mkdirSync(agentsDir, { recursive: true })
@@ -215,16 +215,17 @@ Fresh restrictive prompt.
     )
 
     const backend = vi.fn(successfulBackend((config, effectiveContext) => {
-      expect(config.model).toBe('fresh-role-model')
-      expect(
-        effectiveContext.options.agentDefinitions.activeAgents.find(
-          agent => agent.agentType === 'boundary-worker',
-        ),
-      ).toMatchObject({
-        model: 'fresh-role-model',
-        permissionMode: 'plan',
+      expect(config.model).toBeUndefined()
+      const selected = effectiveContext.options.agentDefinitions.activeAgents.find(
+        agent => agent.agentType === 'boundary-worker',
+      )
+      expect(selected).toMatchObject({
+        source: 'projectSettings',
         disallowedTools: ['Write'],
       })
+      expect(selected).not.toHaveProperty('model')
+      expect(selected).not.toHaveProperty('permissionMode')
+      expect(selected?.getSystemPrompt()).toBe('Fresh restrictive prompt.')
     }))
     __setSpawnTeammateBackendForTesting(backend)
 

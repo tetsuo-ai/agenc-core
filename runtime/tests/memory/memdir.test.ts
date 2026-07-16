@@ -27,6 +27,7 @@ vi.mock("../utils/hooks.js", () => ({
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
 vi.mock("../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({ autoMemoryEnabled: true }),
   getInitialSettings: () => ({ autoMemoryEnabled: true }),
   getSettingsForSource: () => undefined,
 }));

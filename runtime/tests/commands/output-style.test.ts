@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
   clearAllOutputStylesCache,
+  getOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import {
   getOriginalCwd,
@@ -14,6 +15,7 @@ import {
 import type { Session } from "../session/session.js";
 import { outputStyleCommand, outputStyleNewCommand } from "./output-style.js";
 import type { SlashCommandContext } from "./types.js";
+import { resetSettingsCache } from "../utils/settings/settingsCache.js";
 
 function stubSession(): Session {
   return {
@@ -32,17 +34,24 @@ function stubCtx(
     session: stubSession(),
     argsRaw,
     cwd,
-    home: "/home/test",
+    home: join(cwd, "agenc-home"),
     ...(appState !== undefined ? { appState } : {}),
   };
 }
 
 describe("output-style commands", () => {
   const originalCwd = getOriginalCwd();
+  const originalConfigDir = process.env.AGENC_CONFIG_DIR;
   const tempDirs: string[] = [];
 
   afterEach(() => {
     setOriginalCwd(originalCwd);
+    if (originalConfigDir === undefined) {
+      delete process.env.AGENC_CONFIG_DIR;
+    } else {
+      process.env.AGENC_CONFIG_DIR = originalConfigDir;
+    }
+    resetSettingsCache();
     clearAllOutputStylesCache();
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
@@ -53,6 +62,8 @@ describe("output-style commands", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-output-style-"));
     tempDirs.push(dir);
     setOriginalCwd(dir);
+    process.env.AGENC_CONFIG_DIR = join(dir, "agenc-home");
+    resetSettingsCache();
     return dir;
   }
 
@@ -86,7 +97,7 @@ describe("output-style commands", () => {
     );
   });
 
-  it("switches the active style through local settings and updates app state", async () => {
+  it("persists the active style through trusted user settings and survives cache reset", async () => {
     const cwd = tempProject();
     let appState: unknown = { settings: {} };
     const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
@@ -102,10 +113,15 @@ describe("output-style commands", () => {
       text: 'Output style switched to "Explanatory".',
     });
     const settings = JSON.parse(
-      readFileSync(join(cwd, ".agenc", "settings.local.json"), "utf8"),
+      readFileSync(join(cwd, "agenc-home", "settings.json"), "utf8"),
     ) as { outputStyle?: string };
     expect(settings.outputStyle).toBe("Explanatory");
     expect(appState).toEqual({ settings: { outputStyle: "Explanatory" } });
+    resetSettingsCache();
+    clearAllOutputStylesCache();
+    await expect(getOutputStyleConfig()).resolves.toMatchObject({
+      name: "Explanatory",
+    });
   });
 
   it("returns a clear error for unknown styles", async () => {
@@ -120,7 +136,7 @@ describe("output-style commands", () => {
     expect(result.text).toContain('Unknown output style "does-not-exist"');
   });
 
-  it("turns /output-style:new into an agent-authored project style prompt", async () => {
+  it("turns /output-style:new into an agent-authored user style prompt", async () => {
     const cwd = tempProject();
 
     const result = await outputStyleNewCommand.execute(
@@ -130,7 +146,7 @@ describe("output-style commands", () => {
     expect(result.kind).toBe("prompt");
     if (result.kind !== "prompt") throw new Error("expected prompt");
     expect(result.content).toContain(
-      "Create a new project output style at .agenc/output-styles/terse.md",
+      `Create a new user-owned output style at ${join(cwd, "agenc-home", "output-styles", "terse.md")}`,
     );
     expect(result.content).toContain("name: terse");
     expect(result.content).toContain("description: Short replies");

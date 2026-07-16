@@ -24,7 +24,7 @@ import {
 import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
-import { getSettings_DEPRECATED } from '../settings/settings.js'
+import { getExecutionAuthoritySettings } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
@@ -172,7 +172,7 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   if (modelOverride !== undefined) {
     specifiedModel = modelOverride
   } else {
-    const settings = getSettings_DEPRECATED() || {}
+    const settings = getExecutionAuthoritySettings()
     const setting = normalizeModelSetting(settings.model)
     // Read the model env var that matches the active provider to prevent
     // cross-provider leaks (e.g. ANTHROPIC_MODEL sent to the openai API).
@@ -389,7 +389,7 @@ export function getRuntimeMainLoopModel(params: {
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // GitHub Copilot provider: check settings.model first, then env, then default
   if (getAPIProvider() === 'github') {
-    const settings = getSettings_DEPRECATED() || {}
+    const settings = getExecutionAuthoritySettings()
     return (
       normalizeModelSetting(process.env.GITHUB_MODEL) ||
       normalizeModelSetting(settings.model) ||

@@ -52,6 +52,7 @@ vi.mock("../../utils/nativeInstaller/installer.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => harness.settings,
   getInitialSettings: () => harness.settings,
 }));
 

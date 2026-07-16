@@ -242,7 +242,9 @@ function buildScopeDefinitions(
   }
 
   const pendingApproval =
-    scope === 'project' ? deps.getProjectMcpServerStatus(name) === 'pending' : false
+    scope === 'project'
+      ? deps.getProjectMcpServerStatus(name, config) === 'pending'
+      : false
   const disabled = deps.isMcpServerDisabled(name)
   const runtimeActive = !disabled && isSameDefinition(config, activeConfig)
 

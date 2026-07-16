@@ -255,7 +255,9 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
         (message) =>
           message.role === "tool" &&
           message.toolCallId === "tc-complete" &&
-          message.content === "read-ok",
+          typeof message.content === "string" &&
+          message.content.includes("untrusted workspace data") &&
+          message.content.includes("read-ok"),
       ),
     ).toBe(true);
     expect(state.toolResults).toContainEqual(
@@ -263,7 +265,7 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
         role: "user",
         toolCallId: "tc-complete",
         toolName: "stream_read",
-        content: "read-ok",
+        content: expect.stringContaining("read-ok"),
       }),
     );
   });
@@ -298,6 +300,8 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     expect(state.messages[1]).toMatchObject({
       role: "tool",
       toolCallId: "tc-executing",
+      toolName: "stream_write",
+      content: expect.stringContaining("untrusted workspace data"),
     });
     expect(state.toolResults).toContainEqual(
       expect.objectContaining({

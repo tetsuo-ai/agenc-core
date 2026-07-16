@@ -1,7 +1,11 @@
 import type { HookCommand, HookMatcher, HooksMap } from "../../config/schema.js";
 import { validateHooksConfig } from "../../config/schema.js";
 import type { ConfiguredHooksRuntime } from "../../hooks/configured-hooks.js";
-import type { LoadedPlugin, PluginHookSource } from "../loader.js";
+import {
+  isRepositoryControlledPlugin,
+  type LoadedPlugin,
+  type PluginHookSource,
+} from "../loader.js";
 import {
   loadRuntimePlugins,
   substitutePluginTemplate,
@@ -80,6 +84,7 @@ export async function loadPluginHooks(
   const plugins = await resolvePlugins(options);
   let merged: HooksMap | undefined;
   for (const plugin of plugins) {
+    if (isRepositoryControlledPlugin(plugin)) continue;
     for (const source of plugin.hookSources) {
       merged = mergeHooks(merged, hookSourceToMatchers(plugin, source, options));
     }

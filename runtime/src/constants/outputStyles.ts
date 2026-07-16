@@ -6,7 +6,7 @@ import type { OutputStyle } from '../utils/config.js'
 import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { SettingSource } from '../utils/settings/constants.js'
-import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
 
 export type OutputStyleConfig = {
   name: string
@@ -151,12 +151,9 @@ export const getAllOutputStyles = memoize(async function getAllOutputStyles(
   const userStyles = customStyles.filter(
     style => style.source === 'userSettings',
   )
-  const projectStyles = customStyles.filter(
-    style => style.source === 'projectSettings',
-  )
-
-  // Add styles in priority order (lowest to highest): built-in, plugin, managed, user, project
-  const styleGroups = [pluginStyles, userStyles, projectStyles, managedStyles]
+  // Repository styles are content, not system-prompt authority. They cannot
+  // shadow a trusted style or suppress the built-in coding instructions.
+  const styleGroups = [pluginStyles, userStyles, managedStyles]
 
   for (const styles of styleGroups) {
     for (const style of styles) {
@@ -206,7 +203,7 @@ export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> 
     return firstForcedStyle
   }
 
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   const outputStyle = (settings?.outputStyle ||
     DEFAULT_OUTPUT_STYLE_NAME) as string
 
@@ -214,6 +211,6 @@ export async function getOutputStyleConfig(): Promise<OutputStyleConfig | null> 
 }
 
 export function hasCustomOutputStyle(): boolean {
-  const style = getSettings_DEPRECATED()?.outputStyle
+  const style = getExecutionAuthoritySettings().outputStyle
   return style !== undefined && style !== DEFAULT_OUTPUT_STYLE_NAME
 }

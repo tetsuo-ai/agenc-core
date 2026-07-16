@@ -2,7 +2,7 @@
 // can read the auto-dream enabled state without dragging in the forked
 // agent / task registry / message builder chain that autoDream.ts pulls in.
 
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 
 /**
  * Whether background memory consolidation should run. User setting
@@ -10,7 +10,7 @@ import { getInitialSettings } from '../../utils/settings/settings.js'
  * when explicitly set; otherwise falls through to tengu_onyx_plover.
  */
 export function isAutoDreamEnabled(): boolean {
-  const setting = getInitialSettings().autoDreamEnabled
+  const setting = getExecutionAuthoritySettings().autoDreamEnabled
   if (setting !== undefined) return setting
   // Open-build: no GrowthBook auto-dream config; defaults to off.
   return false

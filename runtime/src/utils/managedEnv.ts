@@ -11,7 +11,7 @@ import { clearProxyCache, configureGlobalAgents } from './proxy.js'
 import { applyActiveProviderProfileFromConfig } from './providerProfiles.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import {
-  getSettings_DEPRECATED,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
 } from './settings/settings.js'
 
@@ -177,7 +177,7 @@ export function applySafeConfigEnvironmentVariables(): void {
   // unchanged (it has the highest merge priority in both loops) — except
   // provider-routing vars, which filterSettingsEnv strips from every source
   // when AGENC_PROVIDER_MANAGED_BY_HOST is set.
-  const settingsEnv = filterSettingsEnv(getSettings_DEPRECATED()?.env)
+  const settingsEnv = filterSettingsEnv(getExecutionAuthoritySettings()?.env)
   for (const [key, value] of Object.entries(settingsEnv)) {
     if (SAFE_ENV_VARS.has(key.toUpperCase())) {
       process.env[key] = value
@@ -199,7 +199,10 @@ export function applySafeConfigEnvironmentVariables(): void {
 export function applyConfigEnvironmentVariables(): void {
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
-  Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
+  Object.assign(
+    process.env,
+    filterSettingsEnv(getExecutionAuthoritySettings()?.env),
+  )
 
   // Keep runtime provider/model env aligned with the active profile, except
   // when an explicit provider selection is already present in process.env.

@@ -63,6 +63,7 @@ vi.mock("../../utils/semver.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({ autoUpdatesChannel: "latest" }),
   getInitialSettings: () => ({ autoUpdatesChannel: "latest" }),
 }));
 

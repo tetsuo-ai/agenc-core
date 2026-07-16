@@ -1,6 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { isUltrathinkEnabled } from './thinking.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getAPIProvider } from './model/providers.js'
 import {
@@ -179,7 +179,7 @@ export function toPersistableEffort(
 export function getInitialEffortSetting(): EffortLevel | undefined {
   // toPersistableEffort validates 'max' on read, so a manually
   // edited settings.json with an invalid level doesn't leak into a fresh session.
-  return toPersistableEffort(getInitialSettings().effortLevel)
+  return toPersistableEffort(getExecutionAuthoritySettings().effortLevel)
 }
 
 /**

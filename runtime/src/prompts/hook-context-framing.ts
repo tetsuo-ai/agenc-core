@@ -1,3 +1,5 @@
+import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
+
 export interface HookAdditionalContextInput {
   readonly hookName?: string;
   readonly hookEvent?: string;
@@ -13,10 +15,16 @@ function escapeHookContextAttribute(value: string): string {
 }
 
 function escapeHookContextBody(value: string): string {
-  return value.replace(
-    /<\/hook_additional_context>/gi,
-    "<\\/hook_additional_context>",
-  );
+  return sanitizeSystemReminderContent(value)
+    .replace(
+      /<\s*\/?\s*(system|developer|user|assistant|tool|workspace_instructions|workspace_agent_role)\b[^>]*>/giu,
+      (_match, tag: string) =>
+        `<neutralized-${tag.toLowerCase().replaceAll("_", "-")}-tag>`,
+    )
+    .replace(
+      /<\/hook_additional_context>/gi,
+      "<\\/hook_additional_context>",
+    );
 }
 
 function renderAttrs(input: HookAdditionalContextInput): string {

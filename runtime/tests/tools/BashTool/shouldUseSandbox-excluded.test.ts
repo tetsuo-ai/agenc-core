@@ -17,7 +17,7 @@ vi.mock("../../../src/utils/sandbox/sandbox-runtime.js", () => ({
 
 const excludedCommands: string[] = [];
 vi.mock("../../../src/utils/settings/settings.js", () => ({
-  getSettings_DEPRECATED: () => ({ sandbox: { excludedCommands } }),
+  getExecutionAuthoritySettings: () => ({ sandbox: { excludedCommands } }),
 }));
 
 const { shouldUseSandbox } = await import(

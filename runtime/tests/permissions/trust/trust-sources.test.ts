@@ -58,16 +58,17 @@ describe("project trust source summaries", () => {
       await summarizeProjectTrustSources({ home, cwd: repo }),
     );
 
-    expect(lines).toEqual(
-      expect.arrayContaining([
-        "Project settings: hooks: preToolUse",
-        "Project settings: MCP servers: docs",
-        "Project settings: MCP env keys: API_TOKEN",
-        "Project settings: allow rules: Bash",
-        "Project settings: permission default: bypassPermissions",
-        "Project settings: shell env keys: SECRET_KEY",
-        "Local settings: allow rules: Edit",
-      ]),
+    expect(lines).toEqual([
+      "Project settings (non-authoritative; path trust does not activate grants): ignored capability hook declarations: preToolUse",
+      "Project settings (non-authoritative; path trust does not activate grants): MCP declarations requiring separate digest approval: docs",
+      "Project settings (non-authoritative; path trust does not activate grants): non-authoritative MCP env keys: API_TOKEN",
+      "Project settings (non-authoritative; path trust does not activate grants): ignored capability allow rules: Bash",
+      "Project settings (non-authoritative; path trust does not activate grants): ignored permission default: bypassPermissions",
+      "Project settings (non-authoritative; path trust does not activate grants): ignored shell environment grants: SECRET_KEY",
+      "Local settings (non-authoritative; path trust does not activate grants): ignored capability allow rules: Edit",
+    ]);
+    expect(lines.every(line => line.includes("path trust does not activate grants"))).toBe(
+      true,
     );
     expect(lines.join("\n")).not.toContain("secret-token");
     expect(lines.join("\n")).not.toContain("node server.js");

@@ -79,9 +79,10 @@ describe("getSettingsFilePathForSource", () => {
     expect(p).toBe("/home/u/.agenc/settings.json");
   });
 
-  test("projectSettings uses cwd when no marker found", () => {
+  test("projectSettings uses cwd when cwd is the project root", () => {
     const dir = mkTmp();
     try {
+      mkdirSync(join(dir, ".git"));
       const p = getSettingsFilePathForSource("projectSettings", {
         home: "/home/u",
         cwd: dir,
@@ -111,6 +112,7 @@ describe("getSettingsFilePathForSource", () => {
   test("localSettings writes to settings.local.json", () => {
     const dir = mkTmp();
     try {
+      mkdirSync(join(dir, ".git"));
       const p = getSettingsFilePathForSource("localSettings", {
         home: "/home/u",
         cwd: dir,
@@ -437,6 +439,40 @@ describe("syncPermissionRulesFromDisk", () => {
     });
     expect(ctx.alwaysDenyRules.policySettings).toEqual([]);
   });
+
+  test("live sync strips repository grants while retaining restrictions", async () => {
+    mkdirSync(join(cwd, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".agenc", "settings.json"),
+      JSON.stringify({
+        permissions: {
+          allow: ["Bash(*)"],
+          ask: ["Edit"],
+          deny: ["Write"],
+        },
+      }),
+    );
+    writeFileSync(
+      join(cwd, ".agenc", "settings.local.json"),
+      JSON.stringify({
+        permissions: {
+          allow: ["Read"],
+          deny: ["Bash(curl:*)"],
+        },
+      }),
+    );
+
+    const out = await syncPermissionRulesFromDisk(
+      createEmptyToolPermissionContext(),
+      { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+    );
+
+    expect(out.alwaysAllowRules.projectSettings ?? []).toEqual([]);
+    expect(out.alwaysAllowRules.localSettings ?? []).toEqual([]);
+    expect(out.alwaysAskRules.projectSettings).toEqual(["Edit"]);
+    expect(out.alwaysDenyRules.projectSettings).toEqual(["Write"]);
+    expect(out.alwaysDenyRules.localSettings).toEqual(["Bash(curl:*)"]);
+  });
 });
 
 describe("addPermissionRulesToSettings / deletePermissionRule", () => {
@@ -460,6 +496,49 @@ describe("addPermissionRulesToSettings / deletePermissionRule", () => {
       join(home, ".agenc", "settings.json"),
     );
     expect(parsed?.permissions?.allow).toEqual(["Read", "Bash(git:*)"]);
+  });
+
+  test("repository settings reject allow grants but retain restrictions", async () => {
+    const cwd = join(home, "repo");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "package.json"), "{}\n");
+    const env = {
+      home,
+      cwd,
+      managedSettingsPath: join(home, "no-policy.json"),
+    };
+
+    for (const destination of [
+      "projectSettings",
+      "localSettings",
+    ] as const) {
+      await expect(
+        addPermissionRulesToSettings({
+          destination,
+          behavior: "allow",
+          rules: [{ toolName: "Bash", ruleContent: "*" }],
+          env,
+        }),
+      ).resolves.toBe(false);
+    }
+    expect(existsSync(join(cwd, ".agenc", "settings.json"))).toBe(false);
+    expect(existsSync(join(cwd, ".agenc", "settings.local.json"))).toBe(
+      false,
+    );
+
+    await expect(
+      addPermissionRulesToSettings({
+        destination: "projectSettings",
+        behavior: "deny",
+        rules: [{ toolName: "Bash", ruleContent: "curl:*" }],
+        env,
+      }),
+    ).resolves.toBe(true);
+    const project = await readSettingsFileLenient(
+      join(cwd, ".agenc", "settings.json"),
+    );
+    expect(project?.permissions?.deny).toEqual(["Bash(curl:*)"]);
+    expect(project?.permissions?.allow).toBeUndefined();
   });
 
   test("dedupes against existing rules", async () => {
@@ -713,7 +792,7 @@ describe("initializeToolPermissionContext", () => {
     ]);
   });
 
-  test("untrusted projects ignore project/local allow rules and default modes", async () => {
+  test("project trust never makes project/local allow rules or default modes authoritative", async () => {
     mkdirSync(join(cwd, ".agenc"), { recursive: true });
     writeFileSync(
       join(cwd, ".agenc", "settings.json"),
@@ -730,6 +809,7 @@ describe("initializeToolPermissionContext", () => {
       join(cwd, ".agenc", "settings.local.json"),
       JSON.stringify({
         permissions: {
+          defaultMode: "bypassPermissions",
           allow: ["Read"],
           ask: ["Bash(npm publish:*)"],
         },
@@ -739,7 +819,7 @@ describe("initializeToolPermissionContext", () => {
     const { toolPermissionContext, warnings } =
       await initializeToolPermissionContext({
         env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
-        projectTrust: "untrusted",
+        projectTrust: "trusted",
       });
 
     expect(toolPermissionContext.mode).toBe("default");
@@ -758,7 +838,29 @@ describe("initializeToolPermissionContext", () => {
     expect(toolPermissionContext.alwaysDenyRules.projectSettings).toEqual([
       "Write",
     ]);
-    expect(warnings).toEqual([]);
+    expect(warnings).toEqual([
+      "Ignored 2 repository-controlled permission allow rules; project/local settings may restrict but cannot grant capabilities",
+    ]);
+  });
+
+  test("repository settings may disable auto mode but cannot enable it", async () => {
+    mkdirSync(join(home, ".agenc"), { recursive: true });
+    mkdirSync(join(cwd, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(home, ".agenc", "settings.json"),
+      JSON.stringify({ permissions: { disableAutoMode: "disable" } }),
+    );
+    writeFileSync(
+      join(cwd, ".agenc", "settings.json"),
+      JSON.stringify({ permissions: { disableAutoMode: "enable" } }),
+    );
+
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+      projectTrust: "trusted",
+    });
+
+    expect(toolPermissionContext.isAutoModeAvailable).toBe(false);
   });
 
   test("untrusted projects downgrade bypassPermissions unless dangerous skip is explicit", async () => {

@@ -12,6 +12,7 @@ import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/Tool.js";
+import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
 import { appendSystemContext, prependUserContext } from "../utils/api.js";
 import { createAttachmentMessage } from "../utils/attachments.js";
@@ -48,6 +49,7 @@ const LEGACY_PROGRESS_MARKER = "__agenc_turn_compat_progress__:";
 export interface TurnCompatParams {
   readonly messages: readonly Message[];
   readonly systemPrompt: SystemPrompt;
+  readonly systemPromptTrust?: "trusted_internal" | "workspace_role";
   readonly userContext: Record<string, string>;
   readonly systemContext: Record<string, string>;
   readonly canUseTool: CanUseToolFn;
@@ -477,6 +479,9 @@ export async function* runTurnCompat(
     turn.session.runTurn(turn.userMessage, {
       history: turn.history,
       systemPrompt: turn.systemPrompt,
+      ...(params.systemPromptTrust !== undefined
+        ? { systemPromptTrust: params.systemPromptTrust }
+        : {}),
       signal: runAbortController.signal,
       querySource: params.querySource,
       ...(params.skipCacheWrite !== undefined
@@ -795,7 +800,7 @@ function messagesToLlmMessages(messages: readonly Message[]): LLMMessage[] {
     pendingCompatMessages.push(message);
   }
   flushPendingCompatMessages();
-  return converted;
+  return frameUntrustedToolHistoryMessages(converted);
 }
 
 function messageToLlmMessages(message: Message): LLMMessage[] {

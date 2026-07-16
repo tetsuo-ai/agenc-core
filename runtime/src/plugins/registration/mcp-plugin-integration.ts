@@ -1,6 +1,10 @@
 import type { McpServerConfig } from "../../config/schema.js";
 import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
-import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
+import {
+  isRepositoryControlledPlugin,
+  type LoadedPlugin,
+  type PluginLoadIssue,
+} from "../loader.js";
 import {
   resolvePluginMcpSandboxedServer,
   type PluginMcpSandboxIssue,
@@ -196,9 +200,11 @@ async function extractMcpServersFromPlugins(
 ): Promise<Readonly<Record<string, McpServerConfig>>> {
   return Object.assign(
     {},
-    ...plugins.map((plugin) =>
-      addPluginScopeToServers(plugin, plugin.mcpServers, options),
-    ),
+    ...plugins
+      .filter((plugin) => !isRepositoryControlledPlugin(plugin))
+      .map((plugin) =>
+        addPluginScopeToServers(plugin, plugin.mcpServers, options)
+      ),
   ) as Readonly<Record<string, McpServerConfig>>;
 }
 

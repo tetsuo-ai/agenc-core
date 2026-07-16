@@ -279,7 +279,7 @@ test('fetchToolsForClient maps MCP tool metadata onto runtime tools', async () =
         type: 'addRules',
         rules: [{ toolName: 'mcp__jira__search', ruleContent: undefined }],
         behavior: 'allow',
-        destination: 'localSettings',
+        destination: 'session',
       },
     ],
   })

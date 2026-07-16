@@ -13,7 +13,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { load as loadYaml } from "js-yaml";
 
 import { parseArguments } from "../../tui/slash/argument-substitution.js";
-import { loadPlugins, type LoadedPlugin, type PluginLoaderOptions } from "../loader.js";
+import {
+  isRepositoryControlledPlugin,
+  loadPlugins,
+  type LoadedPlugin,
+  type PluginLoaderOptions,
+} from "../loader.js";
 import { getPluginDataDir } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
 
@@ -246,6 +251,7 @@ export function pluginSettingValue(
   key: string,
   options: { readonly exposeSensitive?: boolean } = {},
 ): string | undefined {
+  if (isRepositoryControlledPlugin(plugin)) return undefined;
   const settings = isRecord(plugin.settings?.options)
     ? plugin.settings.options
     : isRecord(plugin.settings)

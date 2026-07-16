@@ -30,7 +30,7 @@ import {
   connectToServer,
   fetchToolsForClient,
 } from '../../services/mcp/client.js'
-import { getMcpConfigByName } from '../../services/mcp/config.js'
+import { getApprovedMcpConfigByName } from '../../services/mcp/config.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -74,7 +74,7 @@ import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { resolveAgentProvider } from '../../services/api/agentRouting.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
@@ -96,6 +96,7 @@ import { resolveAgentTools } from './agentToolUtils.js'
 import {
   type AgentDefinition,
   isBuiltInAgent,
+  isRepositoryControlledAgentDefinition,
   requireAgentDefinitionRoleFingerprint,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 
@@ -128,6 +129,13 @@ async function initializeAgentMcpServers(
   tools: Tools
   cleanup: () => Promise<void>
 }> {
+  if (isRepositoryControlledAgentDefinition(agentDefinition)) {
+    return {
+      clients: parentClients,
+      tools: [],
+      cleanup: async () => {},
+    }
+  }
   // If no agent-specific servers defined, return parent clients as-is
   if (!agentDefinition.mcpServers?.length) {
     return {
@@ -169,7 +177,7 @@ async function initializeAgentMcpServers(
       // Reference by name - look up in existing MCP configs
       // This uses the memoized connectToServer, so we may get a shared client
       name = spec
-      config = getMcpConfigByName(spec)
+      config = getApprovedMcpConfigByName(spec)
       if (!config) {
         logForDebugging(
           `[Agent: ${agentDefinition.agentType}] MCP server not found: ${spec}`,
@@ -394,9 +402,11 @@ export async function* runAgent({
   )
   const agentRoleFingerprint =
     requireAgentDefinitionRoleFingerprint(agentDefinition)
+  const repositoryControlledAgent =
+    isRepositoryControlledAgentDefinition(agentDefinition)
 
   const resolvedAgentModel = getAgentModel(
-    agentDefinition.model,
+    repositoryControlledAgent ? undefined : agentDefinition.model,
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
@@ -406,7 +416,7 @@ export async function* runAgent({
   const providerOverride = resolveAgentProvider(
     agentName,
     agentDefinition.agentType,
-    getInitialSettings(),
+    getExecutionAuthoritySettings(),
   )
   const effectiveModel = providerOverride ? providerOverride.model : resolvedAgentModel
 
@@ -485,7 +495,9 @@ export async function* runAgent({
   // Override permission mode if agent defines one
   // However, don't override if parent is in bypassPermissions or acceptEdits mode - those should always take precedence
   // For async agents, also set shouldAvoidPermissionPrompts since they can't show UI
-  const agentPermissionMode = agentDefinition.permissionMode
+  const agentPermissionMode = repositoryControlledAgent
+    ? undefined
+    : agentDefinition.permissionMode
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     let toolPermissionContext = state.toolPermissionContext
@@ -563,7 +575,7 @@ export async function* runAgent({
     // behavior (the agent's raw effort is written through unchanged); the type
     // gap is a latent issue tracked separately.
     const effortValue: EffortValue | undefined =
-      agentDefinition.effort !== undefined
+      !repositoryControlledAgent && agentDefinition.effort !== undefined
         ? (agentDefinition.effort as EffortValue)
         : state.effortValue
 
@@ -656,8 +668,9 @@ export async function* runAgent({
   // blanket-blocking all session hooks at execution time (which would
   // also kill plugin agents' hooks).
   const hooksAllowedForThisAgent =
-    !isRestrictedToPluginOnly('hooks') ||
-    isSourceAdminTrusted(agentDefinition.source)
+    !repositoryControlledAgent &&
+    (!isRestrictedToPluginOnly('hooks') ||
+      isSourceAdminTrusted(agentDefinition.source))
   if (agentDefinition.hooks && hooksAllowedForThisAgent) {
     registerFrontmatterHooks(
       rootSetAppState,
@@ -672,7 +685,9 @@ export async function* runAgent({
   }
 
   // Preload skills from agent frontmatter
-  const skillsToPreload = agentDefinition.skills ?? []
+  const skillsToPreload = repositoryControlledAgent
+    ? []
+    : agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
     const allSkills = await getSkillToolCommands(getProjectRoot())
 
@@ -845,6 +860,9 @@ export async function* runAgent({
     for await (const event of runTurnCompat(parentSession, {
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
+      ...(repositoryControlledAgent
+        ? { systemPromptTrust: 'workspace_role' as const }
+        : {}),
       userContext: resolvedUserContext,
       systemContext: resolvedSystemContext,
       canUseTool,
@@ -906,7 +924,7 @@ export async function* runAgent({
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
-    if (agentDefinition.hooks) {
+    if (agentDefinition.hooks && !repositoryControlledAgent) {
       clearSessionHooks(rootSetAppState, agentId)
     }
     // Clean up prompt cache tracking state for this agent

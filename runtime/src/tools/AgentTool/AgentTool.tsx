@@ -60,6 +60,7 @@ import {
   findAgentDefinitionByType,
   hasRequiredMcpServers,
   isBuiltInAgent,
+  isRepositoryControlledAgentDefinition,
   loadFreshAgentDefinitions,
   requireAgentDefinitionRoleFingerprint,
 } from 'src/tools/AgentTool/loadAgentsDir.js';
@@ -419,6 +420,8 @@ export const AgentTool = buildTool({
     }
     const selectedAgentRoleFingerprint =
       requireAgentDefinitionRoleFingerprint(selectedAgent);
+    const repositoryControlledAgent =
+      isRepositoryControlledAgentDefinition(selectedAgent);
 
     // Same lifecycle constraint as the run_in_background guard above, but for
     // agent definitions that force background via `background: true`. Checked
@@ -485,7 +488,12 @@ export const AgentTool = buildTool({
     });
 
     // Resolve agent params (these are already resolved in runAgent)
-    const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
+    const resolvedAgentModel = getAgentModel(
+      repositoryControlledAgent ? undefined : selectedAgent.model,
+      toolUseContext.options.mainLoopModel,
+      repositoryControlledAgent || isForkPath ? undefined : model,
+      permissionMode,
+    );
 
     // Resolve effective isolation mode (explicit param overrides agent def)
     const effectiveIsolation = isolation ?? selectedAgent.isolation;
@@ -564,10 +572,12 @@ export const AgentTool = buildTool({
     // below (registerAsyncAgentTask + notifyOnCompletion).
     const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
     const shouldRunAsync = (run_in_background === true || selectedAgent.background === true || isCoordinator || forceAsync || assistantForceAsync || (proactiveModule?.isProactiveActive() ?? false)) && !isBackgroundTasksDisabled;
-    const workerPermissionContext = {
-      ...appState.toolPermissionContext,
-      mode: selectedAgent.permissionMode ?? 'acceptEdits'
-    };
+    const workerPermissionContext = repositoryControlledAgent
+      ? appState.toolPermissionContext
+      : {
+          ...appState.toolPermissionContext,
+          mode: selectedAgent.permissionMode ?? 'acceptEdits'
+        };
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
@@ -652,7 +662,9 @@ export const AgentTool = buildTool({
     // permission mode, so they aren't affected by the parent's tool
     // restrictions. This is computed here so that runAgent doesn't need to
     // import from tools.ts (which would create a circular dependency).
-    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
+    const workerTools = repositoryControlledAgent
+      ? toolUseContext.options.tools
+      : assembleToolPool(workerPermissionContext, appState.mcp.tools);
 
     const runAgentParams: Parameters<typeof runAgent>[0] = {
       agentDefinition: selectedAgent,
@@ -661,7 +673,7 @@ export const AgentTool = buildTool({
       canUseTool,
       isAsync: shouldRunAsync,
       querySource: toolUseContext.options.querySource ?? getQuerySourceForAgent(selectedAgent.agentType, isBuiltInAgent(selectedAgent)),
-      model: isForkPath ? undefined : model,
+      model: repositoryControlledAgent || isForkPath ? undefined : model,
       // Fork path: pass parent's system prompt AND parent's exact tool
       // array (cache-identical prefix). workerTools is rebuilt under
       // permissionMode 'bubble' which differs from the parent's mode, so

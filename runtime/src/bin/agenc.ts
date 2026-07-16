@@ -351,7 +351,7 @@ export function formatCliHelpText(): string {
     "       agenc agent attach <id>",
     "       agenc agent stop <id>",
     "       agenc agent logs <id>",
-    "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>",
+    "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|approve-project|reset-project-choices|doctor|xaa>",
     "",
     "Commands:",
     "  onboard                                 Set up AgenC: provider, key, theme, first chat",

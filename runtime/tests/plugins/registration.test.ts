@@ -1436,8 +1436,9 @@ async function withTempPlugin(
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-registration-"));
   const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
-  const pluginRoot = join(root, ".agents", "plugins", "sample-plugin");
   const agencHome = join(root, "home");
+  const pluginRoot = join(agencHome, "plugins", "sample-plugin");
+  const workspaceRoot = join(root, "workspace");
   try {
     process.env.AGENC_PLUGIN_CACHE_DIR = join(root, "plugin-cache");
     await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
@@ -1589,7 +1590,7 @@ async function withTempPlugin(
       pluginRoot,
       options: {
         agencHome,
-        workspaceRoot: root,
+        workspaceRoot,
         extraPluginDirs: [pluginRoot],
       },
     });

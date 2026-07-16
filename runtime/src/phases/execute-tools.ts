@@ -80,8 +80,9 @@ import {
   type ToolUseSummaryToolInfo,
 } from "../services/toolUseSummary/toolUseSummaryGenerator.js";
 import {
+  classifyUntrustedToolResult,
   frameUntrustedToolResultContent,
-  shouldFrameUntrustedToolResult,
+  type UntrustedToolResultKind,
 } from "../tools/untrusted-tool-result-framing.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 
@@ -89,13 +90,13 @@ function toolResultMessage(
   callId: string,
   toolName: string,
   result: ToolDispatchResult,
-  frameAsUntrusted: boolean,
+  untrustedKind: UntrustedToolResultKind,
 ): LLMMessage {
   const message: LLMMessage = {
     role: "tool",
     toolCallId: callId,
     toolName,
-    content: modelFacingToolResultContent(toolName, result, frameAsUntrusted),
+    content: modelFacingToolResultContent(toolName, result, untrustedKind),
   };
   const failureKind = recoverableFailureKind(result.metadata);
   if (failureKind !== null) {
@@ -145,26 +146,24 @@ function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
 function modelFacingToolResultContent(
   toolName: string,
   result: ToolDispatchResult,
-  frameAsUntrusted: boolean,
+  untrustedKind: UntrustedToolResultKind,
 ): LLMMessage["content"] {
   const content = toolResultContent(result);
-  return frameAsUntrusted
-    ? frameUntrustedToolResultContent(toolName, content)
-    : content;
+  return frameUntrustedToolResultContent(toolName, content, untrustedKind);
 }
 
 function toolResultUserRecord(
   callId: string,
   toolName: string,
   result: ToolDispatchResult,
-  frameAsUntrusted: boolean,
+  untrustedKind: UntrustedToolResultKind,
 ): UserMessage {
   return {
     uuid: crypto.randomUUID(),
     role: "user",
     toolCallId: callId,
     toolName,
-    content: modelFacingToolResultContent(toolName, result, frameAsUntrusted),
+    content: modelFacingToolResultContent(toolName, result, untrustedKind),
   };
 }
 
@@ -526,7 +525,7 @@ function recordCompletedToolCall(
   const registryTool = session.services.registry.tools.find(
     (tool) => tool.name === toolCall.name,
   );
-  const frameAsUntrusted = shouldFrameUntrustedToolResult(
+  const untrustedKind = classifyUntrustedToolResult(
     toolCall.name,
     registryTool,
   );
@@ -566,10 +565,10 @@ function recordCompletedToolCall(
   };
   state.completedToolResults.push(completed);
   state.toolResults.push(
-    toolResultUserRecord(toolCall.id, toolCall.name, result, frameAsUntrusted),
+    toolResultUserRecord(toolCall.id, toolCall.name, result, untrustedKind),
   );
   state.messages.push(
-    toolResultMessage(toolCall.id, toolCall.name, result, frameAsUntrusted),
+    toolResultMessage(toolCall.id, toolCall.name, result, untrustedKind),
   );
   return completed;
 }

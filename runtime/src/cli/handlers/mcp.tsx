@@ -17,8 +17,9 @@ import { doctorAllServers, doctorServer, type McpDoctorReport, type McpDoctorSco
 import { connectToServer, getMcpServerConnectionBatchSize } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import { redactMcpDisplayValue } from '../../services/mcp/redaction.js';
+import { normalizeNameForMCP } from '../../services/mcp/normalization.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
-import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
+import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, projectMcpServerApprovalDigest } from '../../services/mcp/utils.js';
 import { AppStateProvider } from '../../tui/state/AppState.js';
 import { getCurrentProjectConfig, saveCurrentProjectConfig } from '../../utils/config.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
@@ -388,12 +389,44 @@ export async function mcpAddFromDesktopHandler(options: {
 }
 
 // mcp reset-project-choices (lines 4935–4952)
+export async function mcpApproveProjectHandler(name: string): Promise<void> {
+  try {
+    const { servers, errors } = getMcpConfigsByScope('project')
+    const normalizedName = normalizeNameForMCP(name)
+    const match = Object.entries(servers).find(
+      ([candidate]) => normalizeNameForMCP(candidate) === normalizedName,
+    )
+    if (!match) {
+      const detail = errors.length > 0 ? ` (${errors[0]!.message})` : ''
+      throw new Error(`No project-scoped MCP server found with name: ${name}${detail}`)
+    }
+    const [serverName, config] = match
+    const digest = projectMcpServerApprovalDigest(config)
+    saveCurrentProjectConfig(current => ({
+      ...current,
+      approvedMcpjsonServerDigests: {
+        ...current.approvedMcpjsonServerDigests,
+        [normalizeNameForMCP(serverName)]: digest,
+      },
+      disabledMcpjsonServers: (current.disabledMcpjsonServers ?? []).filter(
+        candidate => normalizeNameForMCP(candidate) !== normalizedName,
+      ),
+    }))
+    cliOk(
+      `Approved the current definition of project MCP server ${serverName}. Changes to .mcp.json require approval again.`,
+    )
+  } catch (error) {
+    cliError((error as Error).message)
+  }
+}
+
 export async function mcpResetChoicesHandler(): Promise<void> {
   saveCurrentProjectConfig(current => ({
     ...current,
     enabledMcpjsonServers: [],
     disabledMcpjsonServers: [],
-    enableAllProjectMcpServers: false
+    enableAllProjectMcpServers: false,
+    approvedMcpjsonServerDigests: {},
   }));
   cliOk('All project-scoped (.mcp.json) server approvals and rejections have been reset.\n' + 'You will be prompted for approval next time you start AgenC.');
 }

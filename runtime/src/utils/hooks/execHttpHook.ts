@@ -42,16 +42,15 @@ async function getSandboxProxyConfig(): Promise<
 }
 
 /**
- * Read HTTP hook allowlist restrictions from merged settings (all sources).
- * Follows the allowedMcpServers precedent: arrays concatenate across sources.
- * When allowManagedHooksOnly is set in managed settings, only admin-defined
- * hooks run anyway, so no separate lock-down boolean is needed here.
+ * Read HTTP hook grants only from operator-controlled settings. Repository
+ * settings are content, not authority: they cannot add destinations or expose
+ * environment variables through an otherwise trusted hook.
  */
 function getHttpHookPolicy(): {
   allowedUrls: string[] | undefined
   allowedEnvVars: string[] | undefined
 } {
-  const settings = settingsModule.getInitialSettings()
+  const settings = settingsModule.getExecutionAuthoritySettings()
   return {
     allowedUrls: settings.allowedHttpHookUrls,
     allowedEnvVars: settings.httpHookAllowedEnvVars,

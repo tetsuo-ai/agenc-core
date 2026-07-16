@@ -18,6 +18,7 @@ const gateState = {
 const CURRENT_SESSION = 'current-session-id'
 
 vi.mock('../../../src/utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => settings,
   getInitialSettings: () => settings,
 }))
 

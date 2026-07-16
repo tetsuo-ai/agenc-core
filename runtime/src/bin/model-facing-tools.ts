@@ -100,6 +100,10 @@ import type {
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { peekLSPDiagnosticsForFile } from "../services/lsp/LSPDiagnosticRegistry.js";
 import {
+  frameRepositorySkillGuidance,
+  isRepositoryControlledSkillSource,
+} from "../skills/repository-skill-boundary.js";
+import {
   getInitializationStatus,
   getLspServerManager,
   waitForInitialization,
@@ -1905,9 +1909,14 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
         }, true);
       }
 
+      const modelVisibleContent = isRepositoryControlledSkillSource(
+        rendered.skill.source,
+      )
+        ? frameRepositorySkillGuidance(rendered.content)
+        : rendered.content;
       const content = formatLoadedSkillForModel(
         rendered.skill.name,
-        rendered.content,
+        modelVisibleContent,
       );
       sessionOrError.services.skillsManager.recordInvokedSkill?.({
         skillName: rendered.skill.name,
@@ -2121,7 +2130,7 @@ function webFetchPermissionSuggestions(
   return [
     {
       type: "addRules",
-      destination: "localSettings",
+      destination: "session",
       rules: [{ toolName, ruleContent }],
       behavior: "allow",
     },

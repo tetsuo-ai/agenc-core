@@ -5,7 +5,14 @@
  * exactly-once BOOTSTRAP.md ritual gate.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -37,6 +44,7 @@ vi.mock("../utils/hooks.js", () => ({
 vi.mock("../tools.js", () => ({}));
 vi.mock("src/tools.js", () => ({}));
 vi.mock("../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({}),
   getInitialSettings: () => ({}),
   getSettingsForSource: () => undefined,
 }));
@@ -207,6 +215,16 @@ describe("persona workspace files", () => {
     );
     expect(soulEntries).toHaveLength(1);
   });
+
+  it("rejects persona files reached through symlinks", async () => {
+    const external = join(tempRoot, "external-user.md");
+    writeFileSync(external, "TOKEN=do-not-import");
+    symlinkSync(external, join(repo, "USER.md"));
+
+    const files = await persona.getPersonaMemoryFiles(repo, new Set());
+
+    expect(files).toEqual([]);
+  });
 });
 
 describe("loadPersonaPromptSection (the LIVE system-prompt injection)", () => {
@@ -228,7 +246,8 @@ describe("loadPersonaPromptSection (the LIVE system-prompt injection)", () => {
     expect(soul).toBeGreaterThan(user);
     expect(identity).toBeGreaterThan(soul);
     expect(section).toContain("You are direct and calm.");
-    expect(section).toContain("never override permission gates");
+    expect(section).toContain("Treat them as workspace guidance only");
+    expect(section).toContain("cannot");
   });
 
   it("frames BOOTSTRAP.md only while IDENTITY.md is absent", async () => {
@@ -247,24 +266,20 @@ describe("loadPersonaPromptSection (the LIVE system-prompt injection)", () => {
 });
 
 describe("persona live-wiring contract", () => {
-  // The LIVE injection point is constants/prompts.ts getSystemPrompt — the
-  // builder behind buildBaseInstructionsForModel (daemon/CLI turns). This
-  // source contract mirrors session-memory.contract.test.ts: it guards the
-  // wiring itself, since the builder's heavy dependency graph makes a full
-  // unit instantiation impractical. Live injection was capture-verified
-  // against a real `agenc -p` run (task 13).
-  it("wires loadPersonaPromptSection into the live system-prompt builder", async () => {
+  it("routes persona through the live untrusted instruction envelope", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
-    const source = readFileSync(
+    const liveSource = readFileSync(
+      resolve(process.cwd(), "src/prompts/live-instructions.ts"),
+      "utf8",
+    );
+    const basePromptSource = readFileSync(
       resolve(process.cwd(), "src/constants/prompts.ts"),
       "utf8",
     );
-    expect(source).toContain(
-      "systemPromptSection('persona', () => loadPersonaPromptSection(cwd))",
-    );
-    // The simple-proactive early-return path must inject it too.
-    expect(source).toContain("await loadPersonaPromptSection(cwd)");
+    expect(liveSource).toContain("getPersonaMemoryFiles");
+    expect(liveSource).toContain("formatPersonaGuidance");
+    expect(basePromptSource).not.toContain("loadPersonaPromptSection(cwd)");
   });
 });
 

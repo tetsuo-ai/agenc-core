@@ -136,6 +136,7 @@ async function loadMemoryHarness(options: {
     hasInstructionsLoadedHook: () => false,
   }));
   vi.doMock("../utils/settings/settings.js", () => ({
+    getExecutionAuthoritySettings: () => ({ autoMemoryEnabled: true }),
     getInitialSettings: () => ({ autoMemoryEnabled: true }),
     getSettingsForSource: () => undefined,
   }));

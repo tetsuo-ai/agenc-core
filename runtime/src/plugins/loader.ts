@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -112,12 +112,20 @@ export interface PluginHookSource {
   readonly hooks: HooksMap;
 }
 
+export type PluginContentProvenance = "authority-controlled" | "repository-controlled";
+
 export interface LoadedPlugin {
   readonly name: string;
   readonly version?: string;
   readonly description?: string;
   readonly root: string;
   readonly source: string;
+  /**
+   * Whether the loaded bytes come from an operator-controlled install root or
+   * from the mutable workspace. Repository-controlled plugins are guidance
+   * only and cannot register execution capabilities.
+   */
+  readonly contentProvenance: PluginContentProvenance;
   readonly enabled: boolean;
   readonly manifest: PluginManifest;
   readonly manifestPath?: string;
@@ -155,8 +163,15 @@ interface DiscoveredPluginRoot {
   readonly path: string;
   readonly source: string;
   readonly enabled: boolean;
+  readonly contentProvenance: PluginContentProvenance;
   readonly key?: string;
   readonly featureGated?: boolean;
+}
+
+export function isRepositoryControlledPlugin(
+  plugin: Pick<LoadedPlugin, "contentProvenance">,
+): boolean {
+  return plugin.contentProvenance === "repository-controlled";
 }
 
 function configuredPluginEntries(
@@ -305,13 +320,17 @@ async function hasPluginShape(path: string): Promise<boolean> {
   ]).then((checks) => checks.some(Boolean));
 }
 
-async function discoverRootsUnder(baseDir: string): Promise<DiscoveredPluginRoot[]> {
+async function discoverRootsUnder(
+  baseDir: string,
+  contentProvenance: PluginContentProvenance,
+): Promise<DiscoveredPluginRoot[]> {
   if (!(await pathIsDirectory(baseDir))) return [];
   if (await hasPluginShape(baseDir)) {
     return [{
       path: await maybeRealpath(baseDir),
       source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
       enabled: true,
+      contentProvenance,
     }];
   }
   let entries;
@@ -329,10 +348,35 @@ async function discoverRootsUnder(baseDir: string): Promise<DiscoveredPluginRoot
         path: await maybeRealpath(candidate),
         source: await installedPluginDependencyIdentity(candidate) ?? candidate,
         enabled: true,
+        contentProvenance,
       });
     }
   }
   return roots.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function contentProvenanceForPath(
+  candidate: string,
+  canonicalCandidate: string,
+  workspaceRoot: string,
+  agencHome: string,
+): PluginContentProvenance {
+  const isWithin = (path: string, root: string): boolean => {
+    const pathRelative = relative(resolve(root), resolve(path));
+    return pathRelative === "" ||
+      (!pathRelative.startsWith("..") && !isAbsolute(pathRelative));
+  };
+  const userPluginRoot = resolve(agencHome, "plugins");
+  if (
+    isWithin(candidate, userPluginRoot) &&
+    isWithin(canonicalCandidate, userPluginRoot)
+  ) {
+    return "authority-controlled";
+  }
+  return isWithin(candidate, workspaceRoot) ||
+      isWithin(canonicalCandidate, workspaceRoot)
+    ? "repository-controlled"
+    : "authority-controlled";
 }
 
 async function installedPluginDependencyIdentity(pluginRoot: string): Promise<string | undefined> {
@@ -359,11 +403,17 @@ export async function discoverPluginRoots(
   const featureEnabled = pluginFeatureEnabled(options.config);
   const roots: DiscoveredPluginRoot[] = [];
   roots.push(
-    ...(await discoverRootsUnder(join(options.agencHome, "plugins"))).map((root) => ({
+    ...(await discoverRootsUnder(
+      join(options.agencHome, "plugins"),
+      "authority-controlled",
+    )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
     })),
-    ...(await discoverRootsUnder(join(options.workspaceRoot, ".agents", "plugins"))).map((root) => ({
+    ...(await discoverRootsUnder(
+      join(options.workspaceRoot, ".agents", "plugins"),
+      "repository-controlled",
+    )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
     })),
@@ -372,24 +422,52 @@ export async function discoverPluginRoots(
   for (const [key, value] of Object.entries(configured).sort(([a], [b]) => a.localeCompare(b))) {
     const path = configEntryPath(value);
     if (path === undefined) continue;
+    const resolvedPath = resolvePath(options.workspaceRoot, path);
+    const canonicalPath = await maybeRealpath(resolvedPath);
     roots.push({
-      path: await maybeRealpath(resolvePath(options.workspaceRoot, path)),
+      path: canonicalPath,
       source: key,
       key,
       enabled: featureEnabled && configEntryEnabled(value),
+      contentProvenance: contentProvenanceForPath(
+        resolvedPath,
+        canonicalPath,
+        options.workspaceRoot,
+        options.agencHome,
+      ),
     });
   }
   for (const path of configuredPluginDirs(options.config)) {
+    const resolvedPath = resolvePath(options.workspaceRoot, path);
+    const canonicalPath = await maybeRealpath(resolvedPath);
     roots.push(
-      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+      ...(await discoverRootsUnder(
+        resolvedPath,
+        contentProvenanceForPath(
+          resolvedPath,
+          canonicalPath,
+          options.workspaceRoot,
+          options.agencHome,
+        ),
+      )).map((root) => ({
         ...root,
         enabled: root.enabled && featureEnabled,
       })),
     );
   }
   for (const path of options.extraPluginDirs ?? []) {
+    const resolvedPath = resolvePath(options.workspaceRoot, path);
+    const canonicalPath = await maybeRealpath(resolvedPath);
     roots.push(
-      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+      ...(await discoverRootsUnder(
+        resolvedPath,
+        contentProvenanceForPath(
+          resolvedPath,
+          canonicalPath,
+          options.workspaceRoot,
+          options.agencHome,
+        ),
+      )).map((root) => ({
         ...root,
         featureGated: false,
       })),
@@ -425,6 +503,7 @@ export async function loadPlugins(
         source: root.source,
         enabled: root.enabled,
         fallbackName: basename(root.path),
+        contentProvenance: root.contentProvenance,
         configEntry,
         isEnabled: (manifestName) => configEntryEnabled(configEntry(manifestName)) &&
           pluginAllowedByAllowlist(
@@ -475,9 +554,36 @@ export async function loadPlugins(
 export async function discoverPluginSkillRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly string[]> {
+  return (await discoverPluginSkillRootsWithProvenance(options)).map(
+    (root) => root.path,
+  );
+}
+
+export interface PluginSkillRoot {
+  readonly path: string;
+  readonly contentProvenance: PluginContentProvenance;
+}
+
+export async function discoverPluginSkillRootsWithProvenance(
+  options: PluginLoaderOptions,
+): Promise<readonly PluginSkillRoot[]> {
   const result = await loadPlugins(options);
-  return [...new Set(result.enabled.flatMap((plugin) => plugin.skillsPaths))]
-    .sort((a, b) => a.localeCompare(b));
+  const roots = new Map<string, PluginContentProvenance>();
+  for (const plugin of result.enabled) {
+    for (const path of plugin.skillsPaths) {
+      const current = roots.get(path);
+      roots.set(
+        path,
+        current === "repository-controlled" ||
+            plugin.contentProvenance === "repository-controlled"
+          ? "repository-controlled"
+          : "authority-controlled",
+      );
+    }
+  }
+  return [...roots]
+    .map(([path, contentProvenance]) => ({ path, contentProvenance }))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export async function loadPluginMcpServers(
@@ -486,6 +592,7 @@ export async function loadPluginMcpServers(
   const result = await loadPlugins(options);
   const servers: Record<string, McpServerConfig> = {};
   for (const plugin of result.enabled) {
+    if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.mcpServers)) {
       servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
     }
@@ -499,6 +606,7 @@ export async function loadPluginLspServers(
   const result = await loadPlugins(options);
   const servers: Record<string, LspServerConfigInput> = {};
   for (const plugin of result.enabled) {
+    if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.lspServers)) {
       servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
     }
@@ -512,11 +620,15 @@ export async function createPluginFromPath(
     readonly source: string;
     readonly enabled: boolean;
     readonly fallbackName: string;
+    readonly contentProvenance?: PluginContentProvenance;
     readonly configEntry?: (manifestName: string) => boolean | PluginEntryConfig | undefined;
     readonly isEnabled?: (manifestName: string) => boolean;
   },
 ): Promise<{ plugin: LoadedPlugin; errors: readonly PluginLoadIssue[] }> {
   const errors: PluginLoadIssue[] = [];
+  // Direct construction is used by the operator-driven install/validation
+  // path. Runtime discovery always supplies explicit provenance.
+  const contentProvenance = opts.contentProvenance ?? "authority-controlled";
   if (!(await pathIsDirectory(pluginPath))) {
     const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
     errors.push({
@@ -527,14 +639,14 @@ export async function createPluginFromPath(
       message: `Plugin root not found: ${pluginPath}`,
     });
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
       errors,
     };
   }
   if (!opts.enabled) {
     const manifest = fallbackManifest(pluginPath, opts.fallbackName, opts.source);
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
       errors,
     };
   }
@@ -567,13 +679,13 @@ export async function createPluginFromPath(
       message: error instanceof Error ? error.message : String(error),
     });
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
       errors,
     };
   }
   if (!opts.enabled || opts.isEnabled?.(manifest.name) === false) {
     return {
-      plugin: emptyPlugin(pluginPath, opts.source, false, manifest),
+      plugin: emptyPlugin(pluginPath, opts.source, false, manifest, contentProvenance),
       errors,
     };
   }
@@ -589,35 +701,46 @@ export async function createPluginFromPath(
     opts.source,
     manifest.name,
   );
-  const hookSources = await loadHooks(pluginPath, manifest, manifestPath, opts.source, errors);
-  const mcpServers = await loadServers<McpServerConfig>(
-    "mcp",
-    pluginPath,
-    manifest.mcpServers,
-    DEFAULT_MCP_FILE,
-    "mcpServers",
-    normalizeMcpServer,
-    errors,
-    opts.source,
-    manifest.name,
-  );
+  const repositoryControlled = contentProvenance === "repository-controlled";
+  const hookSources = repositoryControlled
+    ? []
+    : await loadHooks(pluginPath, manifest, manifestPath, opts.source, errors);
+  const mcpServers = repositoryControlled
+    ? nullProtoRecord<McpServerConfig>()
+    : await loadServers<McpServerConfig>(
+        "mcp",
+        pluginPath,
+        manifest.mcpServers,
+        DEFAULT_MCP_FILE,
+        "mcpServers",
+        normalizeMcpServer,
+        errors,
+        opts.source,
+        manifest.name,
+      );
   const configuredMcpServers = applyPluginMcpServerConfig(
     mcpServers,
     opts.configEntry?.(manifest.name),
   );
-  const lspServers = await loadServers<LspServerConfigInput>(
-    "lsp",
-    pluginPath,
-    manifest.lspServers,
-    DEFAULT_LSP_FILE,
-    "lspServers",
-    normalizeLspServer,
-    errors,
-    opts.source,
-    manifest.name,
-  );
-  const appConnectorIds = await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
-  const settings = await loadPluginSettings(pluginPath, manifest, errors, opts.source, manifest.name);
+  const lspServers = repositoryControlled
+    ? nullProtoRecord<LspServerConfigInput>()
+    : await loadServers<LspServerConfigInput>(
+        "lsp",
+        pluginPath,
+        manifest.lspServers,
+        DEFAULT_LSP_FILE,
+        "lspServers",
+        normalizeLspServer,
+        errors,
+        opts.source,
+        manifest.name,
+      );
+  const appConnectorIds = repositoryControlled
+    ? []
+    : await loadAppConnectorIds(pluginPath, manifest, errors, opts.source, manifest.name);
+  const settings = repositoryControlled
+    ? undefined
+    : await loadPluginSettings(pluginPath, manifest, errors, opts.source, manifest.name);
 
   const plugin: LoadedPlugin = {
     name: manifest.name,
@@ -625,6 +748,7 @@ export async function createPluginFromPath(
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
     root: pluginPath,
     source: opts.source,
+    contentProvenance,
     enabled: opts.enabled,
     manifest,
     ...(manifestPath !== undefined ? { manifestPath } : {}),
@@ -672,6 +796,7 @@ function emptyPlugin(
   source: string,
   enabled: boolean,
   manifest: PluginManifest,
+  contentProvenance: PluginContentProvenance,
 ): LoadedPlugin {
   return {
     name: manifest.name,
@@ -679,6 +804,7 @@ function emptyPlugin(
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
     root: pluginPath,
     source,
+    contentProvenance,
     enabled,
     manifest,
     commandsPaths: [],

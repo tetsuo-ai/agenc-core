@@ -103,7 +103,7 @@ function navigateSuggestions(ruleContent: string): readonly PermissionUpdate[] {
   return [
     {
       type: "addRules",
-      destination: "localSettings",
+      destination: "session",
       rules: [{ toolName: BROWSER_TOOL_NAME, ruleContent }],
       behavior: "allow",
     },

@@ -18,7 +18,8 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 import { getSecureStorage } from '../secureStorage/index.js'
 import {
-  getSettings_DEPRECATED,
+  getExecutionAuthoritySettings,
+  getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
 import {
@@ -55,7 +56,7 @@ export function getPluginStorageId(plugin: LoadedPlugin): string {
  */
 export const loadPluginOptions = memoize(
   (pluginId: string): PluginOptionValues => {
-    const settings = getSettings_DEPRECATED()
+    const settings = getExecutionAuthoritySettings()
     const nonSensitive =
       settings.pluginConfigs?.[pluginId]?.options ?? ({} as PluginOptionValues)
 
@@ -153,13 +154,7 @@ export function savePluginOptions(
   // settings.json AFTER secureStorage — scrub sensitive keys via explicit
   // undefined (mergeWith deletion pattern).
   //
-  // Follow-up: getSettings_DEPRECATED returns MERGED settings across all scopes.
-  // Mutating that and writing to userSettings can leak project-scope
-  // pluginConfigs into ~/.agenc/settings.json. Same pattern exists in
-  // saveMcpServerUserConfig. Safe today since pluginConfigs is only ever
-  // written here (user-scope), but will bite if we add project-scoped
-  // plugin options.
-  const settings = getSettings_DEPRECATED()
+  const settings = getSettingsForSource('userSettings') ?? {}
   const existingInSettings = settings.pluginConfigs?.[pluginId]?.options ?? {}
   const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
     sensitiveKeysInThisSave.has(k),
@@ -168,20 +163,21 @@ export function savePluginOptions(
     Object.keys(nonSensitive).length > 0 ||
     keysToScrubFromSettings.length > 0
   ) {
-    if (!settings.pluginConfigs) {
-      settings.pluginConfigs = {}
-    }
-    if (!settings.pluginConfigs[pluginId]) {
-      settings.pluginConfigs[pluginId] = {}
-    }
     const scrubbed = Object.fromEntries(
       keysToScrubFromSettings.map(k => [k, undefined]),
     ) as Record<string, undefined>
-    settings.pluginConfigs[pluginId].options = {
-      ...nonSensitive,
-      ...scrubbed,
-    } as PluginOptionValues
-    const result = updateSettingsForSource('userSettings', settings)
+    const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
+    const result = updateSettingsForSource('userSettings', {
+      pluginConfigs: {
+        [pluginId]: {
+          ...existingPluginConfig,
+          options: {
+            ...nonSensitive,
+            ...scrubbed,
+          } as PluginOptionValues,
+        },
+      },
+    })
     if (result.error) {
       logError(result.error)
       throw new Error(
@@ -220,7 +216,7 @@ export function deletePluginOptions(pluginId: string): void {
   // mergeWith-deletion contract is internal plumbing — it shouldn't shape
   // the Zod schema. enabledPlugins gets away with it only because its other
   // arms (string[] | boolean) are non-objects that stay distinct.
-  const settings = getSettings_DEPRECATED()
+  const settings = getSettingsForSource('userSettings') ?? {}
   type PluginConfigs = NonNullable<typeof settings.pluginConfigs>
   if (settings.pluginConfigs?.[pluginId]) {
     // Partial<Record<K,V>> = Record<K, V | undefined> — gives us the widening

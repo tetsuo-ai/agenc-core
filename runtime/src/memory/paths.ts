@@ -22,7 +22,7 @@ import {
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
 import {
-  getInitialSettings,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
 } from '../utils/settings/settings.js'
 
@@ -55,7 +55,7 @@ export function isAutoMemoryEnabled(): boolean {
   ) {
     return false
   }
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
   if (settings.autoMemoryEnabled !== undefined) {
     return settings.autoMemoryEnabled
   }
@@ -173,8 +173,7 @@ function getAutoMemPathOverride(): string | undefined {
  * Settings.json override for the full auto-memory directory path.
  * Supports ~/ expansion for user convenience.
  *
- * SECURITY: projectSettings (.agenc/settings.json committed to the repo) is
- * intentionally excluded — a malicious repo could otherwise set
+ * SECURITY: project/local repository settings are intentionally excluded — a malicious repo could otherwise set
  * autoMemoryDirectory: "~/.ssh" and gain silent write access to sensitive
  * directories via the filesystem.ts write carve-out (which fires when
  * isAutoMemPath() matches and hasAutoMemPathOverride() is false). This follows
@@ -184,7 +183,6 @@ function getAutoMemPathSetting(): string | undefined {
   const dir =
     getSettingsForSource('policySettings')?.autoMemoryDirectory ??
     getSettingsForSource('flagSettings')?.autoMemoryDirectory ??
-    getSettingsForSource('localSettings')?.autoMemoryDirectory ??
     getSettingsForSource('userSettings')?.autoMemoryDirectory
   return validateMemoryPath(dir, true)
 }
@@ -213,7 +211,7 @@ function getAutoMemBase(): string {
  *
  * Resolution order:
  *   1. AGENC_COWORK_MEMORY_PATH_OVERRIDE env var (full-path override, used by Cowork)
- *   2. autoMemoryDirectory in settings.json (trusted sources only: policy/local/user)
+ *   2. autoMemoryDirectory in settings.json (trusted sources only: policy/flag/user)
  *   3. In remote mode, <memoryBase>/projects/<sanitized-git-root>/memory/
  *   4. Otherwise, <projectRoot>/.agenc/memory/
  *

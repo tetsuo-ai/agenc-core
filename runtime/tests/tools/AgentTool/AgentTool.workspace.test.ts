@@ -181,7 +181,7 @@ Never mutate files.
     expect(setAppState).not.toHaveBeenCalled()
   })
 
-  it('accepts an unchanged fresh custom role at the real AgentTool boundary', async () => {
+  it('accepts a fresh repository role with deny-only authority at the real AgentTool boundary', async () => {
     const workspace = tempRoot('agent-fresh-custom')
     const agentsDir = join(workspace, '.agenc', 'agents')
     mkdirSync(agentsDir, { recursive: true })
@@ -203,9 +203,9 @@ Audit without mutations.
     const preflight = vi.fn(({ selectedAgent, agentRoleFingerprint }) => {
       expect(selectedAgent).toMatchObject({
         agentType: 'exact-auditor',
-        permissionMode: 'plan',
         disallowedTools: ['Write'],
       })
+      expect(selectedAgent.permissionMode).toBeUndefined()
       expect(agentRoleFingerprint).toMatch(/^[a-f0-9]{64}$/)
       throw new Error('test launch boundary reached')
     })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
@@ -109,30 +109,36 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
   it("projects markdown roles from the same registry used by spawn_agent", () => {
     _resetAgentRolesForTesting();
     const root = mkdtempSync(join(tmpdir(), "agenc-role-definitions-"));
-    const dir = join(root, ".agenc", "agents");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "audit.md"),
-      [
-        "---",
-        "name: audit-role",
-        "description: Audit local changes",
-        "---",
-        "Audit the diff.",
-      ].join("\n"),
-    );
+    try {
+      const dir = join(root, ".agenc", "agents");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "audit.md"),
+        [
+          "---",
+          "name: audit-role",
+          "description: Audit local changes",
+          "---",
+          "Audit the diff.",
+        ].join("\n"),
+      );
 
-    const workspace = createAgentRoleWorkspace(root);
-    loadMarkdownAgentRoles(workspace);
+      const workspace = createAgentRoleWorkspace(root);
+      loadMarkdownAgentRoles(workspace);
 
-    const projected = listAgentRoleDefinitions(root).find(
-      (role) => role.agentType === "audit-role",
-    );
-    expect(projected).toBeDefined();
-    expect(projected?.whenToUse).toBe("Audit local changes");
-    expect(
-      (projected as { getSystemPrompt: () => string }).getSystemPrompt(),
-    ).toBe("Audit the diff.");
-    _resetAgentRolesForTesting();
+      const projected = listAgentRoleDefinitions(root).find(
+        (role) => role.agentType === "audit-role",
+      );
+      expect(projected).toBeDefined();
+      expect(projected?.whenToUse).toBe("Audit local changes");
+      expect(projected?.source).toBe("projectSettings");
+      expect(projected?.baseDir).toBe("workspace-role");
+      expect(
+        (projected as { getSystemPrompt: () => string }).getSystemPrompt(),
+      ).toBe("Audit the diff.");
+    } finally {
+      _resetAgentRolesForTesting();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

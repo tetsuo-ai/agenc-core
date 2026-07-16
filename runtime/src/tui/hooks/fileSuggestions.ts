@@ -28,7 +28,10 @@ import {
 import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { ripGrep } from '../../utils/ripgrep.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
+import {
+  getExecutionAuthoritySettings,
+  getSettingsForSource,
+} from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { createSignal } from '../../utils/signal'
 
 // Lazily constructed singleton
@@ -529,11 +532,14 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
   trackedCacheReadyForUntrackedMerge = false
 
   try {
-    // Check project settings first, then fall back to global config
-    const projectSettings = getInitialSettings()
+    const authoritySettings = getExecutionAuthoritySettings()
     const globalConfig = getGlobalConfig()
-    const respectGitignore =
-      projectSettings.respectGitignore ?? globalConfig.respectGitignore ?? true
+    const repositoryRequiresGitignore =
+      getSettingsForSource('projectSettings')?.respectGitignore === true ||
+      getSettingsForSource('localSettings')?.respectGitignore === true
+    const respectGitignore = repositoryRequiresGitignore
+      ? true
+      : authoritySettings.respectGitignore ?? globalConfig.respectGitignore ?? true
 
     const cwd = getCwd()
     const [projectFiles, configFiles] = await Promise.all([
@@ -801,7 +807,7 @@ export async function generateFileSuggestions(
 
   // Use custom command directly if configured. We don't mix in our config files
   // because the command returns pre-ranked results using its own search logic.
-  if (getInitialSettings().fileSuggestion?.type === 'command') {
+  if (getExecutionAuthoritySettings().fileSuggestion?.type === 'command') {
     try {
       const input: FileSuggestionCommandInput = {
         ...createBaseHookInput(),

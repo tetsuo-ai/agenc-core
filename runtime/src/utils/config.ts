@@ -115,6 +115,8 @@ export type ProjectConfig = {
   enabledMcpjsonServers?: string[]
   disabledMcpjsonServers?: string[]
   enableAllProjectMcpServers?: boolean
+  /** Exact approved project MCP definitions, keyed by normalized server name. */
+  approvedMcpjsonServerDigests?: Record<string, string>
   // List of disabled MCP servers (all scopes) - used for enable/disable toggle
   disabledMcpServers?: string[]
   // Opt-in list for built-in MCP servers that default to disabled
@@ -138,6 +140,7 @@ const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   mcpServers: {},
   enabledMcpjsonServers: [],
   disabledMcpjsonServers: [],
+  approvedMcpjsonServerDigests: {},
   hasTrustDialogAccepted: false,
   projectOnboardingSeenCount: 0,
   hasAgenCMdExternalIncludesWarningShown: false,

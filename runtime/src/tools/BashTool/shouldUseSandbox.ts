@@ -1,6 +1,6 @@
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import {
   BINARY_HIJACK_VARS,
   bashPermissionRule,
@@ -24,7 +24,7 @@ function containsExcludedCommand(command: string): boolean {
   // was removed. This path is a user-facing convenience, not a security boundary
   // (see NOTE above) — so it must not be re-wired to a source that could exclude
   // MORE commands from the sandbox.
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   const userExcludedCommands = settings.sandbox?.excludedCommands ?? []
 
   if (userExcludedCommands.length === 0) {

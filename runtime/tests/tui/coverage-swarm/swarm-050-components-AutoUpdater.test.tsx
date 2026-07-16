@@ -90,6 +90,7 @@ vi.mock("../../../src/utils/semver.js", () => {
 });
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: harness.getInitialSettings,
   getInitialSettings: harness.getInitialSettings,
 }));
 

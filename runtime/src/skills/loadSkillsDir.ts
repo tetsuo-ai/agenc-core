@@ -59,6 +59,10 @@ import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
 import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
 import { frameUntrustedMcpSkillContent } from './untrustedMcpSkillFraming.js'
+import {
+  frameRepositorySkillGuidance,
+  isRepositoryControlledSkillSource,
+} from './repository-skill-boundary.js'
 
 export type LoadedFrom =
   | 'commands_DEPRECATED'
@@ -310,22 +314,23 @@ export function createSkillCommand({
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
 }): Command {
+  const repositoryControlled = isRepositoryControlledSkillSource(source)
   return {
     type: 'prompt',
     name: skillName,
     description,
     hasUserSpecifiedDescription,
-    allowedTools,
+    allowedTools: repositoryControlled ? [] : allowedTools,
     argumentHint,
     argNames: argumentNames.length > 0 ? argumentNames : undefined,
     whenToUse,
     version,
-    model,
+    model: repositoryControlled ? undefined : model,
     disableModelInvocation,
     userInvocable,
-    context: executionContext,
-    agent,
-    effort,
+    context: repositoryControlled ? undefined : executionContext,
+    agent: repositoryControlled ? undefined : agent,
+    effort: repositoryControlled ? undefined : effort,
     paths,
     contentLength: markdownContent.length,
     isHidden: !userInvocable,
@@ -335,7 +340,7 @@ export function createSkillCommand({
     },
     source,
     loadedFrom,
-    hooks,
+    hooks: repositoryControlled ? undefined : hooks,
     skillRoot: baseDir,
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
@@ -369,6 +374,10 @@ export function createSkillCommand({
       // ${AGENC_SKILL_DIR} is meaningless for MCP skills anyway.
       if (loadedFrom === 'mcp') {
         finalContent = frameUntrustedMcpSkillContent(skillName, finalContent)
+      } else if (repositoryControlled) {
+        // Repository markdown is guidance-only. Inline shell syntax remains
+        // literal model context and never reaches the shell executor.
+        finalContent = frameRepositorySkillGuidance(finalContent)
       } else {
         const { executeShellCommandsInPrompt } = await import(
           '../utils/promptShellExecution.js'
@@ -396,7 +405,10 @@ export function createSkillCommand({
         )
       }
 
-      return [{ type: 'text', text: finalContent }]
+      return [{
+        type: 'text',
+        text: finalContent,
+      }]
     },
   } satisfies Command
 }

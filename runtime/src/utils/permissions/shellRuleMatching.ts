@@ -200,7 +200,7 @@ export function suggestionForExactCommand(
         },
       ],
       behavior: 'allow',
-      destination: 'localSettings',
+      destination: 'session',
     },
   ]
 }
@@ -222,7 +222,7 @@ export function suggestionForPrefix(
         },
       ],
       behavior: 'allow',
-      destination: 'localSettings',
+      destination: 'session',
     },
   ]
 }

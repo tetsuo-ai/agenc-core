@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
@@ -114,6 +114,7 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     const mk = (tier: TierEntry["tier"], path: string, content: string): TierEntry => ({
       tier,
       path,
+      scopePath: dirname(path),
       content,
       rawContent: content,
       dropped: [],

@@ -7,6 +7,7 @@ vi.mock('bun:bundle', () => ({
   feature: (flag: string) => flag === 'TEAMMEM',
 }))
 vi.mock('../utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => ({ autoMemoryEnabled: true }),
   getInitialSettings: () => ({ autoMemoryEnabled: true }),
   getSettingsForSource: () => undefined,
 }))

@@ -1475,7 +1475,9 @@ describe("plugin loader", () => {
         "style-only",
       ]);
       expect(result.enabled.find((plugin) => plugin.name === "app-only")?.appConnectorIds)
-        .toEqual(["calendar"]);
+        .toEqual([]);
+      expect(result.enabled.find((plugin) => plugin.name === "app-only")?.contentProvenance)
+        .toBe("repository-controlled");
       expect(result.enabled.find((plugin) => plugin.name === "style-only")?.outputStylesPaths)
         .toEqual([join(stylePlugin, "output-styles")]);
     });

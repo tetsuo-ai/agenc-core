@@ -12,6 +12,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import type { PromptCommand } from '../commands.js'
 import { canonicalAgentRoleName } from '../agents/role-presentation.js'
+import { isRepositoryControlledSkillSource } from '../skills/repository-skill-boundary.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
 import { requireCurrentRuntimeSession } from '../session/current-session.js'
@@ -208,7 +209,9 @@ export async function prepareForkedCommandContext(
 
   // Parse and prepare allowed tools
   const allowedTools = parseToolListFromCLI([
-    ...(command.allowedTools ?? []),
+    ...(isRepositoryControlledSkillSource(command.source)
+      ? []
+      : command.allowedTools ?? []),
   ])
 
   // Create modified context with allowed tools
@@ -221,7 +224,9 @@ export async function prepareForkedCommandContext(
   // role. Match by exact agentType or canonical role name so public names /
   // aliases (scanner, runner, general-purpose, ...) resolve like the v2 spawn
   // path; fall back to the default role, then the first available agent.
-  const agentTypeName = command.agent ?? 'default'
+  const agentTypeName = isRepositoryControlledSkillSource(command.source)
+    ? 'default'
+    : command.agent ?? 'default'
   const requestedCanonical = canonicalAgentRoleName(agentTypeName)
   const agents = context.options.agentDefinitions.activeAgents
   const baseAgent =

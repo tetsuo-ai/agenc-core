@@ -27,7 +27,7 @@ import {
 } from './model/model.js'
 import { getTranscriptPath } from './sessionStorage.js'
 import { readTranscriptForLoad } from './sessionStoragePortable.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { isUndercover } from './undercover.js'
 
 
@@ -72,7 +72,7 @@ export function getAttributionTexts(): AttributionTexts {
   const defaultAttribution = ''
   const defaultCommit = ''
 
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
 
   // New attribution setting takes precedence over deprecated includeCoAuthoredBy
   if (settings.attribution) {
@@ -302,7 +302,7 @@ export async function getEnhancedPRAttribution(
     return ''
   }
 
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
 
   // If user has custom PR attribution, use that
   if (settings.attribution?.pr) {

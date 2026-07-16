@@ -45,7 +45,7 @@ export type MemoryPathEnv = Readonly<Record<string, string | undefined>>;
 
 export type TrustedAutoMemoryDirectorySource = Extract<
   PermissionRuleSource,
-  "policySettings" | "flagSettings" | "localSettings" | "userSettings"
+  "policySettings" | "flagSettings" | "userSettings"
 >;
 
 export interface ResolveAutoMemoryDirectoryOptions {
@@ -62,14 +62,16 @@ export interface ResolveAutoMemoryDirectoryOptions {
 }
 
 const AUTO_MEMORY_DIRECTORY_SOURCES: readonly TrustedAutoMemoryDirectorySource[] =
-  ["policySettings", "flagSettings", "localSettings", "userSettings"];
+  ["policySettings", "flagSettings", "userSettings"];
 
-const AUTO_MEMORY_ENABLED_SOURCES: readonly PermissionRuleSource[] = [
+const AUTO_MEMORY_ENABLED_AUTHORITY_SOURCES: readonly PermissionRuleSource[] = [
   "policySettings",
   "flagSettings",
+  "userSettings",
+];
+const AUTO_MEMORY_REPOSITORY_SOURCES: readonly PermissionRuleSource[] = [
   "localSettings",
   "projectSettings",
-  "userSettings",
 ];
 const MAX_SANITIZED_PROJECT_KEY_LENGTH = 200;
 
@@ -183,13 +185,23 @@ async function readSettings(
 async function readAutoMemoryEnabledSetting(
   opts: ResolveAutoMemoryDirectoryOptions,
 ): Promise<boolean | undefined> {
-  for (const source of AUTO_MEMORY_ENABLED_SOURCES) {
+  let authoritative: boolean | undefined;
+  for (const source of AUTO_MEMORY_ENABLED_AUTHORITY_SOURCES) {
     const settings = await readSettings(source, opts);
     if (typeof settings?.autoMemoryEnabled === "boolean") {
-      return settings.autoMemoryEnabled;
+      authoritative = settings.autoMemoryEnabled;
+      break;
     }
   }
-  return undefined;
+  // Repository content may reduce background activity but cannot enable a
+  // model call or override an operator disable.
+  for (const source of AUTO_MEMORY_REPOSITORY_SOURCES) {
+    const settings = await readSettings(source, opts);
+    if (settings?.autoMemoryEnabled === false) {
+      return false;
+    }
+  }
+  return authoritative;
 }
 
 async function readAutoMemoryDirectorySetting(

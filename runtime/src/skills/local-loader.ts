@@ -23,7 +23,7 @@ import { load as loadYaml } from "js-yaml";
 
 import type { AgenCConfig } from "../config/schema.js";
 import { FileWatcher } from "../file-watcher/index.js";
-import { discoverPluginSkillRoots as discoverLoadedPluginSkillRoots } from "../plugins/loader.js";
+import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
@@ -33,6 +33,7 @@ import {
   skillChangeDetector,
   type SkillChangeDetector,
 } from "./change-detector.js";
+import { isRepositoryControlledSkillSource } from "./repository-skill-boundary.js";
 
 export type LocalSkillScope =
   | "user"
@@ -364,16 +365,18 @@ export async function discoverSkillRoots(
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
   const roots = localSkillRootCandidates(options);
 
-  const pluginRoots = await discoverLoadedPluginSkillRoots({
+  const pluginRoots = await discoverPluginSkillRootsWithProvenance({
     agencHome,
     workspaceRoot,
     config: options.config,
   });
   roots.push(
-    ...pluginRoots.map((path) => ({
-      path,
+    ...pluginRoots.map((root) => ({
+      path: root.path,
       scope: "plugin" as const,
-      source: "plugin" as const,
+      source: root.contentProvenance === "repository-controlled"
+        ? "projectSettings" as const
+        : "plugin" as const,
       loadedFrom: "plugin" as const,
       kind: "skills" as const,
     })),
@@ -398,11 +401,11 @@ export async function discoverSkillWatchRoots(
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
   const roots = [
     ...localSkillRootCandidates(options).map((root) => root.path),
-    ...(await discoverLoadedPluginSkillRoots({
+    ...(await discoverPluginSkillRootsWithProvenance({
       agencHome,
       workspaceRoot,
       config: options.config,
-    })),
+    })).map((root) => root.path),
   ];
   return unique(roots.map(normalizeExistingCandidate)).sort((a, b) =>
     a.localeCompare(b),
@@ -730,9 +733,23 @@ async function loadSkillFile(
     skillName,
     root.kind === "commands" ? "Custom command" : "Skill",
   );
+  const repositoryControlled = isRepositoryControlledSkillSource(root.source);
+  const safeParsed = (() => {
+    if (!repositoryControlled) return parsed;
+    const {
+      model: _model,
+      hooks: _hooks,
+      context: _context,
+      agent: _agent,
+      effort: _effort,
+      shell: _shell,
+      ...guidanceFields
+    } = parsed;
+    return { ...guidanceFields, allowedTools: [] };
+  })();
 
   const skill: LocalSkillMetadata = {
-    ...parsed,
+    ...safeParsed,
     name: skillName,
     path: filePath,
     root: root.path,
@@ -1328,13 +1345,13 @@ export function createLocalSkillsServices(
     skillsManager,
     pluginsManager: {
       async pluginsForConfig(config) {
-        const pluginSkillRoots = await discoverLoadedPluginSkillRoots({
+        const pluginSkillRoots = await discoverPluginSkillRootsWithProvenance({
           agencHome: options.agencHome,
           workspaceRoot: options.workspaceRoot,
           config: pluginConfigView(config),
         });
         return {
-          effectiveSkillRoots: () => pluginSkillRoots,
+          effectiveSkillRoots: () => pluginSkillRoots.map((root) => root.path),
         };
       },
     },

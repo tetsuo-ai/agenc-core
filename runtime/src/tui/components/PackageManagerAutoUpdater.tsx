@@ -9,7 +9,7 @@ import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js';
 import { getPackageManager } from '../../utils/nativeInstaller/packageManagers.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;
@@ -33,7 +33,7 @@ export function PackageManagerAutoUpdater(t0: Props): React.ReactNode {
       if (isAutoUpdaterDisabled()) {
         return;
       }
-      const [channel, pm] = await Promise.all([Promise.resolve(getInitialSettings()?.autoUpdatesChannel ?? "latest"), getPackageManager()]);
+      const [channel, pm] = await Promise.all([Promise.resolve(getExecutionAuthoritySettings()?.autoUpdatesChannel ?? "latest"), getPackageManager()]);
       if (!mountedRef.current) {
         return;
       }

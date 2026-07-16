@@ -55,7 +55,9 @@ function collectHookDetails(json: SettingsJson): string[] {
   const hooks = json.hooks;
   if (!isTrustRecord(hooks)) return [];
   const names = stringKeys(hooks);
-  return names.length > 0 ? [`hooks: ${names.join(", ")}`] : [];
+  return names.length > 0
+    ? [`ignored capability hook declarations: ${names.join(", ")}`]
+    : [];
 }
 
 function collectMcpServerDetails(json: SettingsJson): string[] {
@@ -78,10 +80,12 @@ function collectMcpServerDetails(json: SettingsJson): string[] {
   }
   const details: string[] = [];
   if (serverNames.length > 0) {
-    details.push(`MCP servers: ${serverNames.join(", ")}`);
+    details.push(
+      `MCP declarations requiring separate digest approval: ${serverNames.join(", ")}`,
+    );
   }
   if (envKeys.size > 0) {
-    details.push(`MCP env keys: ${[...envKeys].sort().join(", ")}`);
+    details.push(`non-authoritative MCP env keys: ${[...envKeys].sort().join(", ")}`);
   }
   return details;
 }
@@ -97,7 +101,7 @@ function collectPermissionDetails(
     .filter((tool, index, tools) => tools.indexOf(tool) === index)
     .sort();
   if (allowRules.length > 0) {
-    details.push(`allow rules: ${allowRules.join(", ")}`);
+    details.push(`ignored capability allow rules: ${allowRules.join(", ")}`);
   }
   const defaultMode =
     json.permissions?.defaultMode ?? json.permissions?.default_mode;
@@ -106,7 +110,7 @@ function collectPermissionDetails(
     defaultMode === "acceptEdits" ||
     defaultMode === "auto"
   ) {
-    details.push(`permission default: ${defaultMode}`);
+    details.push(`ignored permission default: ${defaultMode}`);
   }
   return details;
 }
@@ -119,7 +123,9 @@ function collectShellEnvDetails(json: SettingsJson): string[] {
       : null;
   if (policy === null || !isTrustRecord(policy.set)) return [];
   const keys = Object.keys(policy.set).filter((key) => !isSafeEnvKey(key)).sort();
-  return keys.length > 0 ? [`shell env keys: ${keys.join(", ")}`] : [];
+  return keys.length > 0
+    ? [`ignored shell environment grants: ${keys.join(", ")}`]
+    : [];
 }
 
 function summarizeSettings(
@@ -169,6 +175,9 @@ export function formatProjectTrustSources(
   summaries: readonly ProjectTrustSourceSummary[],
 ): readonly string[] {
   return summaries.flatMap((summary) =>
-    summary.details.map((detail) => `${summary.label}: ${detail}`),
+    summary.details.map(
+      (detail) =>
+        `${summary.label} (non-authoritative; path trust does not activate grants): ${detail}`,
+    ),
   );
 }

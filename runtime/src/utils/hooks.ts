@@ -49,7 +49,7 @@ import {
 } from './sessionStorage.js'
 import type { AgentId } from '../types/ids.js'
 import {
-  getSettings_DEPRECATED,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
 } from './settings/settings.js'
 import {
@@ -4717,7 +4717,7 @@ export async function executeStatusLineCommand(
   if (shouldAllowManagedHooksOnly()) {
     statusLine = getSettingsForSource('policySettings')?.statusLine
   } else {
-    statusLine = getSettings_DEPRECATED()?.statusLine
+    statusLine = getExecutionAuthoritySettings()?.statusLine
   }
 
   if (!statusLine || statusLine.type !== 'command') {
@@ -4807,7 +4807,7 @@ export async function executeFileSuggestionCommand(
   if (shouldAllowManagedHooksOnly()) {
     fileSuggestion = getSettingsForSource('policySettings')?.fileSuggestion
   } else {
-    fileSuggestion = getSettings_DEPRECATED()?.fileSuggestion
+    fileSuggestion = getExecutionAuthoritySettings()?.fileSuggestion
   }
 
   if (!fileSuggestion || fileSuggestion.type !== 'command') {

@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
   clearAllOutputStylesCache,
@@ -5,7 +7,7 @@ import {
   type OutputStyleConfig,
 } from "../constants/outputStyles.js";
 import {
-  getInitialSettings,
+  getExecutionAuthoritySettings,
   updateSettingsForSource,
 } from "../utils/settings/settings.js";
 import {
@@ -22,21 +24,9 @@ import {
 
 type StyleMap = { readonly [styleName: string]: OutputStyleConfig | null };
 
-function readAppStateOutputStyle(ctx: SlashCommandContext): string | undefined {
-  const state = ctx.appState?.getAppState?.();
-  if (typeof state !== "object" || state === null) return undefined;
-  const settings = (state as { readonly settings?: unknown }).settings;
-  if (typeof settings !== "object" || settings === null) return undefined;
-  const outputStyle = (settings as { readonly outputStyle?: unknown }).outputStyle;
-  return typeof outputStyle === "string" && outputStyle.trim().length > 0
-    ? outputStyle.trim()
-    : undefined;
-}
-
-function configuredOutputStyle(ctx: SlashCommandContext): string {
+function configuredOutputStyle(_ctx: SlashCommandContext): string {
   return (
-    readAppStateOutputStyle(ctx) ??
-    getInitialSettings().outputStyle?.trim() ??
+    getExecutionAuthoritySettings().outputStyle?.trim() ??
     DEFAULT_OUTPUT_STYLE_NAME
   );
 }
@@ -143,7 +133,7 @@ export function formatOutputStyleSnapshot(
   }
   lines.push(
     "",
-    "Run /output-style <name> to switch, or /output-style:new <name> to author a project style.",
+    "Run /output-style <name> to switch, or /output-style:new <name> to author a user-owned style.",
   );
   return lines.join("\n");
 }
@@ -202,7 +192,7 @@ export async function applyOutputStyleSwitch(
   if (resolved.error !== undefined) return resolved.error;
   const target = resolved.name!;
 
-  const result = updateSettingsForSource("localSettings", {
+  const result = updateSettingsForSource("userSettings", {
     outputStyle: target,
   });
   if (result.error !== null) {
@@ -211,7 +201,11 @@ export async function applyOutputStyleSwitch(
 
   clearAllOutputStylesCache();
   const nextStyles = await getAllOutputStyles(ctx.cwd);
-  const effective = effectiveOutputStyle(nextStyles, target);
+  const persisted = configuredOutputStyle(ctx);
+  if (persisted !== target) {
+    return `Output style switch failed: trusted user settings still resolve to "${persisted}".`;
+  }
+  const effective = effectiveOutputStyle(nextStyles, persisted);
   updateOutputStyleChrome(ctx, effective.name);
   if (effective.name !== target) {
     return (
@@ -256,11 +250,12 @@ function outputStyleNewPrompt(params: {
   readonly fileName: string;
   readonly styleName: string;
   readonly description?: string;
+  readonly targetPath: string;
 }): string {
   const description =
     params.description ?? `${params.styleName} response style`;
   return [
-    `Create a new project output style at .agenc/output-styles/${params.fileName}.md.`,
+    `Create a new user-owned output style at ${params.targetPath}.`,
     "",
     "Use this exact frontmatter shape:",
     "---",
@@ -269,7 +264,7 @@ function outputStyleNewPrompt(params: {
     "keep-coding-instructions: true",
     "---",
     "",
-    "Then write the prompt body that defines how the assistant should respond when this output style is active. Keep the style project-specific, concise, and compatible with normal coding-agent behavior. Create parent directories if needed. Do not change the active output style unless asked.",
+    "Then write the prompt body that defines how the assistant should respond when this output style is active. Keep it concise and compatible with normal coding-agent behavior. Create parent directories if needed. Do not change the active output style unless asked.",
   ].join("\n");
 }
 
@@ -309,6 +304,11 @@ export const outputStyleCommand: SlashCommand = {
           content: outputStyleNewPrompt({
             fileName: parsed.fileName!,
             styleName: parsed.styleName!,
+            targetPath: join(
+              ctx.home,
+              "output-styles",
+              `${parsed.fileName!}.md`,
+            ),
             ...(parsed.description !== undefined
               ? { description: parsed.description }
               : {}),
@@ -322,7 +322,7 @@ export const outputStyleCommand: SlashCommand = {
 
 export const outputStyleNewCommand: SlashCommand = {
   name: "output-style:new",
-  description: "Ask the agent to author a new project output style",
+  description: "Ask the agent to author a new user-owned output style",
   supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
   userInvocable: true,
@@ -337,6 +337,11 @@ export const outputStyleNewCommand: SlashCommand = {
         content: outputStyleNewPrompt({
           fileName: parsed.fileName!,
           styleName: parsed.styleName!,
+          targetPath: join(
+            ctx.home,
+            "output-styles",
+            `${parsed.fileName!}.md`,
+          ),
           ...(parsed.description !== undefined
             ? { description: parsed.description }
             : {}),

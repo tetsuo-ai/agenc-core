@@ -1,13 +1,9 @@
+import { createHash } from 'node:crypto'
 import { join } from 'path'
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { resolveAgencHome } from '../../config/env.js'
+import { getCurrentProjectConfig } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getGlobalAgenCFile } from '../../utils/env.js'
-import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
-import {
-  getSettings_DEPRECATED,
-  hasSkipDangerousModePermissionPrompt,
-} from '../../utils/settings/settings.js'
 import { getEnterpriseMcpFilePath } from './config.js'
 import { validateMcpHeaders } from './headerValidation.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
@@ -15,6 +11,7 @@ import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
   ConfigScopeSchema,
+  type ScopedMcpServerConfig,
 } from './types.js'
 
 /**
@@ -124,10 +121,34 @@ export function parseHeaders(headerArray: string[]): Record<string, string> {
   return validateMcpHeaders(headers, 'MCP CLI headers')
 }
 
+function canonicalApprovalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalApprovalValue)
+  if (value === null || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalApprovalValue(child)]),
+  )
+}
+
+/** Content-addressed identity for a parsed project MCP server definition. */
+export function projectMcpServerApprovalDigest(
+  config: ScopedMcpServerConfig,
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalApprovalValue(config)))
+    .digest('hex')
+}
+
 export function getProjectMcpServerStatus(
   serverName: string,
+  config?: ScopedMcpServerConfig,
 ): 'approved' | 'rejected' | 'pending' {
-  const settings = getSettings_DEPRECATED()
+  // Approval state is stored outside the repository in the per-project global
+  // config. Project/local settings and non-interactive mode are deliberately
+  // not authority channels.
+  const settings = getCurrentProjectConfig()
   const normalizedName = normalizeNameForMCP(serverName)
 
   // Follow-up: This fails an e2e test if the ?. is not present. This is likely a bug in the e2e test.
@@ -140,42 +161,14 @@ export function getProjectMcpServerStatus(
     return 'rejected'
   }
 
-  if (
-    settings?.enabledMcpjsonServers?.some(
-      name => normalizeNameForMCP(name) === normalizedName,
-    ) ||
-    settings?.enableAllProjectMcpServers
-  ) {
-    return 'approved'
-  }
-
-  // In bypass permissions mode (--dangerously-skip-permissions), there's no way
-  // to show an approval popup. Auto-approve if projectSettings is enabled since
-  // the user has explicitly chosen to bypass all permission checks.
-  // SECURITY: We intentionally only check skipDangerousModePermissionPrompt via
-  // hasSkipDangerousModePermissionPrompt(), which reads from userSettings/localSettings/
-  // flagSettings/policySettings but NOT projectSettings (repo-level .agenc/settings.json).
-  // This is intentional: a repo should not be able to accept the bypass dialog on behalf of
-  // users. We also do NOT check getSessionBypassPermissionsMode() here because
-  // sessionBypassPermissionsMode can be set from project settings before the dialog is shown,
-  // which would allow RCE attacks via malicious project settings.
-  if (
-    hasSkipDangerousModePermissionPrompt() &&
-    isSettingSourceEnabled('projectSettings')
-  ) {
-    return 'approved'
-  }
-
-  // In non-interactive mode (SDK, agenc -p, piped input), there's no way to
-  // show an approval popup. Auto-approve if projectSettings is enabled since:
-  // 1. The user/developer explicitly chose to run in this mode
-  // 2. For SDK, projectSettings is off by default - they must explicitly enable it
-  // 3. For -p mode, the help text warns to only use in trusted directories
-  if (
-    getIsNonInteractiveSession() &&
-    isSettingSourceEnabled('projectSettings')
-  ) {
-    return 'approved'
+  if (config !== undefined) {
+    const expected = settings.approvedMcpjsonServerDigests?.[normalizedName]
+    if (
+      typeof expected === 'string' &&
+      expected === projectMcpServerApprovalDigest(config)
+    ) {
+      return 'approved'
+    }
   }
 
   return 'pending'

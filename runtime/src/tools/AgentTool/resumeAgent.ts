@@ -46,6 +46,7 @@ import type {
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 import {
   isBuiltInAgent,
+  isRepositoryControlledAgentDefinition,
   loadFreshAgentDefinitions,
   requireAgentDefinitionRoleFingerprint,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
@@ -175,6 +176,8 @@ export async function resumeAgentBackground({
     parentSession.roleWorkspace,
     freshCatalog,
   )
+  const repositoryControlledAgent =
+    isRepositoryControlledAgentDefinition(selectedAgent)
   const resumedMessages = filterWhitespaceOnlyAssistantMessages(
     filterOrphanedThinkingOnlyMessages(
       filterUnresolvedToolUses(transcript.messages),
@@ -215,7 +218,7 @@ export async function resumeAgentBackground({
     invokingRequestId,
     invocationKind: 'resume' as const,
     invocationEmitted: false,
-    ...(selectedAgent.memory !== undefined
+    ...(!repositoryControlledAgent && selectedAgent.memory !== undefined
       ? {
           memoryAuthorization: {
             agentType: selectedAgent.agentType,
@@ -272,7 +275,7 @@ export async function resumeAgentBackground({
 
   // Resolve model for request metadata (runAgent resolves its own internally).
   const resolvedAgentModel = getAgentModel(
-    selectedAgent.model,
+    repositoryControlledAgent ? undefined : selectedAgent.model,
     toolUseContext.options.mainLoopModel,
     undefined,
     permissionMode,
@@ -284,13 +287,17 @@ export async function resumeAgentBackground({
   // ToolPermissionContext requires. The runtime value is unchanged; this
   // assertion only bridges the two near-identical mode unions (mirrors the
   // identical construct in AgentTool.tsx).
-  const workerPermissionContext = {
-    ...appState.toolPermissionContext,
-    mode: selectedAgent.permissionMode ?? 'acceptEdits',
-  } as ToolPermissionContext
+  const workerPermissionContext = repositoryControlledAgent
+    ? appState.toolPermissionContext
+    : {
+        ...appState.toolPermissionContext,
+        mode: selectedAgent.permissionMode ?? 'acceptEdits',
+      } as ToolPermissionContext
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
-    : assembleToolPool(workerPermissionContext, appState.mcp.tools)
+    : repositoryControlledAgent
+      ? toolUseContext.options.tools
+      : assembleToolPool(workerPermissionContext, appState.mcp.tools)
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
     agentDefinition: selectedAgent,
