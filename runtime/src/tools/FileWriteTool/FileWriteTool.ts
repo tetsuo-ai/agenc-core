@@ -3,6 +3,8 @@ import { z } from 'zod/v4'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
 import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { getLspServerManager } from '../../services/lsp/manager.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
 import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js'
 import { checkTeamMemSecrets } from '../../memory/index.js'
 import {
@@ -85,6 +87,26 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
+
+function lspScopeFromToolUseContext(
+  context: ToolUseContext,
+): SandboxExecutionBrokerLike | undefined {
+  const extended = context as ToolUseContext & {
+    readonly services?: {
+      readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+    }
+    readonly session?: {
+      readonly services?: {
+        readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+      }
+    }
+  }
+  return (
+    extended.services?.sandboxExecutionBroker ??
+    extended.session?.services?.sandboxExecutionBroker ??
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
+  )
+}
 
 export const FileWriteTool = buildTool({
   name: FILE_WRITE_TOOL_NAME,
@@ -217,10 +239,12 @@ export const FileWriteTool = buildTool({
   },
   async call(
     { file_path, content },
-    { readFileState, updateFileHistoryState, dynamicSkillDirTriggers },
+    toolUseContext,
     _,
     parentMessage,
   ) {
+    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
+      toolUseContext
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
 
@@ -300,10 +324,11 @@ export const FileWriteTool = buildTool({
     writeTextContent(fullFilePath, content, enc, 'LF')
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
-    const lspManager = getLspServerManager()
+    const lspScope = lspScopeFromToolUseContext(toolUseContext)
+    const lspManager = getLspServerManager(lspScope)
     if (lspManager) {
       // Clear previously delivered diagnostics so new ones will be shown
-      clearDeliveredDiagnosticsForFile(`file://${fullFilePath}`)
+      clearDeliveredDiagnosticsForFile(`file://${fullFilePath}`, lspScope)
       // didChange: Content has been modified
       lspManager.changeFile(fullFilePath, content).catch((err: Error) => {
         logForDebugging(

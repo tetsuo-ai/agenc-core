@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
   buildBootstrapSessionServices,
@@ -440,6 +441,18 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
     );
     const home = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-lsp-refresh-ws-"));
+    const marker = join(workspace, "lsp-escaped");
+    const sandboxExecutionBroker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: workspace,
+      probe: () => ({
+        kind: "unavailable",
+        mode: "workspace_write",
+        platform: process.platform,
+        reason: "probe: injected bootstrap LSP namespace failure",
+        remediation: "repair sandbox support",
+      }),
+    });
     const handle = buildBootstrapSessionServices({
       provider: {
         name: "anthropic",
@@ -460,7 +473,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       registry: { tools: [] } as never,
       mcpManager: {} as never,
       unifiedExecManager: {} as never,
-      sandboxExecutionBroker: explicitDangerBroker,
+      sandboxExecutionBroker,
       permissionModeRegistry: new PermissionModeRegistry(
         createEmptyToolPermissionContext(),
       ),
@@ -496,18 +509,33 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         ...defaultConfig(),
         lsp_servers: {
           ts: {
-            command: "typescript-language-server",
+            command: process.execPath,
+            args: [
+              "-e",
+              `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped")`,
+            ],
             extensionToLanguage: { ".ts": "typescript" },
           },
         },
       });
-      await waitForInitialization();
+      await waitForInitialization(sandboxExecutionBroker);
 
-      expect(getInitializationStatus().status).toBe("success");
-      expect(getLspServerManager()?.getAllServers().has("ts")).toBe(true);
+      expect(getInitializationStatus(sandboxExecutionBroker).status).toBe(
+        "success",
+      );
+      const manager = getLspServerManager(sandboxExecutionBroker);
+      expect(manager?.getAllServers().has("ts")).toBe(true);
+      if (manager === undefined) throw new Error("LSP manager was not initialized");
+      await expect(
+        manager.ensureServerStarted(join(workspace, "file.ts")),
+      ).rejects.toMatchObject({
+        code: "sandbox_probe_failed",
+        surface: "lsp",
+      });
+      expect(existsSync(marker)).toBe(false);
     } finally {
       await handle.shutdown();
-      await shutdownLspServerManager();
+      await shutdownLspServerManager(sandboxExecutionBroker);
       _resetLspManagerForTesting();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });

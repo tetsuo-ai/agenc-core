@@ -7,9 +7,56 @@
  * frame (it would hang instead of rejecting).
  */
 
-import { describe, expect, test } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, test, vi } from "vitest";
 import { PassThrough } from "node:stream";
-import { buildChromiumArgs, CdpConnection } from "../../src/browser/cdp.js";
+import {
+  buildChromiumArgs,
+  CdpConnection,
+  launchBrowser,
+} from "../../src/browser/cdp.js";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function isLivePid(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const closeParen = stat.lastIndexOf(")");
+      const state = stat.slice(closeParen + 2).trim().split(/\s+/)[0];
+      return state !== "Z" && state !== "X";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function forceKillPid(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
 
 describe("buildChromiumArgs egress hardening", () => {
   const args = buildChromiumArgs({
@@ -56,4 +103,76 @@ describe("CdpConnection frame ceiling", () => {
     await expect(pending).resolves.toEqual({ product: "Test/1.0" });
     conn.close();
   });
+});
+
+describe("launchBrowser process-tree cleanup", () => {
+  const testPosix = process.platform === "win32" ? test.skip : test;
+
+  testPosix(
+    "kills a TERM-resistant descendant when CDP launch fails",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-cdp-tree-"));
+      const marker = join(dir, "tree.json");
+      const descendantScript = `
+const fs = require("node:fs");
+process.on("SIGTERM", () => {});
+fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  leader: process.ppid,
+  descendant: process.pid,
+}));
+setInterval(() => {}, 1000);
+`;
+      const leaderScript = `
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], {
+  stdio: "ignore",
+});
+function exitWhenReady() {
+  if (!fs.existsSync(${JSON.stringify(marker)})) {
+    setTimeout(exitWhenReady, 5);
+    return;
+  }
+  process.exit(29);
+}
+exitWhenReady();
+`;
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: dir,
+      });
+      vi.spyOn(broker, "prepareSpawn").mockImplementation(
+        (_surface, command) => ({
+          program: process.execPath,
+          args: ["-e", leaderScript],
+          cwd: dir,
+          env: command.env,
+        }),
+      );
+      let descendant: number | undefined;
+      try {
+        await expect(
+          launchBrowser({
+            executablePath: process.execPath,
+            userDataDir: join(dir, "profile"),
+            headless: true,
+            noSandbox: false,
+            proxyPort: 4567,
+            sandboxExecutionBroker: broker,
+          }),
+        ).rejects.toThrow(/did not establish a CDP pipe/);
+        expect(existsSync(marker)).toBe(true);
+        descendant = (
+          JSON.parse(readFileSync(marker, "utf8")) as { descendant: number }
+        ).descendant;
+        await waitFor(() => !isLivePid(descendant!));
+
+        expect(isLivePid(descendant)).toBe(false);
+      } finally {
+        forceKillPid(descendant);
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
 });

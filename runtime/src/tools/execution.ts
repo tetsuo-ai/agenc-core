@@ -143,6 +143,7 @@ import {
   attachToolRuntimeContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
+import { attachSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   DEFAULT_BYTES_PER_TOKEN,
   detectContentType,
@@ -1939,6 +1940,16 @@ export async function runToolUse(
       tool,
       args: inputForTool,
     });
+  }
+  const sandboxExecutionBroker = invocation.session.services.sandboxExecutionBroker;
+  if (sandboxExecutionBroker !== undefined) {
+    attachSandboxExecutionBroker(
+      argsForTool,
+      sandboxExecutionBroker,
+      argsForTool.run_in_background === true || argsForTool.runInBackground === true
+        ? "background"
+        : "tool",
+    );
   }
 
   // Step 5: I-9 timeout + abort race.

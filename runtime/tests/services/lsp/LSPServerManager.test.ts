@@ -187,6 +187,32 @@ describe("createLSPServerManager", () => {
     expect(created[0]!.stopCount).toBe(1);
   });
 
+  test("retains a failed server owner so a later shutdown retries it", async () => {
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    const server = fakeServer("ts", config, "running");
+    let attempts = 0;
+    server.stop = async () => {
+      attempts += 1;
+      server.setState("stopped");
+      if (attempts === 1) throw new Error("process tree survived");
+    };
+    const manager = createLSPServerManager({
+      configSource: () => ({ ts: config }),
+      instanceFactory: () => server,
+    });
+    await manager.initialize();
+
+    await expect(manager.shutdown()).rejects.toThrow("process tree survived");
+    expect(manager.getAllServers().get("ts")).toBe(server);
+
+    await expect(manager.shutdown()).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(manager.getAllServers().size).toBe(0);
+  });
+
   test("resolves relative file notifications against workspaceRoot", async () => {
     const config = normalizeLspServerConfig("ts", {
       command: "typescript-language-server",

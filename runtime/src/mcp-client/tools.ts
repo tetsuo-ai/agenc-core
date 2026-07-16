@@ -892,8 +892,12 @@ export async function createToolBridge(
     `MCP server "${serverName}" exposes ${providerSafeMcpTools.length} tools`,
   );
 
-  // Track disposal to prevent use-after-close
+  // Track disposal to prevent use-after-close. Cache an in-flight or
+  // successful close so concurrent lifecycle owners cannot race. A rejected
+  // close is cleared after settlement: the bridge remains unusable, but its
+  // exact client owner stays available for a later verified-cleanup retry.
   let disposed = false;
+  let disposal: Promise<void> | undefined;
 
   const tools: Tool[] = providerSafeMcpTools.map((mcpTool) => {
     const namespacedName = `mcp.${serverName}.${mcpTool.name}`;
@@ -1024,17 +1028,28 @@ export async function createToolBridge(
   return {
     serverName,
     tools,
-    async dispose(): Promise<void> {
+    dispose(): Promise<void> {
+      if (disposal !== undefined) return disposal;
       disposed = true;
-      try {
-        await client.close();
-        logger.info(`Disconnected from MCP server "${serverName}"`);
-      } catch (error) {
-        logger.warn?.(
-          `Error disconnecting from MCP server "${serverName}":`,
-          error,
+      const task = Promise.resolve()
+        .then(() => client.close())
+        .then(
+          () => {
+            logger.info(`Disconnected from MCP server "${serverName}"`);
+          },
+          (error: unknown) => {
+            logger.warn?.(
+              `Error disconnecting from MCP server "${serverName}":`,
+              error,
+            );
+            throw error;
+          },
         );
-      }
+      disposal = task;
+      void task.then(undefined, () => {
+        if (disposal === task) disposal = undefined;
+      });
+      return task;
     },
   };
 }

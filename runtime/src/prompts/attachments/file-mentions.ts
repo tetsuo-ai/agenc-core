@@ -162,7 +162,12 @@ async function collectPdfMentionAttachment(
     maxTotalBytes: PDF_MENTION_MAX_TOTAL_BYTES,
     isSupportedPath: isSupportedUserPdfPath,
     buildItem: async ({ mention, resolved }) => {
-      const pdf = await normalizeUserPdfInput(resolved);
+      const pdf = await normalizeUserPdfInput(resolved, {
+        cwd: opts.cwd,
+        ...(opts.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
+          : {}),
+      });
       if (pdf === null) return null;
       return {
         raw: mention.raw,

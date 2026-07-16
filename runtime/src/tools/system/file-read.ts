@@ -39,7 +39,6 @@
  * @module
  */
 
-import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
@@ -73,6 +72,9 @@ import {
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
 import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -421,33 +423,32 @@ interface CommandResult {
 function execFileNoThrow(
   command: string,
   args: readonly string[],
+  toolArgs: Record<string, unknown>,
+  cwd: string,
   timeoutMs = PDF_SUBPROCESS_TIMEOUT_MS,
 ): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    execFile(
-      command,
-      [...args],
-      {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: timeoutMs,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        const exitCode =
-          error && typeof (error as { code?: unknown }).code === "number"
-            ? ((error as { code: number }).code)
-            : error
-              ? 1
-              : 0;
-        resolve({
-          exitCode,
-          stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
-          stderr: typeof stderr === "string" ? stderr : String(stderr ?? ""),
-        });
-      },
-    );
+  const spawnCommand = applyRuntimeSandboxToSpawn({
+    toolArgs,
+    fallbackCwd: cwd,
+    program: command,
+    args,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
   });
+  const injectedSignal = toolArgs.__abortSignal;
+  return runSupervisedProcess(spawnCommand, {
+    timeoutMs,
+    maxOutputBytes: 64 * 1024 * 1024,
+    ...(injectedSignal instanceof AbortSignal
+      ? { signal: injectedSignal }
+      : {}),
+  }).then((result) => ({
+    exitCode: result.stopReason === undefined ? (result.exitCode ?? 1) : 1,
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stopReason === "output_limit"
+      ? "PDF helper output exceeded the 64 MiB limit"
+      : result.error?.message ?? result.stderr.toString("utf8"),
+  }));
 }
 
 function parsePDFPageRangeArg(
@@ -469,8 +470,17 @@ function pageRangeLength(range: PDFPageRange): number {
   return range.lastPage - range.firstPage + 1;
 }
 
-async function getPDFPageCount(filePath: string): Promise<number | null> {
-  const result = await execFileNoThrow("pdfinfo", [filePath], 10_000);
+async function getPDFPageCount(
+  filePath: string,
+  toolArgs: Record<string, unknown>,
+): Promise<number | null> {
+  const result = await execFileNoThrow(
+    "pdfinfo",
+    [filePath],
+    toolArgs,
+    dirname(filePath),
+    10_000,
+  );
   if (result.exitCode !== 0) return null;
   return parsePDFInfoPageCount(result.stdout);
 }
@@ -958,6 +968,7 @@ async function readPDFFile(
   resolvedPath: ResolvedPath,
   opts: PDFReadOpts,
   sessionId: string | undefined,
+  toolArgs: Record<string, unknown>,
 ): Promise<ToolResult> {
   const fileStats = await stat(resolvedPath.canonical);
   if (!fileStats.isFile()) {
@@ -988,7 +999,7 @@ async function readPDFFile(
     return errorResult(parsedRange.err);
   }
 
-  const pageCount = await getPDFPageCount(resolvedPath.canonical);
+  const pageCount = await getPDFPageCount(resolvedPath.canonical, toolArgs);
   const selectedRange =
     parsedRange ??
     (pageCount === null
@@ -1022,7 +1033,12 @@ async function readPDFFile(
   }
   args.push(resolvedPath.canonical, "-");
 
-  const extracted = await execFileNoThrow("pdftotext", args);
+  const extracted = await execFileNoThrow(
+    "pdftotext",
+    args,
+    toolArgs,
+    dirname(resolvedPath.canonical),
+  );
   if (extracted.exitCode !== 0) {
     const detail = extracted.stderr.trim();
     return errorResult(
@@ -1371,6 +1387,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               limit,
             },
             sessionId,
+            rawArgs,
           );
         }
         if (isNotebook) {

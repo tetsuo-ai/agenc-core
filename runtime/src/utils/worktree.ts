@@ -29,6 +29,20 @@ import { getPlatform } from './platform.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { isInITerm2 } from './swarm/backends/detection.js'
+import {
+  SandboxExecutionError,
+  type SandboxExecutionBrokerLike,
+  type SandboxExecutionSurface,
+} from '../sandbox/execution-broker.js'
+import { scrubEnvForChildProcess } from '../unified-exec/scrub-env.js'
+import { gitChildEnvironment } from '../sandbox/git-environment.js'
+import { runSupervisedProcess } from './supervisedProcess.js'
+import type { AdditionalPermissionProfile } from '../sandbox/engine/index.js'
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
+  worktreeMutationPermissions,
+} from '../sandbox/worktree-permissions.js'
 
 const VALID_WORKTREE_SLUG_SEGMENT = /^[a-zA-Z0-9._-]+$/
 const MAX_WORKTREE_SLUG_LENGTH = 64
@@ -211,6 +225,80 @@ const GIT_NO_PROMPT_ENV = {
   GIT_ASKPASS: '',
 }
 
+type WorktreeProcessBoundary = {
+  sandboxExecutionBroker: SandboxExecutionBrokerLike
+  surface: SandboxExecutionSurface
+}
+
+async function execWorktreeProcess(
+  file: string,
+  args: string[],
+  options: {
+    cwd: string
+    env?: NodeJS.ProcessEnv
+    stdin?: 'ignore' | 'inherit' | 'pipe'
+  },
+  boundary?: WorktreeProcessBoundary,
+  additionalPermissions?: AdditionalPermissionProfile,
+): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
+  if (boundary === undefined) {
+    return execFileNoThrowWithCwd(file, args, options)
+  }
+  const command = boundary.sandboxExecutionBroker.prepareSpawn(
+    boundary.surface,
+    {
+    program: file,
+    args: file === gitExe() ? hardenGitWorktreeMutationArgs(args) : args,
+    cwd: options.cwd,
+    env: file === gitExe()
+      ? gitChildEnvironment(options.env ?? process.env)
+      : scrubEnvForChildProcess(options.env ?? process.env),
+    argv0: basename(file),
+    ...(additionalPermissions !== undefined
+      ? { additionalPermissions }
+      : {}),
+    trustedExecutable: true,
+    },
+  )
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: 60_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  })
+  return {
+    stdout: result.stdout.toString('utf8'),
+    stderr: result.stderr.toString('utf8'),
+    code: result.exitCode ?? 1,
+    ...(result.error !== undefined
+      ? { error: result.error.message }
+      : result.stopReason !== undefined
+        ? { error: `worktree helper stopped (${result.stopReason})` }
+        : {}),
+  }
+}
+
+function execWorktreeMutation(
+  file: string,
+  args: string[],
+  options: {
+    cwd: string
+    env?: NodeJS.ProcessEnv
+    stdin?: 'ignore' | 'inherit' | 'pipe'
+  },
+  boundary: WorktreeProcessBoundary | undefined,
+  repoRoot: string,
+  writablePaths: readonly string[] = [],
+) {
+  return execWorktreeProcess(
+    file,
+    args,
+    options,
+    boundary,
+    boundary === undefined
+      ? undefined
+      : worktreeMutationPermissions(repoRoot, writablePaths),
+  )
+}
+
 function worktreesDir(repoRoot: string): string {
   return join(repoRoot, '.agenc', 'worktrees')
 }
@@ -245,7 +333,10 @@ function worktreePathFor(repoRoot: string, slug: string): string {
 async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
-  options?: { prNumber?: number },
+  options?: {
+    prNumber?: number
+    processBoundary?: WorktreeProcessBoundary
+  },
 ): Promise<WorktreeCreateResult> {
   const worktreePath = worktreePathFor(repoRoot, slug)
   const worktreeBranch = worktreeBranchName(slug)
@@ -284,10 +375,12 @@ async function getOrCreateWorktree(
     let baseSha: string | null = null
     if (options?.prNumber) {
       const { code: prFetchCode, stderr: prFetchStderr } =
-        await execFileNoThrowWithCwd(
+        await execWorktreeMutation(
           gitExe(),
           ['fetch', 'origin', `pull/${options.prNumber}/head`],
           { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
+          options.processBoundary,
+          repoRoot,
         )
       if (prFetchCode !== 0) {
         throw new Error(
@@ -296,10 +389,9 @@ async function getOrCreateWorktree(
       }
       baseBranch = 'FETCH_HEAD'
     } else {
-      // If origin/<branch> already exists locally, skip fetch. In large repos
-      // (210k files, 16M objects) fetch burns ~6-8s on a local commit-graph
-      // scan before even hitting the network. A slightly stale base is fine —
-      // the user can pull in the worktree if they want latest.
+      // Use the locally available remote-tracking branch when present. Worktree
+      // creation must not perform an implicit network operation: callers that
+      // need a fresher base can fetch explicitly before creating the worktree.
       // resolveRef reads the loose/packed ref directly; when it succeeds we
       // already have the SHA, so the later rev-parse is skipped entirely.
       const [defaultBranch, gitDir] = await Promise.all([
@@ -314,22 +406,18 @@ async function getOrCreateWorktree(
         baseBranch = originRef
         baseSha = originSha
       } else {
-        const { code: fetchCode } = await execFileNoThrowWithCwd(
-          gitExe(),
-          ['fetch', 'origin', defaultBranch],
-          { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
-        )
-        baseBranch = fetchCode === 0 ? originRef : 'HEAD'
+        baseBranch = 'HEAD'
       }
     }
 
     // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
     // above only covers the "origin/<branch> already exists locally" case.
     if (!baseSha) {
-      const { stdout, code: shaCode } = await execFileNoThrowWithCwd(
+      const { stdout, code: shaCode } = await execWorktreeProcess(
         gitExe(),
         ['rev-parse', baseBranch],
         { cwd: repoRoot },
+        options?.processBoundary,
       )
       if (shaCode !== 0) {
         throw new Error(
@@ -340,19 +428,38 @@ async function getOrCreateWorktree(
     }
 
     const sparsePaths = getExecutionAuthoritySettings().worktree?.sparsePaths
-    const addArgs = ['worktree', 'add']
-    if (sparsePaths?.length) {
-      addArgs.push('--no-checkout')
-    }
+    const addArgs = ['worktree', 'add', '--no-checkout']
     // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
     // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
     addArgs.push('-B', worktreeBranch, worktreePath, baseBranch)
 
     const { code: createCode, stderr: createStderr } =
-      await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
+      await execWorktreeMutation(
+        gitExe(),
+        addArgs,
+        { cwd: repoRoot },
+        options?.processBoundary,
+        repoRoot,
+        [worktreesDir(repoRoot)],
+      )
     if (createCode !== 0) {
       throw new Error(`Failed to create worktree: ${createStderr}`)
     }
+
+    const checkoutPermissions = options?.processBoundary === undefined
+      ? undefined
+      : worktreeCheckoutPermissions(repoRoot, worktreePath)
+
+    const execCheckoutPhase = (
+      args: string[],
+      cwd: string,
+    ) => execWorktreeProcess(
+      gitExe(),
+      args,
+      { cwd },
+      options?.processBoundary,
+      checkoutPermissions,
+    )
 
     if (sparsePaths?.length) {
       // If sparse-checkout or checkout fail after --no-checkout, the worktree
@@ -360,29 +467,45 @@ async function getOrCreateWorktree(
       // fast-resume (rev-parse HEAD) would succeed and present a broken worktree
       // as "resumed". Tear it down before propagating the error.
       const tearDown = async (msg: string): Promise<never> => {
-        await execFileNoThrowWithCwd(
+        await execWorktreeMutation(
           gitExe(),
           ['worktree', 'remove', '--force', worktreePath],
           { cwd: repoRoot },
+          options?.processBoundary,
+          repoRoot,
+          [worktreePath],
         )
         throw new Error(msg)
       }
-      const { code: sparseCode, stderr: sparseErr } =
-        await execFileNoThrowWithCwd(
-          gitExe(),
-          ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
-          { cwd: worktreePath },
-        )
+      const { code: sparseCode, stderr: sparseErr } = await execCheckoutPhase(
+        ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
+        worktreePath,
+      )
       if (sparseCode !== 0) {
         await tearDown(`Failed to configure sparse-checkout: ${sparseErr}`)
       }
-      const { code: coCode, stderr: coErr } = await execFileNoThrowWithCwd(
-        gitExe(),
+      const { code: coCode, stderr: coErr } = await execCheckoutPhase(
         ['checkout', 'HEAD'],
-        { cwd: worktreePath },
+        worktreePath,
       )
       if (coCode !== 0) {
         await tearDown(`Failed to checkout sparse worktree: ${coErr}`)
+      }
+    } else {
+      const { code: coCode, stderr: coErr } = await execCheckoutPhase(
+        ['checkout', 'HEAD'],
+        worktreePath,
+      )
+      if (coCode !== 0) {
+        await execWorktreeMutation(
+          gitExe(),
+          ['worktree', 'remove', '--force', worktreePath],
+          { cwd: repoRoot },
+          options?.processBoundary,
+          repoRoot,
+          [worktreePath],
+        )
+        throw new Error(`Failed to checkout worktree: ${coErr}`)
       }
     }
 
@@ -500,12 +623,18 @@ export async function createTmuxSessionForWorktree(
   return { created: true }
 }
 
-export async function killTmuxSession(sessionName: string): Promise<boolean> {
-  const { code } = await execFileNoThrow('tmux', [
-    'kill-session',
-    '-t',
-    sessionName,
-  ])
+export async function killTmuxSession(
+  sessionName: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): Promise<boolean> {
+  const { code } = await execWorktreeProcess(
+    'tmux',
+    ['kill-session', '-t', sessionName],
+    { cwd: getCwd() },
+    sandboxExecutionBroker === undefined
+      ? undefined
+      : { sandboxExecutionBroker, surface: 'tool' },
+  )
   return code === 0
 }
 
@@ -513,7 +642,10 @@ export async function createWorktreeForSession(
   sessionId: string,
   slug: string,
   tmuxSessionName?: string,
-  options?: { prNumber?: number },
+  options?: {
+    prNumber?: number
+    sandboxExecutionBroker?: SandboxExecutionBrokerLike
+  },
 ): Promise<WorktreeSession> {
   // Must run before the hook branch below — hooks receive the raw slug as an
   // argument, and the git branch builds a path from it via path.join.
@@ -550,7 +682,19 @@ export async function createWorktreeForSession(
 
     const createStart = Date.now()
     const { worktreePath, worktreeBranch, headCommit, existed } =
-      await getOrCreateWorktree(gitRoot, slug, options)
+      await getOrCreateWorktree(gitRoot, slug, {
+        ...(options?.prNumber !== undefined
+          ? { prNumber: options.prNumber }
+          : {}),
+        ...(options?.sandboxExecutionBroker !== undefined
+          ? {
+              processBoundary: {
+                sandboxExecutionBroker: options.sandboxExecutionBroker,
+                surface: 'tool',
+              },
+            }
+          : {}),
+      })
 
     let creationDurationMs: number | undefined
     if (existed) {
@@ -621,7 +765,9 @@ export async function keepWorktree(): Promise<void> {
   }
 }
 
-export async function cleanupWorktree(): Promise<void> {
+export async function cleanupWorktree(
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): Promise<void> {
   if (!currentWorktreeSession) {
     return
   }
@@ -629,6 +775,8 @@ export async function cleanupWorktree(): Promise<void> {
   try {
     const { worktreePath, originalCwd, worktreeBranch, hookBased } =
       currentWorktreeSession
+    const cleanupSandboxExecutionBroker =
+      sandboxExecutionBroker?.forkForCwd(originalCwd)
 
     // Change back to original directory first
     process.chdir(originalCwd)
@@ -650,10 +798,18 @@ export async function cleanupWorktree(): Promise<void> {
       // CWD that execFileNoThrow defaults to). If the model cd'd to a non-repo
       // dir, the bare execFileNoThrow variant would fail silently here.
       const { code: removeCode, stderr: removeError } =
-        await execFileNoThrowWithCwd(
+        await execWorktreeMutation(
           gitExe(),
           ['worktree', 'remove', '--force', worktreePath],
           { cwd: originalCwd },
+          cleanupSandboxExecutionBroker === undefined
+            ? undefined
+            : {
+                sandboxExecutionBroker: cleanupSandboxExecutionBroker,
+                surface: 'tool',
+              },
+          originalCwd,
+          [worktreePath],
         )
 
       if (removeCode !== 0) {
@@ -680,10 +836,17 @@ export async function cleanupWorktree(): Promise<void> {
       await sleep(100)
 
       const { code: deleteBranchCode, stderr: deleteBranchError } =
-        await execFileNoThrowWithCwd(
+        await execWorktreeMutation(
           gitExe(),
           ['branch', '-D', worktreeBranch],
           { cwd: originalCwd },
+          cleanupSandboxExecutionBroker === undefined
+            ? undefined
+            : {
+                sandboxExecutionBroker: cleanupSandboxExecutionBroker,
+                surface: 'tool',
+              },
+          originalCwd,
         )
 
       if (deleteBranchCode !== 0) {
@@ -698,6 +861,7 @@ export async function cleanupWorktree(): Promise<void> {
 
     logForDebugging('Linked worktree cleaned up completely')
   } catch (error) {
+    if (error instanceof SandboxExecutionError) throw error
     logForDebugging(`Error cleaning up worktree: ${error}`, {
       level: 'error',
     })
@@ -710,7 +874,10 @@ export async function cleanupWorktree(): Promise<void> {
  * global session state (currentWorktreeSession, process.chdir, project config).
  * Falls back to hook-based creation if not in a git repository.
  */
-export async function createAgentWorktree(slug: string): Promise<{
+export async function createAgentWorktree(
+  slug: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): Promise<{
   worktreePath: string
   worktreeBranch?: string
   headCommit?: string
@@ -743,7 +910,16 @@ export async function createAgentWorktree(slug: string): Promise<{
   }
 
   const { worktreePath, worktreeBranch, headCommit, existed } =
-    await getOrCreateWorktree(gitRoot, slug)
+    await getOrCreateWorktree(gitRoot, slug, {
+      ...(sandboxExecutionBroker !== undefined
+        ? {
+            processBoundary: {
+              sandboxExecutionBroker,
+              surface: 'child_agent' as const,
+            },
+          }
+        : {}),
+    })
 
   if (!existed) {
     logForDebugging(
@@ -774,6 +950,7 @@ export async function removeAgentWorktree(
   worktreeBranch?: string,
   gitRoot?: string,
   hookBased?: boolean,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): Promise<boolean> {
   if (hookBased) {
     const hookRan = await executeWorktreeRemoveHook(worktreePath)
@@ -798,10 +975,15 @@ export async function removeAgentWorktree(
   return withGitWorktreeMutationLock(gitRoot, async () => {
     // Run from the main repo root, not the worktree (which we're about to delete)
     const { code: removeCode, stderr: removeError } =
-      await execFileNoThrowWithCwd(
+      await execWorktreeMutation(
         gitExe(),
         ['worktree', 'remove', '--force', worktreePath],
         { cwd: gitRoot },
+        sandboxExecutionBroker === undefined
+          ? undefined
+          : { sandboxExecutionBroker, surface: 'child_agent' },
+        gitRoot,
+        [worktreePath],
       )
 
     if (removeCode !== 0) {
@@ -818,9 +1000,15 @@ export async function removeAgentWorktree(
 
     // Delete the short-lived worktree branch from the main repo
     const { code: deleteBranchCode, stderr: deleteBranchError } =
-      await execFileNoThrowWithCwd(gitExe(), ['branch', '-D', worktreeBranch], {
-        cwd: gitRoot,
-      })
+      await execWorktreeMutation(
+        gitExe(),
+        ['branch', '-D', worktreeBranch],
+        { cwd: gitRoot },
+        sandboxExecutionBroker === undefined
+          ? undefined
+          : { sandboxExecutionBroker, surface: 'child_agent' },
+        gitRoot,
+      )
 
     if (deleteBranchCode !== 0) {
       logForDebugging(
@@ -957,11 +1145,17 @@ export async function cleanupStaleAgentWorktrees(
 export async function hasWorktreeChanges(
   worktreePath: string,
   headCommit: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): Promise<boolean> {
   const { code: statusCode, stdout: statusOutput } =
-    await execFileNoThrowWithCwd(gitExe(), ['status', '--porcelain'], {
-      cwd: worktreePath,
-    })
+    await execWorktreeProcess(
+      gitExe(),
+      ['status', '--porcelain'],
+      { cwd: worktreePath },
+      sandboxExecutionBroker === undefined
+        ? undefined
+        : { sandboxExecutionBroker, surface: 'child_agent' },
+    )
   if (statusCode !== 0) {
     return true
   }
@@ -970,10 +1164,13 @@ export async function hasWorktreeChanges(
   }
 
   const { code: revListCode, stdout: revListOutput } =
-    await execFileNoThrowWithCwd(
+    await execWorktreeProcess(
       gitExe(),
       ['rev-list', '--count', `${headCommit}..HEAD`],
       { cwd: worktreePath },
+      sandboxExecutionBroker === undefined
+        ? undefined
+        : { sandboxExecutionBroker, surface: 'child_agent' },
     )
   if (revListCode !== 0) {
     return true

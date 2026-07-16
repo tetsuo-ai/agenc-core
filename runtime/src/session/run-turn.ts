@@ -2647,6 +2647,11 @@ async function prepareSamplingRequestBoundary(
     messages: state.messagesForQuery,
     permissionContext: session.permissionModeRegistry.current(),
     cwd: ctx.cwd,
+    ...(session.services.sandboxExecutionBroker !== undefined
+      ? {
+          sandboxExecutionBroker: session.services.sandboxExecutionBroker,
+        }
+      : {}),
     subagentDepth: ctx.depth,
     signal,
     ...(typeof agencHome === "string" && agencHome.length > 0

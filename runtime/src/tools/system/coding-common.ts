@@ -1,5 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import {
+  basename,
   dirname,
   join,
   resolve as resolvePath,
@@ -15,7 +16,15 @@ import {
   type PlanFileContext,
 } from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
-import { runCommand } from "../../utils/process.js";
+import type { RunCommandResult } from "../../utils/process.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
+import {
+  missingSandboxExecutionBoundary,
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+} from "../../sandbox/execution-broker.js";
 import type { Tool, ToolCatalogEntry, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import {
@@ -98,6 +107,61 @@ export const MANIFEST_NAMES = [
   "Makefile",
   "README.md",
 ] as const;
+
+const DEFAULT_HELPER_TIMEOUT_MS = 120_000;
+
+export function runSandboxedToolCommand(params: {
+  readonly toolArgs: Record<string, unknown>;
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly timeoutMs?: number;
+  readonly maxBuffer?: number;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly additionalPermissions?: AdditionalPermissionProfile;
+  readonly trustedExecutable?: boolean;
+}): Promise<RunCommandResult> {
+  const surface = readSandboxExecutionSurface(params.toolArgs) ?? "tool";
+  const broker = readSandboxExecutionBroker(params.toolArgs);
+  if (broker === undefined) {
+    throw missingSandboxExecutionBoundary(surface);
+  }
+  const command = broker.prepareSpawn(surface, {
+    program: params.program,
+    args: params.args,
+    cwd: params.cwd,
+    env: scrubEnvForChildProcess(params.env ?? process.env),
+    argv0: basename(params.program),
+    ...(params.additionalPermissions !== undefined
+      ? { additionalPermissions: params.additionalPermissions }
+      : {}),
+    ...(params.trustedExecutable === true ? { trustedExecutable: true } : {}),
+  });
+
+  const injectedSignal = params.toolArgs.__abortSignal;
+  const signal = injectedSignal instanceof AbortSignal
+    ? injectedSignal
+    : undefined;
+  const maxBuffer = params.maxBuffer ?? 10 * 1024 * 1024;
+  return runSupervisedProcess(command, {
+    timeoutMs: params.timeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS,
+    maxOutputBytes: maxBuffer,
+    ...(signal !== undefined ? { signal } : {}),
+  }).then((result) => ({
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stopReason === "output_limit"
+      ? `command output exceeded ${maxBuffer} bytes`
+      : result.error?.message ?? result.stderr.toString("utf8"),
+    exitCode:
+      result.stopReason === "timeout"
+        ? 124
+        : result.stopReason === "aborted"
+          ? 130
+          : result.stopReason !== undefined
+            ? 1
+            : (result.exitCode ?? 1),
+  }));
+}
 
 export function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
@@ -188,7 +252,10 @@ export async function resolveRepoRoot(params: {
   }
   const target = await stat(workspacePath).catch(() => undefined);
   const cwd = target?.isDirectory() ? workspacePath : dirname(workspacePath);
-  const result = await runCommand("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+  const result = await runSandboxedToolCommand({
+    toolArgs: params.args,
+    program: "git",
+    args: ["-C", cwd, "rev-parse", "--show-toplevel"],
     cwd,
   });
   if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
@@ -197,12 +264,16 @@ export async function resolveRepoRoot(params: {
   return resolvePath(result.stdout.trim());
 }
 
-export async function listRepoFiles(repoRoot: string): Promise<readonly string[]> {
-  const gitFiles = await runCommand(
-    "git",
-    ["-C", repoRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
-    { cwd: repoRoot },
-  );
+export async function listRepoFiles(
+  repoRoot: string,
+  toolArgs: Record<string, unknown>,
+): Promise<readonly string[]> {
+  const gitFiles = await runSandboxedToolCommand({
+    toolArgs,
+    program: "git",
+    args: ["-C", repoRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
+    cwd: repoRoot,
+  });
   if (gitFiles.exitCode === 0) {
     return gitFiles.stdout
       .split(/\r?\n/)

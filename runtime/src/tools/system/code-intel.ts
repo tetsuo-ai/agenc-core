@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve as resolvePath } from "node:path";
 
 import { silentLogger, type Logger } from "../../utils/logger.js";
-import { runCommand } from "../../utils/process.js";
+import { runSandboxedToolCommand } from "./coding-common.js";
 
 type SupportedLanguage =
   | "typescript"
@@ -126,13 +126,29 @@ function buildSnippetSignature(
     : normalized;
 }
 
-async function listCandidateFiles(workspaceRoot: string): Promise<string[]> {
-  const gitFiles = await runCommand(
-    "git",
-    ["-C", workspaceRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
-    { cwd: workspaceRoot },
-  );
-  if (gitFiles.exitCode === 0 && gitFiles.stdout.trim().length > 0) {
+async function listCandidateFiles(
+  workspaceRoot: string,
+  toolArgs?: Record<string, unknown>,
+): Promise<string[]> {
+  const gitFiles = toolArgs === undefined
+    ? undefined
+    : await runSandboxedToolCommand({
+        toolArgs,
+        program: "git",
+        args: [
+          "-C",
+          workspaceRoot,
+          "ls-files",
+          "--cached",
+          "--others",
+          "--exclude-standard",
+        ],
+        cwd: workspaceRoot,
+      });
+  if (
+    gitFiles?.exitCode === 0 &&
+    gitFiles.stdout.trim().length > 0
+  ) {
     return gitFiles.stdout
       .split(/\r?\n/)
       .map((entry) => entry.trim())
@@ -384,8 +400,11 @@ export class CodeIntelManager {
     });
   }
 
-  private async buildIndex(workspaceRoot: string): Promise<WorkspaceIndex> {
-    const files = await listCandidateFiles(workspaceRoot);
+  private async buildIndex(
+    workspaceRoot: string,
+    toolArgs?: Record<string, unknown>,
+  ): Promise<WorkspaceIndex> {
+    const files = await listCandidateFiles(workspaceRoot, toolArgs);
     const fileStats = await Promise.all(
       files.map(async (filePath) => {
         const fileStat = await stat(filePath).catch(() => undefined);
@@ -437,12 +456,16 @@ export class CodeIntelManager {
 
   async searchSymbols(params: {
     readonly workspaceRoot: string;
+    readonly toolArgs?: Record<string, unknown>;
     readonly query?: string;
     readonly language?: string;
     readonly kind?: string;
     readonly maxResults?: number;
   }): Promise<readonly CodeIntelSymbol[]> {
-    const index = await this.buildIndex(resolvePath(params.workspaceRoot));
+    const index = await this.buildIndex(
+      resolvePath(params.workspaceRoot),
+      params.toolArgs,
+    );
     const query = params.query?.trim().toLowerCase();
     const kind = params.kind?.trim().toLowerCase();
     const language = params.language?.trim().toLowerCase();
@@ -478,10 +501,14 @@ export class CodeIntelManager {
 
   async getDefinition(params: {
     readonly workspaceRoot: string;
+    readonly toolArgs?: Record<string, unknown>;
     readonly symbolName: string;
     readonly filePath?: string;
   }): Promise<CodeIntelSymbol | undefined> {
-    const index = await this.buildIndex(resolvePath(params.workspaceRoot));
+    const index = await this.buildIndex(
+      resolvePath(params.workspaceRoot),
+      params.toolArgs,
+    );
     const symbolName = params.symbolName.trim();
     const filePath = params.filePath ? resolvePath(params.filePath) : undefined;
     return index.symbols.find((symbol) =>
@@ -492,6 +519,7 @@ export class CodeIntelManager {
 
   async getReferences(params: {
     readonly workspaceRoot: string;
+    readonly toolArgs?: Record<string, unknown>;
     readonly symbolName: string;
     readonly filePath?: string;
     readonly maxResults?: number;
@@ -504,7 +532,7 @@ export class CodeIntelManager {
     }[]
   > {
     const workspaceRoot = resolvePath(params.workspaceRoot);
-    const files = await listCandidateFiles(workspaceRoot);
+    const files = await listCandidateFiles(workspaceRoot, params.toolArgs);
     const pattern = new RegExp(`\\b${escapeRegExp(params.symbolName.trim())}\\b`);
     const references: {
       filePath: string;
@@ -544,8 +572,9 @@ function escapeRegExp(value: string): string {
 
 export async function collectWorkspaceLanguages(
   workspaceRoot: string,
+  toolArgs?: Record<string, unknown>,
 ): Promise<Record<string, number>> {
-  const files = await listCandidateFiles(workspaceRoot);
+  const files = await listCandidateFiles(workspaceRoot, toolArgs);
   const counts = new Map<string, number>();
   for (const filePath of files) {
     const language = detectLanguage(filePath);

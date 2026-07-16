@@ -9,6 +9,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { resolve } from "node:path";
 
 import {
   createMessageConnection,
@@ -24,8 +25,13 @@ import type {
   InitializeResult,
   ServerCapabilities,
 } from "./protocol.js";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
 import { errorMessage } from "../../utils/errors.js";
 import { subprocessEnv } from "../../utils/subprocessEnv.js";
+import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
 
 export interface LSPClient {
   readonly capabilities: ServerCapabilities | undefined;
@@ -53,6 +59,7 @@ export interface LSPClientOptions {
   readonly onCrash?: (error: Error) => void;
   readonly onDiagnostic?: (message: string) => void;
   readonly baseEnv?: NodeJS.ProcessEnv;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
@@ -61,11 +68,16 @@ const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
 function mergedEnv(
   baseEnv: NodeJS.ProcessEnv | undefined,
   extra?: Readonly<Record<string, string>>,
-): NodeJS.ProcessEnv {
-  return {
+): Record<string, string> {
+  const merged: NodeJS.ProcessEnv = {
     ...subprocessEnv(baseEnv),
     ...(extra ?? {}),
   };
+  return Object.fromEntries(
+    Object.entries(merged).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
 }
 
 function withTimeout<T>(
@@ -95,6 +107,8 @@ export function createLSPClient(
   let stopping = false;
   let terminalNotified = false;
   let connectionClosePending = false;
+  let terminalCleanup: Promise<void> | undefined;
+  let cleanupFailure: Error | undefined;
   const notificationHandlers: Array<{
     readonly method: string;
     readonly handler: (params: unknown) => void;
@@ -134,25 +148,72 @@ export function createLSPClient(
     currentChild.stderr?.removeAllListeners("data");
   };
 
-  const clearClosedRuntimeState = (opts: { readonly killChild?: boolean } = {}): void => {
-    clearConnectionState();
-    if (child) {
-      const currentChild = child;
-      removeChildListeners(currentChild);
-      if (opts.killChild === true && !currentChild.killed) {
-        currentChild.kill();
-      }
-      child = undefined;
-    }
-  };
-
   const notifyUnexpectedTerminal = (error: Error): void => {
     if (stopping || terminalNotified) return;
     terminalNotified = true;
     startFailed = false;
     startError = undefined;
-    options.onCrash?.(error);
+    try {
+      options.onCrash?.(error);
+    } catch (callbackError) {
+      diagnostic(`crash callback failed: ${errorMessage(callbackError)}`);
+    }
     diagnostic(error.message);
+  };
+
+  const terminateOwnedChild = async (
+    currentChild: ChildProcess,
+  ): Promise<void> => {
+    removeChildListeners(currentChild);
+    await terminateProcessTreeAndWait(currentChild, {
+      label: `LSP server ${serverName}`,
+    });
+    if (child === currentChild) child = undefined;
+  };
+
+  const queueUnexpectedTerminal = (
+    currentChild: ChildProcess,
+    terminalError: Error,
+  ): void => {
+    if (
+      stopping ||
+      terminalNotified ||
+      terminalCleanup !== undefined ||
+      child !== currentChild
+    ) {
+      return;
+    }
+    clearConnectionState();
+    const cleanup = (async (): Promise<void> => {
+      let reportedError = terminalError;
+      let residualFailure: Error | undefined;
+      try {
+        await terminateOwnedChild(currentChild);
+      } catch (error) {
+        residualFailure =
+          error instanceof Error ? error : new Error(String(error));
+        reportedError = new AggregateError(
+          [terminalError, residualFailure],
+          `${terminalError.message}; process-tree cleanup failed`,
+        );
+      }
+      notifyUnexpectedTerminal(reportedError);
+      if (residualFailure !== undefined) {
+        cleanupFailure = reportedError;
+        startFailed = true;
+        startError = reportedError;
+      }
+    })();
+    const tracked = cleanup.finally(() => {
+      if (terminalCleanup === tracked) terminalCleanup = undefined;
+    });
+    terminalCleanup = tracked;
+    void tracked.catch((error) => {
+      cleanupFailure = error instanceof Error ? error : new Error(String(error));
+      startFailed = true;
+      startError = cleanupFailure;
+      diagnostic(`terminal cleanup failed: ${cleanupFailure.message}`);
+    });
   };
 
   const scheduleUnexpectedConnectionClose = (): void => {
@@ -162,14 +223,11 @@ export function createLSPClient(
     clearConnectionState();
     setTimeout(() => {
       connectionClosePending = false;
-      if (stopping || terminalNotified) return;
-      if (closedChild && child === closedChild) {
-        removeChildListeners(closedChild);
-        if (!closedChild.killed) closedChild.kill();
-        child = undefined;
-      }
+      if (stopping || terminalNotified || terminalCleanup !== undefined) return;
+      if (closedChild === undefined || child !== closedChild) return;
       if (closedChild?.exitCode !== null && closedChild?.exitCode !== undefined) {
-        notifyUnexpectedTerminal(
+        queueUnexpectedTerminal(
+          closedChild,
           closedChild.exitCode === 0
             ? new Error(`LSP server ${serverName} exited unexpectedly with code 0`)
             : new Error(
@@ -179,12 +237,14 @@ export function createLSPClient(
         return;
       }
       if (closedChild?.signalCode) {
-        notifyUnexpectedTerminal(
+        queueUnexpectedTerminal(
+          closedChild,
           new Error(`LSP server ${serverName} exited with signal ${closedChild.signalCode}`),
         );
         return;
       }
-      notifyUnexpectedTerminal(
+      queueUnexpectedTerminal(
+        closedChild,
         new Error(`LSP server ${serverName} connection closed unexpectedly`),
       );
     }, CONNECTION_CLOSE_EXIT_GRACE_MS);
@@ -226,19 +286,41 @@ export function createLSPClient(
     },
 
     async start(command, args, runOptions): Promise<void> {
+      if (terminalCleanup !== undefined) await terminalCleanup;
       if (connection) return;
+      if (child !== undefined) {
+        throw (
+          cleanupFailure ??
+          new Error(`LSP server ${serverName} still has a live process tree`)
+        );
+      }
       stopping = false;
       terminalNotified = false;
       connectionClosePending = false;
       startFailed = false;
       startError = undefined;
+      cleanupFailure = undefined;
 
       try {
-        child = spawn(command, [...args], {
-          stdio: ["pipe", "pipe", "pipe"],
+        const sandboxExecutionBroker = options.sandboxExecutionBroker;
+        if (sandboxExecutionBroker === undefined) {
+          throw missingSandboxExecutionBoundary("lsp");
+        }
+        const spawnCommand = sandboxExecutionBroker.prepareSpawn("lsp", {
+          program: command,
+          args,
+          cwd: resolve(runOptions?.cwd ?? sandboxExecutionBroker.cwd),
           env: mergedEnv(options.baseEnv, runOptions?.env),
-          cwd: runOptions?.cwd,
+        });
+        child = spawn(spawnCommand.program, [...spawnCommand.args], {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: spawnCommand.env,
+          cwd: spawnCommand.cwd,
           windowsHide: true,
+          detached: process.platform !== "win32",
+          ...(spawnCommand.argv0 !== undefined
+            ? { argv0: spawnCommand.argv0 }
+            : {}),
         });
 
         if (!child.stdin || !child.stdout) {
@@ -275,22 +357,25 @@ export function createLSPClient(
           diagnostic(`process error: ${error.message}`);
         });
 
+        const runningChild = child;
         child.on("exit", (code, signal) => {
           if (stopping) return;
-          clearClosedRuntimeState();
           if (code !== 0 && code !== null) {
-            notifyUnexpectedTerminal(
+            queueUnexpectedTerminal(
+              runningChild,
               new Error(`LSP server ${serverName} crashed with exit code ${code}`),
             );
             return;
           }
           if (signal) {
-            notifyUnexpectedTerminal(
+            queueUnexpectedTerminal(
+              runningChild,
               new Error(`LSP server ${serverName} exited with signal ${signal}`),
             );
             return;
           }
-          notifyUnexpectedTerminal(
+          queueUnexpectedTerminal(
+            runningChild,
             new Error(`LSP server ${serverName} exited unexpectedly with code 0`),
           );
         });
@@ -326,9 +411,25 @@ export function createLSPClient(
           });
         applyQueuedHandlers();
       } catch (error) {
+        const primaryError =
+          error instanceof Error ? error : new Error(String(error));
+        let stopError: Error | undefined;
+        try {
+          await this.stop();
+        } catch (cleanupError) {
+          stopError =
+            cleanupError instanceof Error
+              ? cleanupError
+              : new Error(String(cleanupError));
+        }
         startFailed = true;
-        startError = error instanceof Error ? error : new Error(String(error));
-        await this.stop().catch(() => {});
+        startError =
+          stopError === undefined
+            ? primaryError
+            : new AggregateError(
+                [primaryError, stopError],
+                `LSP server ${serverName} failed to start and clean up`,
+              );
         throw startError;
       }
     },
@@ -398,7 +499,9 @@ export function createLSPClient(
     async stop(): Promise<void> {
       stopping = true;
       let shutdownError: Error | undefined;
+      let terminationError: Error | undefined;
       try {
+        if (terminalCleanup !== undefined) await terminalCleanup;
         if (connection) {
           await withTimeout(
             connection.sendRequest("shutdown", {}),
@@ -412,15 +515,27 @@ export function createLSPClient(
       } finally {
         disposeConnection();
         if (child) {
-          removeChildListeners(child);
-          if (!child.killed) child.kill();
-          child = undefined;
+          const currentChild = child;
+          try {
+            await terminateOwnedChild(currentChild);
+          } catch (error) {
+            terminationError =
+              error instanceof Error ? error : new Error(String(error));
+            cleanupFailure = terminationError;
+          }
         }
         initialized = false;
         capabilities = undefined;
         stopping = false;
       }
-      if (shutdownError) throw shutdownError;
+      if (shutdownError !== undefined && terminationError !== undefined) {
+        throw new AggregateError(
+          [shutdownError, terminationError],
+          `LSP server ${serverName} shutdown and process-tree cleanup failed`,
+        );
+      }
+      if (terminationError !== undefined) throw terminationError;
+      if (shutdownError !== undefined) throw shutdownError;
     },
   };
 }

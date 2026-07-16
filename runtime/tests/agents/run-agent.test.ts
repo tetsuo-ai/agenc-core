@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 /**
  * runAgent + initMcpForAgent — driver tests.
  *
@@ -51,6 +52,7 @@ import {
   SandboxExecutionBroker,
   readSandboxExecutionBroker,
 } from "../sandbox/execution-broker.js";
+import { isSandboxExecutionBrokerDisposed } from "../sandbox/execution-lifecycle.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
@@ -73,6 +75,14 @@ import {
 import { signSessionId } from "../agents/_deps/filesystem-args.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
+import { normalizeLspServerConfig } from "../services/lsp/config.js";
+import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
+import {
+  getLspServerManager,
+  initializeLspServerManager,
+  shutdownLspServerManager,
+  waitForInitialization,
+} from "../services/lsp/manager.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -275,6 +285,129 @@ async function spawnLive(session: Session, roleName?: string) {
   return { control, registry, live };
 }
 
+type OwnedChildProviderScenario = "success" | "error" | "abort";
+
+async function exerciseOwnedChildProvider(
+  scenario: OwnedChildProviderScenario,
+): Promise<{
+  readonly result: RunAgentResult;
+  readonly forkForSession: ReturnType<typeof vi.fn>;
+  readonly childDispose: ReturnType<typeof vi.fn>;
+  readonly parentDispose: ReturnType<typeof vi.fn>;
+  readonly parentPrewarmClear: ReturnType<typeof vi.fn>;
+  readonly cleanupOrder: readonly string[];
+  readonly childStartupPrewarm: unknown;
+  readonly parentBroker: SandboxExecutionBroker;
+  readonly childCwd: string;
+}> {
+  const cleanupOrder: string[] = [];
+  let childStartupPrewarm: unknown;
+  let resolveStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  const childDispose = vi.fn(async () => {
+    cleanupOrder.push("provider_dispose");
+  });
+  const childProvider: LLMProvider = {
+    ...makeProvider([]),
+    dispose: childDispose,
+    chatStream: vi.fn(async (_messages, _onChunk, options) => {
+      resolveStarted?.();
+      if (scenario === "error") throw new Error("owned_child_failure");
+      if (scenario === "abort") {
+        await new Promise<never>((_resolve, reject) => {
+          const signal = options?.signal;
+          const rejectAbort = () => reject(new Error("owned_child_aborted"));
+          if (signal?.aborted) rejectAbort();
+          else signal?.addEventListener("abort", rejectAbort, { once: true });
+        });
+      }
+      return {
+        content: "owned child response",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "fake-model",
+        finishReason: "stop",
+      };
+    }),
+  };
+  const parentDispose = vi.fn(async () => {});
+  const forkForSession = vi.fn(() => childProvider);
+  const parentProvider: LLMProvider = {
+    ...makeProvider([]),
+    dispose: parentDispose,
+    forkForSession,
+  };
+  const parentBroker = new SandboxExecutionBroker({
+    mode: "danger_full_access",
+    cwd: "/tmp",
+  });
+  const parentPrewarmClear = vi.fn(async () => {});
+  const session = makeStubSession({
+    services: {
+      provider: parentProvider,
+      sandboxExecutionBroker: parentBroker,
+      startupPrewarm: {
+        setProviderHandle: vi.fn(),
+        setProviderTask: vi.fn(),
+        consumeProviderHandle: vi.fn(async () => undefined),
+        expireProviderHandle: vi.fn(async () => {}),
+        clear: parentPrewarmClear,
+      },
+    },
+  });
+  const { live } = await spawnLive(session);
+  const childCwd = `/tmp/agenc-owned-child-${scenario}`;
+  const externalAbort = new AbortController();
+  const originalShutdown = Session.prototype.shutdown;
+  const shutdownSpy = vi
+    .spyOn(Session.prototype, "shutdown")
+    .mockImplementation(async function (this: Session): Promise<void> {
+      if (this !== session) {
+        childStartupPrewarm = this.services.startupPrewarm;
+        cleanupOrder.push("child_shutdown");
+      }
+      await originalShutdown.call(this);
+    });
+
+  try {
+    const run = collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        worktree: {
+          path: childCwd,
+          branch: `worktree-${scenario}`,
+          gitRoot: "/tmp",
+          created: false,
+        },
+        externalSignal: externalAbort.signal,
+      }),
+    );
+    if (scenario === "abort") {
+      await started;
+      externalAbort.abort("ownership_test_abort");
+    }
+    const { result } = await run;
+    return {
+      result,
+      forkForSession,
+      childDispose,
+      parentDispose,
+      parentPrewarmClear,
+      cleanupOrder,
+      childStartupPrewarm,
+      parentBroker,
+      childCwd,
+    };
+  } finally {
+    shutdownSpy.mockRestore();
+  }
+}
+
 function mkNamedTool(name: string): ToolRegistry["tools"][number] {
   return {
     name,
@@ -317,6 +450,422 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("runAgent", () => {
+  it.each([
+    ["success", "completed"],
+    ["error", "errored"],
+    ["abort", "interrupted"],
+  ] as const)(
+    "owns a forked child provider through %s cleanup",
+    async (scenario, expectedOutcome) => {
+      const exercised = await exerciseOwnedChildProvider(scenario);
+
+      expect(exercised.result.outcome).toBe(expectedOutcome);
+      expect(exercised.forkForSession).toHaveBeenCalledOnce();
+      const forkOptions = exercised.forkForSession.mock.calls[0]?.[0] as {
+        readonly cwd: string;
+        readonly sandboxExecutionBroker: SandboxExecutionBroker;
+      };
+      expect(forkOptions.cwd).toBe(exercised.childCwd);
+      expect(forkOptions.sandboxExecutionBroker).not.toBe(
+        exercised.parentBroker,
+      );
+      expect(forkOptions.sandboxExecutionBroker.cwd).toBe(exercised.childCwd);
+      expect(exercised.childStartupPrewarm).toBeUndefined();
+      expect(exercised.parentPrewarmClear).not.toHaveBeenCalled();
+      expect(exercised.childDispose).toHaveBeenCalledOnce();
+      expect(exercised.parentDispose).not.toHaveBeenCalled();
+      expect(exercised.cleanupOrder).toEqual([
+        "child_shutdown",
+        "provider_dispose",
+      ]);
+    },
+  );
+
+  it("forks the LSP manager into the child authority and stops it before provider disposal", async () => {
+    const lspEnv = {
+      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
+      AGENC_BARE: process.env.AGENC_BARE,
+      AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
+    };
+    delete process.env.AGENC_SIMPLE;
+    delete process.env.AGENC_BARE;
+    delete process.env.AGENC_DISABLE_LSP;
+    const cleanupOrder: string[] = [];
+    const openedUris: string[] = [];
+    const parentBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: tmpdir(),
+    });
+    const config = normalizeLspServerConfig("typescript", {
+      command: "test-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    let serverIndex = 0;
+    const instanceFactory = (): LSPServerInstance => {
+      const index = serverIndex++;
+      let state: LSPServerInstance["state"] = "stopped";
+      return {
+        name: `server-${index}`,
+        config,
+        get state() {
+          return state;
+        },
+        start: async () => {
+          state = "running";
+        },
+        stop: async () => {
+          state = "stopped";
+          cleanupOrder.push(`lsp_stop_${index}`);
+        },
+        restart: async () => {},
+        isHealthy: () => true,
+        sendRequest: async () => ({}),
+        sendNotification: async (method, params) => {
+          if (method !== "textDocument/didOpen") return;
+          const uri = (
+            params as { readonly textDocument?: { readonly uri?: unknown } }
+          ).textDocument?.uri;
+          if (typeof uri === "string") openedUris.push(uri);
+        },
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+    };
+    initializeLspServerManager({
+      workspaceRoot: tmpdir(),
+      sandboxExecutionBroker: parentBroker,
+      configSource: () => ({ typescript: config }),
+      instanceFactory,
+    });
+    await waitForInitialization(parentBroker);
+    const parentManager = getLspServerManager(parentBroker);
+    const childCwd = join(tmpdir(), "agenc-owned-child-lsp");
+    let childBroker: SandboxExecutionBroker | undefined;
+    let observedChildManager: ReturnType<typeof getLspServerManager>;
+    const childDispose = vi.fn(async () => {
+      cleanupOrder.push("provider_dispose");
+    });
+    const childProvider: LLMProvider = {
+      ...makeProvider([]),
+      dispose: childDispose,
+      chatStream: vi.fn(async () => {
+        expect(childBroker).toBeDefined();
+        await waitForInitialization(childBroker);
+        observedChildManager = getLspServerManager(childBroker);
+        await observedChildManager?.openFile("owned.ts", "const owned = true;");
+        return {
+          content: "done",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "fake-model",
+          finishReason: "stop",
+        };
+      }),
+    };
+    const parentProvider: LLMProvider = {
+      ...makeProvider([]),
+      forkForSession: vi.fn((options) => {
+        childBroker = options.sandboxExecutionBroker as SandboxExecutionBroker;
+        return childProvider;
+      }),
+    };
+    const session = makeStubSession({
+      services: {
+        provider: parentProvider,
+        sandboxExecutionBroker: parentBroker,
+      },
+    });
+    const { live } = await spawnLive(session);
+
+    try {
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          worktree: {
+            path: childCwd,
+            branch: "worktree-lsp",
+            gitRoot: "/tmp",
+            created: false,
+          },
+        }),
+      );
+
+      expect(result.outcome).toBe("completed");
+      expect(observedChildManager).toBeDefined();
+      expect(observedChildManager).not.toBe(parentManager);
+      expect(openedUris).toEqual([
+        pathToFileURL(join(childCwd, "owned.ts")).href,
+      ]);
+      expect(getLspServerManager(parentBroker)).toBe(parentManager);
+      expect(getLspServerManager(childBroker)).toBeUndefined();
+      expect(childDispose).toHaveBeenCalledOnce();
+      expect(cleanupOrder).toEqual(["lsp_stop_1", "provider_dispose"]);
+    } finally {
+      await shutdownLspServerManager(parentBroker);
+      for (const [key, value] of Object.entries(lspEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("cleans child broker participants when Session construction fails", async () => {
+    const lspEnv = {
+      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
+      AGENC_BARE: process.env.AGENC_BARE,
+      AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
+    };
+    delete process.env.AGENC_SIMPLE;
+    delete process.env.AGENC_BARE;
+    delete process.env.AGENC_DISABLE_LSP;
+    const parentBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: tmpdir(),
+    });
+    const config = normalizeLspServerConfig("typescript", {
+      command: "test-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    let serverIndex = 0;
+    const instanceFactory = (): LSPServerInstance => {
+      const name = `server-${serverIndex++}`;
+      let state: LSPServerInstance["state"] = "stopped";
+      return {
+        name,
+        config,
+        get state() {
+          return state;
+        },
+        start: async () => {
+          state = "running";
+        },
+        stop: async () => {
+          state = "stopped";
+        },
+        restart: async () => {},
+        isHealthy: () => true,
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      } as unknown as LSPServerInstance;
+    };
+    initializeLspServerManager({
+      workspaceRoot: tmpdir(),
+      sandboxExecutionBroker: parentBroker,
+      configSource: () => ({ typescript: config }),
+      instanceFactory,
+    });
+    await waitForInitialization(parentBroker);
+    const childDispose = vi.fn(async () => {});
+    const childProvider: LLMProvider = {
+      ...makeProvider([]),
+      dispose: childDispose,
+    };
+    let childBroker: SandboxExecutionBroker | undefined;
+    const session = makeStubSession({
+      services: {
+        sandboxExecutionBroker: parentBroker,
+        provider: {
+          ...makeProvider([]),
+          forkForSession: vi.fn((options) => {
+            childBroker = options.sandboxExecutionBroker as SandboxExecutionBroker;
+            return childProvider;
+          }),
+        },
+      },
+    });
+    const { live } = await spawnLive(session);
+    // Force the child constructor's trust-domain assertion to fail after the
+    // forked LSP participant has registered on its broker.
+    (
+      session.agentDefinitions as unknown as {
+        agentRoleWorkspaceId: string;
+      }
+    ).agentRoleWorkspaceId = "mismatched-workspace";
+
+    try {
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+        }),
+      );
+
+      expect(result.outcome).toBe("errored");
+      expect(childBroker).toBeDefined();
+      expect(getLspServerManager(childBroker)).toBeUndefined();
+      expect(isSandboxExecutionBrokerDisposed(childBroker!)).toBe(true);
+      expect(getLspServerManager(parentBroker)).toBeDefined();
+      expect(childDispose).toHaveBeenCalledOnce();
+    } finally {
+      await shutdownLspServerManager(parentBroker);
+      for (const [key, value] of Object.entries(lspEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("keeps parent MCP transports and MCP-origin tool closures out of child sessions", async () => {
+    const refreshFromConfig = vi.fn(async () => ({
+      configuredServers: ["parent"],
+      requiredServers: [],
+    }));
+    const parentMcpManager = {
+      effectiveServers: async () => new Map(),
+      toolPluginProvenance: async () => null,
+      refreshFromConfig,
+      getTools: () => [],
+      getConnectedServers: () => ["parent"],
+      isConnected: () => true,
+    } as unknown as SessionServices["mcpManager"];
+    const builtin = mkNamedTool("system.echo");
+    const directMcp = {
+      ...mkNamedTool("mcp.parent.query"),
+      serverId: "parent",
+      metadata: { source: "mcp", family: "mcp" },
+    };
+    const resourceMcp = {
+      ...mkNamedTool("ListMcpResources"),
+      metadata: { source: "builtin", family: "mcp" },
+    };
+    const registry = {
+      tools: [builtin, directMcp, resourceMcp],
+      toLLMTools: () =>
+        [builtin, directMcp, resourceMcp].map((tool) => ({
+          type: "function" as const,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+          },
+        })),
+      dispatch: vi.fn(async () => ({ content: "parent dispatch" })),
+    } satisfies ToolRegistry;
+    const provider = makeProvider([{ content: "done" }]);
+    const session = makeStubSession({
+      services: { provider, registry, mcpManager: parentMcpManager },
+    });
+    const { live } = await spawnLive(session);
+    live.downInbox.send({
+      author: "/root",
+      recipient: live.agentPath,
+      content: "",
+      triggerTurn: false,
+      direction: "down",
+      metadata: { kind: "mcp_refresh", mcpConfig: { servers: ["child"] } },
+    });
+    let childServices: SessionServices | undefined;
+    const originalShutdown = Session.prototype.shutdown;
+    const shutdownSpy = vi
+      .spyOn(Session.prototype, "shutdown")
+      .mockImplementation(async function (this: Session): Promise<void> {
+        if (this !== session) childServices = this.services;
+        await originalShutdown.call(this);
+      });
+
+    try {
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+        }),
+      );
+
+      expect(result.outcome).toBe("completed");
+      expect(refreshFromConfig).not.toHaveBeenCalled();
+      expect(childServices?.mcpManager).not.toBe(parentMcpManager);
+      expect(childServices?.mcpManager.getConnectedServers?.()).toEqual([]);
+      expect(childServices?.registry.tools.map((tool) => tool.name)).toEqual([
+        "system.echo",
+      ]);
+      const deniedMcpDispatch = await childServices!.registry.dispatch({
+        id: "mcp-call",
+        name: "mcp.parent.query",
+        arguments: "{}",
+      });
+      expect(deniedMcpDispatch).toMatchObject({ isError: true });
+      expect(registry.dispatch).not.toHaveBeenCalled();
+      const providerOptions = (
+        provider.chatStream as ReturnType<typeof vi.fn>
+      ).mock.calls[0]?.[2] as LLMChatOptions | undefined;
+      expect(providerOptions?.tools?.map((tool) => tool.function.name)).toEqual([
+        "system.echo",
+      ]);
+    } finally {
+      shutdownSpy.mockRestore();
+    }
+  });
+
+  it("preserves provider session forking and disposal through the AgentSummary wrapper", async () => {
+    const nestedDispose = vi.fn(async () => {});
+    const nestedProvider: LLMProvider = {
+      ...makeProvider([]),
+      dispose: nestedDispose,
+    };
+    const nestedFork = vi.fn(() => nestedProvider);
+    const childDispose = vi.fn(async () => {});
+    const childProvider: LLMProvider = {
+      ...makeProvider([{ content: "summary seed" }]),
+      forkForSession: nestedFork,
+      dispose: childDispose,
+    };
+    const parentBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/tmp",
+    });
+    const session = makeStubSession({
+      services: {
+        sandboxExecutionBroker: parentBroker,
+        provider: {
+          ...makeProvider([]),
+          forkForSession: vi.fn(() => childProvider),
+        },
+      },
+    });
+    const { live } = await spawnLive(session);
+    let summaryProvider: LLMProvider | undefined;
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+        onCacheSafeParams: (params) => {
+          summaryProvider = (
+            params as unknown as {
+              toolUseContext: { provider: LLMProvider };
+            }
+          ).toolUseContext.provider;
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(summaryProvider).toBeDefined();
+    expect(summaryProvider).not.toBe(childProvider);
+    const nestedBroker = parentBroker.forkForCwd("/tmp/nested-agent");
+    const nestedWrapped = summaryProvider!.forkForSession?.({
+      cwd: nestedBroker.cwd,
+      sandboxExecutionBroker: nestedBroker,
+    });
+    expect(nestedFork).toHaveBeenCalledOnce();
+    expect(nestedWrapped).toBeDefined();
+    expect(nestedWrapped).not.toBe(nestedProvider);
+    await nestedWrapped?.dispose?.();
+    expect(nestedDispose).toHaveBeenCalledOnce();
+    expect(childDispose).toHaveBeenCalledOnce();
+  });
+
   it("drives a single provider turn and forwards the assistant text via upInbox", async () => {
     const provider = makeProvider([{ content: "hello world" }]);
     const session = makeStubSession({ services: { provider } });

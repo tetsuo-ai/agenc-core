@@ -45,6 +45,11 @@ import {
 } from "../permissions/types.js";
 import { createFileReadTool } from "./system/file-read.js";
 import { createFileWriteTool } from "./system/file-write.js";
+import {
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+} from "../sandbox/execution-broker.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
@@ -422,6 +427,38 @@ describe("I-21 + I-44 requestToolUserApproval", () => {
 });
 
 describe("runToolUse end-to-end", () => {
+  test("carries the authenticated session sandbox broker to final tool args", async () => {
+    const broker = explicitDangerBroker.forkForCwd("/repo");
+    let seenBroker: unknown;
+    let seenSurface: unknown;
+    const tool: Tool = {
+      name: "broker-aware",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        seenBroker = readSandboxExecutionBroker(args);
+        seenSurface = readSandboxExecutionSurface(args);
+        return { content: "ok" };
+      },
+    };
+    const invocation = makeInvocation("c-broker", tool.name);
+
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: {
+        ...invocation,
+        session: {
+          services: { sandboxExecutionBroker: broker },
+        } as never,
+      },
+    });
+
+    expect(out.isError).toBe(false);
+    expect(seenBroker).toBe(broker);
+    expect(seenSurface).toBe("tool");
+  });
+
   test("I-9 timeout on stalled tool", async () => {
     const tool: Tool = {
       name: "stuck",

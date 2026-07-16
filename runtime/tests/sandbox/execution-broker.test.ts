@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +25,7 @@ import { applyRuntimeSandboxToSpawn } from "../../src/tools/system/apply-runtime
 import {
   rebaseWorktreeSandboxBrokers,
   requireWorktreeSandboxBrokers,
+  runWorktreeSandboxedProcess,
 } from "../../src/tools/worktree-sandbox-boundary.js";
 
 const roots: string[] = [];
@@ -44,6 +52,50 @@ afterEach(() => {
 });
 
 describe("SandboxExecutionBroker", () => {
+  it("rejects a privileged executable resolved from the writable workspace PATH", () => {
+    const root = tempRoot("agenc-sandbox-broker-path-shim-");
+    const executableName = process.platform === "win32" ? "git.cmd" : "git";
+    const workspaceShim = join(root, executableName);
+    writeFileSync(
+      workspaceShim,
+      process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+    );
+    chmodSync(workspaceShim, 0o755);
+    const transform = vi.fn();
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      platform: process.platform,
+      sandboxManager: {
+        selectInitial: vi.fn(() => "linux_seccomp" as const),
+        transform,
+      } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(() =>
+      broker.prepareSpawn("tool", {
+        program: "git",
+        args: ["status"],
+        cwd: root,
+        env: {
+          PATH: root,
+          ...(process.platform === "win32" ? { PATHEXT: ".CMD" } : {}),
+        },
+        trustedExecutable: true,
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_transform_failed",
+        surface: "tool",
+        status: expect.objectContaining({
+          reason: expect.stringContaining("privileged executable is writable"),
+        }),
+      }),
+    );
+    expect(transform).not.toHaveBeenCalled();
+  });
+
   it("rejects a process tool when its authenticated boundary is missing", () => {
     const root = tempRoot("agenc-sandbox-broker-uncovered-");
 
@@ -117,7 +169,7 @@ describe("SandboxExecutionBroker", () => {
       });
 
       expect(command).toMatchObject({
-        program: "/bin/echo",
+        program: realpathSync("/bin/echo"),
         args: ["ok"],
         cwd: root,
       });
@@ -156,7 +208,7 @@ describe("SandboxExecutionBroker", () => {
     expect(transform).toHaveBeenCalledOnce();
   });
 
-  it("rebases captured boundaries and forks independent child roots", () => {
+  it("rebases captured boundaries and forks independent child roots", async () => {
     const root = tempRoot("agenc-sandbox-broker-root-");
     const child = tempRoot("agenc-sandbox-broker-child-");
     const sibling = tempRoot("agenc-sandbox-broker-sibling-");
@@ -174,14 +226,73 @@ describe("SandboxExecutionBroker", () => {
     const brokers = requireWorktreeSandboxBrokers({
       services: { sandboxExecutionBroker: broker },
     } as never);
-    rebaseWorktreeSandboxBrokers(brokers, child);
+    await rebaseWorktreeSandboxBrokers(brokers, child);
     broker.status();
     const fork = broker.forkForCwd(sibling);
     fork.status();
 
     expect(broker.cwd).toBe(child);
     expect(fork.cwd).toBe(sibling);
+    expect(broker.forkDepth).toBe(0);
+    expect(fork.forkDepth).toBe(1);
+    expect(fork.forkForCwd(root).forkDepth).toBe(2);
     expect(probedCwds).toEqual([root, child, sibling]);
+  });
+
+  it("runs ExitWorktree inspection with hardened Git authority and finite supervision", async () => {
+    const root = tempRoot("agenc-exit-worktree-git-helper-");
+    const prepareSpawn = vi.fn(
+      (_surface: string, command: Record<string, unknown>) => ({
+        program: process.execPath,
+        args: ["-e", "process.stdout.write('clean')"],
+        cwd: root,
+        env: { PATH: process.env.PATH ?? "" },
+        argv0: "git",
+        original: command,
+      }),
+    );
+    vi.stubEnv("GIT_CONFIG_COUNT", "99");
+    try {
+      const result = await runWorktreeSandboxedProcess(
+        { cwd: root, prepareSpawn } as never,
+        "git",
+        ["-C", root, "status", "--porcelain"],
+        root,
+      );
+
+      expect(result).toMatchObject({ code: 0, stdout: "clean" });
+      const prepared = prepareSpawn.mock.calls[0]?.[1] as {
+        args: readonly string[];
+        env: Record<string, string>;
+        trustedExecutable?: boolean;
+      };
+      expect(prepared.args).toEqual([
+        "-c",
+        `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "diff.external=",
+        "--no-optional-locks",
+        "-C",
+        root,
+        "status",
+        "--porcelain",
+      ]);
+      expect(prepared.trustedExecutable).toBe(true);
+      expect(prepared.env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(prepared.env).toMatchObject({
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_PROTOCOL_FROM_USER: "0",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("wraps transform failures with a stable code and never returns the host command", () => {

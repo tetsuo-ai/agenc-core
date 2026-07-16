@@ -21,6 +21,7 @@ import {
   HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS,
   HERMETIC_RUNTIME_AUTH_ENV_VARS,
   HERMETIC_STRIPPED_ENV_VARS,
+  sanitizeHermeticEnv,
 } from "./helpers/hermetic-env.mjs";
 import { BUILT_IN_PROVIDER_API_KEY_ENVS } from "../src/llm/registry/provider-info.js";
 import { SUBPROCESS_SECRET_ENV } from "../src/utils/subprocessEnv.js";
@@ -59,6 +60,18 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
       (name: string) => process.env[name] !== undefined,
     );
     expect(leaked).toEqual([]);
+  });
+
+  it("scrubs the daemon transport cookie at the hermetic boundary", () => {
+    expect(HERMETIC_RUNTIME_AUTH_ENV_VARS).toContain("AGENC_DAEMON_COOKIE");
+    expect(HERMETIC_STRIPPED_ENV_VARS).toContain("AGENC_DAEMON_COOKIE");
+    expect(process.env.AGENC_DAEMON_COOKIE).toBeUndefined();
+
+    const syntheticEnv: NodeJS.ProcessEnv = {
+      AGENC_DAEMON_COOKIE: "test-only-cookie-sentinel",
+    };
+    sanitizeHermeticEnv(syntheticEnv, process.env.AGENC_HOME as string);
+    expect(syntheticEnv.AGENC_DAEMON_COOKIE).toBeUndefined();
   });
 
   it("covers canonical provider and subprocess secret registries", () => {

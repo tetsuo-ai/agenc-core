@@ -30,7 +30,16 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { __INTERNAL, createGlobTool, GLOB_TOOL_NAME } from "./glob.js";
+import {
+  __INTERNAL,
+  createGlobTool as createUnboundGlobTool,
+  GLOB_TOOL_NAME,
+} from "./glob.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createGlobTool = (
+  ...args: Parameters<typeof createUnboundGlobTool>
+) => bindExplicitDangerBoundary(createUnboundGlobTool(...args));
 
 describe("Glob tool", () => {
   let root = "";

@@ -50,6 +50,13 @@ function resolveRuntimeDirectory() {
 
 const RUNTIME_DIR = resolveRuntimeDirectory();
 const CANDIDATE_REPOSITORY_ROOT = realpathSync(path.dirname(RUNTIME_DIR));
+const TRUSTED_DEPENDENCY_ROOT = (() => {
+  const resolved = realpathSync(path.join(TRUSTED_REPOSITORY_ROOT, "node_modules"));
+  if (!lstatSync(resolved).isDirectory() || path.basename(resolved) !== "node_modules") {
+    throw new Error("TUI smoke dependency root must resolve to one node_modules directory");
+  }
+  return resolved;
+})();
 const DIST_ROOT_PATH = path.join(RUNTIME_DIR, "dist", "index.js");
 const DIST_TUI_PATH = path.join(RUNTIME_DIR, "dist", "tui", "main.js");
 const BIN_AGENC_PATH = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
@@ -262,6 +269,7 @@ export async function runImportProbe({
   const challenge = randomBytes(32);
   const allowedRoots = [...new Set([
     realpathSync(TRUSTED_REPOSITORY_ROOT),
+    TRUSTED_DEPENDENCY_ROOT,
     realpathSync(containmentRoot),
   ])];
   const child = fork(
@@ -651,8 +659,13 @@ if (isEntrypoint()) {
       process.exitCode = await main();
     }
   } catch (error) {
+    const permissionDetail = error !== null && typeof error === "object"
+      ? [error.permission, error.resource].filter((value) => typeof value === "string").join(": ")
+      : "";
     process.stderr.write(
-      `startup smoke crashed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
+      `startup smoke crashed${permissionDetail === "" ? "" : ` (${permissionDetail})`}: ${
+        error instanceof Error ? error.stack ?? error.message : String(error)
+      }\n`,
     );
     process.exitCode = 1;
   }

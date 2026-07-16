@@ -17,6 +17,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { BrowserManager } from "../../src/browser/manager.js";
 import { resolveBrowserExecutable } from "../../src/browser/executable.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 const LIVE = process.env.AGENC_BROWSER_E2E === "1";
 
@@ -46,6 +47,7 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
       navigationTimeoutMs: 30_000,
     },
     idleShutdownMs: 120_000,
+    sandboxExecutionBroker: explicitDangerBroker,
   });
 
   beforeAll(async () => {

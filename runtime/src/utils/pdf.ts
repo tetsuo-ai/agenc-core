@@ -1,16 +1,18 @@
 import { randomUUID } from 'crypto'
 import { mkdir, readdir, readFile } from 'fs/promises'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import {
   PDF_MAX_EXTRACT_SIZE,
   PDF_TARGET_RAW_SIZE,
 } from '../constants/apiLimits.js'
 import { errorMessage } from './errors.js'
-import { execFileNoThrow } from './execFileNoThrow.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
 import { parsePDFInfoPageCount } from './pdfInfo.js'
 import { getToolResultsDir } from './toolResultStorage.js'
+import type { SandboxExecutionBrokerLike } from '../sandbox/execution-broker.js'
+import { scrubEnvForChildProcess } from '../unified-exec/scrub-env.js'
+import { runSupervisedProcess } from './supervisedProcess.js'
 
 export type PDFError = {
   reason:
@@ -119,15 +121,20 @@ export async function readPDF(filePath: string): Promise<
  */
 export async function getPDFPageCount(
   filePath: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): Promise<number | null> {
-  const { code, stdout } = await execFileNoThrow('pdfinfo', [filePath], {
-    timeout: 10_000,
-    useCwd: false,
-  })
-  if (code !== 0) {
+  if (sandboxExecutionBroker === undefined) return null
+  const result = await runPdfHelper(
+    sandboxExecutionBroker,
+    'pdfinfo',
+    [filePath],
+    dirname(filePath),
+    10_000,
+  )
+  if (result.exitCode !== 0 || result.stopReason !== undefined) {
     return null
   }
-  return parsePDFInfoPageCount(stdout)
+  return parsePDFInfoPageCount(result.stdout.toString('utf8'))
 }
 
 export type PDFExtractPagesResult = {
@@ -153,14 +160,22 @@ export function resetPdftoppmCache(): void {
  * Check whether the `pdftoppm` binary (from poppler-utils) is available.
  * The result is cached for the lifetime of the process.
  */
-export async function isPdftoppmAvailable(): Promise<boolean> {
+export async function isPdftoppmAvailable(
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): Promise<boolean> {
   if (pdftoppmAvailable !== undefined) return pdftoppmAvailable
-  const { code, stderr } = await execFileNoThrow('pdftoppm', ['-v'], {
-    timeout: 5000,
-    useCwd: false,
-  })
+  if (sandboxExecutionBroker === undefined) return false
+  const result = await runPdfHelper(
+    sandboxExecutionBroker,
+    'pdftoppm',
+    ['-v'],
+    sandboxExecutionBroker.cwd,
+    5_000,
+  )
   // pdftoppm prints version info to stderr and exits 0 (or sometimes 99 on older versions)
-  pdftoppmAvailable = code === 0 || stderr.length > 0
+  pdftoppmAvailable =
+    result.stopReason === undefined &&
+    (result.exitCode === 0 || result.stderr.length > 0)
   return pdftoppmAvailable
 }
 
@@ -174,7 +189,11 @@ export async function isPdftoppmAvailable(): Promise<boolean> {
  */
 export async function extractPDFPages(
   filePath: string,
-  options?: { firstPage?: number; lastPage?: number },
+  options?: {
+    firstPage?: number
+    lastPage?: number
+    sandboxExecutionBroker?: SandboxExecutionBrokerLike
+  },
 ): Promise<PDFResult<PDFExtractPagesResult>> {
   try {
     const fs = getFsImplementation()
@@ -198,7 +217,17 @@ export async function extractPDFPages(
       }
     }
 
-    const available = await isPdftoppmAvailable()
+    const broker = options?.sandboxExecutionBroker
+    if (broker === undefined) {
+      return {
+        success: false,
+        error: {
+          reason: 'unavailable',
+          message: 'PDF rendering requires an authenticated sandbox execution boundary.',
+        },
+      }
+    }
+    const available = await isPdftoppmAvailable(broker)
     if (!available) {
       return {
         success: false,
@@ -224,12 +253,29 @@ export async function extractPDFPages(
       args.push('-l', String(options.lastPage))
     }
     args.push(filePath, prefix)
-    const { code, stderr } = await execFileNoThrow('pdftoppm', args, {
-      timeout: 120_000,
-      useCwd: false,
+    const command = broker.prepareSpawn('tool', {
+      program: 'pdftoppm',
+      args,
+      cwd: dirname(filePath),
+      env: scrubEnvForChildProcess(process.env),
+      trustedExecutable: true,
+      additionalPermissions: {
+        fileSystem: {
+          entries: [{
+            path: { kind: 'path', path: outputDir },
+            access: 'write',
+          }],
+        },
+      },
     })
+    const processResult = await runSupervisedProcess(command, {
+      timeoutMs: 120_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+    })
+    const code = processResult.exitCode ?? 1
+    const stderr = processResult.stderr.toString('utf8')
 
-    if (code !== 0) {
+    if (code !== 0 || processResult.stopReason !== undefined) {
       if (/password/i.test(stderr)) {
         return {
           success: false,
@@ -293,4 +339,24 @@ export async function extractPDFPages(
       },
     }
   }
+}
+
+async function runPdfHelper(
+  broker: SandboxExecutionBrokerLike,
+  program: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+) {
+  const command = broker.prepareSpawn('tool', {
+    program,
+    args,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+    trustedExecutable: true,
+  })
+  return runSupervisedProcess(command, {
+    timeoutMs,
+    maxOutputBytes: 4 * 1024 * 1024,
+  })
 }

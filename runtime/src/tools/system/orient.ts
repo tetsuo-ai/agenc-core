@@ -162,6 +162,7 @@ export function createOrientTool(
         command: ripgrepCommand,
         pattern: SOURCE_GLOB,
         cwd: baseDir,
+        toolArgs: rawArgs,
         limit: cap,
         includeIgnored: false,
         signal,

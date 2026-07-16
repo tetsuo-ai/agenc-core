@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { setTimeout as sleep } from "node:timers/promises";
+import { resolve } from "node:path";
 
 import { normalizeLspServerConfig } from "./config.js";
 import {
@@ -164,6 +165,44 @@ describe("createLSPServerInstance", () => {
     expect(initializeParams).toMatchObject({
       rootPath: "/workspace/project",
       workspaceFolders: [{ name: "project" }],
+    });
+  });
+
+  test("resolves a configured relative workspace against the session root", async () => {
+    let initializeParams: unknown;
+    const client = fakeClient({
+      initialize: async (params) => {
+        initializeParams = params;
+        client.initialized = true;
+        return { capabilities: {} };
+      },
+    });
+    const sessionRoot = resolve("/workspace/project");
+    const expectedWorkspace = resolve(sessionRoot, "packages/service");
+    const instance = createLSPServerInstance(
+      "workspace-relative",
+      normalizeLspServerConfig("workspace-relative", {
+        command: "server",
+        workspaceFolder: "packages/service",
+        extensionToLanguage: { ".ts": "typescript" },
+      }),
+      { client, cwd: sessionRoot },
+    );
+
+    await instance.start();
+
+    expect((client.starts[0] as unknown[])[2]).toMatchObject({
+      cwd: expectedWorkspace,
+    });
+    expect(initializeParams).toMatchObject({
+      rootPath: expectedWorkspace,
+      rootUri: expect.stringContaining("/workspace/project/packages/service"),
+      workspaceFolders: [
+        {
+          name: "service",
+          uri: expect.stringContaining("/workspace/project/packages/service"),
+        },
+      ],
     });
   });
 

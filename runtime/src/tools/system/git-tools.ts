@@ -1,7 +1,6 @@
 import { stat } from "node:fs/promises";
-import { relative, resolve as resolvePath } from "node:path";
+import { dirname, relative, resolve as resolvePath } from "node:path";
 
-import { runCommand } from "../../utils/process.js";
 import type { Tool } from "../types.js";
 import { collectWorkspaceLanguages } from "./code-intel.js";
 import {
@@ -14,6 +13,7 @@ import {
   parseStatusPorcelain,
   parseWorktreePorcelain,
   resolveRepoRoot,
+  runSandboxedToolCommand,
   summarizeChanges,
   toOptionalString,
   toOptionalStringArray,
@@ -23,6 +23,32 @@ import {
   resolveToolAllowedPaths,
   safePath,
 } from "./filesystem.js";
+import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
+  worktreeMutationPermissions,
+} from "../../sandbox/worktree-permissions.js";
+import { gitChildEnvironment } from "../../sandbox/git-environment.js";
+
+function runGitToolCommand(
+  toolArgs: Record<string, unknown>,
+  commandArgs: readonly string[],
+  cwd: string,
+  maxBuffer?: number,
+  additionalPermissions?: AdditionalPermissionProfile,
+) {
+  return runSandboxedToolCommand({
+    toolArgs,
+    program: "git",
+    args: hardenGitWorktreeMutationArgs(commandArgs),
+    cwd,
+    env: gitChildEnvironment(),
+    ...(maxBuffer !== undefined ? { maxBuffer } : {}),
+    ...(additionalPermissions !== undefined ? { additionalPermissions } : {}),
+    trustedExecutable: true,
+  });
+}
 
 export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[] {
   const repoInventoryTool: Tool = {
@@ -45,14 +71,14 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const files = await listRepoFiles(repoRoot);
-      const status = await runCommand(
-        "git",
+      const files = await listRepoFiles(repoRoot, args);
+      const status = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "status", "--porcelain", "--branch"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       const branchInfo = parseStatusPorcelain(status.stdout);
-      const languages = await collectWorkspaceLanguages(repoRoot);
+      const languages = await collectWorkspaceLanguages(repoRoot, args);
       const topLevelDirectories = [...new Set(
         files
           .map((filePath) => relative(repoRoot, filePath).split(/[\\/]/)[0] ?? "")
@@ -69,10 +95,10 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       ).filter(
         (entry): entry is (typeof MANIFEST_NAMES)[number] => entry !== null,
       );
-      const worktrees = await runCommand(
-        "git",
+      const worktrees = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "worktree", "list", "--porcelain"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       return okResult({
         repoRoot,
@@ -115,10 +141,10 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const result = await runCommand(
-        "git",
+      const result = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "status", "--porcelain", "--branch"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       if (result.exitCode !== 0) {
         return errorResult(result.stderr.trim() || result.stdout.trim() || "git status failed");
@@ -155,7 +181,14 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const command = ["-C", repoRoot, "diff", "--no-ext-diff", "--binary"];
+      const command = [
+        "-C",
+        repoRoot,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+      ];
       if (args.staged === true) command.push("--cached");
       const fromRef = toOptionalString(args.fromRef);
       const toRef = toOptionalString(args.toRef);
@@ -177,7 +210,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (filePaths && filePaths.length > 0) {
         command.push("--", ...filePaths);
       }
-      const result = await runCommand("git", command, { cwd: repoRoot, maxBuffer: MAX_DIFF_BYTES });
+      const result = await runGitToolCommand(args, command, repoRoot, MAX_DIFF_BYTES);
       if (result.exitCode !== 0) {
         return errorResult(result.stderr.trim() || result.stdout.trim() || "git diff failed");
       }
@@ -222,10 +255,19 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const result = await runCommand(
-        "git",
-        ["-C", repoRoot, "show", ...(args.noPatch === true ? ["--stat", "--summary"] : []), ref],
-        { cwd: repoRoot, maxBuffer: MAX_DIFF_BYTES },
+      const result = await runGitToolCommand(
+        args,
+        [
+          "-C",
+          repoRoot,
+          "show",
+          "--no-ext-diff",
+          "--no-textconv",
+          ...(args.noPatch === true ? ["--stat", "--summary"] : []),
+          ref,
+        ],
+        repoRoot,
+        MAX_DIFF_BYTES,
       );
       if (result.exitCode !== 0) {
         return errorResult(result.stderr.trim() || result.stdout.trim() || "git show failed");
@@ -255,11 +297,15 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const head = await runCommand("git", ["-C", repoRoot, "rev-parse", "HEAD"], { cwd: repoRoot });
-      const status = await runCommand(
-        "git",
+      const head = await runGitToolCommand(
+        args,
+        ["-C", repoRoot, "rev-parse", "HEAD"],
+        repoRoot,
+      );
+      const status = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "status", "--porcelain", "--branch"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       const parsed = parseStatusPorcelain(status.stdout);
       return okResult({
@@ -291,10 +337,10 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const status = await runCommand(
-        "git",
+      const status = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "status", "--porcelain", "--branch"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       if (status.exitCode !== 0) {
         return errorResult(status.stderr.trim() || status.stdout.trim() || "git status failed");
@@ -325,10 +371,10 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const result = await runCommand(
-        "git",
+      const result = await runGitToolCommand(
+        args,
         ["-C", repoRoot, "worktree", "list", "--porcelain"],
-        { cwd: repoRoot },
+        repoRoot,
       );
       if (result.exitCode !== 0) {
         return errorResult(result.stderr.trim() || result.stdout.trim() || "git worktree list failed");
@@ -370,7 +416,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (!safeWorktreePath.safe) {
         return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
       }
-      const command = ["-C", repoRoot, "worktree", "add"];
+      const command = ["-C", repoRoot, "worktree", "add", "--no-checkout"];
       if (args.detached === true) command.push("--detach");
       const branch = toOptionalString(args.branch);
       const ref = toOptionalString(args.ref);
@@ -391,10 +437,39 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (ref) {
         command.push(ref);
       }
-      const result = await runCommand("git", command, { cwd: repoRoot });
+      const result = await runGitToolCommand(
+        args,
+        command,
+        repoRoot,
+        undefined,
+        worktreeMutationPermissions(repoRoot, [
+          dirname(safeWorktreePath.resolved),
+        ]),
+      );
       if (result.exitCode !== 0) {
         return errorResult(
           result.stderr.trim() || result.stdout.trim() || "git worktree add failed",
+        );
+      }
+      const checkout = await runGitToolCommand(
+        args,
+        ["-C", safeWorktreePath.resolved, "checkout", "HEAD"],
+        repoRoot,
+        undefined,
+        worktreeCheckoutPermissions(repoRoot, safeWorktreePath.resolved),
+      );
+      if (checkout.exitCode !== 0) {
+        await runGitToolCommand(
+          args,
+          ["-C", repoRoot, "worktree", "remove", "--force", safeWorktreePath.resolved],
+          repoRoot,
+          undefined,
+          worktreeMutationPermissions(repoRoot, [
+            dirname(safeWorktreePath.resolved),
+          ]),
+        );
+        return errorResult(
+          checkout.stderr.trim() || checkout.stdout.trim() || "git worktree checkout failed",
         );
       }
       return okResult({
@@ -403,7 +478,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
         branch: branch ?? null,
         ref: ref ?? null,
         detached: args.detached === true,
-        output: result.stdout.trim(),
+        output: [result.stdout.trim(), checkout.stdout.trim()].filter(Boolean).join("\n"),
       });
     },
   };
@@ -438,10 +513,10 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (!safeWorktreePath.safe) {
         return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
       }
-      const status = await runCommand(
-        "git",
+      const status = await runGitToolCommand(
+        args,
         ["-C", safeWorktreePath.resolved, "status", "--porcelain", "--untracked-files=normal"],
-        { cwd: safeWorktreePath.resolved },
+        safeWorktreePath.resolved,
       );
       const dirty = status.exitCode === 0 && status.stdout.trim().length > 0;
       if (dirty && args.force !== true) {
@@ -449,8 +524,8 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
           `Worktree ${safeWorktreePath.resolved} has uncommitted changes; re-run with force=true to remove it.`,
         );
       }
-      const result = await runCommand(
-        "git",
+      const result = await runGitToolCommand(
+        args,
         [
           "-C",
           repoRoot,
@@ -459,7 +534,9 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
           ...(args.force === true ? ["--force"] : []),
           safeWorktreePath.resolved,
         ],
-        { cwd: repoRoot },
+        repoRoot,
+        undefined,
+        worktreeMutationPermissions(repoRoot, [safeWorktreePath.resolved]),
       );
       if (result.exitCode !== 0) {
         return errorResult(
@@ -500,20 +577,20 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (!safeWorktreePath.safe) {
         return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
       }
-      const branch = await runCommand(
-        "git",
+      const branch = await runGitToolCommand(
+        args,
         ["-C", safeWorktreePath.resolved, "rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd: safeWorktreePath.resolved },
+        safeWorktreePath.resolved,
       );
-      const head = await runCommand(
-        "git",
+      const head = await runGitToolCommand(
+        args,
         ["-C", safeWorktreePath.resolved, "rev-parse", "HEAD"],
-        { cwd: safeWorktreePath.resolved },
+        safeWorktreePath.resolved,
       );
-      const status = await runCommand(
-        "git",
+      const status = await runGitToolCommand(
+        args,
         ["-C", safeWorktreePath.resolved, "status", "--porcelain", "--untracked-files=normal"],
-        { cwd: safeWorktreePath.resolved },
+        safeWorktreePath.resolved,
       );
       return okResult({
         worktreePath: safeWorktreePath.resolved,

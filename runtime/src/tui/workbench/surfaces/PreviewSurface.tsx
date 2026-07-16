@@ -2,6 +2,7 @@ import path from "node:path";
 import React, { useEffect, useMemo, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
+import { peekAmbientRuntimeSession } from "../../../session/current-session.js";
 import { getCwd } from "../../../utils/cwd.js";
 import { logError } from "../../../utils/log.js";
 import { readFileInRange } from "../../../utils/readFileInRange.js";
@@ -40,7 +41,12 @@ export function PreviewSurface({ focused }: { readonly focused: boolean }): Reac
   );
   const absolutePath = activePath ? path.resolve(getCwd(), activePath) : null;
   const diagnostics = useMemo(
-    () => absolutePath ? peekLSPDiagnosticsForFile(absolutePath) : [],
+    () => absolutePath
+      ? peekLSPDiagnosticsForFile(
+          absolutePath,
+          peekAmbientRuntimeSession()?.services.sandboxExecutionBroker,
+        )
+      : [],
     [absolutePath, content],
   );
   const lines = content.length > 0 ? content.split("\n") : [];

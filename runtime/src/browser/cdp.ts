@@ -16,6 +16,12 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { terminateProcessTreeAndWait } from "../utils/supervisedProcess.js";
 
 const NUL = "\0";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
@@ -55,6 +61,23 @@ export class CdpError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CdpError";
+  }
+}
+
+/**
+ * A launch failure whose spawned process tree could not be verified stopped.
+ * The caller becomes the owner of `child` and must retain it until a later
+ * process-tree cleanup succeeds.
+ */
+export class BrowserLaunchCleanupError extends CdpError {
+  readonly child: ChildProcess;
+  readonly cleanupError: Error;
+
+  constructor(message: string, child: ChildProcess, cleanupError: Error) {
+    super(message);
+    this.name = "BrowserLaunchCleanupError";
+    this.child = child;
+    this.cleanupError = cleanupError;
   }
 }
 
@@ -310,6 +333,8 @@ export interface LaunchBrowserOptions {
    * every connection is address-checked once at the proxy (no rebinding).
    */
   readonly proxyPort: number;
+  /** Authenticated session boundary for the Chromium process. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 export interface LaunchedBrowser {
@@ -365,9 +390,34 @@ export function buildChromiumArgs(options: LaunchBrowserOptions): string[] {
 export async function launchBrowser(
   options: LaunchBrowserOptions,
 ): Promise<LaunchedBrowser> {
-  const child = spawn(options.executablePath, buildChromiumArgs(options), {
+  const sandboxExecutionBroker = options.sandboxExecutionBroker;
+  if (sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary("browser");
+  }
+  const env = scrubEnvForChildProcess(process.env);
+  const spawnCommand = sandboxExecutionBroker.prepareSpawn("browser", {
+    program: options.executablePath,
+    args: buildChromiumArgs(options),
+    cwd: sandboxExecutionBroker.cwd,
+    env,
+    additionalPermissions: {
+      network: { enabled: true },
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: options.userDataDir },
+            access: "write",
+          },
+        ],
+      },
+    },
+  });
+  const child = spawn(spawnCommand.program, [...spawnCommand.args], {
+    cwd: spawnCommand.cwd,
+    env: spawnCommand.env,
+    argv0: spawnCommand.argv0,
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    detached: false,
+    detached: process.platform !== "win32",
   });
 
   let stderrTail = "";
@@ -379,8 +429,21 @@ export async function launchBrowser(
   const writePipe = child.stdio[3] as Writable | null;
   const readPipe = child.stdio[4] as Readable | null;
   if (writePipe === null || readPipe === null) {
-    child.kill("SIGKILL");
-    throw new CdpError("browser did not expose the CDP pipe file descriptors");
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
+        child,
+        cleanupError,
+      );
+    }
+    throw new CdpError(
+      "browser did not expose the CDP pipe file descriptors",
+    );
   }
 
   const spawnError = new Promise<never>((_, reject) => {
@@ -408,11 +471,26 @@ export async function launchBrowser(
     ]);
   } catch (err) {
     connection.close();
-    child.kill("SIGKILL");
     const detail = err instanceof Error ? err.message : String(err);
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not establish a CDP pipe: ${detail}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+        child,
+        cleanupError,
+      );
+    }
     throw new CdpError(
       `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
     );
   }
   return { child, connection };
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

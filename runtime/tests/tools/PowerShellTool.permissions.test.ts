@@ -8,20 +8,21 @@ import {
 import type { ToolUseContext } from "../../src/tools/Tool.js";
 import { powershellToolHasPermission } from "../../src/tools/PowerShellTool/powershellPermissions.js";
 import {
-  parsePowerShellCommand,
+  parsePowerShellCommandWithSandbox,
   type ParsedPowerShellCommand,
 } from "../../src/utils/powershell/parser.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 vi.mock("../../src/utils/powershell/parser.js", async importOriginal => {
   const actual =
     await importOriginal<typeof import("../../src/utils/powershell/parser.js")>();
   return {
     ...actual,
-    parsePowerShellCommand: vi.fn(),
+    parsePowerShellCommandWithSandbox: vi.fn(),
   };
 });
 
-const parsePowerShellCommandMock = vi.mocked(parsePowerShellCommand);
+const parsePowerShellCommandMock = vi.mocked(parsePowerShellCommandWithSandbox);
 
 function invalidParsedCommand(command: string): ParsedPowerShellCommand {
   return {
@@ -44,6 +45,7 @@ function toolUseContext(
 ): ToolUseContext {
   return {
     getAppState: () => ({ toolPermissionContext }),
+    services: { sandboxExecutionBroker: explicitDangerBroker },
   } as unknown as ToolUseContext;
 }
 
@@ -76,7 +78,11 @@ describe("PowerShell parse-failed permission fallback", () => {
       toolUseContext(permissionContext),
     );
 
-    expect(parsePowerShellCommandMock).toHaveBeenCalledWith(command);
+    expect(parsePowerShellCommandMock).toHaveBeenCalledWith(
+      command,
+      explicitDangerBroker,
+      explicitDangerBroker.cwd,
+    );
     expect(result.behavior).toBe("deny");
     expect(result.decisionReason).toMatchObject({ type: "rule" });
   });

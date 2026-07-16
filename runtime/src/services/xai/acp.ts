@@ -21,7 +21,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface, type Interface } from 'node:readline'
 
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from '../../sandbox/execution-broker.js'
+import { scrubEnvForChildProcess } from '../../unified-exec/scrub-env.js'
 import { asRecord } from '../../utils/record.js'
+import { terminateProcessTreeAndWait } from '../../utils/supervisedProcess.js'
 
 export const GROK_ACP_REFERRER_ENV = 'GROK_OAUTH2_REFERRER'
 export const GROK_ACP_REFERRER = 'agenc'
@@ -33,10 +39,13 @@ export const GROK_ACP_AUTH_METHOD_CACHED_TOKEN = 'cached_token'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_PROMPT_TIMEOUT_MS = 20 * 60 * 1000
 const STDERR_TAIL_LIMIT = 4_096
+const DEFAULT_TERMINATE_GRACE_MS = 500
+const DEFAULT_SETTLE_BACKSTOP_MS = 1_000
 
 export type XaiAcpErrorCode =
   | 'spawn_failed'
   | 'closed'
+  | 'aborted'
   | 'timeout'
   | 'protocol'
   | 'agent_error'
@@ -90,8 +99,11 @@ export type XaiAcpPromptResult = {
 export interface XaiAcpClientOptions {
   command?: string
   args?: readonly string[]
+  /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd: string
   env?: NodeJS.ProcessEnv
+  /** Authenticated session boundary used for the Grok CLI process. */
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike
   clientInfo?: { name: string; version: string }
   /**
    * Decides agent-initiated `session/request_permission` requests. The
@@ -103,6 +115,9 @@ export interface XaiAcpClientOptions {
   ) => Promise<XaiAcpPermissionDecision> | XaiAcpPermissionDecision
   requestTimeoutMs?: number
   promptTimeoutMs?: number
+  /** Internal lifecycle bounds; configurable for deterministic tests. */
+  terminateGraceMs?: number
+  settleBackstopMs?: number
 }
 
 type PendingRequest = {
@@ -154,19 +169,46 @@ export class XaiAcpClient {
   private closeReason: string | undefined
   private stderrTail = ''
   private promptCollector: PromptCollector | null = null
+  private closePromise: Promise<void> | null = null
 
   constructor(options: XaiAcpClientOptions) {
-    this.options = options
     const command = options.command ?? GROK_ACP_DEFAULT_COMMAND
     const args = options.args ?? GROK_ACP_ARGS
+    const sandboxExecutionBroker = options.sandboxExecutionBroker
+    if (sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary('provider')
+    }
+    this.options = {
+      ...options,
+      // A stale caller-supplied cwd must never outlive or override the
+      // authenticated workspace authority.
+      cwd: sandboxExecutionBroker.cwd,
+    }
+    const sourceEnv = options.env ?? process.env
+    const env = {
+      ...scrubEnvForChildProcess(sourceEnv),
+      // ACP is the one child that legitimately consumes this provider secret.
+      // Re-introduce only its documented credential after the general scrub.
+      ...(typeof sourceEnv.XAI_API_KEY === 'string'
+        ? { XAI_API_KEY: sourceEnv.XAI_API_KEY }
+        : {}),
+      [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
+    }
+    const spawnCommand = sandboxExecutionBroker.prepareSpawn('provider', {
+      program: command,
+      args,
+      cwd: this.options.cwd,
+      env,
+      additionalPermissions: { network: { enabled: true } },
+    })
     try {
-      this.child = spawn(command, [...args], {
-        cwd: options.cwd,
-        env: {
-          ...(options.env ?? process.env),
-          [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
-        },
+      this.child = spawn(spawnCommand.program, [...spawnCommand.args], {
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        argv0: spawnCommand.argv0,
         stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        windowsHide: true,
       })
     } catch (error) {
       throw new XaiAcpError(
@@ -182,6 +224,7 @@ export class XaiAcpClient {
             '(`grok`) before using composer models, or set XAI_API_KEY.'
           : `Grok CLI failed: ${error.message}`
       this.failAll(new XaiAcpError('spawn_failed', message))
+      void this.terminateProcessTree().catch(() => {})
     })
     this.child.on('exit', (exitCode, signal) => {
       const detail = this.stderrTail.trim()
@@ -192,6 +235,7 @@ export class XaiAcpClient {
             (detail ? `: ${detail}` : ''),
         ),
       )
+      void this.terminateProcessTree().catch(() => {})
     })
     this.child.stderr.on('data', (chunk: Buffer) => {
       this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(
@@ -232,9 +276,9 @@ export class XaiAcpClient {
     await this.request('authenticate', { methodId })
   }
 
-  async newSession(cwd?: string): Promise<XaiAcpSessionInfo> {
+  async newSession(): Promise<XaiAcpSessionInfo> {
     const result = await this.request('session/new', {
-      cwd: cwd ?? this.options.cwd,
+      cwd: this.options.cwd,
       mcpServers: [],
     })
     const sessionId = result.sessionId
@@ -290,8 +334,16 @@ export class XaiAcpClient {
     }
     const onAbort = () => {
       this.notify('session/cancel', { sessionId: params.sessionId })
+      const error = new XaiAcpError(
+        'aborted',
+        `ACP prompt aborted${params.signal?.reason === undefined ? '' : `: ${String(params.signal.reason)}`}`,
+      )
+      this.failAll(error)
+      abortTermination ??= this.terminateProcessTree()
     }
-    params.signal?.addEventListener('abort', onAbort, { once: true })
+    let abortTermination: Promise<void> | null = null
+    if (params.signal?.aborted === true) onAbort()
+    else params.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       const result = await this.request(
         'session/prompt',
@@ -306,18 +358,66 @@ export class XaiAcpClient {
       return { stopReason, text }
     } finally {
       params.signal?.removeEventListener('abort', onAbort)
+      // Do not let a caller treat cancellation as complete while the
+      // single-flight ACP process (or one of its descendants) is still live.
+      if (abortTermination !== null) await abortTermination
       this.promptCollector = null
     }
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
     if (!this.closed) {
       this.closed = true
       this.closeReason = 'disposed'
     }
-    this.reader.close()
-    this.child.kill()
     this.failAll(new XaiAcpError('closed', 'ACP client disposed'))
+    return this.terminateProcessTree()
+  }
+
+  private terminateProcessTree(): Promise<void> {
+    if (this.closePromise !== null) return this.closePromise
+    try {
+      this.reader.close()
+    } catch {
+      // The output stream may already have closed after an early spawn error.
+    }
+    this.child.stdin.destroy()
+    const closing = terminateProcessTreeAndWait(this.child, {
+      terminateGraceMs: positiveLifecycleBound(
+        this.options.terminateGraceMs,
+        DEFAULT_TERMINATE_GRACE_MS,
+      ),
+      killGraceMs: positiveLifecycleBound(
+        this.options.settleBackstopMs,
+        DEFAULT_SETTLE_BACKSTOP_MS,
+      ),
+      label: 'ACP process',
+    })
+      .catch(error => {
+        throw error instanceof XaiAcpError
+          ? error
+          : new XaiAcpError(
+              'closed',
+              error instanceof Error ? error.message : String(error),
+            )
+      })
+    let tracked: Promise<void>
+    tracked = closing.then(
+      () => {
+        this.child.stdout.destroy()
+        this.child.stderr.destroy()
+      },
+      error => {
+        this.child.stdout.destroy()
+        this.child.stderr.destroy()
+        // Retain the exact ChildProcess, but clear the rejected in-flight
+        // operation so a later dispose can retry terminating that owner.
+        if (this.closePromise === tracked) this.closePromise = null
+        throw error
+      },
+    )
+    this.closePromise = tracked
+    return tracked
   }
 
   private request(
@@ -490,4 +590,13 @@ export class XaiAcpClient {
       waiter.reject(error)
     }
   }
+}
+
+function positiveLifecycleBound(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : fallback
 }

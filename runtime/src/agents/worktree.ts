@@ -38,9 +38,17 @@ import {
   statSync,
   utimesSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import { gitChildEnvironment } from "../sandbox/git-environment.js";
+import { runSupervisedProcess } from "../utils/supervisedProcess.js";
+import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
+  worktreeMutationPermissions,
+} from "../sandbox/worktree-permissions.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Global git-mutation lock
@@ -68,29 +76,49 @@ export interface GitResult {
 function runGit(
   args: ReadonlyArray<string>,
   cwd: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
+  additionalPermissions?: AdditionalPermissionProfile,
 ): Promise<GitResult> {
-  return new Promise<GitResult>((resolve) => {
-    const child = spawn("git", [...args], { cwd, stdio: "pipe" });
-    // I-78 Buffer accumulation — decode at flush.
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("close", (code) => {
-      resolve({
-        code: code ?? 1,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
-      });
-    });
-    child.on("error", (err) => {
-      resolve({
-        code: 127,
-        stdout: "",
-        stderr: err.message,
-      });
-    });
+  const command = sandboxExecutionBroker.prepareSpawn("child_agent", {
+      program: "git",
+      args: hardenGitWorktreeMutationArgs(args),
+      cwd,
+      env: gitChildEnvironment(),
+      argv0: "git",
+      ...(additionalPermissions !== undefined
+        ? { additionalPermissions }
+        : {}),
+      trustedExecutable: true,
   });
+  return runSupervisedProcess(command, {
+    timeoutMs: 30_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  }).then((result) => ({
+    code: result.stopReason === "spawn_error"
+      ? 127
+      : result.stopReason === "timeout"
+        ? 124
+        : result.stopReason !== undefined
+          ? 1
+          : (result.exitCode ?? 1),
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.error?.message ?? result.stderr.toString("utf8"),
+  }));
+}
+
+function runGitMutation(
+  args: ReadonlyArray<string>,
+  cwd: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
+  repoRoot: string,
+  writablePaths: readonly string[] = [],
+): Promise<GitResult> {
+  return runGit(
+    args,
+    cwd,
+    sandboxExecutionBroker,
+    worktreeMutationPermissions(repoRoot, writablePaths),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -227,6 +255,7 @@ export interface GetOrCreateOpts {
   readonly workspaceRoot?: string;
   readonly enableSparseCheckout?: boolean;
   readonly sparsePatterns?: ReadonlyArray<string>;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
 /**
@@ -265,15 +294,19 @@ export async function getOrCreateWorktree(
       );
     }
 
-    // Fetch base if it doesn't exist locally.
+    // Worktree setup is deliberately local-only. Repository-controlled remotes,
+    // credential helpers, and transport helpers are not an implicit capability.
     const base = opts.base ?? "HEAD";
-    const fetchResult = await runGit(["fetch", "--depth=1", "origin", base], opts.gitRoot);
-    void fetchResult; // best-effort
 
-    // `git worktree add -B <branch> <path> <base>`.
-    const addResult = await runGit(
-      ["worktree", "add", "-B", branch, path, base],
+    // Register metadata without materializing repository content. Checkout is
+    // a second, narrowly granted phase so a configured filter cannot write the
+    // common .git directory with Git's inherited authority.
+    const addResult = await runGitMutation(
+      ["worktree", "add", "--no-checkout", "-B", branch, path, base],
       opts.gitRoot,
+      opts.sandboxExecutionBroker,
+      opts.gitRoot,
+      [workspaceRoot],
     );
     if (addResult.code !== 0) {
       throw new Error(
@@ -281,27 +314,54 @@ export async function getOrCreateWorktree(
       );
     }
 
+    const checkoutPermissions = worktreeCheckoutPermissions(opts.gitRoot, path);
+    const tearDownIncompleteWorktree = async (message: string): Promise<never> => {
+      await runGitMutation(
+        ["worktree", "remove", "--force", path],
+        opts.gitRoot,
+        opts.sandboxExecutionBroker,
+        opts.gitRoot,
+        [workspaceRoot],
+      );
+      throw new Error(message);
+    };
+
     // Optional sparse-checkout.
     if (opts.enableSparseCheckout && opts.sparsePatterns?.length) {
       const init = await runGit(
         ["-C", path, "sparse-checkout", "init", "--cone"],
         opts.gitRoot,
+        opts.sandboxExecutionBroker,
+        checkoutPermissions,
       );
       if (init.code !== 0) {
-        // I-35 teardown verify — failing to init still leaves the
-        // dir, so we treat this as a non-fatal warning. Callers can
-        // still use the worktree; sparse-checkout is disabled.
-        throw new Error(
+        await tearDownIncompleteWorktree(
           `sparse-checkout init failed: ${init.stderr.trim()}`,
         );
       }
       const set = await runGit(
         ["-C", path, "sparse-checkout", "set", ...opts.sparsePatterns],
         opts.gitRoot,
+        opts.sandboxExecutionBroker,
+        checkoutPermissions,
       );
       if (set.code !== 0) {
-        throw new Error(`sparse-checkout set failed: ${set.stderr.trim()}`);
+        await tearDownIncompleteWorktree(
+          `sparse-checkout set failed: ${set.stderr.trim()}`,
+        );
       }
+    }
+
+    const checkout = await runGit(
+      ["-C", path, "checkout", "HEAD"],
+      opts.gitRoot,
+      opts.sandboxExecutionBroker,
+      checkoutPermissions,
+    );
+    if (checkout.code !== 0) {
+      await tearDownIncompleteWorktree(
+        `git worktree checkout failed: ${checkout.stderr.trim() || checkout.stdout.trim()}`,
+      );
     }
 
     return { path, branch, gitRoot: opts.gitRoot, created: true };
@@ -319,6 +379,7 @@ export async function getOrCreateWorktree(
 export async function hasWorktreeChanges(opts: {
   readonly path: string;
   readonly baseCommit: string;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }): Promise<{
   readonly hasCommits: boolean;
   readonly isDirty: boolean;
@@ -327,7 +388,11 @@ export async function hasWorktreeChanges(opts: {
   // work product is NEW files (a fresh test, a generated report) must
   // not have its worktree judged "unchanged" and deleted on close.
   // Ignored files are already excluded by `--porcelain`.
-  const status = await runGit(["status", "--porcelain"], opts.path);
+  const status = await runGit(
+    ["status", "--porcelain"],
+    opts.path,
+    opts.sandboxExecutionBroker,
+  );
   if (status.code !== 0) {
     throw new Error(
       `git status failed for ${opts.path}: ${formatGitFailure(status)}`,
@@ -337,6 +402,7 @@ export async function hasWorktreeChanges(opts: {
   const revList = await runGit(
     ["rev-list", "--count", `${opts.baseCommit}..HEAD`],
     opts.path,
+    opts.sandboxExecutionBroker,
   );
   if (revList.code !== 0) {
     throw new Error(
@@ -369,6 +435,7 @@ export interface RemoveWorktreeOpts {
   readonly onSparseCheckoutOrphaned?: (detail: string) => void;
   /** Optional callback for I-34 prune-failed warning. */
   readonly onPruneFailed?: (detail: string) => void;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
 /**
@@ -388,9 +455,12 @@ export async function removeAgentWorktree(
       try {
         const contents = readFileSync(sparseFile, "utf8").trim();
         if (contents.length > 0) {
-          const disable = await runGit(
+          const disable = await runGitMutation(
             ["-C", opts.path, "sparse-checkout", "disable"],
             opts.gitRoot,
+            opts.sandboxExecutionBroker,
+            opts.gitRoot,
+            [opts.path],
           );
           if (disable.code !== 0) {
             opts.onSparseCheckoutOrphaned?.(
@@ -407,9 +477,12 @@ export async function removeAgentWorktree(
 
     // Force-remove. Fail closed on git errors so callers never report a
     // removed worktree when git rejected the remove.
-    const remove = await runGit(
+    const remove = await runGitMutation(
       ["worktree", "remove", "--force", opts.path],
       opts.gitRoot,
+      opts.sandboxExecutionBroker,
+      opts.gitRoot,
+      [opts.path],
     );
     if (remove.code !== 0) {
       throw new Error(
@@ -419,11 +492,18 @@ export async function removeAgentWorktree(
 
     // Branch delete — best-effort (may fail if branch is the current
     // one in another worktree).
-    await runGit(["branch", "-D", opts.branch], opts.gitRoot);
+    await runGitMutation(
+      ["branch", "-D", opts.branch],
+      opts.gitRoot,
+      opts.sandboxExecutionBroker,
+      opts.gitRoot,
+    );
 
     // I-34: prune — cleans up stale `.git/worktrees/<slug>/` dirs.
-    const prune = await runGit(
+    const prune = await runGitMutation(
       ["worktree", "prune", "--force"],
+      opts.gitRoot,
+      opts.sandboxExecutionBroker,
       opts.gitRoot,
     );
     if (prune.code !== 0) {
@@ -441,9 +521,14 @@ export async function removeAgentWorktree(
 /** Capture the current HEAD of the base branch (to compare later). */
 export async function captureBaseCommit(
   gitRoot: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
   ref = "HEAD",
 ): Promise<string | null> {
-  const result = await runGit(["rev-parse", ref], gitRoot);
+  const result = await runGit(
+    ["rev-parse", ref],
+    gitRoot,
+    sandboxExecutionBroker,
+  );
   if (result.code !== 0) return null;
   const sha = result.stdout.trim();
   return sha.length > 0 ? sha : null;
@@ -482,6 +567,7 @@ export interface CleanupStaleAgentWorktreesOpts {
   readonly currentPath?: string;
   readonly ageMs?: number;
   readonly nowMs?: number;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
 export async function cleanupStaleAgentWorktrees(
@@ -512,7 +598,7 @@ export async function cleanupStaleAgentWorktrees(
     if (!isWorktreeStale(path, opts.ageMs, opts.nowMs)) {
       continue;
     }
-    if (!(await canRemoveStaleWorktree(path))) {
+    if (!(await canRemoveStaleWorktree(path, opts.sandboxExecutionBroker))) {
       continue;
     }
 
@@ -521,6 +607,7 @@ export async function cleanupStaleAgentWorktrees(
         path,
         branch: worktreeBranchName(slug),
         gitRoot: opts.gitRoot,
+        sandboxExecutionBroker: opts.sandboxExecutionBroker,
       });
       removed += 1;
     } catch {
@@ -532,10 +619,17 @@ export async function cleanupStaleAgentWorktrees(
   return removed;
 }
 
-function canRemoveStaleWorktree(path: string): Promise<boolean> {
+function canRemoveStaleWorktree(
+  path: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
+): Promise<boolean> {
   return Promise.all([
-    runGit(["status", "--porcelain", "-uno"], path),
-    runGit(["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"], path),
+    runGit(["status", "--porcelain", "-uno"], path, sandboxExecutionBroker),
+    runGit(
+      ["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"],
+      path,
+      sandboxExecutionBroker,
+    ),
   ]).then(([status, unpushed]) => {
     if (status.code !== 0 || status.stdout.trim().length > 0) {
       return false;

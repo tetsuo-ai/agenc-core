@@ -16,16 +16,24 @@
  * @module
  */
 
-import { spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, win32 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import ignore from "ignore";
 
-import { runCommand } from "../../utils/process.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import {
+  runSupervisedProcess,
+  type SupervisedProcessStopReason,
+} from "../../utils/supervisedProcess.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
+import {
+  applyRuntimeSandboxToSpawn,
+  type SandboxSpawnCommand,
+} from "./apply-runtime-sandbox.js";
 import { resolveToolAllowedPaths, safePath } from "./filesystem.js";
 
 export const GREP_TOOL_NAME = "Grep";
@@ -59,6 +67,9 @@ const DEFAULT_GENERATED_DIRECTORIES_TO_EXCLUDE = [
 
 const DEFAULT_HEAD_LIMIT = 250;
 const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
+const RIPGREP_PROBE_TIMEOUT_MS = 5_000;
+const RIPGREP_SEARCH_TIMEOUT_MS = 120_000;
+const RIPGREP_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 const MAX_FALLBACK_FILES = 5_000;
 const MAX_FALLBACK_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_RENDERED_CONTENT_LINE_CHARS = 500;
@@ -163,19 +174,61 @@ function normalizeOutputMode(value: unknown): OutputMode | { error: string } {
 
 let ripgrepAvailability: boolean | undefined;
 
-/** Probe `rg` once per process and cache the result. */
-async function isRipgrepAvailable(cwd: string): Promise<boolean> {
-  if (ripgrepAvailability !== undefined) return ripgrepAvailability;
-  try {
-    const result = await runCommand("rg", ["--version"], {
-      cwd,
-      maxBuffer: 64 * 1024,
-    });
-    ripgrepAvailability = result.exitCode === 0;
-  } catch {
-    ripgrepAvailability = false;
+function isExecutableUnavailable(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (/executable not found or not executable:/u.test(current.message)) {
+      return true;
+    }
+    current = current.cause;
   }
-  return ripgrepAvailability;
+  return false;
+}
+
+/** Probe `rg` once per process and cache the result. */
+async function isRipgrepAvailable(
+  cwd: string,
+  toolArgs: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  // Authenticate and prepare the probe before consulting the process-wide
+  // availability cache. A cached host result must never let a later restricted
+  // session skip its own required sandbox boundary.
+  let command: SandboxSpawnCommand;
+  try {
+    command = applyRuntimeSandboxToSpawn({
+      toolArgs,
+      fallbackCwd: cwd,
+      program: "rg",
+      args: ["--version"],
+      cwd,
+      env: scrubEnvForChildProcess(process.env),
+    });
+  } catch (error) {
+    if (isExecutableUnavailable(error)) {
+      if (signal?.aborted !== true) ripgrepAvailability = false;
+      return false;
+    }
+    throw error;
+  }
+  if (ripgrepAvailability !== undefined) return ripgrepAvailability;
+  const available = await probeRipgrepCommand(command, signal);
+  if (signal?.aborted !== true) ripgrepAvailability = available;
+  return available;
+}
+
+async function probeRipgrepCommand(
+  command: SandboxSpawnCommand,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: RIPGREP_PROBE_TIMEOUT_MS,
+    maxOutputBytes: 256 * 1024,
+    signal,
+  });
+  return result.exitCode === 0 &&
+    result.stopReason === undefined &&
+    result.error === undefined;
 }
 
 /**
@@ -601,6 +654,7 @@ interface LimitedRipgrepResult {
   readonly signal: string | null;
   readonly killedAfterLimit: boolean;
   readonly aborted: boolean;
+  readonly stopReason?: SupervisedProcessStopReason;
   readonly spawnError?: Error;
 }
 
@@ -609,115 +663,97 @@ function appendBoundedText(current: string, chunk: string, maxChars: number): st
   return next.length > maxChars ? next.slice(0, maxChars) : next;
 }
 
-function runRipgrepCollectLines(params: {
+async function runRipgrepCollectLines(params: {
   readonly args: readonly string[];
   readonly cwd: string;
+  readonly toolArgs: Record<string, unknown>;
   readonly lineLimit?: number;
   readonly signal?: AbortSignal;
 }): Promise<LimitedRipgrepResult> {
   const { args, cwd, signal } = params;
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs: params.toolArgs,
+    fallbackCwd: cwd,
+    program: "rg",
+    args,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   const lineLimit =
     params.lineLimit === undefined
       ? undefined
       : Math.max(1, Math.floor(params.lineLimit));
+  const lines: string[] = [];
+  const decoder = new StringDecoder("utf8");
+  let carry = "";
+  let killedAfterLimit = false;
+  const isAborted = (): boolean => signal?.aborted === true;
 
-  return new Promise((resolve) => {
-    const child = spawn("rg", [...args], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const lines: string[] = [];
-    let carry = "";
-    let stderr = "";
-    let killedAfterLimit = false;
-    let aborted = signal?.aborted === true;
-    let settled = false;
-
-    const finish = (
-      exitCode: number | null,
-      signalName: NodeJS.Signals | null,
-      spawnError?: Error,
-    ): void => {
-      if (settled) return;
-      settled = true;
-      if (signal !== undefined) {
-        signal.removeEventListener("abort", onAbort);
-      }
-      resolve({
-        lines,
-        stderr,
-        exitCode,
-        signal: signalName,
-        killedAfterLimit,
-        aborted,
-        ...(spawnError ? { spawnError } : {}),
-      });
-    };
-
-    const stopAfterLimit = (): void => {
-      if (killedAfterLimit || child.killed) return;
-      killedAfterLimit = true;
-      child.kill("SIGTERM");
-    };
-
-    const pushLine = (line: string): void => {
-      const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
-      if (normalized.length === 0) return;
-      if (lineLimit === undefined || lines.length < lineLimit) {
-        lines.push(normalized);
-      }
-      if (lineLimit !== undefined && lines.length >= lineLimit) {
-        stopAfterLimit();
-      }
-    };
-
-    const onAbort = (): void => {
-      aborted = true;
-      if (!child.killed) child.kill("SIGTERM");
-    };
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      if (killedAfterLimit || aborted) return;
-      carry += chunk;
-      while (!killedAfterLimit && !aborted) {
-        const idx = carry.indexOf("\n");
-        if (idx === -1) break;
-        const line = carry.slice(0, idx);
-        carry = carry.slice(idx + 1);
-        pushLine(line);
-      }
-      if (killedAfterLimit || aborted) {
-        carry = "";
-      }
-    });
-
-    child.stdout.on("end", () => {
-      if (!killedAfterLimit && !aborted && carry.length > 0) {
-        pushLine(carry);
-      }
-      carry = "";
-    });
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderr = appendBoundedText(stderr, chunk, MAX_RIPGREP_STDERR_CHARS);
-    });
-
-    child.on("error", (err: Error) => {
-      finish(127, null, err);
-    });
-
-    child.on("close", (code, signalName) => {
-      finish(code, signalName);
-    });
-
-    if (aborted) {
-      onAbort();
-    } else if (signal !== undefined) {
-      signal.addEventListener("abort", onAbort, { once: true });
+  const pushLine = (
+    line: string,
+    stop: () => void,
+  ): void => {
+    const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (normalized.length === 0) return;
+    if (lineLimit === undefined || lines.length < lineLimit) {
+      lines.push(normalized);
     }
+    if (lineLimit !== undefined && lines.length >= lineLimit) {
+      killedAfterLimit = true;
+      carry = "";
+      stop();
+    }
+  };
+
+  const consumeStdout = (
+    text: string,
+    stop: () => void,
+  ): void => {
+    if (killedAfterLimit || isAborted()) return;
+    carry += text;
+    while (!killedAfterLimit && !isAborted()) {
+      const idx = carry.indexOf("\n");
+      if (idx === -1) break;
+      const line = carry.slice(0, idx);
+      carry = carry.slice(idx + 1);
+      pushLine(line, stop);
+    }
+    if (killedAfterLimit || isAborted()) carry = "";
+  };
+
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: RIPGREP_SEARCH_TIMEOUT_MS,
+    maxOutputBytes: RIPGREP_MAX_OUTPUT_BYTES,
+    signal,
+    onStdout: (chunk, control) => {
+      consumeStdout(decoder.write(chunk), () => control.stop());
+    },
   });
+
+  const aborted = signal?.aborted === true || result.stopReason === "aborted";
+  if (!killedAfterLimit && !aborted && result.stopReason !== "output_limit") {
+    consumeStdout(decoder.end(), () => undefined);
+    if (carry.length > 0) pushLine(carry, () => undefined);
+  }
+
+  return {
+    lines,
+    stderr: appendBoundedText(
+      "",
+      result.stderr.toString("utf8"),
+      MAX_RIPGREP_STDERR_CHARS,
+    ),
+    exitCode: result.error !== undefined && result.exitCode === null
+      ? 127
+      : result.exitCode,
+    signal: result.signal,
+    killedAfterLimit,
+    aborted,
+    ...(result.stopReason !== undefined
+      ? { stopReason: result.stopReason }
+      : {}),
+    ...(result.error !== undefined ? { spawnError: result.error } : {}),
+  };
 }
 
 async function runRipgrepGrep(params: {
@@ -725,6 +761,7 @@ async function runRipgrepGrep(params: {
   readonly headLimit: number;
   readonly offset: number;
   readonly target: ResolvedTarget;
+  readonly toolArgs: Record<string, unknown>;
   readonly signal?: AbortSignal;
 }): Promise<ToolResult> {
   const { opts, headLimit, offset, target, signal } = params;
@@ -732,6 +769,7 @@ async function runRipgrepGrep(params: {
   const result = await runRipgrepCollectLines({
     args,
     cwd: target.searchRoot,
+    toolArgs: params.toolArgs,
     ...(headLimit === 0
       ? {}
       : { lineLimit: collectionLineLimit(headLimit, offset) }),
@@ -742,6 +780,12 @@ async function runRipgrepGrep(params: {
   }
   if (result.spawnError) {
     return errorResult(`Grep error: ${result.spawnError.message}`);
+  }
+  if (result.stopReason === "timeout") {
+    return errorResult("Grep error: ripgrep timed out.");
+  }
+  if (result.stopReason === "output_limit") {
+    return errorResult("Grep error: ripgrep exceeded the output safety limit.");
   }
   if (result.exitCode === 1 && result.lines.length === 0) {
     // Ripgrep convention: exit 1 = "no matches".
@@ -1397,7 +1441,15 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
 
       const signal = args.__abortSignal;
       const cwdForProbe = target.searchRoot || process.cwd();
-      const ripgrepReady = await isRipgrepAvailable(cwdForProbe);
+      const ripgrepReady = await isRipgrepAvailable(
+        cwdForProbe,
+        rawArgs,
+        signal,
+      );
+
+      if (signal?.aborted) {
+        return errorResult("Search aborted");
+      }
 
       if (!ripgrepReady) {
         // Fallback path — narrow capability subset.
@@ -1445,6 +1497,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         headLimit,
         offset,
         target,
+        toolArgs: rawArgs,
         signal,
       });
     },

@@ -1,7 +1,43 @@
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
+import type { ChildProcess } from 'node:child_process'
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
+
+const { terminationSeam } = vi.hoisted(() => ({
+  terminationSeam: {
+    failuresRemaining: 0,
+    calls: [] as ChildProcess[],
+  },
+}))
+
+vi.mock('../../../src/utils/supervisedProcess.js', async importOriginal => {
+  const actual = await importOriginal<
+    typeof import('../../../src/utils/supervisedProcess.js')
+  >()
+  return {
+    ...actual,
+    terminateProcessTreeAndWait: async (
+      ...args: Parameters<typeof actual.terminateProcessTreeAndWait>
+    ): Promise<void> => {
+      terminationSeam.calls.push(args[0])
+      if (terminationSeam.failuresRemaining > 0) {
+        terminationSeam.failuresRemaining -= 1
+        throw new Error('injected ACP cleanup failure')
+      }
+      await actual.terminateProcessTreeAndWait(...args)
+    },
+  }
+})
 
 import {
   allowPermissionDecision,
@@ -9,6 +45,8 @@ import {
   XaiAcpClient,
   type XaiAcpPermissionRequest,
 } from '../../../src/services/xai/acp.ts'
+import { SandboxExecutionBroker } from '../../../src/sandbox/execution-broker.ts'
+import { explicitDangerBroker } from '../../helpers/explicit-danger-boundary.ts'
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -29,6 +67,7 @@ function makeClient(options?: {
     args: [FIXTURE],
     cwd: process.cwd(),
     env: { ...process.env, ...options?.env },
+    sandboxExecutionBroker: explicitDangerBroker,
     ...(options?.onPermissionRequest !== undefined
       ? { onPermissionRequest: options.onPermissionRequest }
       : {}),
@@ -69,7 +108,7 @@ describe('XaiAcpClient', () => {
       expect(result.text).toBe('[grok-composer-2.5-fast] Hello world')
       expect(chunks.length).toBeGreaterThanOrEqual(3)
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
@@ -91,7 +130,7 @@ describe('XaiAcpClient', () => {
       expect(seen[0].options.map(o => o.kind)).toEqual(['allow_once', 'reject_once'])
       expect(result.text).toContain('perm=selected:allow')
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
@@ -104,12 +143,12 @@ describe('XaiAcpClient', () => {
       const result = await client.prompt({ sessionId: session.sessionId, text: 'hi' })
       expect(result.text).toContain('perm=selected:reject')
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
   test('agent auth errors surface as typed agent_error', async () => {
-    const client = makeClient({ env: { FAKE_ACP_FAIL_AUTH: '1' } })
+    const client = makeClient({ env: { FAKE_ACP_FAIL_LOGIN: '1' } })
     try {
       await client.initialize()
       await expect(client.authenticate('cached_token')).rejects.toMatchObject({
@@ -117,22 +156,21 @@ describe('XaiAcpClient', () => {
         rpcCode: -32000,
       })
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
-  test('missing binary fails with a helpful spawn error', async () => {
-    const client = new XaiAcpClient({
-      command: 'definitely-not-a-real-grok-binary',
-      cwd: process.cwd(),
-    })
-    try {
-      await expect(client.initialize()).rejects.toMatchObject({
-        code: expect.stringMatching(/spawn_failed|closed/),
-      })
-    } finally {
-      client.dispose()
-    }
+  test('missing binary fails at the executable boundary', async () => {
+    expect(() =>
+      new XaiAcpClient({
+        command: 'definitely-not-a-real-grok-binary',
+        cwd: process.cwd(),
+        sandboxExecutionBroker: explicitDangerBroker,
+      }),
+    ).toThrowError(expect.objectContaining({
+      code: 'sandbox_transform_failed',
+      surface: 'provider',
+    }))
   })
 
   test('prompt timeout produces a typed timeout error', async () => {
@@ -148,10 +186,285 @@ describe('XaiAcpClient', () => {
         client.prompt({ sessionId: session.sessionId, text: 'hi' }),
       ).rejects.toMatchObject({ code: 'timeout' })
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
+
+  test('abort closes an ACP agent that ignores session/cancel before rejecting', async () => {
+    const client = makeClient({
+      env: { FAKE_ACP_STALL_PROMPT: '1' },
+      promptTimeoutMs: 10_000,
+    })
+    try {
+      await client.initialize()
+      await client.authenticate('cached_token')
+      const session = await client.newSession()
+      const controller = new AbortController()
+      const startedAt = Date.now()
+      const prompt = client.prompt({
+        sessionId: session.sessionId,
+        text: 'hi',
+        signal: controller.signal,
+      })
+      controller.abort('test cancellation')
+
+      await expect(prompt).rejects.toMatchObject({ code: 'aborted' })
+      expect(Date.now() - startedAt).toBeLessThan(2_000)
+      expect(client.isClosed).toBe(true)
+    } finally {
+      await client.dispose()
+    }
+  })
+
+  test('failed concurrent disposal retries the identical ACP child', async () => {
+    const client = makeClient()
+    terminationSeam.calls = []
+    terminationSeam.failuresRemaining = 1
+
+    const first = client.dispose()
+    const concurrent = client.dispose()
+    expect(concurrent).toBe(first)
+    const outcomes = await Promise.allSettled([first, concurrent])
+    expect(outcomes.map(outcome => outcome.status)).toEqual([
+      'rejected',
+      'rejected',
+    ])
+    expect(terminationSeam.calls).toHaveLength(1)
+
+    const retainedChild = terminationSeam.calls[0]
+    await client.dispose()
+    expect(terminationSeam.calls).toHaveLength(2)
+    expect(terminationSeam.calls[1]).toBe(retainedChild)
+  })
+
+  test('required sandbox failure prevents the ACP executable from starting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-boundary-'))
+    const marker = join(root, 'spawned')
+    const executable = join(root, 'grok.mjs')
+    await writeFile(
+      executable,
+      `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(marker)}, 'spawned')\n`,
+      'utf8',
+    )
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: root,
+      platform: 'linux',
+      probe: () => ({
+        kind: 'unavailable',
+        mode: 'workspace_write',
+        platform: 'linux',
+        reason: 'probe: forced unavailable for ACP boundary test',
+        remediation: 'repair the test sandbox',
+      }),
+    })
+
+    try {
+      expect(() =>
+        new XaiAcpClient({
+          command: process.execPath,
+          args: [executable],
+          cwd: root,
+          sandboxExecutionBroker: broker,
+        }),
+      ).toThrowError(expect.objectContaining({
+        code: 'sandbox_probe_failed',
+        surface: 'provider',
+      }))
+      await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('restricted ACP grants network, scrubs unrelated secrets, and honors the transformed spawn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-transform-'))
+    const transformedCwd = join(root, 'transformed-cwd')
+    const capturePath = join(root, 'spawn.json')
+    const wrapperPath = join(root, 'transformed-agent.mjs')
+    await mkdir(transformedCwd)
+    await writeFile(
+      wrapperPath,
+      [
+        'import { writeFileSync } from "node:fs"',
+        `writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({`,
+        '  cwd: process.cwd(),',
+        '  argv0: process.argv0,',
+        '  xaiApiKey: process.env.XAI_API_KEY ?? null,',
+        '  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,',
+        '  githubToken: process.env.GITHUB_TOKEN ?? null,',
+        '  publicSetting: process.env.ACP_PUBLIC_SETTING ?? null,',
+        '  transformed: process.env.ACP_TRANSFORMED ?? null,',
+        '  referrer: process.env.GROK_OAUTH2_REFERRER ?? null,',
+        '}))',
+        `await import(${JSON.stringify(pathToFileURL(FIXTURE).href)})`,
+      ].join('\n'),
+      'utf8',
+    )
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: root,
+      platform: 'linux',
+      probe: () => ({
+        kind: 'ready',
+        mode: 'workspace_write',
+        platform: 'linux',
+      }),
+    })
+    const prepareSpawn = vi.spyOn(broker, 'prepareSpawn').mockImplementation(
+      (_surface, command) => ({
+        program: process.execPath,
+        args: [wrapperPath],
+        cwd: transformedCwd,
+        env: { ...command.env, ACP_TRANSFORMED: 'present' },
+        argv0: 'agenc-acp-sandboxed',
+      }),
+    )
+    let client: XaiAcpClient | undefined
+
+    try {
+      client = new XaiAcpClient({
+        command: 'untrusted-original-command',
+        args: ['--must-not-run'],
+        cwd: join(root, 'original-cwd'),
+        env: {
+          XAI_API_KEY: 'xai-preserved',
+          ANTHROPIC_API_KEY: 'anthropic-must-be-scrubbed',
+          GITHUB_TOKEN: 'github-must-be-scrubbed',
+          ACP_PUBLIC_SETTING: 'public-preserved',
+        },
+        sandboxExecutionBroker: broker,
+      })
+      await client.initialize()
+
+      expect(prepareSpawn).toHaveBeenCalledOnce()
+      expect(prepareSpawn).toHaveBeenCalledWith('provider', {
+        program: 'untrusted-original-command',
+        args: ['--must-not-run'],
+        cwd: root,
+        env: {
+          XAI_API_KEY: 'xai-preserved',
+          ACP_PUBLIC_SETTING: 'public-preserved',
+          GROK_OAUTH2_REFERRER: 'agenc',
+        },
+        additionalPermissions: { network: { enabled: true } },
+      })
+      expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
+        cwd: transformedCwd,
+        argv0: 'agenc-acp-sandboxed',
+        xaiApiKey: 'xai-preserved',
+        anthropicApiKey: null,
+        githubToken: null,
+        publicSetting: 'public-preserved',
+        transformed: 'present',
+        referrer: 'agenc',
+      })
+    } finally {
+      await client?.dispose()
+      prepareSpawn.mockRestore()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(process.platform !== 'linux')(
+    'dispose is bounded and kills a TERM-resistant ACP process tree',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'agenc-acp-dispose-tree-'))
+      const pidPath = join(root, 'pids.json')
+      const agentPath = join(root, 'stubborn-agent.mjs')
+      await writeFile(
+        agentPath,
+        [
+          'import { spawn } from "node:child_process"',
+          'import { writeFileSync } from "node:fs"',
+          'const child = spawn(process.execPath, ["-e",',
+          '  "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"',
+          '], { stdio: "ignore" })',
+          `writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ agent: process.pid, child: child.pid }))`,
+          'process.on("SIGTERM", () => {})',
+          'setInterval(() => {}, 1000)',
+        ].join('\n'),
+        'utf8',
+      )
+      const broker = explicitDangerBroker.forkForCwd(root)
+      let client: XaiAcpClient | undefined
+      let pids: { agent: number; child: number } | undefined
+
+      try {
+        client = new XaiAcpClient({
+          command: process.execPath,
+          args: [agentPath],
+          cwd: root,
+          sandboxExecutionBroker: broker,
+          terminateGraceMs: 50,
+          settleBackstopMs: 500,
+        })
+        pids = JSON.parse(
+          await waitForFile(pidPath, 2_000),
+        ) as { agent: number; child: number }
+
+        const startedAt = Date.now()
+        await client.dispose()
+        expect(Date.now() - startedAt).toBeLessThan(1_500)
+        await expectProcessesStopped([pids.agent, pids.child], 2_000)
+      } finally {
+        await client?.dispose()
+        if (pids !== undefined) {
+          try {
+            process.kill(-pids.agent, 'SIGKILL')
+          } catch {
+            // The tested process group has already stopped.
+          }
+        }
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
 })
+
+async function waitForFile(path: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      return await readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`timed out waiting for ${path}`)
+}
+
+async function expectProcessesStopped(
+  pids: readonly number[],
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (
+      (
+        await Promise.all(pids.map(pid => isRunningNonZombie(pid)))
+      ).every(running => !running)
+    ) {
+      return
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`ACP process tree still running: ${pids.join(', ')}`)
+}
+
+async function isRunningNonZombie(pid: number): Promise<boolean> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+    const closingParen = stat.lastIndexOf(')')
+    return stat.slice(closingParen + 2, closingParen + 3) !== 'Z'
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      return false
+    }
+    throw error
+  }
+}
 
 describe('permission decision helpers', () => {
   const request: XaiAcpPermissionRequest = {

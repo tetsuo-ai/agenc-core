@@ -167,6 +167,8 @@ import {
   checkForLSPDiagnostics,
   clearAllLSPDiagnostics,
 } from '../services/lsp/LSPDiagnosticRegistry.js'
+import { peekAmbientRuntimeSession } from '../session/current-session.js'
+import type { SandboxExecutionBrokerLike } from '../sandbox/execution-broker.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   extractTextContent,
@@ -2837,6 +2839,26 @@ async function getDiagnosticAttachments(
   ]
 }
 
+function resolveToolUseContextSandboxBroker(
+  toolUseContext: ToolUseContext,
+): SandboxExecutionBrokerLike | undefined {
+  const extended = toolUseContext as ToolUseContext & {
+    readonly services?: {
+      readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+    }
+    readonly session?: {
+      readonly services?: {
+        readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+      }
+    }
+  }
+  return (
+    extended.services?.sandboxExecutionBroker ??
+    extended.session?.services?.sandboxExecutionBroker ??
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
+  )
+}
+
 /**
  * Get LSP diagnostic attachments from passive LSP servers.
  * Follows the AsyncHookRegistry pattern for consistent async attachment delivery.
@@ -2853,8 +2875,10 @@ async function getLSPDiagnosticAttachments(
 
   logForDebugging('LSP Diagnostics: getLSPDiagnosticAttachments called')
 
+  const lspScope = resolveToolUseContextSandboxBroker(toolUseContext)
+
   try {
-    const diagnosticSets = checkForLSPDiagnostics()
+    const diagnosticSets = checkForLSPDiagnostics(lspScope)
 
     if (diagnosticSets.length === 0) {
       return []
@@ -2874,7 +2898,7 @@ async function getLSPDiagnosticAttachments(
     // Clear delivered diagnostics from registry to prevent memory leak
     // Follows same pattern as removeDeliveredAsyncHooks
     if (diagnosticSets.length > 0) {
-      clearAllLSPDiagnostics()
+      clearAllLSPDiagnostics(lspScope)
       logForDebugging(
         `LSP Diagnostics: Cleared ${diagnosticSets.length} delivered diagnostic(s) from registry`,
       )
@@ -2940,6 +2964,7 @@ export async function* getAttachmentMessages(
  */
 export async function tryGetPDFReference(
   filename: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): Promise<PDFReferenceAttachment | null> {
   const ext = parse(filename).ext.toLowerCase()
   if (!isPDFExtension(ext)) {
@@ -2948,7 +2973,7 @@ export async function tryGetPDFReference(
   try {
     const [stats, pageCount] = await Promise.all([
       getFsImplementation().stat(filename),
-      getPDFPageCount(filename),
+      getPDFPageCount(filename, sandboxExecutionBroker),
     ])
     // Use page count if available, otherwise fall back to size heuristic (~100KB per page)
     const effectivePageCount = pageCount ?? Math.ceil(stats.size / (100 * 1024))
@@ -3013,7 +3038,10 @@ export async function generateFileAttachment(
 
   // For large PDFs on @ mention, return a lightweight reference instead of inlining
   if (mode === 'at-mention') {
-    const pdfRef = await tryGetPDFReference(filename)
+    const pdfRef = await tryGetPDFReference(
+      filename,
+      resolveToolUseContextSandboxBroker(toolUseContext),
+    )
     if (pdfRef) {
       return pdfRef
     }

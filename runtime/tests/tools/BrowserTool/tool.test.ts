@@ -9,12 +9,17 @@
  * dropped.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { createBrowserTool } from "../../../src/tools/BrowserTool/tool.js";
 import { BROWSER_TOOL_NAME } from "../../../src/tools/BrowserTool/prompt.js";
 import { createEmptyToolPermissionContext } from "../../../src/permissions/types.js";
 import type { ToolEvaluatorContext } from "../../../src/permissions/evaluator.js";
 import type { PermissionResult } from "../../../src/permissions/types.js";
+import {
+  SandboxExecutionBroker,
+  attachSandboxExecutionBroker,
+} from "../../../src/sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../../../src/sandbox/execution-lifecycle.js";
 
 function evaluatorContext(): ToolEvaluatorContext {
   const permissionContext = createEmptyToolPermissionContext();
@@ -117,5 +122,31 @@ describe("Browser tool validation (no browser launched)", () => {
     const result = await createBrowserTool().execute({ action: "click" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("requires a ref");
+  });
+
+  test("closes and detaches a broker-owned manager when child authority is disposed", async () => {
+    const closeAll = vi.fn(async () => {});
+    const listTabs = vi.fn(async () => []);
+    const tool = createBrowserTool({
+      manager: { closeAll, listTabs } as never,
+    });
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/child-browser-workspace",
+    });
+    const args: Record<string, unknown> = { action: "tabs" };
+    attachSandboxExecutionBroker(args, broker, "browser");
+
+    const beforeDisposal = await tool.execute(args);
+    expect(beforeDisposal.isError).toBeUndefined();
+    expect(listTabs).toHaveBeenCalledOnce();
+
+    await disposeSandboxExecutionBroker(broker);
+    expect(closeAll).toHaveBeenCalledOnce();
+
+    const afterDisposal = await tool.execute(args);
+    expect(afterDisposal).toMatchObject({ isError: true });
+    expect(afterDisposal.content).toContain("authority has been disposed");
+    expect(listTabs).toHaveBeenCalledOnce();
   });
 });

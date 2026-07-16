@@ -41,6 +41,46 @@ describe("ResilientMCPBridge", () => {
     vi.clearAllMocks();
   });
 
+  it("retries a rejected inner disposal and caches the successful retry", async () => {
+    const cleanupError = new Error("owned client still alive");
+    const initialBridge = makeBridge("srv1");
+    vi.mocked(initialBridge.dispose)
+      .mockRejectedValueOnce(cleanupError)
+      .mockResolvedValue(undefined);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv1", command: "node" },
+      initialBridge,
+    );
+
+    const firstDisposal = bridge.dispose();
+    expect(bridge.dispose()).toBe(firstDisposal);
+    await expect(firstDisposal).rejects.toEqual(
+      expect.objectContaining({ errors: [cleanupError] }),
+    );
+
+    await expect(bridge.dispose()).resolves.toBeUndefined();
+    await expect(bridge.dispose()).resolves.toBeUndefined();
+    expect(initialBridge.dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("remains disposed while persistent cleanup failures stay retryable", async () => {
+    const cleanupError = new Error("owned client remains alive");
+    const initialBridge = makeBridge("srv1");
+    vi.mocked(initialBridge.dispose).mockRejectedValue(cleanupError);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv1", command: "node" },
+      initialBridge,
+    );
+
+    await expect(bridge.dispose()).rejects.toBeInstanceOf(AggregateError);
+    await expect(bridge.dispose()).rejects.toBeInstanceOf(AggregateError);
+    expect(initialBridge.dispose).toHaveBeenCalledTimes(2);
+    await expect(bridge.tools[0]!.execute({})).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("disposed"),
+    });
+  });
+
   it("passes permission options to automatically reconnected tool bridges", async () => {
     vi.useFakeTimers();
     const config: MCPServerConfig = {
@@ -231,5 +271,47 @@ describe("ResilientMCPBridge", () => {
     expect(options.serverConfig).toBeUndefined();
 
     await bridge.dispose();
+  });
+
+  it("awaits and closes an in-flight automatic reconnect during disposal", async () => {
+    vi.useFakeTimers();
+    let resolveClient:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const freshClient = { close: vi.fn().mockResolvedValue(undefined) };
+    const initialBridge = makeBridge(
+      "srv1",
+      vi.fn().mockResolvedValue({
+        content: "transport closed",
+        isError: true,
+      }),
+    );
+    mockCreateMCPConnection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClient = resolve;
+        }),
+    );
+    const bridge = new ResilientMCPBridge(
+      { name: "srv1", command: "node" },
+      initialBridge,
+    );
+
+    await bridge.tools[0]!.execute({});
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    let disposed = false;
+    const disposal = bridge.dispose().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    resolveClient?.(freshClient);
+    await disposal;
+
+    expect(freshClient.close).toHaveBeenCalledOnce();
+    expect(initialBridge.dispose).toHaveBeenCalledOnce();
   });
 });

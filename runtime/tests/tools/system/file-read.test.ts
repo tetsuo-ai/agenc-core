@@ -7,7 +7,15 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { applyPermissionUpdate } from "../../permissions/rules.js";
 import { createEmptyToolPermissionContext } from "../../permissions/types.js";
-import { createFileReadTool, FILE_READ_TOOL_NAME } from "./file-read.js";
+import {
+  createFileReadTool as createUnboundFileReadTool,
+  FILE_READ_TOOL_NAME,
+} from "./file-read.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createFileReadTool = (
+  ...args: Parameters<typeof createUnboundFileReadTool>
+) => bindExplicitDangerBoundary(createUnboundFileReadTool(...args));
 import {
   clearSessionReadState,
   getSessionReadSnapshot,

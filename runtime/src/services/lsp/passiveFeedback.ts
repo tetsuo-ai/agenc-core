@@ -8,7 +8,10 @@
 
 import { fileURLToPath } from "node:url";
 
-import { registerPendingLSPDiagnostic } from "./LSPDiagnosticRegistry.js";
+import {
+  registerPendingLSPDiagnostic,
+  type LSPDiagnosticScope,
+} from "./LSPDiagnosticRegistry.js";
 import type { LSPServerManager } from "./LSPServerManager.js";
 import type { PublishDiagnosticsParams } from "./protocol.js";
 import type { DiagnosticEntry, DiagnosticFile } from "./types.js";
@@ -103,6 +106,7 @@ export interface HandlerRegistrationResult {
 
 export function registerLSPNotificationHandlers(
   manager: LSPServerManager,
+  scope?: LSPDiagnosticScope,
 ): HandlerRegistrationResult {
   const servers = manager.getAllServers();
   const registrationErrors: Array<{ serverName: string; error: string }> = [];
@@ -126,7 +130,7 @@ export function registerLSPNotificationHandlers(
           const files = formatDiagnosticsForAttachment(params);
           const first = files[0];
           if (!first) return;
-          registerPendingLSPDiagnostic({ serverName, files });
+          registerPendingLSPDiagnostic({ serverName, files }, scope);
           diagnosticFailures.delete(serverName);
         } catch (error) {
           const message = errorMessage(error);

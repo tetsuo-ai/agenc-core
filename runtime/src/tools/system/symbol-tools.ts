@@ -48,6 +48,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
       const symbols = await codeIntel.searchSymbols({
         workspaceRoot: repoRoot,
+        toolArgs: args,
         query: toOptionalString(args.query),
         language: toOptionalString(args.language),
         kind: toOptionalString(args.kind),
@@ -90,6 +91,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       const filePath = toOptionalString(args.filePath);
       const definition = await codeIntel.getDefinition({
         workspaceRoot: repoRoot,
+        toolArgs: args,
         symbolName: symbol,
         ...(filePath ? { filePath: resolvePath(repoRoot, filePath) } : {}),
       });
@@ -134,6 +136,7 @@ export function createSymbolTools(config: CodingToolConfig): readonly Tool[] {
       const filePath = toOptionalString(args.filePath);
       const refs = await codeIntel.getReferences({
         workspaceRoot: repoRoot,
+        toolArgs: args,
         symbolName: symbol,
         ...(filePath ? { filePath: resolvePath(repoRoot, filePath) } : {}),
         maxResults: normalizePositiveInteger(args.maxResults, 100, 500),

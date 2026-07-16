@@ -47,7 +47,6 @@
 
 import { resolve } from "node:path";
 
-import { runCommand } from "../../utils/process.js";
 import {
   getPlanFilePath,
   getPlansDirectory,
@@ -56,6 +55,12 @@ import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
+import { runSandboxedToolCommand } from "./coding-common.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
+  worktreeMutationPermissions,
+} from "../../sandbox/worktree-permissions.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-level worktree state — module singleton keyed by AgenC
@@ -207,22 +212,67 @@ function okResult(data: Record<string, unknown>, message: string): ToolResult {
   };
 }
 
-async function findGitRoot(cwd: string): Promise<string | null> {
-  const result = await runCommand(
-    "git",
+async function runWorktreeGit(
+  toolArgs: Record<string, unknown>,
+  commandArgs: readonly string[],
+  cwd: string,
+  authority?:
+    | {
+        readonly kind: "mutation";
+        readonly repoRoot: string;
+        readonly writablePaths?: readonly string[];
+      }
+    | {
+        readonly kind: "checkout";
+        readonly repoRoot: string;
+        readonly worktreePath: string;
+      },
+) {
+  return runSandboxedToolCommand({
+    toolArgs,
+    program: "git",
+    args: authority === undefined
+      ? commandArgs
+      : hardenGitWorktreeMutationArgs(commandArgs),
+    cwd,
+    ...(authority !== undefined
+      ? {
+          additionalPermissions: authority.kind === "mutation"
+            ? worktreeMutationPermissions(
+                authority.repoRoot,
+                authority.writablePaths,
+              )
+            : worktreeCheckoutPermissions(
+                authority.repoRoot,
+                authority.worktreePath,
+              ),
+        }
+      : {}),
+  });
+}
+
+async function findGitRoot(
+  cwd: string,
+  toolArgs: Record<string, unknown>,
+): Promise<string | null> {
+  const result = await runWorktreeGit(
+    toolArgs,
     ["-C", cwd, "rev-parse", "--show-toplevel"],
-    { cwd },
+    cwd,
   );
   if (result.exitCode !== 0) return null;
   const path = result.stdout.trim();
   return path.length > 0 ? path : null;
 }
 
-async function getCurrentHeadCommit(cwd: string): Promise<string | undefined> {
-  const result = await runCommand(
-    "git",
+async function getCurrentHeadCommit(
+  cwd: string,
+  toolArgs: Record<string, unknown>,
+): Promise<string | undefined> {
+  const result = await runWorktreeGit(
+    toolArgs,
     ["-C", cwd, "rev-parse", "HEAD"],
-    { cwd },
+    cwd,
   );
   if (result.exitCode !== 0) return undefined;
   const sha = result.stdout.trim();
@@ -243,11 +293,12 @@ interface ChangeSummary {
 async function countWorktreeChanges(
   worktreePath: string,
   originalHeadCommit: string | undefined,
+  toolArgs: Record<string, unknown>,
 ): Promise<ChangeSummary | null> {
-  const status = await runCommand(
-    "git",
+  const status = await runWorktreeGit(
+    toolArgs,
     ["-C", worktreePath, "status", "--porcelain"],
-    { cwd: worktreePath },
+    worktreePath,
   );
   if (status.exitCode !== 0) return null;
   const changedFiles = status.stdout
@@ -260,8 +311,8 @@ async function countWorktreeChanges(
     return null;
   }
 
-  const revList = await runCommand(
-    "git",
+  const revList = await runWorktreeGit(
+    toolArgs,
     [
       "-C",
       worktreePath,
@@ -269,7 +320,7 @@ async function countWorktreeChanges(
       "--count",
       `${originalHeadCommit}..HEAD`,
     ],
-    { cwd: worktreePath },
+    worktreePath,
   );
   if (revList.exitCode !== 0) return null;
   const commits = parseInt(revList.stdout.trim(), 10);
@@ -372,7 +423,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       }
 
       const startCwd = resolve(config.cwd);
-      const mainRepoRoot = await findGitRoot(startCwd);
+      const mainRepoRoot = await findGitRoot(startCwd, rawArgs);
       if (mainRepoRoot === null) {
         return errorResult(
           `Not in a git repository (no rev-parse --show-toplevel from ${startCwd}). EnterWorktree requires a git repo or configured WorktreeCreate hooks (the latter aren't yet wired in AgenC).`,
@@ -395,20 +446,29 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         );
       }
       const branch = slug;
-      const originalHeadCommit = await getCurrentHeadCommit(mainRepoRoot);
+      const originalHeadCommit = await getCurrentHeadCommit(
+        mainRepoRoot,
+        rawArgs,
+      );
 
-      const create = await runCommand(
-        "git",
+      const create = await runWorktreeGit(
+        rawArgs,
         [
           "-C",
           mainRepoRoot,
           "worktree",
           "add",
+          "--no-checkout",
           "-b",
           branch,
           worktreePath,
         ],
-        { cwd: mainRepoRoot },
+        mainRepoRoot,
+        {
+          kind: "mutation",
+          repoRoot: mainRepoRoot,
+          writablePaths: [resolve(mainRepoRoot, ".agenc")],
+        },
       );
       if (create.exitCode !== 0) {
         const errText =
@@ -416,6 +476,103 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
           create.stdout.trim() ||
           "git worktree add failed";
         return errorResult(`Failed to create worktree: ${errText}`);
+      }
+
+      // Materialize repository content only after Git has registered the
+      // linked worktree. This phase deliberately omits write access to the
+      // common .git directory: repository-configured checkout filters inherit
+      // the child process boundary, so carrying the metadata grant into this
+      // phase would let one mutate common repository state.
+      let checkoutError: string | undefined;
+      try {
+        const checkout = await runWorktreeGit(
+          rawArgs,
+          ["-C", worktreePath, "checkout", "HEAD"],
+          worktreePath,
+          {
+            kind: "checkout",
+            repoRoot: mainRepoRoot,
+            worktreePath,
+          },
+        );
+        if (checkout.exitCode !== 0) {
+          checkoutError =
+            checkout.stderr.trim() ||
+            checkout.stdout.trim() ||
+            "git checkout failed";
+        }
+      } catch (error) {
+        checkoutError = error instanceof Error ? error.message : String(error);
+      }
+
+      if (checkoutError !== undefined) {
+        const cleanupErrors: string[] = [];
+        let removed = false;
+        try {
+          const remove = await runWorktreeGit(
+            rawArgs,
+            [
+              "-C",
+              mainRepoRoot,
+              "worktree",
+              "remove",
+              "--force",
+              worktreePath,
+            ],
+            mainRepoRoot,
+            {
+              kind: "mutation",
+              repoRoot: mainRepoRoot,
+              writablePaths: [worktreePath],
+            },
+          );
+          if (remove.exitCode === 0) {
+            removed = true;
+          } else {
+            cleanupErrors.push(
+              remove.stderr.trim() ||
+                remove.stdout.trim() ||
+                "git worktree remove failed",
+            );
+          }
+        } catch (error) {
+          cleanupErrors.push(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+
+        // A removed linked worktree leaves its newly-created branch behind.
+        // Delete it as part of the rollback so retrying the same slug remains
+        // possible. If worktree removal failed the branch is still checked
+        // out and must not be deleted independently.
+        if (removed) {
+          try {
+            const deleteBranch = await runWorktreeGit(
+              rawArgs,
+              ["-C", mainRepoRoot, "branch", "-D", branch],
+              mainRepoRoot,
+              { kind: "mutation", repoRoot: mainRepoRoot },
+            );
+            if (deleteBranch.exitCode !== 0) {
+              cleanupErrors.push(
+                deleteBranch.stderr.trim() ||
+                  deleteBranch.stdout.trim() ||
+                  "git branch cleanup failed",
+              );
+            }
+          } catch (error) {
+            cleanupErrors.push(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+
+        const cleanupNote = cleanupErrors.length === 0
+          ? ""
+          : ` Cleanup was incomplete: ${cleanupErrors.join("; ")}`;
+        return errorResult(
+          `Failed to checkout worktree: ${checkoutError}.${cleanupNote}`,
+        );
       }
 
       const session: WorktreeSession = {
@@ -515,6 +672,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         const summary = await countWorktreeChanges(
           session.worktreePath,
           session.originalHeadCommit,
+          rawArgs,
         );
         if (summary === null) {
           return errorResult(
@@ -546,6 +704,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         (await countWorktreeChanges(
           session.worktreePath,
           session.originalHeadCommit,
+          rawArgs,
         )) ?? { changedFiles: 0, commits: 0 };
 
       if (action === "keep") {
@@ -568,8 +727,8 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
       }
 
       // action === "remove"
-      const remove = await runCommand(
-        "git",
+      const remove = await runWorktreeGit(
+        rawArgs,
         [
           "-C",
           session.mainRepoRoot,
@@ -578,7 +737,12 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
           "--force",
           session.worktreePath,
         ],
-        { cwd: session.mainRepoRoot },
+        session.mainRepoRoot,
+        {
+          kind: "mutation",
+          repoRoot: session.mainRepoRoot,
+          writablePaths: [session.worktreePath],
+        },
       );
       if (remove.exitCode !== 0) {
         const errText =
@@ -591,8 +755,8 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
       // Clean up the per-session branch if we created one. `git
       // worktree remove --force` does NOT delete the branch.
       if (session.worktreeBranch !== undefined) {
-        await runCommand(
-          "git",
+        await runWorktreeGit(
+          rawArgs,
           [
             "-C",
             session.mainRepoRoot,
@@ -600,7 +764,8 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
             "-D",
             session.worktreeBranch,
           ],
-          { cwd: session.mainRepoRoot },
+          session.mainRepoRoot,
+          { kind: "mutation", repoRoot: session.mainRepoRoot },
         ).catch(() => {
           /* best-effort branch cleanup */
         });

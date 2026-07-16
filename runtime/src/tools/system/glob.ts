@@ -18,7 +18,6 @@
  *     `safePath()` before and after the file-listing call.
  */
 
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import {
   dirname,
@@ -28,6 +27,7 @@ import {
   sep,
   win32,
 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   resolveToolAllowedPaths,
@@ -35,11 +35,22 @@ import {
   type FilesystemToolConfig,
 } from "./filesystem.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import {
+  runSupervisedProcess,
+  type SupervisedProcessStopReason,
+} from "../../utils/supervisedProcess.js";
+import {
+  applyRuntimeSandboxToSpawn,
+  type SandboxSpawnCommand,
+} from "./apply-runtime-sandbox.js";
 
 export const GLOB_TOOL_NAME = "Glob";
 
 const DEFAULT_MAX_RESULTS = 100;
 const MAX_RIPGREP_STDERR_CHARS = 128 * 1024;
+const RIPGREP_FILES_TIMEOUT_MS = 120_000;
+const RIPGREP_FILES_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const TRUNCATION_NOTE =
   "(Results are truncated. Consider using a more specific path or pattern.)";
 
@@ -123,6 +134,7 @@ export interface LimitedRipgrepResult {
   readonly exitCode: number | null;
   readonly aborted: boolean;
   readonly killedAfterLimit: boolean;
+  readonly stopReason?: SupervisedProcessStopReason;
   readonly spawnError?: Error;
 }
 
@@ -282,10 +294,22 @@ function appendBoundedText(current: string, chunk: string): string {
     : next;
 }
 
-export function runRipgrepFiles(params: {
+function isExecutableUnavailable(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (/executable not found or not executable:/u.test(current.message)) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+export async function runRipgrepFiles(params: {
   readonly command: string;
   readonly pattern: string;
   readonly cwd: string;
+  readonly toolArgs: Record<string, unknown>;
   readonly limit: number;
   readonly includeIgnored: boolean;
   readonly signal?: AbortSignal;
@@ -317,90 +341,85 @@ export function runRipgrepFiles(params: {
       args.push("--glob", `!${exclude}`);
     }
   }
-  return new Promise((resolveResult) => {
-    const lines: string[] = [];
-    let pending = "";
-    let stderr = "";
-    let killedAfterLimit = false;
-    let settled = false;
-    let child;
-    try {
-      child = spawn(params.command, args, {
-        cwd: params.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      resolveResult({
-        lines,
-        stderr,
-        exitCode: null,
-        aborted: false,
-        killedAfterLimit,
-        spawnError: err as Error,
-      });
-      return;
+  let command: SandboxSpawnCommand;
+  try {
+    command = applyRuntimeSandboxToSpawn({
+      toolArgs: params.toolArgs,
+      fallbackCwd: params.cwd,
+      program: params.command,
+      args,
+      cwd: params.cwd,
+      env: scrubEnvForChildProcess(process.env),
+    });
+  } catch (error) {
+    if (!isExecutableUnavailable(error)) throw error;
+    return {
+      lines: [],
+      stderr: "",
+      exitCode: null,
+      aborted: params.signal?.aborted === true,
+      killedAfterLimit: false,
+      spawnError: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+  const lines: string[] = [];
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  let killedAfterLimit = false;
+
+  const consumeStdout = (
+    text: string,
+    stop: () => void,
+  ): void => {
+    if (killedAfterLimit || params.signal?.aborted === true) return;
+    pending += text;
+    const parts = pending.split(/\n/);
+    pending = parts.pop() ?? "";
+    for (const part of parts) {
+      const normalized = part.endsWith("\r") ? part.slice(0, -1) : part;
+      if (normalized.length === 0) continue;
+      lines.push(normalized);
+      if (lines.length > params.limit) {
+        killedAfterLimit = true;
+        pending = "";
+        stop();
+        break;
+      }
     }
+  };
 
-    const finish = (result: LimitedRipgrepResult): void => {
-      if (settled) return;
-      settled = true;
-      resolveResult(result);
-    };
-
-    const abort = (): void => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Ignore process teardown races.
-      }
-    };
-    params.signal?.addEventListener("abort", abort, { once: true });
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      pending += chunk;
-      const parts = pending.split(/\n/);
-      pending = parts.pop() ?? "";
-      for (const part of parts) {
-        const normalized = part.endsWith("\r") ? part.slice(0, -1) : part;
-        if (normalized.length === 0) continue;
-        lines.push(normalized);
-        if (lines.length > params.limit) {
-          killedAfterLimit = true;
-          abort();
-          break;
-        }
-      }
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderr = appendBoundedText(stderr, chunk);
-    });
-    child.on("error", (err: Error) => {
-      finish({
-        lines,
-        stderr,
-        exitCode: null,
-        aborted: params.signal?.aborted === true,
-        killedAfterLimit,
-        spawnError: err,
-      });
-    });
-    child.on("close", (code: number | null) => {
-      params.signal?.removeEventListener("abort", abort);
-      if (pending.length > 0 && !killedAfterLimit) {
-        const normalized = pending.endsWith("\r") ? pending.slice(0, -1) : pending;
-        if (normalized.length > 0) lines.push(normalized);
-      }
-      finish({
-        lines,
-        stderr,
-        exitCode: code,
-        aborted: params.signal?.aborted === true,
-        killedAfterLimit,
-      });
-    });
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: RIPGREP_FILES_TIMEOUT_MS,
+    maxOutputBytes: RIPGREP_FILES_MAX_OUTPUT_BYTES,
+    signal: params.signal,
+    onStdout: (chunk, control) => {
+      consumeStdout(decoder.write(chunk), () => control.stop());
+    },
   });
+
+  const aborted =
+    params.signal?.aborted === true || result.stopReason === "aborted";
+  if (!killedAfterLimit && !aborted && result.stopReason !== "output_limit") {
+    consumeStdout(decoder.end(), () => undefined);
+    if (pending.length > 0) {
+      const normalized = pending.endsWith("\r")
+        ? pending.slice(0, -1)
+        : pending;
+      if (normalized.length > 0) lines.push(normalized);
+    }
+  }
+
+  return {
+    lines,
+    stderr: appendBoundedText("", result.stderr.toString("utf8")),
+    exitCode: result.exitCode,
+    aborted,
+    killedAfterLimit,
+    ...(result.stopReason !== undefined
+      ? { stopReason: result.stopReason }
+      : {}),
+    ...(result.error !== undefined ? { spawnError: result.error } : {}),
+  };
 }
 
 async function normalizeAndFilterMatches(params: {
@@ -495,12 +514,21 @@ export function createGlobTool(
         command: ripgrepCommand,
         pattern: target.pattern,
         cwd: target.searchRoot,
+        toolArgs: rawArgs,
         limit: effectiveLimit,
         includeIgnored,
         signal,
       });
       if (signal?.aborted || rg.aborted) {
         return errorResult("Glob aborted");
+      }
+      if (rg.stopReason === "timeout") {
+        return errorResult("Glob error: ripgrep timed out.");
+      }
+      if (rg.stopReason === "output_limit") {
+        return errorResult(
+          "Glob error: ripgrep exceeded the output safety limit.",
+        );
       }
       if (rg.spawnError) {
         return errorResult(

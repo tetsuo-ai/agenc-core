@@ -320,7 +320,7 @@ boundary. They are higher leverage than new surface area.
     - Test hostile project instructions, source comments, generated tool output,
       symlinks, and nested repositories.
 
-[ ] Make required sandboxing fail closed everywhere.
+[x] Make required sandboxing fail closed everywhere.
     - Cover interactive, print, background, workflow/job, hook/cron, MCP, and
       child-agent execution paths.
     - Missing or unhealthy required sandbox support must stop execution with a

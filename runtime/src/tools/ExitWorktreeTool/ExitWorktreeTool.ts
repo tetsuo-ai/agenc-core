@@ -10,7 +10,6 @@ import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { count } from '../../utils/array.js'
 import { clearMemoryFileCaches } from '../../memory/index.js'
-import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { updateHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getPlansDirectory } from '../../utils/plans.js'
@@ -28,7 +27,9 @@ import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import {
   rebaseWorktreeSandboxBrokers,
   requireWorktreeSandboxBrokers,
+  runWorktreeSandboxedProcess,
 } from '../worktree-sandbox-boundary.js'
+import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -82,13 +83,14 @@ type ChangeSummary = {
 async function countWorktreeChanges(
   worktreePath: string,
   originalHeadCommit: string | undefined,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
 ): Promise<ChangeSummary | null> {
-  const status = await execFileNoThrow('git', [
-    '-C',
+  const status = await runWorktreeSandboxedProcess(
+    sandboxExecutionBroker,
+    'git',
+    ['-C', worktreePath, 'status', '--porcelain'],
     worktreePath,
-    'status',
-    '--porcelain',
-  ])
+  )
   if (status.code !== 0) {
     return null
   }
@@ -100,13 +102,18 @@ async function countWorktreeChanges(
     return null
   }
 
-  const revList = await execFileNoThrow('git', [
-    '-C',
+  const revList = await runWorktreeSandboxedProcess(
+    sandboxExecutionBroker,
+    'git',
+    [
+      '-C',
+      worktreePath,
+      'rev-list',
+      '--count',
+      `${originalHeadCommit}..HEAD`,
+    ],
     worktreePath,
-    'rev-list',
-    '--count',
-    `${originalHeadCommit}..HEAD`,
-  ])
+  )
   if (revList.code !== 0) {
     return null
   }
@@ -174,7 +181,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
   toAutoClassifierInput(input) {
     return input.action
   },
-  async validateInput(input) {
+  async validateInput(input, toolUseContext) {
     // Scope guard: getCurrentWorktreeSession() is null unless EnterWorktree
     // (specifically createWorktreeForSession) ran in THIS session. Worktrees
     // created by `git worktree add`, or by EnterWorktree in a previous
@@ -191,9 +198,12 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     }
 
     if (input.action === 'remove' && !input.discard_changes) {
+      const sandboxExecutionBroker =
+        requireWorktreeSandboxBrokers(toolUseContext)[0]!
       const summary = await countWorktreeChanges(
         session.worktreePath,
         session.originalHeadCommit,
+        sandboxExecutionBroker,
       )
       if (summary === null) {
         return {
@@ -230,6 +240,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
   async call(input, toolUseContext) {
     const sandboxExecutionBrokers =
       requireWorktreeSandboxBrokers(toolUseContext)
+    const sandboxExecutionBroker = sandboxExecutionBrokers[0]!
     const session = getCurrentWorktreeSession()
     if (!session) {
       // validateInput guards this, but the session is module-level mutable
@@ -261,12 +272,13 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     const { changedFiles, commits } = (await countWorktreeChanges(
       worktreePath,
       originalHeadCommit,
+      sandboxExecutionBroker,
     )) ?? { changedFiles: 0, commits: 0 }
 
     if (input.action === 'keep') {
+      await rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
       await keepWorktree()
       restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
-      rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
 
       const tmuxNote = tmuxSessionName
         ? ` Tmux session ${tmuxSessionName} is still running; reattach with: tmux attach -t ${tmuxSessionName}`
@@ -285,11 +297,11 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
 
     // action === 'remove'
     if (tmuxSessionName) {
-      await killTmuxSession(tmuxSessionName)
+      await killTmuxSession(tmuxSessionName, sandboxExecutionBroker)
     }
-    await cleanupWorktree()
+    await rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
     restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
-    rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
+    await cleanupWorktree(sandboxExecutionBroker)
 
     const discardParts: string[] = []
     if (commits > 0) {

@@ -17,7 +17,15 @@
 export const meta = {
   description:
     "Run a full turn, wait for daemon post-turn messages to settle, expect no late crash.",
+  // Completion ordering is independent of the platform sandbox. Use the
+  // explicit test-only bypass so this local mock-provider scenario remains
+  // runnable on hosts where unprivileged namespaces are unavailable.
+  args: ["--yolo"],
   timeoutMs: 90_000,
+  // This scenario exercises daemon/TUI completion ordering, not project
+  // context. Keep the writable workspace outside the built runtime so the
+  // packaged sandbox helper remains a trusted executable boundary.
+  slimCwd: true,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

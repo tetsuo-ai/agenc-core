@@ -33,15 +33,15 @@ const jsReplTool: Tool = {
   execute: async () => ({ content: "repl-ok" }),
 };
 
-// Minimal ToolInvocation stub — ToolRouter.dispatchToolCall*
-// only reads `toolName`, so we cast through unknown for the unused
-// session/turn/tracker fields.
+// Minimal ToolInvocation stub. The execution boundary reads the session
+// service container even when no sandbox broker is installed, so keep that
+// required shape while casting the other unused fields.
 function makeInvocation(
   toolName: ToolName,
   callId = "c0",
 ): ToolInvocation {
   return {
-    session: {} as ToolInvocation["session"],
+    session: { services: {} } as ToolInvocation["session"],
     turn: {} as ToolInvocation["turn"],
     tracker: {
       appendFileDiff: () => {},

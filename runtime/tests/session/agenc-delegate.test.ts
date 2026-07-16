@@ -64,6 +64,8 @@ import {
   type ExitReviewModePayload,
 } from "./agenc-delegate.js";
 import { newDefaultTurnWithSubId } from "./turn-context.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import * as providerFactory from "../llm/provider.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixtures (mirrors tasks.test.ts::buildSession and review.test.ts)
@@ -289,11 +291,189 @@ function observeExitReviewMode(session: Session): Promise<ExitReviewModePayload>
   });
 }
 
+type DelegateProviderScenario = "success" | "error" | "abort";
+
+async function exerciseDelegateProviderOwnership(
+  scenario: DelegateProviderScenario,
+): Promise<{
+  readonly outcome: Awaited<ReturnType<typeof runAgenCReviewOneShot>>;
+  readonly forkForSession: ReturnType<typeof vi.fn>;
+  readonly childDispose: ReturnType<typeof vi.fn>;
+  readonly parentDispose: ReturnType<typeof vi.fn>;
+  readonly parentPrewarmClear: ReturnType<typeof vi.fn>;
+  readonly cleanupOrder: readonly string[];
+  readonly childStartupPrewarm: unknown;
+  readonly parentBroker: SandboxExecutionBroker;
+}> {
+  const cleanupOrder: string[] = [];
+  let childStartupPrewarm: unknown;
+  let resolveStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  const childDispose = vi.fn(async () => {
+    cleanupOrder.push("provider_dispose");
+  });
+  const childProvider: LLMProvider = {
+    ...mkScriptedProvider(),
+    dispose: childDispose,
+    chatStream: vi.fn(async (_messages, onChunk, options) => {
+      resolveStarted?.();
+      if (scenario === "error") throw new Error("delegate_child_failure");
+      if (scenario === "abort") {
+        await new Promise<never>((_resolve, reject) => {
+          const signal = options?.signal;
+          const rejectAbort = () => reject(new Error("delegate_child_aborted"));
+          if (signal?.aborted) rejectAbort();
+          else signal?.addEventListener("abort", rejectAbort, { once: true });
+        });
+      }
+      const content = JSON.stringify({
+        findings: [],
+        overall_correctness: "good",
+        overall_explanation: "owned delegate response",
+      });
+      onChunk({ content, done: false });
+      return {
+        content,
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: options?.model ?? "test-model",
+        finishReason: "stop",
+      };
+    }),
+  };
+  const parentDispose = vi.fn(async () => {});
+  const forkForSession = vi.fn(() => childProvider);
+  const parentProvider: LLMProvider = {
+    ...mkScriptedProvider(),
+    dispose: parentDispose,
+    forkForSession,
+  };
+  const parentBroker = new SandboxExecutionBroker({
+    mode: "danger_full_access",
+    cwd: "/tmp",
+  });
+  const parentPrewarmClear = vi.fn(async () => {});
+  const session = mkSession(parentProvider, {
+    sandboxExecutionBroker: parentBroker,
+    startupPrewarm: {
+      setProviderHandle: vi.fn(),
+      setProviderTask: vi.fn(),
+      consumeProviderHandle: vi.fn(async () => undefined),
+      expireProviderHandle: vi.fn(async () => {}),
+      clear: parentPrewarmClear,
+    },
+  });
+  const callerAbort = new AbortController();
+  const originalShutdown = Session.prototype.shutdown;
+  const shutdownSpy = vi
+    .spyOn(Session.prototype, "shutdown")
+    .mockImplementation(async function (this: Session): Promise<void> {
+      if (this !== session) {
+        childStartupPrewarm = this.services.startupPrewarm;
+        cleanupOrder.push("child_shutdown");
+      }
+      await originalShutdown.call(this);
+    });
+
+  try {
+    const run = runAgenCReviewOneShot(session, {
+      ...mkOneShotRequest(session),
+      signal: callerAbort.signal,
+    });
+    if (scenario === "abort") {
+      await started;
+      callerAbort.abort("delegate_ownership_test_abort");
+    }
+    const outcome = await run;
+    return {
+      outcome,
+      forkForSession,
+      childDispose,
+      parentDispose,
+      parentPrewarmClear,
+      cleanupOrder,
+      childStartupPrewarm,
+      parentBroker,
+    };
+  } finally {
+    shutdownSpy.mockRestore();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Happy-path one-shot review
 // ─────────────────────────────────────────────────────────────────────
 
 describe("runAgenCReviewOneShot happy-path review", () => {
+  it.each([
+    ["success", "pass"],
+    ["error", "fail"],
+    ["abort", "aborted"],
+  ] as const)(
+    "owns a forked delegate provider through %s cleanup",
+    async (scenario, expectedVerdict) => {
+      const exercised = await exerciseDelegateProviderOwnership(scenario);
+
+      expect(exercised.outcome.verdict).toBe(expectedVerdict);
+      expect(exercised.forkForSession).toHaveBeenCalledOnce();
+      const forkOptions = exercised.forkForSession.mock.calls[0]?.[0] as {
+        readonly cwd: string;
+        readonly sandboxExecutionBroker: SandboxExecutionBroker;
+      };
+      expect(forkOptions.cwd).toBe("/tmp");
+      expect(forkOptions.sandboxExecutionBroker).not.toBe(
+        exercised.parentBroker,
+      );
+      expect(forkOptions.sandboxExecutionBroker.cwd).toBe("/tmp");
+      expect(exercised.childStartupPrewarm).toBeUndefined();
+      expect(exercised.parentPrewarmClear).not.toHaveBeenCalled();
+      expect(exercised.childDispose).toHaveBeenCalledOnce();
+      expect(exercised.parentDispose).not.toHaveBeenCalled();
+      expect(exercised.cleanupOrder).toEqual([
+        "child_shutdown",
+        "provider_dispose",
+      ]);
+    },
+  );
+
+  it("uses an inert child MCP manager and never refreshes the parent transport", async () => {
+    const parentRefresh = vi.fn(async () => ({
+      configuredServers: ["parent"],
+      requiredServers: [],
+    }));
+    const parentMcpManager = {
+      effectiveServers: async () => new Map(),
+      toolPluginProvenance: async () => null,
+      refreshFromConfig: parentRefresh,
+      getTools: () => [{ name: "mcp.parent.query" }],
+      getConnectedServers: () => ["parent"],
+      isConnected: () => true,
+    } as unknown as SessionServices["mcpManager"];
+    const session = mkSession(mkScriptedProvider({ content: "ok" }), {
+      mcpManager: parentMcpManager,
+    });
+    const req = mkOneShotRequest(session);
+    const thread = spawnAgenCDelegateThread(
+      session,
+      req,
+      req.parentContext.modelInfo.slug,
+      req.parentContext.modelInfo,
+      new AbortController(),
+    );
+
+    expect(thread.childSession.services.mcpManager).not.toBe(parentMcpManager);
+    expect(thread.childSession.services.mcpManager.getTools?.()).toEqual([]);
+    expect(thread.childSession.services.registry.tools).toEqual([]);
+    await thread.childSession.services.mcpManager.refreshFromConfig?.({
+      servers: ["child"],
+    });
+    expect(parentRefresh).not.toHaveBeenCalled();
+
+    await thread.shutdown("test complete");
+  });
+
   it("returns a structured outcome + emits exit_review_mode with reason=completed", async () => {
     const provider = mkScriptedProvider({
       content: JSON.stringify({
@@ -413,6 +593,81 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(observedOptions?.tools).toEqual([]);
     expect(observedOptions?.toolRouting?.allowedToolNames).toEqual([]);
     expect(observedOptions?.toolChoice).toBe("none");
+  });
+
+  it("preserves factory extras while adding the child sandbox broker", async () => {
+    const schema = {
+      type: "object",
+      properties: { overall_explanation: { type: "string" } },
+    };
+    const recreatedProvider = mkScriptedProvider({
+      content: JSON.stringify({
+        findings: [],
+        overall_explanation: "factory child",
+      }),
+    });
+    const createProviderSpy = vi
+      .spyOn(providerFactory, "createProvider")
+      .mockReturnValue(recreatedProvider);
+    const parentProvider = mkScriptedProvider();
+    Object.defineProperty(
+      parentProvider,
+      providerFactory.FACTORY_PROVIDER_MARKER,
+      {
+        value: true,
+      },
+    );
+    Object.defineProperty(
+      parentProvider,
+      providerFactory.FACTORY_PROVIDER_STATE,
+      {
+        value: {
+          provider: "openai-compatible",
+          options: {
+            model: "parent-model",
+            extra: {
+              defaultHeaders: { "x-parent-extra": "preserved" },
+              parallelToolCalls: true,
+            },
+          },
+        },
+      },
+    );
+    const parentBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/tmp",
+    });
+    const session = mkSession(parentProvider, {
+      sandboxExecutionBroker: parentBroker,
+    });
+
+    try {
+      await runAgenCReviewOneShot(session, {
+        ...mkOneShotRequest(session),
+        reviewerModel: "reviewer-5",
+        finalOutputJsonSchema: schema,
+      });
+
+      expect(createProviderSpy).toHaveBeenCalledOnce();
+      const [providerName, options] = createProviderSpy.mock.calls[0]!;
+      expect(providerName).toBe("openai-compatible");
+      expect(options).toMatchObject({
+        model: "reviewer-5",
+        tools: [],
+        extra: {
+          defaultHeaders: { "x-parent-extra": "preserved" },
+          parallelToolCalls: true,
+          structuredOutput: schema,
+        },
+      });
+      const childBroker = options.extra?.sandboxExecutionBroker as
+        SandboxExecutionBroker | undefined;
+      expect(childBroker).toBeDefined();
+      expect(childBroker).not.toBe(parentBroker);
+      expect(childBroker?.cwd).toBe("/tmp");
+    } finally {
+      createProviderSpy.mockRestore();
+    }
   });
 
   it("runs through the child Session streaming path instead of direct provider.chat", async () => {

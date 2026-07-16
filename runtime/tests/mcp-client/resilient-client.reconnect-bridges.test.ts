@@ -152,14 +152,20 @@ describe("ResilientMCPBridge reconnect bridge/leak handling", () => {
     // Fire the reconnect timer; reconnect() now awaits createMCPConnection.
     await vi.advanceTimersByTimeAsync(1_000);
 
-    // Dispose lands while the new client is still being spawned.
-    await bridge.dispose();
+    // Dispose lands while the new client is still being spawned and must not
+    // report completion until that owned reconnect is closed.
+    let disposed = false;
+    const disposal = bridge.dispose().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
 
     // Now the connection resolves — the spawned client must be closed, the
     // tool bridge must NOT be built, and the resource/prompt hook must NOT
     // run (nothing to refresh on a disposed bridge).
     resolveConn(newClient);
-    await vi.runAllTimersAsync();
+    await disposal;
 
     expect(close).toHaveBeenCalledOnce();
     expect(mockCreateToolBridge).not.toHaveBeenCalled();
@@ -191,11 +197,17 @@ describe("ResilientMCPBridge reconnect bridge/leak handling", () => {
     await bridge.tools[0]!.execute({});
     await vi.advanceTimersByTimeAsync(1_000);
 
-    // Dispose lands while the new tool bridge is still being built.
-    await bridge.dispose();
+    // Dispose lands while the new tool bridge is still being built and waits
+    // until that bridge has been torn down.
+    let disposed = false;
+    const disposal = bridge.dispose().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
 
     resolveBridge(newBridge);
-    await vi.runAllTimersAsync();
+    await disposal;
 
     // The freshly-built bridge owns the client; disposing it closes the
     // client + kills the child. The reconnect hook must not run.

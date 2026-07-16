@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach } from "vitest";
 
 import {
   checkForLSPDiagnostics,
+  clearLSPDiagnosticScope,
   clearDeliveredDiagnosticsForFile,
   getPendingLSPDiagnosticCount,
   MAX_DELIVERED_DIAGNOSTICS_PER_FILE,
@@ -51,6 +52,46 @@ describe("LSPDiagnosticRegistry", () => {
       files: [{ uri: "/tmp/a.ts", diagnostics: [baseDiagnostic] }],
     });
     expect(checkForLSPDiagnostics()[0]!.files[0]!.diagnostics).toHaveLength(1);
+  });
+
+  test("isolates identical pending and delivered diagnostics by session scope", () => {
+    const parentScope = {};
+    const childScope = {};
+    const snapshot = {
+      serverName: "ts",
+      files: [{ uri: "/tmp/shared.ts", diagnostics: [baseDiagnostic] }],
+    };
+
+    registerPendingLSPDiagnostic(snapshot, parentScope);
+    registerPendingLSPDiagnostic(snapshot, childScope);
+
+    expect(getPendingLSPDiagnosticCount()).toBe(0);
+    expect(getPendingLSPDiagnosticCount(parentScope)).toBe(1);
+    expect(getPendingLSPDiagnosticCount(childScope)).toBe(1);
+    expect(checkForLSPDiagnostics(parentScope)[0]!.files[0]!.diagnostics)
+      .toEqual([baseDiagnostic]);
+    expect(peekLSPDiagnosticsForFile("/tmp/shared.ts", childScope))
+      .toEqual([baseDiagnostic]);
+    expect(checkForLSPDiagnostics(parentScope)).toEqual([]);
+    expect(checkForLSPDiagnostics(childScope)[0]!.files[0]!.diagnostics)
+      .toEqual([baseDiagnostic]);
+
+    registerPendingLSPDiagnostic(
+      {
+        serverName: "ts",
+        files: [
+          {
+            uri: "/tmp/parent-only.ts",
+            diagnostics: [{ ...baseDiagnostic, message: "parent only" }],
+          },
+        ],
+      },
+      parentScope,
+    );
+    clearLSPDiagnosticScope(parentScope);
+
+    expect(getPendingLSPDiagnosticCount(parentScope)).toBe(0);
+    expect(checkForLSPDiagnostics(childScope)).toEqual([]);
   });
 
   test("clears delivered diagnostics by either path or file URI", () => {

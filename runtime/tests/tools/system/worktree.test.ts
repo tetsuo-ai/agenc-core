@@ -18,9 +18,18 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   __resetWorktreeSessionsForTesting,
-  createEnterWorktreeTool,
-  createExitWorktreeTool,
+  createEnterWorktreeTool as createUnboundEnterWorktreeTool,
+  createExitWorktreeTool as createUnboundExitWorktreeTool,
 } from "./worktree.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createEnterWorktreeTool = (
+  config: Parameters<typeof createUnboundEnterWorktreeTool>[0],
+) => bindExplicitDangerBoundary(createUnboundEnterWorktreeTool(config));
+
+const createExitWorktreeTool = (
+  config: Parameters<typeof createUnboundExitWorktreeTool>[0],
+) => bindExplicitDangerBoundary(createUnboundExitWorktreeTool(config));
 
 const execFileP = promisify(execFile);
 

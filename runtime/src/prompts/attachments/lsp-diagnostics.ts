@@ -31,9 +31,9 @@ function cloneDiagnosticFiles(
   }));
 }
 
-export const lspDiagnosticsProducer: AttachmentProducer = async () => {
+export const lspDiagnosticsProducer: AttachmentProducer = async (options) => {
   try {
-    return checkForLSPDiagnostics().map(
+    return checkForLSPDiagnostics(options.sandboxExecutionBroker).map(
       ({ serverName, files }): Attachment => ({
         kind: "lsp_diagnostics",
         serverName,

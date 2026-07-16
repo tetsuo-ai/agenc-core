@@ -94,14 +94,25 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
 
     const slug = input.name ?? getPlanSlug()
 
-    const worktreeSession = await createWorktreeForSession(getSessionId(), slug)
+    const worktreeSession = await createWorktreeForSession(
+      getSessionId(),
+      slug,
+      undefined,
+      { sandboxExecutionBroker: sandboxExecutionBrokers[0]! },
+    )
 
-    process.chdir(worktreeSession.worktreePath)
-    setCwd(worktreeSession.worktreePath)
-    rebaseWorktreeSandboxBrokers(
+    const previousCwd = getCwd()
+    await rebaseWorktreeSandboxBrokers(
       sandboxExecutionBrokers,
       worktreeSession.worktreePath,
     )
+    try {
+      process.chdir(worktreeSession.worktreePath)
+      setCwd(worktreeSession.worktreePath)
+    } catch (error) {
+      await rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, previousCwd)
+      throw error
+    }
     setOriginalCwd(getCwd())
     saveWorktreeState(worktreeSession)
     // Clear cached system prompt sections so env_info_simple recomputes with worktree context

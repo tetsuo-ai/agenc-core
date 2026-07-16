@@ -25,6 +25,7 @@ import { delegate } from "./delegate.js";
 import { runAgent } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 const mockRunAgent = vi.mocked(runAgent);
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
@@ -64,6 +65,9 @@ function makeParentSession(cwd: string) {
     snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd },
     config: { cwd },
+    services: {
+      sandboxExecutionBroker: explicitDangerBroker.forkForCwd(cwd),
+    },
   };
 }
 

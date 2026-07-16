@@ -108,6 +108,7 @@ import {
   getLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
+import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 
 export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
@@ -2983,9 +2984,12 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           });
         }
 
-        await waitForInitialization();
-        const status = getInitializationStatus();
-        const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved);
+        const lspScope =
+          readSandboxExecutionBroker(args) ??
+          opts.getSession()?.services.sandboxExecutionBroker;
+        await waitForInitialization(lspScope);
+        const status = getInitializationStatus(lspScope);
+        const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved, lspScope);
         if (status.status === "failed") {
           return json({
             file_path: resolved,
@@ -3000,7 +3004,7 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           });
         }
 
-        const manager = getLspServerManager();
+        const manager = getLspServerManager(lspScope);
         if (!manager) {
           return json({
             file_path: resolved,

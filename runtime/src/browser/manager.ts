@@ -16,12 +16,21 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
-import { CdpConnection, launchBrowser } from "./cdp.js";
+import {
+  BrowserLaunchCleanupError,
+  CdpConnection,
+  launchBrowser,
+} from "./cdp.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { BrowserPage, BrowserActionError } from "./page.js";
 import { BrowserProxy } from "./proxy.js";
 import { resolveBrowserExecutable } from "./executable.js";
 import type { BrowserPolicy } from "./config.js";
 import type { HostLookup } from "./ssrf.js";
+import {
+  signalProcessTree,
+  terminateProcessTreeAndWait,
+} from "../utils/supervisedProcess.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -32,12 +41,22 @@ const activeManagers = new Set<BrowserManager>();
 /** Graceful shutdown hook for the daemon cleanup registry. */
 export async function closeAllBrowserManagers(): Promise<void> {
   const managers = [...activeManagers];
-  await Promise.all(managers.map((manager) => manager.closeAll().catch(() => {})));
+  const results = await Promise.allSettled(
+    managers.map((manager) => manager.closeAll()),
+  );
+  const errors = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "browser manager shutdown failed");
+  }
 }
 
 export interface BrowserManagerOptions {
   readonly agencHome?: string;
   readonly policy: BrowserPolicy;
+  /** Authenticated session boundary for the Chromium process. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /** Test seam: overrides DNS resolution inside the proxy's SSRF checks. */
   readonly lookup?: HostLookup;
   /** Test seam: overrides idle shutdown delay. */
@@ -56,6 +75,17 @@ interface TabEntry {
   readonly page: BrowserPage;
 }
 
+interface BrowserBoundary {
+  child: ChildProcess | undefined;
+  proxy: BrowserProxy | undefined;
+  readonly label: string;
+}
+
+interface RetainedBrowserBoundary {
+  readonly boundary: BrowserBoundary;
+  failure: Error;
+}
+
 export class BrowserManager {
   readonly #options: BrowserManagerOptions;
   #child: ChildProcess | undefined;
@@ -66,6 +96,11 @@ export class BrowserManager {
   #nextTabId = 1;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
   #launching: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
+  #processCleanup: Promise<void> | undefined;
+  #retainedBoundaries: RetainedBrowserBoundary[] = [];
+  #shutdownGeneration = 0;
+  #launchAuthorityCwd: string | undefined;
   #tempProfileDir: string | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
@@ -88,6 +123,15 @@ export class BrowserManager {
    * unpredictable 0700 directory and never reuses an existing one.
    */
   #ensureProfileDir(): string {
+    // Child sessions get an ephemeral profile. Sharing the root session's
+    // persistent cookies/storage across independently sandboxed browser
+    // processes would silently collapse their authority boundary.
+    if ((this.#options.sandboxExecutionBroker?.forkDepth ?? 0) > 0) {
+      if (this.#tempProfileDir === undefined) {
+        this.#tempProfileDir = mkdtempSync(join(tmpdir(), "agenc-browser-child-"));
+      }
+      return this.#tempProfileDir;
+    }
     const configured = this.#options.policy.profileDir;
     if (configured !== undefined) {
       mkdirSync(configured, { recursive: true, mode: 0o700 });
@@ -105,23 +149,46 @@ export class BrowserManager {
   }
 
   async #ensureLaunched(): Promise<void> {
-    if (this.running) {
-      this.#touchIdle();
-      return;
-    }
-    if (this.#launching !== undefined) {
-      await this.#launching;
-      return;
-    }
-    this.#launching = this.#launch();
-    try {
-      await this.#launching;
-    } finally {
-      this.#launching = undefined;
+    const requestGeneration = this.#shutdownGeneration;
+    while (true) {
+      if (requestGeneration !== this.#shutdownGeneration) {
+        throw new BrowserActionError("browser launch was interrupted by shutdown");
+      }
+      if (this.#closing !== undefined) {
+        await this.#closing;
+        continue;
+      }
+      await this.#awaitProcessCleanup();
+      const brokerCwd = this.#options.sandboxExecutionBroker?.cwd;
+      if (
+        this.running &&
+        brokerCwd !== undefined &&
+        this.#launchAuthorityCwd !== brokerCwd
+      ) {
+        await this.closeAll();
+        continue;
+      }
+      if (this.running) {
+        this.#touchIdle();
+        return;
+      }
+      if (this.#launching !== undefined) {
+        await this.#launching;
+        continue;
+      }
+      const generation = this.#shutdownGeneration;
+      const launching = this.#launch(generation);
+      this.#launching = launching;
+      try {
+        await launching;
+      } finally {
+        if (this.#launching === launching) this.#launching = undefined;
+      }
     }
   }
 
-  async #launch(): Promise<void> {
+  async #launch(generation: number): Promise<void> {
+    const authorityCwd = this.#options.sandboxExecutionBroker?.cwd;
     const proxy = new BrowserProxy({
       policy: { allowPrivateNetwork: this.#options.policy.allowPrivateNetwork },
       ...(this.#options.lookup !== undefined
@@ -145,19 +212,74 @@ export class BrowserManager {
         headless: this.#options.policy.headless,
         noSandbox: this.#options.policy.noSandbox,
         proxyPort,
+        ...(this.#options.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: this.#options.sandboxExecutionBroker }
+          : {}),
       });
     } catch (err) {
-      await proxy.stop();
+      const boundary: BrowserBoundary = {
+        child: undefined,
+        proxy,
+        label: "failed browser launch",
+      };
+      let managerCleanupError: Error | undefined;
+      try {
+        await this.#cleanupOwnedBoundary(boundary);
+      } catch (cleanupError) {
+        managerCleanupError = toError(cleanupError);
+      }
+      if (err instanceof BrowserLaunchCleanupError) {
+        // launchBrowser already attempted verified teardown. Do not silently
+        // retry that failed process boundary from an ordinary action: transfer
+        // ownership, poison the manager, and leave retry authority to closeAll.
+        boundary.child = err.child;
+        this.#retainBoundary(
+          boundary,
+          managerCleanupError === undefined
+            ? err.cleanupError
+            : new AggregateError(
+                [err.cleanupError, managerCleanupError],
+                "failed browser launch boundary cleanup remains incomplete",
+              ),
+        );
+      }
+      if (managerCleanupError !== undefined) {
+        throw new AggregateError(
+          [err, managerCleanupError],
+          "browser launch cleanup failed",
+        );
+      }
       throw err;
+    }
+
+    if (
+      generation !== this.#shutdownGeneration ||
+      authorityCwd !== this.#options.sandboxExecutionBroker?.cwd
+    ) {
+      launched.connection.close();
+      await this.#cleanupOwnedBoundary({
+        child: launched.child,
+        proxy,
+        label: "stale browser launch",
+      });
+      return;
     }
 
     this.#proxy = proxy;
     this.#child = launched.child;
     this.#connection = launched.connection;
+    this.#launchAuthorityCwd = authorityCwd;
     this.#tabs = [];
     this.#activeTabId = 0;
     launched.child.once("exit", () => {
-      if (this.#child === launched.child) this.#teardownState();
+      if (this.#child === launched.child) {
+        const stoppedProxy = this.#teardownState();
+        this.#trackUnexpectedCleanup({
+          child: launched.child,
+          proxy: stoppedProxy,
+          label: "browser after unexpected exit",
+        });
+      }
     });
     process.once("exit", this.#exitListener);
     activeManagers.add(this);
@@ -299,7 +421,7 @@ export class BrowserManager {
     this.#touchIdle();
   }
 
-  #teardownState(): void {
+  #teardownState(): BrowserProxy | undefined {
     if (this.#idleTimer !== undefined) {
       clearTimeout(this.#idleTimer);
       this.#idleTimer = undefined;
@@ -310,17 +432,26 @@ export class BrowserManager {
     this.#connection?.close();
     this.#connection = undefined;
     this.#child = undefined;
-    void this.#proxy?.stop();
+    this.#launchAuthorityCwd = undefined;
+    const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);
     process.removeListener("exit", this.#exitListener);
+    return proxy;
   }
 
   #killNow(): void {
     const child = this.#child;
-    this.#teardownState();
-    if (child !== undefined && child.exitCode === null) {
-      child.kill("SIGKILL");
+    const proxy = this.#teardownState();
+    void proxy?.stop();
+    if (child !== undefined) {
+      signalProcessTree(child, "SIGKILL");
+    }
+    for (const { boundary } of this.#retainedBoundaries) {
+      if (boundary.child !== undefined) {
+        signalProcessTree(boundary.child, "SIGKILL");
+      }
+      void boundary.proxy?.stop();
     }
     if (this.#tempProfileDir !== undefined) {
       rmSync(this.#tempProfileDir, { recursive: true, force: true });
@@ -328,31 +459,142 @@ export class BrowserManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM, then SIGKILL after 500ms (repo discipline). */
-  async closeAll(): Promise<void> {
+  /** Graceful, bounded shutdown that proves the whole process tree exited. */
+  closeAll(): Promise<void> {
+    if (this.#closing !== undefined) return this.#closing;
+    this.#shutdownGeneration += 1;
+    let closing!: Promise<void>;
+    closing = this.#closeAllOnce().finally(() => {
+      if (this.#closing === closing) this.#closing = undefined;
+    });
+    this.#closing = closing;
+    return closing;
+  }
+
+  async #closeAllOnce(): Promise<void> {
+    const errors: unknown[] = [];
     // A launch racing shutdown assigns #child only when it finishes; without
     // awaiting it here, a browser started mid-shutdown would survive cleanup
     // (and re-arm its idle timer) after closeAll already returned.
     const launching = this.#launching;
-    if (launching !== undefined) await launching.catch(() => {});
-    const child = this.#child;
-    this.#teardownState();
-    if (child === undefined || child.exitCode !== null) {
-      this.#cleanupTempProfile();
-      return;
+    if (launching !== undefined) {
+      try {
+        await launching;
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    await new Promise<void>((resolve) => {
-      const killTimer = setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
-      }, 500);
-      killTimer.unref?.();
-      child.once("exit", () => {
-        clearTimeout(killTimer);
-        resolve();
+    if (this.#processCleanup !== undefined) await this.#processCleanup;
+    try {
+      await this.#retryRetainedBoundaries();
+    } catch (error) {
+      errors.push(error);
+    }
+    const child = this.#child;
+    const proxy = this.#teardownState();
+    try {
+      await this.#cleanupOwnedBoundary({ child, proxy, label: "browser" });
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "browser shutdown failed");
+    }
+  }
+
+  async #awaitProcessCleanup(): Promise<void> {
+    if (this.#processCleanup !== undefined) await this.#processCleanup;
+    if (this.#retainedBoundaries.length === 1) {
+      throw this.#retainedBoundaries[0]!.failure;
+    }
+    if (this.#retainedBoundaries.length > 1) {
+      throw new AggregateError(
+        this.#retainedBoundaries.map(({ failure }) => failure),
+        "browser boundary cleanup remains incomplete",
+      );
+    }
+  }
+
+  #trackUnexpectedCleanup(boundary: BrowserBoundary): void {
+    // Keep daemon shutdown aware of this manager until its orphan-resistant
+    // cleanup has settled, even though the CDP state is already torn down.
+    activeManagers.add(this);
+    let tracked!: Promise<void>;
+    tracked = this.#cleanupOwnedBoundary(boundary)
+      .catch(() => {
+        // #cleanupOwnedBoundary retains the failed ownership record. The next
+        // action observes that poison; an explicit close retries it.
+      })
+      .finally(() => {
+        if (this.#processCleanup === tracked) this.#processCleanup = undefined;
+        if (
+          this.#retainedBoundaries.length === 0 &&
+          this.#child === undefined
+        ) {
+          activeManagers.delete(this);
+        }
       });
-      child.kill("SIGTERM");
-    });
-    this.#cleanupTempProfile();
+    this.#processCleanup = tracked;
+  }
+
+  async #cleanupOwnedBoundary(boundary: BrowserBoundary): Promise<void> {
+    const errors: unknown[] = [];
+    if (boundary.child !== undefined) {
+      try {
+        await terminateProcessTreeAndWait(boundary.child, {
+          label: boundary.label,
+        });
+        boundary.child = undefined;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (boundary.proxy !== undefined) {
+      try {
+        await boundary.proxy.stop();
+        boundary.proxy = undefined;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      this.#cleanupTempProfile();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 0) return;
+    const failure = errors.length === 1
+      ? toError(errors[0])
+      : new AggregateError(errors, `${boundary.label} cleanup failed`);
+    this.#retainBoundary(boundary, failure);
+    throw failure;
+  }
+
+  #retainBoundary(boundary: BrowserBoundary, failure: Error): void {
+    const retained = this.#retainedBoundaries.find(
+      (candidate) => candidate.boundary === boundary,
+    );
+    if (retained !== undefined) retained.failure = failure;
+    else this.#retainedBoundaries.push({ boundary, failure });
+    activeManagers.add(this);
+  }
+
+  async #retryRetainedBoundaries(): Promise<void> {
+    const failures: unknown[] = [];
+    for (const retained of [...this.#retainedBoundaries]) {
+      try {
+        await this.#cleanupOwnedBoundary(retained.boundary);
+        const index = this.#retainedBoundaries.indexOf(retained);
+        if (index >= 0) this.#retainedBoundaries.splice(index, 1);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "browser boundary retry failed");
+    }
   }
 
   #cleanupTempProfile(): void {
@@ -361,4 +603,8 @@ export class BrowserManager {
       this.#tempProfileDir = undefined;
     }
   }
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

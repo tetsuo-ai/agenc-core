@@ -46,6 +46,7 @@ import {
   clearSessionReadState,
   recordSessionRead,
 } from "../../tools/system/filesystem.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 vi.mock("../../utils/sideQuery.js", () => ({
   sideQuery: vi.fn(),
@@ -64,6 +65,7 @@ function makeOpts(
     messages: [],
     permissionContext: { mode: "default" } as never,
     cwd: "/tmp/agenc-attachments-integration-test",
+    sandboxExecutionBroker: explicitDangerBroker,
     subagentDepth: 0,
     signal: new AbortController().signal,
     ...partial,
@@ -648,7 +650,7 @@ describe("attachments orchestrator — live producer registry", () => {
           ],
         },
       ],
-    });
+    }, explicitDangerBroker);
 
     const out = await getAttachments(makeOpts());
     expect(out.some((attachment) => attachment.kind === "lsp_diagnostics")).toBe(
@@ -664,7 +666,7 @@ describe("attachments orchestrator — live producer registry", () => {
           message.content.includes("Line 1:3"),
       ),
     ).toBe(true);
-    expect(checkForLSPDiagnostics()).toEqual([]);
+    expect(checkForLSPDiagnostics(explicitDangerBroker)).toEqual([]);
   });
 
   test("aborted signal short-circuits without emitting attachments or throwing", async () => {
