@@ -88,6 +88,18 @@ function spawnBounded(
 const DOCKER_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_TASK_WORKDIR = "/testbed";
 
+export interface DockerContainerRunnerOptions {
+  /**
+   * Accept a bare local image ID (`sha256:<64 hex>`) instead of a
+   * registry-digest-pinned reference. Locally built images have no manifest
+   * digest, so the live e2e fixture cannot satisfy the `@sha256` pin; real
+   * pilot execution must never set this.
+   */
+  readonly allowLocalImageId?: boolean;
+}
+
+const LOCAL_IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
 /**
  * Docker-CLI-backed runner for pinned evaluation task images. Every task
  * container is created with `--network none`: preflight and verification are
@@ -95,6 +107,8 @@ const DEFAULT_TASK_WORKDIR = "/testbed";
  * as QA signal instead of being quietly granted network.
  */
 export class DockerContainerRunner implements ContainerRunner {
+  constructor(private readonly options: DockerContainerRunnerOptions = {}) {}
+
   async environment(): Promise<ContainerEnvironment> {
     const version = await spawnBounded(
       "docker",
@@ -115,12 +129,21 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async createTaskContainer(imageReference: string): Promise<ContainerHandle> {
+    const isLocalImageId = LOCAL_IMAGE_ID_PATTERN.test(imageReference);
     const digestIndex = imageReference.lastIndexOf("@sha256:");
-    if (digestIndex < 0) {
+    if (isLocalImageId && this.options.allowLocalImageId !== true) {
+      throw new EvalExecutorError([
+        `refusing to run local image ID ${imageReference}: task images must be pinned by @sha256 digest`,
+      ]);
+    }
+    if (!isLocalImageId && digestIndex < 0) {
       throw new EvalExecutorError([
         `refusing to run ${imageReference}: task images must be pinned by @sha256 digest`,
       ]);
     }
+    const dockerReference = isLocalImageId
+      ? imageReference.slice("sha256:".length)
+      : imageReference;
     const created = await spawnBounded(
       "docker",
       [
@@ -129,7 +152,7 @@ export class DockerContainerRunner implements ContainerRunner {
         "none",
         "--entrypoint",
         "sleep",
-        imageReference,
+        dockerReference,
         "infinity",
       ],
       { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS },
@@ -151,7 +174,7 @@ export class DockerContainerRunner implements ContainerRunner {
     }
     const inspected = await spawnBounded(
       "docker",
-      ["image", "inspect", "--format", "{{.Config.WorkingDir}}", imageReference],
+      ["image", "inspect", "--format", "{{.Config.WorkingDir}}", dockerReference],
       { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS },
     );
     const workdir = inspected.exitCode === 0 && inspected.stdout.trim().length > 0
@@ -159,7 +182,7 @@ export class DockerContainerRunner implements ContainerRunner {
       : DEFAULT_TASK_WORKDIR;
     return {
       id,
-      imageDigest: imageReference.slice(digestIndex + 1),
+      imageDigest: isLocalImageId ? imageReference : imageReference.slice(digestIndex + 1),
       workdir,
     };
   }
