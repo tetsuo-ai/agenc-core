@@ -69,6 +69,8 @@ import type { Tool } from "../tools/types.js";
 const LARGE_TOOL_OUTPUT_BYTES = 80_000; // > 64KB, well over the clear threshold.
 const KEEP_RECENT = 5; // mirrors microcompact's keep-recent window.
 const CLEARED_MARKER = "[Old tool result content cleared]";
+const UNTRUSTED_TOOL_RESULT_BOUNDARY =
+  "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
 let restoreEnv: (() => void) | undefined;
 
@@ -451,9 +453,16 @@ describe("runTurn — session-history-memory in-memory retention bound", () => {
       expect(fullToolResults.length).toBeLessThanOrEqual(KEEP_RECENT);
       // The latest turn's output must be present full.
       const latestTag = `BASHOUT_${MANY_TURNS}_`;
+      const latestResult = fullToolResults.find(
+        (message) => message.toolCallId === `bash_call_turn_${MANY_TURNS}`,
+      );
+      expect(latestResult).toBeDefined();
+      const latestResultText = messageText(latestResult!);
+      expect(latestResultText).toContain("untrusted workspace data from Bash");
+      expect(latestResultText).toContain(latestTag);
       expect(
-        fullToolResults.some((m) => messageText(m).startsWith(latestTag)),
-      ).toBe(true);
+        latestResultText.split(UNTRUSTED_TOOL_RESULT_BOUNDARY),
+      ).toHaveLength(3);
 
       // Older large results were replaced with the compact marker in memory.
       const clearedMarkers = history.filter(

@@ -29,6 +29,7 @@ import type {
   NetworkPolicyDecider,
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
+import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -552,6 +553,8 @@ export interface TurnContextItem {
   readonly developerInstructions?: string;
   readonly finalOutputJsonSchema?: unknown;
   readonly truncationPolicy?: TruncationPolicy;
+  /** Content-free provenance for the exact live instruction envelope. */
+  readonly instructionEvidence?: RunInstructionEvidence;
 }
 
 export interface TurnContextNetworkItem {

@@ -180,6 +180,8 @@ export type PluginAgentDefinition = BaseAgentDefinition & {
   source: 'plugin'
   filename?: string
   plugin: string
+  /** Mutable workspace plugin content is guidance-only. */
+  repositoryControlled?: boolean
 }
 
 export type AgentDefinition =
@@ -210,11 +212,20 @@ export function findAgentDefinitionByType(
   definitions: readonly AgentDefinition[],
   requestedType: string,
 ): AgentDefinition | undefined {
+  const canonicalType = canonicalAgentRoleName(requestedType)
   const exact = definitions.find(
     definition => definition.agentType === requestedType,
   )
+  if (exact !== undefined && !isRepositoryControlledAgentDefinition(exact)) {
+    return exact
+  }
+  const reservedBuiltin = definitions.find(
+    definition =>
+      definition.source === 'built-in' &&
+      canonicalAgentRoleName(definition.agentType) === canonicalType,
+  )
+  if (reservedBuiltin !== undefined) return reservedBuiltin
   if (exact !== undefined) return exact
-  const canonicalType = canonicalAgentRoleName(requestedType)
   return definitions.find(
     definition =>
       canonicalAgentRoleName(definition.agentType) === canonicalType,
@@ -299,16 +310,32 @@ export function isPluginAgent(
   return agent.source === 'plugin'
 }
 
+export function isRepositoryControlledAgentDefinition(
+  agent: AgentDefinition,
+): boolean {
+  return agent.source === 'projectSettings' ||
+    (agent.source === 'plugin' && agent.repositoryControlled === true)
+}
+
 export function getActiveAgentsFromList(
   allAgents: AgentDefinition[],
 ): AgentDefinition[] {
+  const eligibleAgents = allAgents.filter(
+    agent =>
+      !isRepositoryControlledAgentDefinition(agent) ||
+      !listBuiltInAgentRoles().some(
+        builtin =>
+          canonicalAgentRoleName(builtin.name) ===
+          canonicalAgentRoleName(agent.agentType),
+      ),
+  )
   const groups = [
-    allAgents.filter(a => a.source === 'built-in'),
-    allAgents.filter(a => a.source === 'plugin'),
-    allAgents.filter(a => a.source === 'userSettings'),
-    allAgents.filter(a => a.source === 'projectSettings'),
-    allAgents.filter(a => a.source === 'flagSettings'),
-    allAgents.filter(a => a.source === 'policySettings'),
+    eligibleAgents.filter(a => a.source === 'built-in'),
+    eligibleAgents.filter(a => a.source === 'plugin'),
+    eligibleAgents.filter(a => a.source === 'userSettings'),
+    eligibleAgents.filter(a => a.source === 'projectSettings'),
+    eligibleAgents.filter(a => a.source === 'flagSettings'),
+    eligibleAgents.filter(a => a.source === 'policySettings'),
   ]
   const byType = new Map<string, AgentDefinition>()
   for (const group of groups) {
@@ -535,7 +562,7 @@ function getRegisteredAgents(
     const projected = roleToAgentDefinition(role)
     const definition: CustomAgentDefinition = {
       ...projected,
-      source: 'projectSettings',
+      source: 'flagSettings',
       baseDir: 'programmatic',
       roleDefinitionPrompt: role.config.systemPrompt ?? '',
       ...(role.config.model !== undefined
@@ -830,25 +857,33 @@ function parseAgentFields(
   baseDir?: string,
   roleCwd: string = process.cwd(),
 ): CustomAgentDefinition {
-  const memory = parseMemoryScope(raw.memory)
-  const tools = addMemoryTools(parseAgentTools(raw.tools), memory)
+  const repositoryControlled = source === 'projectSettings'
+  const memory = repositoryControlled ? undefined : parseMemoryScope(raw.memory)
+  const parsedTools = parseAgentTools(raw.tools)
+  const tools = repositoryControlled
+    ? parsedTools
+    : addMemoryTools(parsedTools, memory)
   const disallowedTools =
     raw.disallowedTools !== undefined
       ? parseAgentTools(raw.disallowedTools)
       : undefined
-  const skills = parseSlashTools(raw.skills)
+  const skills = repositoryControlled ? undefined : parseSlashTools(raw.skills)
   const color = AGENT_COLORS.includes(raw.color as AgentColorName)
     ? (raw.color as AgentColorName)
     : undefined
-  const model = nonEmptyString(raw.model)
-  const effort = parseEffortValue(raw.effort)
-  const permissionMode = parsePermissionMode(raw.permissionMode)
-  const mcpServers = parseMcpServers(raw.mcpServers)
-  const hooks = parseHooks(raw.hooks)
-  const maxTurns = parsePositiveIntFromFrontmatter(raw.maxTurns)
-  const initialPrompt = nonEmptyString(raw.initialPrompt)
-  const background = parseBooleanFlag(raw.background)
-  const isolation = parseIsolation(raw.isolation)
+  const model = repositoryControlled ? undefined : nonEmptyString(raw.model)
+  const effort = repositoryControlled ? undefined : parseEffortValue(raw.effort)
+  const permissionMode = repositoryControlled
+    ? undefined
+    : parsePermissionMode(raw.permissionMode)
+  const mcpServers = repositoryControlled ? undefined : parseMcpServers(raw.mcpServers)
+  const hooks = repositoryControlled ? undefined : parseHooks(raw.hooks)
+  const maxTurns = repositoryControlled
+    ? undefined
+    : parsePositiveIntFromFrontmatter(raw.maxTurns)
+  const initialPrompt = repositoryControlled ? undefined : nonEmptyString(raw.initialPrompt)
+  const background = repositoryControlled ? undefined : parseBooleanFlag(raw.background)
+  const isolation = repositoryControlled ? undefined : parseIsolation(raw.isolation)
 
   return {
     agentType: name,

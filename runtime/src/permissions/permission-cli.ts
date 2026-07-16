@@ -118,14 +118,14 @@ export function formatAgenCPermissionsCliHelpText(): string {
     "",
     "Commands:",
     "  list [--json] [--agent <id>|--session <id>]",
-    "  approve [--persist <user|project|local>] <rule>",
+    "  approve [--persist user] <rule>",
     "  revoke [--persist <user|project|local>] <rule>",
     "  approve --session <id> [--scope <once|session|agent>] <request-id>",
     "  revoke --session <id> [--reason <text>] <request-id>",
     "",
     "Examples:",
     "  agenc permissions list",
-    "  agenc permissions approve --persist project 'Read(./src/**)'",
+    "  agenc permissions approve --persist user 'Read(./src/**)'",
     "  agenc permissions approve --session session_123 call_456",
     "  agenc permissions revoke --session session_123 call_456",
   ].join("\n");
@@ -252,6 +252,13 @@ function parseApproveArgs(
     };
   }
   if (parsed.kind === "error") return parsed;
+  if (parsed.destination !== "userSettings") {
+    return {
+      kind: "error",
+      message:
+        "repository files cannot store permission approvals; use --persist user or approve a live request with --session",
+    };
+  }
   return {
     kind: "approveRule",
     rule: parsed.value,
@@ -460,6 +467,11 @@ async function runPermissionRuleApproval(
   options: AgenCPermissionsCliOptions,
 ): Promise<number> {
   try {
+    if (command.destination !== "userSettings") {
+      throw new Error(
+        "repository files cannot store permission approvals; use --persist user or approve a live request with --session",
+      );
+    }
     const ruleValue = parseRuleOrThrow(command.rule);
     const applied = await addPermissionRulesToSettings({
       destination: command.destination,

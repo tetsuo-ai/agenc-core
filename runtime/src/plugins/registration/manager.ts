@@ -251,6 +251,7 @@ function appStatePlugin(plugin: LoadedPlugin): Record<string, unknown> {
     ...(plugin.description !== undefined ? { description: plugin.description } : {}),
     root: plugin.root,
     source: plugin.source,
+    contentProvenance: plugin.contentProvenance,
     enabled: plugin.enabled,
     manifest,
     ...(plugin.manifestPath !== undefined ? { manifestPath: plugin.manifestPath } : {}),

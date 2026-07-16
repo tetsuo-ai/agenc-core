@@ -548,7 +548,7 @@ describe('agent memory workspace authority', () => {
     expect(readFileSync(linkedMemory, 'utf8')).toBe('external-memory')
   })
 
-  it('initializes a user snapshot before binding the exact prompt fingerprint', async () => {
+  it('does not let a project role enable user memory before binding its prompt fingerprint', async () => {
     const workspaceA = tempRoot('snapshot-workspace-a')
     const workspaceB = tempRoot('snapshot-workspace-b')
     const configDir = tempRoot('snapshot-config')
@@ -581,7 +581,18 @@ Snapshot role prompt.
       definition => definition.agentType === 'snapshot-worker',
     )
     expect(first).toBeDefined()
-    expect(first?.getSystemPrompt()).toContain('workspace-a-snapshot')
+    expect(first?.source).toBe('projectSettings')
+    expect(first?.memory).toBeUndefined()
+    expect(first?.getSystemPrompt()).toBe('Snapshot role prompt.')
+    expect(() =>
+      readFileSync(
+        join(
+          getAgentMemoryDir('snapshot-worker', 'user', workspaceA),
+          'MEMORY.md',
+        ),
+        'utf8',
+      ),
+    ).toThrow()
     const fingerprint = requireAgentDefinitionRoleFingerprint(first!)
 
     const secondCatalog = await loadFreshAgentDefinitions(workspaceA)

@@ -22,6 +22,7 @@ import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
 import { getManagedFilePath } from '../../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../../utils/settings/pluginOnlyPolicy.js'
 import {
+  getExecutionAuthoritySettings,
   getInitialSettings,
   getSettingsForSource,
 } from '../../utils/settings/settings.js'
@@ -394,7 +395,7 @@ function getMcpAllowlistSettings(): SettingsJson {
   if (shouldAllowManagedMcpServersOnly()) {
     return getSettingsForSource('policySettings') ?? {}
   }
-  return getInitialSettings()
+  return getExecutionAuthoritySettings()
 }
 
 /**
@@ -1054,6 +1055,42 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
 }
 
 /**
+ * Execution-safe named lookup. Repository `.mcp.json` content is returned only
+ * after exact config-digest approval, and every scope is rechecked against the
+ * effective MCP allow/deny policy. An unapproved project entry never shadows a
+ * trusted local or user entry with the same name.
+ */
+export function getApprovedMcpConfigByName(
+  name: string,
+): ScopedMcpServerConfig | null {
+  const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+  const candidates: ScopedMcpServerConfig[] = []
+  if (enterpriseServers[name]) candidates.push(enterpriseServers[name])
+
+  if (!isRestrictedToPluginOnly('mcp')) {
+    const { servers: localServers } = getMcpConfigsByScope('local')
+    const { servers: projectServers } = getMcpConfigsByScope('project')
+    const { servers: userServers } = getMcpConfigsByScope('user')
+    if (localServers[name]) candidates.push(localServers[name])
+    const project = projectServers[name]
+    if (
+      project &&
+      getProjectMcpServerStatus(name, project) === 'approved'
+    ) {
+      candidates.push(project)
+    }
+    if (userServers[name]) candidates.push(userServers[name])
+  }
+
+  for (const candidate of candidates) {
+    if (filterMcpServersByPolicy({ [name]: candidate }).allowed[name]) {
+      return candidate
+    }
+  }
+  return null
+}
+
+/**
  * Get AgenC MCP configurations (excludes agenc.tech servers from the
  * returned set — they're fetched separately and merged by callers).
  * This is fast: only local file reads; no awaited network calls on the
@@ -1158,7 +1195,7 @@ export async function getAgenCCodeMcpConfigs(
   // Filter project servers to only include approved ones
   const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(projectServers)) {
-    if (getProjectMcpServerStatus(name) === 'approved') {
+    if (getProjectMcpServerStatus(name, config) === 'approved') {
       approvedProjectServers[name] = config
     }
   }

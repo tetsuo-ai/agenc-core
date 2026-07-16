@@ -27,7 +27,10 @@ describe("agenc permissions top-level dispatch", () => {
     await expect(main()).resolves.toBe(0);
     const stdout = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(stdout).toContain("Usage: agenc permissions <command>");
-    expect(stdout).toContain("approve [--persist <user|project|local>] <rule>");
+    expect(stdout).toContain("approve [--persist user] <rule>");
+    expect(stdout).not.toContain(
+      "approve [--persist <user|project|local>] <rule>",
+    );
     expect(stderrSpy).not.toHaveBeenCalled();
   });
 });

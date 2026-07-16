@@ -66,6 +66,7 @@ import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
 import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
 import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
+import { isRepositoryControlledSkillSource } from '../../skills/repository-skill-boundary.js'
 import {
   isRestrictedToPluginOnly,
   isSourceAdminTrusted,
@@ -391,7 +392,8 @@ export async function loadDollarSkillCommandForTurn(
   addInvokedSkill(command.name, skillPath, skillContent, null)
 
   const hooksAllowedForThisSkill =
-    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+    !isRepositoryControlledSkillSource(command.source) &&
+    (!isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source))
   if (command.hooks && hooksAllowedForThisSkill) {
     registerSkillHooks(
       context.setAppState,
@@ -406,9 +408,15 @@ export async function loadDollarSkillCommandForTurn(
     metadata: formatDollarSkillInputTags(command.name, parsed.args),
     blocks,
     skillContent,
-    allowedTools: parseToolListFromCLI(command.allowedTools ?? []),
-    model: command.model,
-    effort: command.effort,
+    allowedTools: isRepositoryControlledSkillSource(command.source)
+      ? []
+      : parseToolListFromCLI(command.allowedTools ?? []),
+    model: isRepositoryControlledSkillSource(command.source)
+      ? undefined
+      : command.model,
+    effort: isRepositoryControlledSkillSource(command.source)
+      ? undefined
+      : command.effort,
   }
 }
 

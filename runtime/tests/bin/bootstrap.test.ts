@@ -510,7 +510,8 @@ describe("bootstrapLocalRuntimeSession", () => {
         "programmatic-auditor",
       );
       expect(bootDefinition).toMatchObject({
-        source: "projectSettings",
+        source: "flagSettings",
+        baseDir: "programmatic",
         model: "grok-4.5",
         tools: ["FileRead"],
         disallowedTools: ["Write"],

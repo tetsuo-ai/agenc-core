@@ -283,6 +283,32 @@ describe("permissionsCommand — add", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("keeps repository-targeted allow approval in the session only", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-boundary-"));
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const r = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          argsRaw: "add allow Read --persist project",
+          home: tmp,
+          cwd: tmp,
+        }),
+      );
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(r.text).toContain("session only");
+      expect(r.text).toContain(
+        "repository files cannot store permission approvals",
+      );
+      expect(registry.current().alwaysAllowRules.session).toContain("Read");
+      expect(existsSync(join(tmp, ".agenc", "settings.json"))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("permissionsCommand — remove", () => {

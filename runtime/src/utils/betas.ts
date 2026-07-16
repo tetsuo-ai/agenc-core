@@ -24,7 +24,7 @@ import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 
 /**
  * SDK-provided betas that are allowed for API key users.
@@ -268,7 +268,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
     includeFirstPartyOnlyBetas &&
     modelSupportsISP(model) &&
     !getIsNonInteractiveSession() &&
-    getInitialSettings().showThinkingSummaries !== true
+    getExecutionAuthoritySettings().showThinkingSummaries !== true
   ) {
     betaHeaders.push(REDACT_THINKING_BETA_HEADER)
   }

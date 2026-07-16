@@ -23,7 +23,9 @@ vi.mock('../../utils/cwd.js', () => ({
 // Stable settings: file suggestions use the in-process index path, not the
 // configurable hook command.
 vi.mock('../../utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => initialSettings,
   getInitialSettings: () => initialSettings,
+  getSettingsForSource: () => undefined,
 }))
 
 vi.mock('../../utils/config.js', () => ({

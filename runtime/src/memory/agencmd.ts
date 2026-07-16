@@ -94,7 +94,7 @@ import {
   isProjectInstructionFileName,
 } from '../utils/projectInstructions.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
-import { getInitialSettings } from '../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
 import { readInstructionFileSnapshot } from '../prompts/secure-instruction-file.js'
 import { discoverInstructionRules } from '../prompts/rules/discovery.js'
 
@@ -576,7 +576,7 @@ function isAgenCMdExcluded(filePath: string, type: MemoryType): boolean {
     return false
   }
 
-  const patterns = getInitialSettings().agencMdExcludes
+  const patterns = getExecutionAuthoritySettings().agencMdExcludes
   if (!patterns || patterns.length === 0) {
     return false
   }

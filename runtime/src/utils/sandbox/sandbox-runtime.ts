@@ -36,8 +36,7 @@ import { settingsChangeDetector } from '../settings/changeDetector.js'
 import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
 import { getManagedSettingsDropInDir } from '../settings/managedPath.js'
 import {
-  getInitialSettings,
-  getSettings_DEPRECATED,
+  getExecutionAuthoritySettings,
   getSettingsFilePathForSource,
   getSettingsForSource,
   getSettingsRootPathForSource,
@@ -303,20 +302,31 @@ export function convertToSandboxRuntimeConfig(
   // so we need to know which source each rule came from
   for (const source of SETTING_SOURCES) {
     const sourceSettings = getSettingsForSource(source)
+    const authoritative =
+      source !== 'projectSettings' && source !== 'localSettings'
 
     // Extract filesystem paths from permission rules
     if (sourceSettings?.permissions) {
-      for (const ruleString of sourceSettings.permissions.allow || []) {
-        const rule = permissionRuleValueFromString(ruleString)
-        if (rule.toolName === FILE_EDIT_TOOL_NAME && rule.ruleContent) {
-          allowWrite.push(
-            resolvePathPatternForSandbox(rule.ruleContent, source),
-          )
+      if (authoritative) {
+        for (const ruleString of sourceSettings.permissions.allow || []) {
+          const rule = permissionRuleValueFromString(ruleString)
+          if (rule.toolName === FILE_EDIT_TOOL_NAME && rule.ruleContent) {
+            allowWrite.push(
+              resolvePathPatternForSandbox(rule.ruleContent, source),
+            )
+          }
         }
       }
 
       for (const ruleString of sourceSettings.permissions.deny || []) {
         const rule = permissionRuleValueFromString(ruleString)
+        if (
+          !authoritative &&
+          rule.toolName === WEB_FETCH_TOOL_NAME &&
+          rule.ruleContent?.startsWith('domain:')
+        ) {
+          deniedDomains.push(rule.ruleContent.substring('domain:'.length))
+        }
         if (rule.toolName === FILE_EDIT_TOOL_NAME && rule.ruleContent) {
           denyWrite.push(resolvePathPatternForSandbox(rule.ruleContent, source))
         }
@@ -331,8 +341,10 @@ export function convertToSandboxRuntimeConfig(
     // NOT the permission-rule convention (/path = settings-relative). #30067
     const fs = sourceSettings?.sandbox?.filesystem
     if (fs) {
-      for (const p of fs.allowWrite || []) {
-        allowWrite.push(resolveSandboxFilesystemPath(p, source))
+      if (authoritative) {
+        for (const p of fs.allowWrite || []) {
+          allowWrite.push(resolveSandboxFilesystemPath(p, source))
+        }
       }
       for (const p of fs.denyWrite || []) {
         denyWrite.push(resolveSandboxFilesystemPath(p, source))
@@ -340,7 +352,10 @@ export function convertToSandboxRuntimeConfig(
       for (const p of fs.denyRead || []) {
         denyRead.push(resolveSandboxFilesystemPath(p, source))
       }
-      if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
+      if (
+        authoritative &&
+        (!shouldAllowManagedReadPathsOnly() || source === 'policySettings')
+      ) {
         for (const p of fs.allowRead || []) {
           allowRead.push(resolveSandboxFilesystemPath(p, source))
         }
@@ -359,7 +374,7 @@ export function convertToSandboxRuntimeConfig(
   return {
     network: {
       allowedDomains,
-      deniedDomains,
+      deniedDomains: [...new Set(deniedDomains)],
       allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
       allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
       allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
@@ -465,7 +480,6 @@ function getSandboxEnabledSetting(): boolean {
   try {
     return !!(
       getSettingsForSource('userSettings')?.sandbox?.enabled ||
-      getSettingsForSource('localSettings')?.sandbox?.enabled ||
       getSettingsForSource('flagSettings')?.sandbox?.enabled ||
       getSettingsForSource('policySettings')?.sandbox?.enabled
     )
@@ -476,17 +490,17 @@ function getSandboxEnabledSetting(): boolean {
 }
 
 function isAutoAllowBashIfSandboxedEnabled(): boolean {
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   return settings?.sandbox?.autoAllowBashIfSandboxed ?? true
 }
 
 function areUnsandboxedCommandsAllowed(): boolean {
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   return settings?.sandbox?.allowUnsandboxedCommands ?? true
 }
 
 function isSandboxRequired(): boolean {
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   return (
     getSandboxEnabledSetting() &&
     (settings?.sandbox?.failIfUnavailable ?? false)
@@ -513,7 +527,7 @@ const isSupportedPlatform = memoize((): boolean => {
  */
 function isPlatformInEnabledList(): boolean {
   try {
-    const settings = getInitialSettings()
+    const settings = getExecutionAuthoritySettings()
     const enabledPlatforms = (
       settings?.sandbox as { enabledPlatforms?: Platform[] } | undefined
     )?.enabledPlatforms
@@ -611,7 +625,7 @@ function getLinuxGlobPatternWarnings(): string[] {
   }
 
   try {
-    const settings = getSettings_DEPRECATED()
+    const settings = getExecutionAuthoritySettings()
 
     // Only return warnings when sandboxing is enabled (check settings directly, not cached value)
     if (!settings?.sandbox?.enabled) {
@@ -654,8 +668,8 @@ function getLinuxGlobPatternWarnings(): string[] {
  * Check if sandbox settings are locked by policy
  */
 function areSandboxSettingsLockedByPolicy(): boolean {
-  // Check if sandbox settings are explicitly set in any source that overrides localSettings
-  // These sources have higher priority than localSettings and would make local changes ineffective
+  // Check if sandbox settings are explicitly set in an operator source that
+  // overrides the editable user setting.
   const overridingSources = ['flagSettings', 'policySettings'] as const
 
   for (const source of overridingSources) {
@@ -680,12 +694,12 @@ async function setSandboxSettings(options: {
   autoAllowBashIfSandboxed?: boolean
   allowUnsandboxedCommands?: boolean
 }): Promise<void> {
-  const existingSettings = getSettingsForSource('localSettings')
+  const existingSettings = getSettingsForSource('userSettings')
 
   // Note: Memoized caches auto-invalidate when settings change because they use
   // the settings object as the cache key (new settings object = cache miss)
 
-  updateSettingsForSource('localSettings', {
+  updateSettingsForSource('userSettings', {
     sandbox: {
       ...existingSettings?.sandbox,
       ...(options.enabled !== undefined && { enabled: options.enabled }),
@@ -703,7 +717,7 @@ async function setSandboxSettings(options: {
  * Get excluded commands (commands that should not be sandboxed)
  */
 function getExcludedCommands(): string[] {
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   return settings?.sandbox?.excludedCommands ?? []
 }
 
@@ -775,7 +789,7 @@ async function initialize(
         worktreeMainRepoPath = await detectWorktreeMainRepoPath(getCwdState())
       }
 
-      const settings = getSettings_DEPRECATED()
+      const settings = getExecutionAuthoritySettings()
       const runtimeConfig = convertToSandboxRuntimeConfig(settings)
 
       // Log monitor is automatically enabled for macOS
@@ -783,7 +797,7 @@ async function initialize(
 
       // Subscribe to settings changes to update sandbox config dynamically
       settingsSubscriptionCleanup = settingsChangeDetector.subscribe(() => {
-        const settings = getSettings_DEPRECATED()
+        const settings = getExecutionAuthoritySettings()
         const newConfig = convertToSandboxRuntimeConfig(settings)
         BaseSandboxManager.updateConfig(newConfig)
         logForDebugging('Sandbox configuration updated from settings change')
@@ -806,7 +820,7 @@ async function initialize(
  */
 function refreshConfig(): void {
   if (!isSandboxingEnabled()) return
-  const settings = getSettings_DEPRECATED()
+  const settings = getExecutionAuthoritySettings()
   const newConfig = convertToSandboxRuntimeConfig(settings)
   BaseSandboxManager.updateConfig(newConfig)
 }
@@ -832,7 +846,8 @@ async function reset(): Promise<void> {
 
 /**
  * Add a command to the excluded commands list (commands that should not be sandboxed)
- * This is a AgenC CLI-specific function that updates local settings.
+ * This is an AgenC CLI-specific function that updates user settings. A
+ * repository-local file cannot authorize unsandboxed commands.
  */
 export function addToExcludedCommands(
   command: string,
@@ -841,7 +856,7 @@ export function addToExcludedCommands(
     rules: Array<{ toolName: string; ruleContent?: string }>
   }>,
 ): string {
-  const existingSettings = getSettingsForSource('localSettings')
+  const existingSettings = getSettingsForSource('userSettings')
   const existingExcludedCommands =
     existingSettings?.sandbox?.excludedCommands || []
 
@@ -871,7 +886,7 @@ export function addToExcludedCommands(
 
   // Add to excludedCommands if not already present
   if (!existingExcludedCommands.includes(commandPattern)) {
-    updateSettingsForSource('localSettings', {
+    updateSettingsForSource('userSettings', {
       sandbox: {
         ...existingSettings?.sandbox,
         excludedCommands: [...existingExcludedCommands, commandPattern],

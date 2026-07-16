@@ -239,19 +239,18 @@ Read $topic and $focus.
       name: "repo-docs",
       displayName: "Repository Docs",
       description: "Use repository docs",
-      allowedTools: ["Read", "Grep"],
+      allowedTools: [],
       argumentHint: "<topic>",
       argNames: ["topic", "focus"],
       whenToUse: "when docs are needed",
       version: "1.2.3",
       userInvocable: true,
-      context: "fork",
-      agent: "explorer",
-      effort: "high",
-      shell: "bash",
       paths: ["docs"],
     });
     expect(hidden?.model).toBeUndefined();
+    for (const field of ["context", "agent", "effort", "shell"] as const) {
+      expect(hidden).not.toHaveProperty(field);
+    }
   });
 
   it("activates conditional path skills when matching paths are provided", async () => {

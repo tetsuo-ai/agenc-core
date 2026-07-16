@@ -9,7 +9,7 @@ import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { installLatest } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 type Props = {
   isUpdating: boolean;
@@ -32,7 +32,7 @@ export function NativeAutoUpdater({
     latest?: string | null;
   }>({});
   const updateSemver = useUpdateNotification(autoUpdaterResult?.version);
-  const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
+  const channel = getExecutionAuthoritySettings()?.autoUpdatesChannel ?? 'latest';
 
   // Track latest isUpdating value in a ref so the memoized checkForUpdates
   // callback always sees the current value without changing callback identity

@@ -42,6 +42,7 @@ vi.mock("../../utils/nativeInstaller/installer.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({ autoUpdatesChannel: "nightly" }),
   getInitialSettings: () => ({ autoUpdatesChannel: "nightly" }),
 }));
 

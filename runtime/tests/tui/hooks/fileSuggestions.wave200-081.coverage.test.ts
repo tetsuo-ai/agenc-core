@@ -23,7 +23,9 @@ vi.mock('../../utils/cwd.js', () => ({
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => ({ respectGitignore: false }),
   getInitialSettings: () => ({ respectGitignore: false }),
+  getSettingsForSource: () => undefined,
 }))
 
 vi.mock('../../utils/config.js', () => ({

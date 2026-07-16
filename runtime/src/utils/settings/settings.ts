@@ -826,6 +826,50 @@ export function getInitialSettings(): SettingsJson {
 }
 
 /**
+ * Settings allowed to create execution authority. Project and local settings
+ * are repository-controlled inputs and are therefore excluded from command,
+ * environment, sandbox-relaxation, MCP-allowlist, and similar capability
+ * decisions. Subsystems that accept repository restrictions must merge those
+ * fields explicitly with deny-wins semantics.
+ */
+export function getExecutionAuthoritySettings(): SettingsJson {
+  const enabled = new Set(getEnabledSettingSources())
+  const sources: Array<{ source: SettingSource; settings: SettingsJson }> = []
+  for (const source of [
+    'userSettings',
+    'flagSettings',
+    'policySettings',
+  ] as const) {
+    if (!enabled.has(source)) continue
+    const settings = getSettingsForSource(source)
+    if (settings) {
+      sources.push({ source, settings })
+    }
+    if (source === 'flagSettings') {
+      const inline = getFlagSettingsInline()
+      if (inline) {
+        const parsed = SettingsSchema().safeParse(inline)
+        if (parsed.success) {
+          sources.push({ source, settings: parsed.data })
+        }
+      }
+    }
+  }
+  return mergeExecutionAuthoritySettings(sources)
+}
+
+export function mergeExecutionAuthoritySettings(
+  sources: readonly { source: SettingSource; settings: SettingsJson }[],
+): SettingsJson {
+  let merged: SettingsJson = {}
+  for (const { source, settings } of sources) {
+    if (source === 'projectSettings' || source === 'localSettings') continue
+    merged = mergeWith({}, merged, settings, settingsMergeCustomizer)
+  }
+  return merged
+}
+
+/**
  * @deprecated Use getInitialSettings() instead. This alias exists for backwards compatibility.
  */
 export const getSettings_DEPRECATED = getInitialSettings
@@ -893,7 +937,6 @@ export function getSettingsWithErrors(): SettingsWithErrors {
 export function hasSkipDangerousModePermissionPrompt(): boolean {
   return !!(
     getSettingsForSource('userSettings')?.skipDangerousModePermissionPrompt ||
-    getSettingsForSource('localSettings')?.skipDangerousModePermissionPrompt ||
     getSettingsForSource('flagSettings')?.skipDangerousModePermissionPrompt ||
     getSettingsForSource('policySettings')?.skipDangerousModePermissionPrompt
   )
@@ -907,8 +950,6 @@ export function hasSkipDangerousModePermissionPrompt(): boolean {
 export function hasAllowBypassPermissionsMode(): boolean {
   return !!(
     getSettingsForSource('userSettings')?.permissions
-      ?.allowBypassPermissionsMode ||
-    getSettingsForSource('localSettings')?.permissions
       ?.allowBypassPermissionsMode ||
     getSettingsForSource('flagSettings')?.permissions
       ?.allowBypassPermissionsMode ||
@@ -925,14 +966,12 @@ export function hasAllowBypassPermissionsMode(): boolean {
 export function hasAutoModeOptIn(): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     const user = getSettingsForSource('userSettings')?.skipAutoPermissionPrompt
-    const local =
-      getSettingsForSource('localSettings')?.skipAutoPermissionPrompt
     const flag = getSettingsForSource('flagSettings')?.skipAutoPermissionPrompt
     const policy =
       getSettingsForSource('policySettings')?.skipAutoPermissionPrompt
-    const result = !!(user || local || flag || policy)
+    const result = !!(user || flag || policy)
     logForDebugging(
-      `[auto-mode] hasAutoModeOptIn=${result} skipAutoPermissionPrompt: user=${user} local=${local} flag=${flag} policy=${policy}`,
+      `[auto-mode] hasAutoModeOptIn=${result} skipAutoPermissionPrompt: user=${user} flag=${flag} policy=${policy}`,
     )
     return result
   }
@@ -979,7 +1018,6 @@ export function getAutoModeConfig():
 
     for (const source of [
       'userSettings',
-      'localSettings',
       'flagSettings',
       'policySettings',
     ] as const) {

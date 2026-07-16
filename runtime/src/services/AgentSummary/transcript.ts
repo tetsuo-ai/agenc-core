@@ -13,7 +13,13 @@
 
 import type { LLMMessage, LLMToolCall, MessageRole } from "../../llm/types.js";
 import type { RunAgentProgressEvent } from "../../agents/run-agent.js";
+import {
+  classifyUntrustedToolResult,
+  frameUntrustedToolResultContent,
+} from "../../tools/untrusted-tool-result-framing.js";
 import type { Message } from "../../types/message.js";
+
+const UNKNOWN_TOOL_NAME = "unknown_tool";
 
 function messageRoleForSummary(role: MessageRole): MessageRole {
   return role === "tool" ? "user" : role;
@@ -21,7 +27,7 @@ function messageRoleForSummary(role: MessageRole): MessageRole {
 
 function contentForSummary(message: LLMMessage): LLMMessage["content"] {
   if (message.role !== "tool") return message.content;
-  return [
+  const content: LLMMessage["content"] = [
     {
       type: "text",
       text: typeof message.content === "string"
@@ -32,6 +38,12 @@ function contentForSummary(message: LLMMessage): LLMMessage["content"] {
             .join("\n"),
     },
   ];
+  const toolName = message.toolName ?? UNKNOWN_TOOL_NAME;
+  return frameUntrustedToolResultContent(
+    toolName,
+    content,
+    classifyUntrustedToolResult(toolName),
+  );
 }
 
 function parseToolCallInput(toolCall: LLMToolCall): Record<string, unknown> {
@@ -122,7 +134,12 @@ export function runAgentProgressEventToAgentSummaryMessage(
           ],
         },
       } as Message;
-    case "tool_result":
+    case "tool_result": {
+      const framedContent = frameUntrustedToolResultContent(
+        event.toolName,
+        event.result,
+        classifyUntrustedToolResult(event.toolName),
+      );
       return {
         type: "user",
         uuid: `agent-summary-${index}`,
@@ -133,18 +150,16 @@ export function runAgentProgressEventToAgentSummaryMessage(
             {
               type: "tool_result",
               tool_use_id: event.callId,
-              content: [
-                {
-                  type: "text",
-                  text: event.result,
-                },
-              ],
+              content: typeof framedContent === "string"
+                ? [{ type: "text", text: framedContent }]
+                : framedContent,
               name: event.toolName,
               is_error: event.isError,
             },
           ],
         },
       } as Message;
+    }
     default:
       return null;
   }

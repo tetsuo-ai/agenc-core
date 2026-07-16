@@ -184,7 +184,7 @@ describe("runStartupConfigMigrations", () => {
     expect(warnings.join("\n")).toContain("invalid JSON");
   });
 
-  it("moves MCP project approvals into local settings and cleans project settings", async () => {
+  it("leaves legacy repository MCP flags inert and does not mutate the checkout", async () => {
     const home = makeTempDir("agenc-config-migration-home");
     const workspace = makeTempDir("agenc-config-migration-ws");
     const projectSettingsPath = join(workspace, ".agenc", "settings.json");
@@ -206,14 +206,19 @@ describe("runStartupConfigMigrations", () => {
       configStore: makeConfigStore(),
     });
 
-    expect(result.wrote).toBe(true);
-    expect(result.applied).toContain("localSettings:mcpProjectApprovals");
-    expect(readJson(projectSettingsPath)).toEqual({ preserved: "value" });
-    expect(readJson(localSettingsPath)).toEqual({
-      enabledMcpjsonServers: ["alpha", "beta"],
-      disabledMcpjsonServers: ["local-blocked", "blocked"],
+    expect(result.wrote).toBe(false);
+    expect(result.skipped).toContain(
+      "projectSettings:mcp-approval-migration-retired",
+    );
+    expect(readJson(projectSettingsPath)).toEqual({
       enableAllProjectMcpServers: true,
-      [CONFIG_MIGRATION_VERSION_KEY]: CURRENT_CONFIG_MIGRATION_VERSION,
+      enabledMcpjsonServers: ["alpha", "beta"],
+      disabledMcpjsonServers: ["blocked"],
+      preserved: "value",
+    });
+    expect(readJson(localSettingsPath)).toEqual({
+      enabledMcpjsonServers: ["alpha"],
+      disabledMcpjsonServers: ["local-blocked"],
     });
 
     const second = await runStartupConfigMigrations({
@@ -222,10 +227,12 @@ describe("runStartupConfigMigrations", () => {
       configStore: makeConfigStore(),
     });
     expect(second.wrote).toBe(false);
-    expect(second.skipped).toContain("localSettings:current");
+    expect(second.skipped).toContain(
+      "projectSettings:mcp-approval-migration-retired",
+    );
   });
 
-  it("does not overwrite malformed project settings", async () => {
+  it("does not read or overwrite malformed project settings", async () => {
     const home = makeTempDir("agenc-config-migration-home");
     const workspace = makeTempDir("agenc-config-migration-ws");
     const projectSettingsPath = join(workspace, ".agenc", "settings.json");
@@ -241,8 +248,10 @@ describe("runStartupConfigMigrations", () => {
     });
 
     expect(result.wrote).toBe(false);
-    expect(result.skipped).toContain("projectSettings");
+    expect(result.skipped).toContain(
+      "projectSettings:mcp-approval-migration-retired",
+    );
     expect(readFileSync(projectSettingsPath, "utf8")).toBe("{not json");
-    expect(warnings.join("\n")).toContain("invalid JSON");
+    expect(warnings).toEqual([]);
   });
 });

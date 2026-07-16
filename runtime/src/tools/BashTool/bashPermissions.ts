@@ -2277,7 +2277,7 @@ export async function bashToolHasPermission(
             type: 'addRules',
             rules: cappedRules,
             behavior: 'allow',
-            destination: 'localSettings',
+            destination: 'session',
           },
         ]
       : undefined

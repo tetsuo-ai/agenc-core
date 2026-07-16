@@ -52,6 +52,7 @@ const MCP_MANAGEMENT_COMMANDS = new Set([
   "remove",
   "add-json",
   "add-from-agenc-desktop",
+  "approve-project",
   "reset-project-choices",
   "doctor",
   "xaa",
@@ -69,6 +70,7 @@ export function formatAgenCMcpCliHelpText(): string {
     "  remove                   Remove an MCP server",
     "  add-json                 Add an MCP server from JSON",
     "  add-from-agenc-desktop   Import servers from AgenC Desktop config",
+    "  approve-project          Approve the exact current project MCP definition",
     "  reset-project-choices    Reset project MCP approval choices",
     "  doctor                   Diagnose MCP configuration",
     "  xaa                      Manage XAA IdP authentication",
@@ -263,6 +265,12 @@ async function runMcpManagementCommand(
         assertNoPositionals(rest, "Usage: agenc mcp reset-project-choices");
         const { mcpResetChoicesHandler } = await import("../cli/handlers/mcp.js");
         await mcpResetChoicesHandler();
+        return 0;
+      }
+      case "approve-project": {
+        assertArity(rest, 1, "Usage: agenc mcp approve-project <name>");
+        const { mcpApproveProjectHandler } = await import("../cli/handlers/mcp.js");
+        await mcpApproveProjectHandler(rest[0]!);
         return 0;
       }
       case "doctor": {

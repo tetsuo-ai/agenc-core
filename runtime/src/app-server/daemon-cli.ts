@@ -129,6 +129,11 @@ import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store
 import { resolveDaemonDefaultCwd } from "./daemon-workspace.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import {
+  classifyUntrustedToolResult,
+  frameUntrustedToolHistoryMessages,
+  frameUntrustedToolResultContent,
+} from "../tools/untrusted-tool-result-framing.js";
+import {
   createSizeCappedFileLogSink,
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
@@ -2586,7 +2591,7 @@ function recoveredInitialMessages(
         .filter(isUsefulRecoveredMessage)
     : [];
   const messages = appendRecoveredCompletedToolMessages(
-    conversationMessages,
+    frameUntrustedToolHistoryMessages(conversationMessages),
     snapshot?.toolState,
   );
   return messages.length > 0 ? messages : undefined;
@@ -2763,9 +2768,14 @@ function appendRecoveredCompletedToolMessages(
       });
     }
     if (!hasRecoveredToolResult(next, toolCall.callId)) {
+      const rawResult = stringifyRecoveredToolResult(toolCall.result);
       next.push({
         role: "tool",
-        content: stringifyRecoveredToolResult(toolCall.result),
+        content: frameUntrustedToolResultContent(
+          toolCall.toolName,
+          rawResult,
+          classifyUntrustedToolResult(toolCall.toolName),
+        ),
         toolCallId: toolCall.callId,
         toolName: toolCall.toolName,
       });

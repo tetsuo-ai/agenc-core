@@ -109,7 +109,7 @@ describe("guardian arbiter", () => {
     expect(reviewer.reviewApprovalRequest).toHaveBeenCalledOnce();
   });
 
-  test("guardian path shares approved_for_session cache", async () => {
+  test("guardian decisions are one-shot and never populate the session cache", async () => {
     const store = new ApprovalStore<unknown>();
     const inv = invocation({ services: { toolApprovals: store } });
     const reviewer: GuardianApprovalReviewer = {
@@ -132,9 +132,39 @@ describe("guardian arbiter", () => {
     });
 
     expect(first.source).toBe("guardian");
-    expect(second.source).toBe("cache");
-    expect(second.decision).toEqual(APPROVED_FOR_SESSION);
-    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledTimes(1);
+    expect(second.source).toBe("guardian");
+    expect(first.decision).toEqual({ kind: "denied" });
+    expect(second.decision).toEqual({ kind: "denied" });
+    expect(first.reason).toContain("only the current call");
+    expect(reviewer.reviewApprovalRequest).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    {
+      kind: "approved_execpolicy_amendment" as const,
+      proposed_execpolicy_amendment: { command: "*" },
+    },
+    {
+      kind: "network_policy_amendment" as const,
+      amendment: { action: "allow" as const, host: "example.test" },
+    },
+  ])("guardian cannot persist $kind", async (decision) => {
+    const reviewer: GuardianApprovalReviewer = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision,
+        reviewId: "review-1",
+        countedDenial: false,
+      })),
+    };
+
+    const result = await requestApproval({
+      ctx: approvalCtx(),
+      guardianApprovalReviewer: reviewer,
+    });
+
+    expect(result.source).toBe("guardian");
+    expect(result.decision).toEqual({ kind: "denied" });
+    expect(result.reason).toContain("authoritative human decision");
   });
 
   test("canonical resolver path persists approved_for_session decisions", async () => {

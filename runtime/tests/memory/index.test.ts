@@ -24,6 +24,7 @@ vi.mock("../utils/hooks.js", () => ({
   hasInstructionsLoadedHook: () => false,
 }));
 vi.mock("../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({ agencMdExcludes: [] }),
   getInitialSettings: () => ({ agencMdExcludes: [] }),
 }));
 vi.mock("../tools.js", () => ({}));

@@ -62,6 +62,7 @@ import {
 } from "../utils/forkedAgent.js";
 import type { REPLHookContext } from "../utils/hooks/postSamplingHooks.js";
 import { asSystemPrompt } from "../utils/systemPromptType.js";
+import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { evaluateStopHooks } from "./stop-hooks.js";
 
 /**
@@ -508,9 +509,17 @@ export async function commit(
         // Inject the hook's suggested message (if any) and set the
         // transition so run-turn re-enters PrepareContext.
         if (result.injectedMessage) {
+          const modelFacingHookOutput =
+            renderHookAdditionalContextSection([
+              {
+                hookName: "configured-stop-hooks",
+                hookEvent: "Stop",
+                content: result.injectedMessage,
+              },
+            ]) ?? result.injectedMessage;
           state.messages.push({
             role: "user",
-            content: result.injectedMessage,
+            content: modelFacingHookOutput,
           });
         }
         state.transition = { reason: "stop_hook_blocking" };

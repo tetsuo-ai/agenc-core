@@ -130,7 +130,18 @@ export function loadAllPermissionRulesFromDisk(): PermissionRule[] {
   for (const source of getEnabledSettingSources()) {
     rules.push(...getPermissionRulesForSource(source))
   }
-  return rules
+  return filterRepositoryControlledPermissionGrants(rules)
+}
+
+/** Repository settings may add deny/ask rules, but never execution grants. */
+export function filterRepositoryControlledPermissionGrants(
+  rules: readonly PermissionRule[],
+): PermissionRule[] {
+  return rules.filter(
+    rule =>
+      rule.ruleBehavior !== 'allow' ||
+      (rule.source !== 'projectSettings' && rule.source !== 'localSettings'),
+  )
 }
 
 /**
@@ -237,6 +248,15 @@ export function addPermissionRulesToSettings(
   },
   source: EditableSettingSource,
 ): boolean {
+  if (
+    ruleBehavior === 'allow' &&
+    (source === 'projectSettings' || source === 'localSettings')
+  ) {
+    // Repository files are restrictions/guidance, never durable approval
+    // records. Explicit per-run approvals belong to the session bucket.
+    return false
+  }
+
   // When allowManagedPermissionRulesOnly is enabled, don't persist new permission rules
   if (shouldAllowManagedPermissionRulesOnly()) {
     return false

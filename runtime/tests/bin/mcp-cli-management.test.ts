@@ -17,6 +17,7 @@ import {
 const handlerMocks = vi.hoisted(() => ({
   mcpAddFromDesktopHandler: vi.fn(),
   mcpAddJsonHandler: vi.fn(),
+  mcpApproveProjectHandler: vi.fn(),
   mcpDoctorHandler: vi.fn(),
   mcpGetHandler: vi.fn(),
   mcpListHandler: vi.fn(),
@@ -203,6 +204,7 @@ describe("AgenC MCP management CLI parsing", () => {
       "remove",
       "add-json",
       "add-from-agenc-desktop",
+      "approve-project",
       "reset-project-choices",
       "doctor",
       "xaa",
@@ -225,6 +227,7 @@ describe("AgenC MCP management CLI parsing", () => {
     const help = formatAgenCMcpCliHelpText();
     expect(help).toContain("add-json");
     expect(help).toContain("add-from-agenc-desktop");
+    expect(help).toContain("approve-project");
     expect(help).toContain("reset-project-choices");
     expect(help).toContain("doctor");
     expect(help).toContain("xaa");
@@ -269,6 +272,16 @@ describe("AgenC MCP management CLI parsing", () => {
       }),
     ).resolves.toBe(0);
     expect(handlerMocks.mcpResetChoicesHandler).toHaveBeenCalledTimes(1);
+
+    await expect(
+      runAgenCMcpCli({
+        kind: "management",
+        argv: ["approve-project", "github"],
+      }),
+    ).resolves.toBe(0);
+    expect(handlerMocks.mcpApproveProjectHandler).toHaveBeenCalledWith(
+      "github",
+    );
 
     await expect(
       runAgenCMcpCli({

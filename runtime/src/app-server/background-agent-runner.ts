@@ -46,6 +46,10 @@ import {
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
+import {
+  classifyUntrustedToolResult,
+  frameUntrustedToolResultContent,
+} from "../tools/untrusted-tool-result-framing.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { getPlan, getPlanFilePath } from "../utils/plans.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
@@ -3311,7 +3315,11 @@ async function replayRecoveredToolCalls<TThread extends AgentThread | ManagedThr
     }
     messages.push({
       role: "tool",
-      content: result.content,
+      content: frameUntrustedToolResultContent(
+        replay.toolName,
+        result.content,
+        classifyUntrustedToolResult(replay.toolName, registeredTool),
+      ),
       toolCallId: replay.callId,
       toolName: replay.toolName,
     });

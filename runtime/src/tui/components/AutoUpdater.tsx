@@ -11,7 +11,7 @@ import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; //
 import { installOrUpdateAgenCPackage, localInstallationExists } from '../../utils/localInstaller.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { removeInstalledSymlink } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 type Props = {
   isUpdating: boolean;
@@ -74,7 +74,7 @@ export function AutoUpdater({
         return;
       }
       const currentVersion = MACRO.VERSION;
-      const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
+      const channel = getExecutionAuthoritySettings()?.autoUpdatesChannel ?? 'latest';
       let latestVersion = await getLatestVersion(channel);
       const isDisabled = isAutoUpdaterDisabled();
       if (!mountedRef.current || isUpdatingRef.current) {

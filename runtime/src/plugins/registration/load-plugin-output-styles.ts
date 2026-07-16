@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 
 import type { OutputStyleInput } from "../../prompts/system-prompt.js";
-import type { LoadedPlugin } from "../loader.js";
+import { isRepositoryControlledPlugin, type LoadedPlugin } from "../loader.js";
 import {
   collectMarkdownFiles,
   coerceString,
@@ -98,7 +98,11 @@ export async function loadPluginOutputStyles(
   options: PluginOutputStyleRegistrationOptions = {},
 ): Promise<readonly PluginOutputStyle[]> {
   const plugins = await resolvePlugins(options);
-  const groups = await Promise.all(plugins.map(loadStylesForPlugin));
+  const groups = await Promise.all(
+    plugins
+      .filter((plugin) => !isRepositoryControlledPlugin(plugin))
+      .map(loadStylesForPlugin),
+  );
   return groups
     .flat()
     .sort((a, b) => a.name.localeCompare(b.name) || basename(a.filePath).localeCompare(basename(b.filePath)));

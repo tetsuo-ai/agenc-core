@@ -4,7 +4,7 @@ import {
 } from '../../bootstrap/state.js'
 import { logError } from '../log.js'
 import { sequential } from '../sequential.js'
-import { getInitialSettings } from '../settings/settings.js'
+import { getExecutionAuthoritySettings } from '../settings/settings.js'
 import { findFirstMatch, getBedrockInferenceProfiles } from './bedrock.js'
 import {
   ALL_MODEL_CONFIGS,
@@ -72,7 +72,7 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
  * strings — typically Bedrock inference profile ARNs.
  */
 function applyModelOverrides(ms: ModelStrings): ModelStrings {
-  const overrides = getInitialSettings().modelOverrides
+  const overrides = getExecutionAuthoritySettings().modelOverrides
   if (!overrides) {
     return ms
   }
@@ -95,7 +95,7 @@ function applyModelOverrides(ms: ModelStrings): ModelStrings {
 export function resolveOverriddenModel(modelId: string): string {
   let overrides: Record<string, string> | undefined
   try {
-    overrides = getInitialSettings().modelOverrides
+    overrides = getExecutionAuthoritySettings().modelOverrides
   } catch {
     return modelId
   }

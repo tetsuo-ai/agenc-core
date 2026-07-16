@@ -340,7 +340,7 @@ function buildSuggestions(ruleContent: string): PermissionUpdate[] {
   return [
     {
       type: 'addRules',
-      destination: 'localSettings',
+      destination: 'session',
       rules: [{ toolName: WEB_FETCH_TOOL_NAME, ruleContent }],
       behavior: 'allow',
     },

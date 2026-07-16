@@ -90,6 +90,8 @@ export type InstructionTier = "managed" | "user" | "project" | "local";
 export interface TierEntry {
   readonly tier: InstructionTier;
   readonly path: string;
+  /** Canonical machine/user/workspace boundary where this tier applies. */
+  readonly scopePath: string;
   readonly content: string;
   readonly rawContent: string;
   readonly dropped: DroppedInclude[];
@@ -588,6 +590,7 @@ async function loadTier(
   return {
     tier,
     path: filePath,
+    scopePath: resolve(boundary),
     content: resolved.text,
     rawContent: raw,
     dropped: resolved.dropped,
@@ -631,7 +634,10 @@ async function appendUnconditionalRules(
     }
   }
   const rules = discovery.rules;
-  dependencyPaths?.push(rulesDir, ...rules.map((rule) => rule.path));
+  // Durable instruction provenance lists content-bearing sources only.
+  // Directory and negative probes remain in cache evidence, but they did not
+  // contribute instructions and must not be reported as model input.
+  dependencyPaths?.push(...rules.map((rule) => rule.path));
   const block = formatRulesBlock(rules);
   if (block.length === 0) return content;
   return content.length === 0 ? block : `${content}\n\n${block}`;
@@ -948,6 +954,7 @@ async function loadTieredInstructionsUncached(
         ? {
             tier: "managed",
             path: DEFAULT_MANAGED_RULES_DIR,
+            scopePath: resolve(pathDir(DEFAULT_MANAGED_RULES_DIR)),
             content: managedRuleContent,
             rawContent: managedRuleContent,
             dropped: [],
@@ -993,6 +1000,7 @@ async function loadTieredInstructionsUncached(
         ? {
             tier: "user",
             path: join(agencHome, "rules"),
+            scopePath: resolve(agencHome),
             content: userRuleContent,
             rawContent: userRuleContent,
             dropped: [],
@@ -1081,6 +1089,7 @@ async function loadTieredInstructionsUncached(
       projectTier = {
         tier: "project",
         path: projectChain.at(-1)?.path ?? projectRulesDir(projectRootDir),
+        scopePath: resolve(projectRootDir),
         content:
           parts.length === 1 && projectChain.length === 1
             ? singleProjectContent

@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 
 import type { Command } from "../../commands.js";
-import type { LoadedPlugin, LoadedPluginCommand } from "../loader.js";
+import { frameRepositorySkillGuidance } from "../../skills/repository-skill-boundary.js";
+import {
+  isRepositoryControlledPlugin,
+  type LoadedPlugin,
+  type LoadedPluginCommand,
+} from "../loader.js";
 import type { PluginCommandMetadata } from "../manifest-schema.js";
 import { isRecord } from "../manifest-schema.js";
 import {
@@ -223,6 +228,7 @@ function createPluginCommand(
   options: PluginCommandRegistrationOptions,
 ): Command | null {
   const { plugin, file, metadata, isSkillMode } = entry;
+  const repositoryControlled = isRepositoryControlledPlugin(plugin);
   const frontmatter = metadataFrontmatter(file.frontmatter, metadata);
   const commandName =
     entry.declaredName ??
@@ -256,11 +262,13 @@ function createPluginCommand(
     ...(aliases !== undefined ? { aliases } : {}),
     argumentHint: coerceString(frontmatter["argument-hint"] ?? frontmatter.argumentHint),
     argNames: argNames.length > 0 ? argNames : undefined,
-    allowedTools: normalizedToolList(plugin, rawAllowedTools),
+    allowedTools: repositoryControlled
+      ? undefined
+      : normalizedToolList(plugin, rawAllowedTools),
     whenToUse: coerceString(frontmatter.when_to_use ?? frontmatter.whenToUse),
     version: coerceString(frontmatter.version),
-    model: model === "inherit" ? undefined : model,
-    effort: coerceString(frontmatter.effort),
+    model: repositoryControlled || model === "inherit" ? undefined : model,
+    effort: repositoryControlled ? undefined : coerceString(frontmatter.effort),
     disableModelInvocation: parseBoolean(frontmatter["disable-model-invocation"]),
     userInvocable,
     isHidden: !userInvocable,
@@ -272,7 +280,7 @@ function createPluginCommand(
       pluginManifest: plugin.manifest,
     },
     progressMessage,
-    shell: maybeShell(frontmatter.shell),
+    shell: repositoryControlled ? undefined : maybeShell(frontmatter.shell),
     userFacingName: () => commandDisplayName(commandName, plugin.name, frontmatter),
     getPromptForCommand: async (args, context) => {
       let content = isSkillMode || isSkillFile(file.filePath)
@@ -284,6 +292,9 @@ function createPluginCommand(
       });
       if (isSkillMode || isSkillFile(file.filePath)) {
         content = content.replace(/\$\{AGENC_SKILL_DIR\}/g, skillBaseDir);
+      }
+      if (repositoryControlled) {
+        content = frameRepositorySkillGuidance(content);
       }
       return [{ type: "text", text: content }];
     },

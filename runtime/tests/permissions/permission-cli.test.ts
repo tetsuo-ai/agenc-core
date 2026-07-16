@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -68,9 +68,9 @@ describe("permission CLI parser", () => {
         "Read",
       ]),
     ).toEqual({
-      kind: "approveRule",
-      destination: "projectSettings",
-      rule: "Read",
+      kind: "error",
+      message:
+        "repository files cannot store permission approvals; use --persist user or approve a live request with --session",
     });
     expect(
       parseAgenCPermissionsCliArgs(["permissions", "revoke", "Bash(ls)"]),
@@ -261,6 +261,33 @@ describe("permission CLI parser", () => {
 });
 
 describe("permission CLI local rules", () => {
+  it("rejects repository-persisted approvals without mutating the workspace", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agenc-permission-cli-boundary-"));
+    try {
+      for (const destination of [
+        "projectSettings",
+        "localSettings",
+      ] as const) {
+        const io = createIo();
+        await expect(
+          runAgenCPermissionsCli(
+            { kind: "approveRule", rule: "Read", destination },
+            { home: tmp, cwd: tmp, io },
+          ),
+        ).resolves.toBe(1);
+        expect(io.stderrText()).toContain(
+          "repository files cannot store permission approvals",
+        );
+      }
+      await expect(access(join(tmp, ".agenc", "settings.json"))).rejects.toThrow();
+      await expect(
+        access(join(tmp, ".agenc", "settings.local.json")),
+      ).rejects.toThrow();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("approves, lists, and revokes persisted allow rules", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "agenc-permission-cli-"));
     try {

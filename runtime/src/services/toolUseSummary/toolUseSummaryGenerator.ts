@@ -11,6 +11,10 @@
 
 import type { LLMProvider } from "../../llm/types.js";
 import { safeStringify } from "../../tools/types.js";
+import {
+  classifyUntrustedToolResult,
+  frameUntrustedToolResultContent,
+} from "../../tools/untrusted-tool-result-framing.js";
 
 export const E_TOOL_USE_SUMMARY_GENERATION_FAILED = 344;
 
@@ -81,7 +85,15 @@ export function buildToolUseSummaryPrompt(
     .map((tool) => {
       const input = truncateToolUseSummaryJson(tool.input);
       const output = truncateToolUseSummaryJson(tool.output);
-      return `Tool: ${tool.name}\nInput: ${input}\nOutput: ${output}`;
+      const framedOutput = frameUntrustedToolResultContent(
+        tool.name,
+        output,
+        classifyUntrustedToolResult(tool.name),
+      );
+      if (typeof framedOutput !== "string") {
+        throw new Error("tool-use summary text framing returned non-text content");
+      }
+      return `Tool: ${tool.name}\nInput: ${input}\nOutput:\n${framedOutput}`;
     })
     .join("\n\n");
 

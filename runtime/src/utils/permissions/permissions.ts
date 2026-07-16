@@ -53,6 +53,7 @@ import {
 } from './permissionRuleParser.js'
 import {
   deletePermissionRuleFromSettings,
+  filterRepositoryControlledPermissionGrants,
   type PermissionRuleFromEditableSettings,
   shouldAllowManagedPermissionRulesOnly,
 } from './permissionsLoader.js'
@@ -1311,7 +1312,10 @@ export function syncPermissionRulesFromDisk(
     }
   }
 
-  const updates = convertRulesToUpdates(rules, 'replaceRules')
+  const updates = convertRulesToUpdates(
+    filterRepositoryControlledPermissionGrants(rules),
+    'replaceRules',
+  )
   return applyPermissionUpdates(context, updates)
 }
 

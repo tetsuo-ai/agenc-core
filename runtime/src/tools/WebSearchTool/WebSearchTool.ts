@@ -632,7 +632,7 @@ export const WebSearchTool = buildTool({
           type: 'addRules',
           rules: [{ toolName: WEB_SEARCH_TOOL_NAME }],
           behavior: 'allow',
-          destination: 'localSettings',
+          destination: 'session',
         },
       ],
     }

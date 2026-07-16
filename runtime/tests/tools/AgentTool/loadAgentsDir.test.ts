@@ -103,7 +103,7 @@ afterEach(async () => {
 })
 
 describe('AgentTool loadAgentsDir adapter', () => {
-  test('prefers an exact restrictive public name over an earlier canonical alias', () => {
+  test('reserves built-in public aliases against repository definitions', () => {
     const explorer = agent('explorer', 'built-in')
     const exactScanner = {
       ...agent('scanner', 'projectSettings'),
@@ -111,9 +111,9 @@ describe('AgentTool loadAgentsDir adapter', () => {
       permissionMode: 'plan' as const,
     }
 
-    expect(
-      findAgentDefinitionByType([explorer, exactScanner], 'scanner'),
-    ).toBe(exactScanner)
+    expect(findAgentDefinitionByType([explorer, exactScanner], 'scanner')).toBe(
+      explorer,
+    )
   })
 
   test('binds rendered prompt bytes so later memory changes cannot alter execution', () => {
@@ -344,18 +344,18 @@ describe('AgentTool loadAgentsDir adapter', () => {
       filename: 'review',
       baseDir: '/repo/.agenc/agents',
       color: 'green',
-      tools: ['Read', 'Grep', 'Write', 'Edit', 'FileRead'],
+      tools: ['Read', 'Grep'],
       disallowedTools: ['Write'],
-      skills: ['security'],
-      mcpServers: ['github', { slack: { type: 'stdio', command: 'slack-mcp' } }],
-      hooks: { Stop: [] },
-      model: 'gpt-5.4',
-      effort: 2,
-      permissionMode: 'acceptEdits',
-      maxTurns: 4,
-      background: true,
-      memory: 'user',
     })
+    expect(parsed).not.toHaveProperty('skills')
+    expect(parsed).not.toHaveProperty('mcpServers')
+    expect(parsed).not.toHaveProperty('hooks')
+    expect(parsed).not.toHaveProperty('model')
+    expect(parsed).not.toHaveProperty('effort')
+    expect(parsed).not.toHaveProperty('permissionMode')
+    expect(parsed).not.toHaveProperty('maxTurns')
+    expect(parsed).not.toHaveProperty('background')
+    expect(parsed).not.toHaveProperty('memory')
   })
 
   test('rejects remote isolation outside internal builds', () => {
@@ -693,7 +693,7 @@ Broken prompt.
 
     expect(catalogA.agentRoleWorkspaceId).toBe(roleA.id)
     expect(selectedA).toMatchObject({
-      source: 'projectSettings',
+      source: 'flagSettings',
       whenToUse: 'Reviewer for A',
       model: 'model-a',
       tools: ['FileRead'],
@@ -730,7 +730,7 @@ Broken prompt.
 
     expect(catalog.agentRoleWorkspaceId).toBe(roleWorkspace.id)
     expect(selected).toMatchObject({
-      source: 'projectSettings',
+      source: 'flagSettings',
       tools: ['FileRead'],
       disallowedTools: ['Write'],
       agentRoleFingerprint: expect.any(String),

@@ -15,6 +15,10 @@ import {
   type LocalSkillMetadata,
 } from "./skills/local-loader.js";
 import {
+  frameRepositorySkillGuidance,
+  isRepositoryControlledSkillSource,
+} from "./skills/repository-skill-boundary.js";
+import {
   loadPluginCommands,
   loadPluginSkills,
 } from "./plugins/registration/load-plugin-commands.js";
@@ -323,6 +327,7 @@ function projectLocalSkill(
   skill: LocalSkillMetadata,
   services: ReturnType<typeof createLocalSkillsServices>,
 ): Command {
+  const repositoryControlled = isRepositoryControlledSkillSource(skill.source);
   return {
     type: "prompt",
     name: skill.name,
@@ -331,8 +336,8 @@ function projectLocalSkill(
     progressMessage: "running",
     contentLength: skill.contentLength,
     argNames: skill.argNames,
-    allowedTools: skill.allowedTools,
-    model: skill.model,
+    allowedTools: repositoryControlled ? [] : [...skill.allowedTools],
+    model: repositoryControlled ? undefined : skill.model,
     source: skill.source,
     loadedFrom: skill.loadedFrom,
     hasUserSpecifiedDescription: skill.hasUserSpecifiedDescription,
@@ -341,10 +346,10 @@ function projectLocalSkill(
     argumentHint: skill.argumentHint,
     whenToUse: skill.whenToUse,
     version: skill.version,
-    context: skill.context,
-    agent: skill.agent,
-    effort: skill.effort,
-    shell: skill.shell,
+    context: repositoryControlled ? undefined : skill.context,
+    agent: repositoryControlled ? undefined : skill.agent,
+    effort: repositoryControlled ? undefined : skill.effort,
+    shell: repositoryControlled ? undefined : skill.shell,
     userFacingName: () => skill.displayName ?? skill.name,
     getPromptForCommand: async (args, context) => {
       void context;
@@ -352,7 +357,10 @@ function projectLocalSkill(
         name: skill.name,
         args,
       });
-      const content = rendered?.content ?? "";
+      const rawContent = rendered?.content ?? "";
+      const content = repositoryControlled
+        ? frameRepositorySkillGuidance(rawContent)
+        : rawContent;
       return [{ type: "text", text: content }];
     },
   };

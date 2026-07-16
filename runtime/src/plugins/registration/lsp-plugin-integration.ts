@@ -1,7 +1,11 @@
 import type { LspServerConfigInput } from "../../config/schema.js";
 import { getPluginDataDir } from "../directories.js";
 import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
-import type { LoadedPlugin, PluginLoadIssue } from "../loader.js";
+import {
+  isRepositoryControlledPlugin,
+  type LoadedPlugin,
+  type PluginLoadIssue,
+} from "../loader.js";
 import {
   loadRuntimePlugins,
   resolvePluginServerTemplate,
@@ -160,9 +164,11 @@ async function extractLspServersFromPlugins(
 ): Promise<Readonly<Record<string, LspServerConfigInput>>> {
   return Object.assign(
     {},
-    ...plugins.map((plugin) =>
-      addPluginScopeToLspServers(plugin, plugin.lspServers, options),
-    ),
+    ...plugins
+      .filter((plugin) => !isRepositoryControlledPlugin(plugin))
+      .map((plugin) =>
+        addPluginScopeToLspServers(plugin, plugin.lspServers, options)
+      ),
   ) as Readonly<Record<string, LspServerConfigInput>>;
 }
 

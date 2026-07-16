@@ -25,7 +25,7 @@ import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import type { ChildToolPolicy } from '../../agents/run-agent.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { isAutoDreamEnabled } from './config.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import {
   getOriginalCwd,
@@ -96,7 +96,7 @@ export function resolveAutoDreamConfig(
 }
 
 function getConfig(): AutoDreamConfig {
-  return resolveAutoDreamConfig(getInitialSettings())
+  return resolveAutoDreamConfig(getExecutionAuthoritySettings())
 }
 
 function isGateOpen(): boolean {

@@ -273,9 +273,9 @@ export async function evaluateStopHooks(
 }
 
 function buildHookMessages(state: TurnState): Message[] {
-  const toolResultErrors = buildToolResultErrorLookup(state);
+  const completedToolResults = buildCompletedToolResultLookup(state);
   const messages = state.messages.map((message, index) =>
-    hookMessageFromLlm(message, index, toolResultErrors),
+    hookMessageFromLlm(message, index, completedToolResults),
   );
   const lastAssistant = state.assistantMessages.at(-1);
   if (!lastAssistant) return messages;
@@ -288,11 +288,13 @@ function buildHookMessages(state: TurnState): Message[] {
   ];
 }
 
-function buildToolResultErrorLookup(state: TurnState): ReadonlyMap<string, boolean> {
+function buildCompletedToolResultLookup(
+  state: TurnState,
+): ReadonlyMap<string, { readonly content: string; readonly isError: boolean }> {
   return new Map(
     (state.completedToolResults ?? []).map((result) => [
       result.callId,
-      result.isError,
+      { content: result.content, isError: result.isError },
     ]),
   );
 }
@@ -316,7 +318,10 @@ function lastLlmAssistantMatches(
 function hookMessageFromLlm(
   message: LLMMessage,
   index: number,
-  toolResultErrors: ReadonlyMap<string, boolean>,
+  completedToolResults: ReadonlyMap<
+    string,
+    { readonly content: string; readonly isError: boolean }
+  >,
 ): Message {
   const uuid = createHookMessageUuid("history", index);
   const timestamp = new Date().toISOString();
@@ -345,6 +350,9 @@ function hookMessageFromLlm(
   }
 
   if (message.role === "tool") {
+    const completed = message.toolCallId !== undefined
+      ? completedToolResults.get(message.toolCallId)
+      : undefined;
     return {
       type: "user",
       uuid,
@@ -355,11 +363,12 @@ function hookMessageFromLlm(
           {
             type: "tool_result",
             tool_use_id: message.toolCallId ?? "",
-            content: hookContent(message.content),
-            is_error:
-              message.toolCallId !== undefined
-                ? toolResultErrors.get(message.toolCallId) === true
-                : false,
+            // Configured hooks consume the legacy transcript API rather than
+            // model history. Preserve exact tool data for deterministic
+            // linters/parsers while the LLM-facing copy remains framed; any
+            // hook continuation is separately framed before model re-entry.
+            content: completed?.content ?? hookContent(message.content),
+            is_error: completed?.isError === true,
           },
         ],
       },

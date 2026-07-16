@@ -11,7 +11,10 @@ import {
 import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
 import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
 import type { SettingSource } from './constants.js'
-import { getInitialSettings } from './settings.js'
+import {
+  getExecutionAuthoritySettings,
+  getInitialSettings,
+} from './settings.js'
 
 /**
  * Apply a settings change to app state. Re-reads settings from disk,
@@ -35,6 +38,7 @@ export function applySettingsChange(
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
   const newSettings = getInitialSettings()
+  const authoritySettings = getExecutionAuthoritySettings()
 
   logForDebugging(`Settings changed from ${source}, updating app state`)
 
@@ -72,7 +76,7 @@ export function applySettingsChange(
     // itself changed — otherwise unrelated settings churn (e.g. tips dismissal
     // on startup) would clobber a --effort CLI flag value held in AppState.
     const prevEffort = prev.settings.effortLevel
-    const newEffort = newSettings.effortLevel
+    const newEffort = authoritySettings.effortLevel
     const effortChanged = prevEffort !== newEffort
 
     return {

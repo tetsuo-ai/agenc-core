@@ -37,7 +37,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { logError } from '../log.js'
 import {
-  getInitialSettings,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
@@ -164,7 +164,7 @@ export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
   // Explicitly-disabled entries (value: false) don't count.
   const enabledPlugins = {
     ...getAddDirEnabledPlugins(),
-    ...(getInitialSettings().enabledPlugins ?? {}),
+    ...(getExecutionAuthoritySettings().enabledPlugins ?? {}),
   }
   for (const [pluginId, value] of Object.entries(enabledPlugins)) {
     if (
@@ -185,7 +185,7 @@ export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
   return {
     ...implicit,
     ...getAddDirExtraMarketplaces(),
-    ...(getInitialSettings().extraKnownMarketplaces ?? {}),
+    ...(getExecutionAuthoritySettings().extraKnownMarketplaces ?? {}),
   }
 }
 
@@ -197,20 +197,10 @@ export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
  */
 export function getMarketplaceDeclaringSource(
   name: string,
-): 'userSettings' | 'projectSettings' | 'localSettings' | null {
-  // Check highest-precedence editable sources first — the one that wins
-  // in the merged view is the one we should write back to.
-  const editableSources: Array<
-    'localSettings' | 'projectSettings' | 'userSettings'
-  > = ['localSettings', 'projectSettings', 'userSettings']
-
-  for (const source of editableSources) {
-    const settings = getSettingsForSource(source)
-    if (settings?.extraKnownMarketplaces?.[name]) {
-      return source
-    }
-  }
-  return null
+): 'userSettings' | null {
+  return getSettingsForSource('userSettings')?.extraKnownMarketplaces?.[name]
+    ? 'userSettings'
+    : null
 }
 
 /**

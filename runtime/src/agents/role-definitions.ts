@@ -12,8 +12,13 @@ export type AgentRoleDefinition = {
   disallowedTools?: string[];
   background?: boolean;
   effort?: AgentRole["config"]["reasoningEffort"];
-  source: "built-in";
-  baseDir: "built-in";
+  source:
+    | "built-in"
+    | "userSettings"
+    | "projectSettings"
+    | "flagSettings"
+    | "policySettings";
+  baseDir: "built-in" | "workspace-role";
   agentRoleFingerprint: string;
   getSystemPrompt: () => string;
 };
@@ -21,14 +26,25 @@ export type AgentRoleDefinition = {
 function projectAgentRole(role: AgentRole): AgentRoleDefinition {
   const description = role.config.description ?? role.name;
   const systemPrompt = role.config.systemPrompt ?? "";
+  const source =
+    role.source === "built-in"
+      ? "built-in" as const
+      : role.source === "projectSettings"
+        ? "projectSettings" as const
+        : role.source === "userSettings"
+          ? "userSettings" as const
+          : role.source === "policySettings"
+            ? "policySettings" as const
+        : "flagSettings" as const;
   const tools = role.config.allowlist
     ? Array.from(role.config.allowlist)
     : undefined;
   const definition = {
     agentType: role.name,
     whenToUse: description,
-    source: "built-in" as const,
-    baseDir: "built-in" as const,
+    source,
+    baseDir:
+      source === "built-in" ? "built-in" as const : "workspace-role" as const,
     getSystemPrompt: () => systemPrompt,
     ...(tools !== undefined ? { tools } : {}),
     ...(role.config.disallowlist

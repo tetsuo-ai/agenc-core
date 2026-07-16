@@ -128,6 +128,13 @@ export interface AgentRoleConfig {
 export interface AgentRole {
   readonly name: string;
   readonly config: AgentRoleConfig;
+  /** Authority provenance; omitted inputs are normalized as programmatic. */
+  readonly source?:
+    | "built-in"
+    | "programmatic"
+    | "userSettings"
+    | "projectSettings"
+    | "policySettings";
 }
 
 /**
@@ -147,6 +154,7 @@ export function agentRoleFingerprint(role: AgentRole): string {
     .update(
       stableStringify({
         name: role.name,
+        source: role.source ?? "programmatic",
         config: role.config,
         effectiveConfigLayer,
       }),
@@ -316,6 +324,7 @@ Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
 // GENERAL_PURPOSE_AGENT const prompt was dead on HEAD — see built-in-prompts.ts.
 const DEFAULT_ROLE: AgentRole = freezeRole({
   name: "default",
+  source: "built-in",
   config: {
     description: "Default agent.",
   },
@@ -328,6 +337,7 @@ const DEFAULT_ROLE: AgentRole = freezeRole({
 // rejects, and it never ran on the live path; see built-in-prompts.ts.
 const EXPLORER_ROLE: AgentRole = freezeRole({
   name: "explorer",
+  source: "built-in",
   config: {
     description: EXPLORER_DESCRIPTION,
     configFile: "explorer.toml",
@@ -338,6 +348,7 @@ const EXPLORER_ROLE: AgentRole = freezeRole({
 
 const WORKER_ROLE: AgentRole = freezeRole({
   name: "worker",
+  source: "built-in",
   config: {
     description: WORKER_DESCRIPTION,
   },
@@ -346,6 +357,7 @@ const WORKER_ROLE: AgentRole = freezeRole({
 // Read-only software-architect role (formerly the stranded PLAN_AGENT const).
 const PLAN_ROLE: AgentRole = freezeRole({
   name: "Plan",
+  source: "built-in",
   config: {
     description: PLAN_WHEN_TO_USE,
     systemPrompt: PLAN_SYSTEM_PROMPT,
@@ -361,6 +373,7 @@ const PLAN_ROLE: AgentRole = freezeRole({
 // HEAD (the const never dispatched), so dropping them is not a live regression.
 const VERIFICATION_ROLE: AgentRole = freezeRole({
   name: "verification",
+  source: "built-in",
   config: {
     description: VERIFICATION_WHEN_TO_USE,
     systemPrompt: VERIFICATION_SYSTEM_PROMPT,
@@ -404,7 +417,7 @@ export function registerAgentRole(
   role: AgentRole,
 ): void {
   const roles = registeredRolesByWorkspace.get(workspace.id) ?? new Map();
-  roles.set(role.name, freezeRole(role));
+  roles.set(role.name, freezeRole({ ...role, source: "programmatic" }));
   registeredRolesByWorkspace.set(workspace.id, roles);
 }
 
@@ -448,7 +461,10 @@ function lookupMarkdownRole(
   name: string,
 ): AgentRole | undefined {
   loadMarkdownAgentRoles(workspace);
-  return markdownRolesByCwd.get(workspace.id)?.roles.get(name);
+  const role = markdownRolesByCwd.get(workspace.id)?.roles.get(name);
+  return role?.source === "projectSettings" && isBuiltInRoleNameOrAlias(name)
+    ? undefined
+    : role;
 }
 
 export function getDefaultAgentRole(): AgentRole {
@@ -529,9 +545,19 @@ export function loadMarkdownAgentRoles(workspace: AgentRoleWorkspace): void {
   const roles = new Map<string, AgentRole>();
   for (const file of readMarkdownAgentRoleFiles(workspace.cwd)) {
     const role = markdownAgentRoleFromFile(file);
-    if (role) roles.set(role.name, freezeRole(role));
+    if (
+      role &&
+      (role.source !== "projectSettings" ||
+        !isBuiltInRoleNameOrAlias(role.name))
+    ) {
+      roles.set(role.name, freezeRole(role));
+    }
   }
   markdownRolesByCwd.set(key, { roles, signature });
+}
+
+function isBuiltInRoleNameOrAlias(name: string): boolean {
+  return builtInRoles.has(canonicalAgentRoleName(name));
 }
 
 function markdownAgentRoleSignature(cwd: string): string {
@@ -539,7 +565,7 @@ function markdownAgentRoleSignature(cwd: string): string {
   for (const source of markdownAgentRoleDirs(cwd)) {
     const directory = validateTrustedMarkdownDirectory(source, source.dir);
     parts.push(
-      `${source.dir}\u0000${directory === null ? "missing-or-untrusted" : trustedDirectorySignature(directory)}`,
+      `${source.source}\u0000${source.dir}\u0000${directory === null ? "missing-or-untrusted" : trustedDirectorySignature(directory)}`,
     );
     // A directory's mtime does not change when a contained file is edited
     // in place, so include each trusted markdown file's identity and metadata.
@@ -839,6 +865,7 @@ function freezeRole(role: AgentRole): AgentRole {
   const derived = deriveRoleRuntimeHints(role.config, tryLoadRoleLayerToml(role));
   return Object.freeze({
     name: role.name,
+    source: role.source ?? "programmatic",
     config: Object.freeze({ ...role.config, ...derived }),
   });
 }
@@ -910,11 +937,13 @@ type MarkdownAgentRoleFile = {
   readonly filePath: string;
   readonly frontmatter: Record<string, unknown>;
   readonly content: string;
+  readonly source: "userSettings" | "projectSettings" | "policySettings";
 };
 
 interface MarkdownAgentRoleDirectory {
   readonly dir: string;
   readonly trustAnchor: string;
+  readonly source: "userSettings" | "projectSettings" | "policySettings";
 }
 
 interface StableEntryState {
@@ -963,7 +992,7 @@ function readMarkdownAgentRoleFiles(cwd: string): MarkdownAgentRoleFile[] {
         const { frontmatter, content } = parseMarkdownAgentRole(
           normalizeExternalText(opened.raw),
         );
-        out.push({ filePath, frontmatter, content });
+        out.push({ filePath, frontmatter, content, source: source.source });
       } catch {
         continue;
       }
@@ -977,7 +1006,11 @@ function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
   const userRoot = resolve(
     process.env.AGENC_CONFIG_DIR ?? join(homedir(), ".agenc"),
   );
-  dirs.push({ dir: join(userRoot, "agents"), trustAnchor: userRoot });
+  dirs.push({
+    dir: join(userRoot, "agents"),
+    trustAnchor: userRoot,
+    source: "userSettings",
+  });
 
   const projectDirs: MarkdownAgentRoleDirectory[] = [];
   let current = resolve(cwd);
@@ -986,6 +1019,7 @@ function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
     projectDirs.push({
       dir: join(current, ".agenc", "agents"),
       trustAnchor: current,
+      source: "projectSettings",
     });
     if (current === home || current === dirname(current)) break;
     if (existsSync(join(current, ".git"))) break;
@@ -996,7 +1030,11 @@ function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
   const managed = process.env.AGENC_MANAGED_AGENTS_DIR;
   if (managed && managed.trim().length > 0) {
     const managedDir = resolve(managed);
-    dirs.push({ dir: managedDir, trustAnchor: dirname(managedDir) });
+    dirs.push({
+      dir: managedDir,
+      trustAnchor: dirname(managedDir),
+      source: "policySettings",
+    });
   }
 
   return dirs;
@@ -1339,18 +1377,23 @@ function markdownAgentRoleFromFile(
   const description = nonEmptyString(file.frontmatter.description);
   if (!name || !description) return null;
 
+  const repositoryControlled = file.source === "projectSettings";
   const tools = parseMarkdownToolList(file.frontmatter.tools);
-  const reasoningEffort = asAgentReasoningEffort(
-    file.frontmatter.effort ??
-      file.frontmatter.reasoning_effort ??
-      file.frontmatter.model_reasoning_effort,
-  );
+  const reasoningEffort = repositoryControlled
+    ? undefined
+    : asAgentReasoningEffort(
+        file.frontmatter.effort ??
+          file.frontmatter.reasoning_effort ??
+          file.frontmatter.model_reasoning_effort,
+      );
   const background =
-    file.frontmatter.background === true ||
-    file.frontmatter.background === "true";
+    !repositoryControlled &&
+    (file.frontmatter.background === true ||
+      file.frontmatter.background === "true");
 
   return {
     name,
+    source: file.source,
     config: {
       description: description.replace(/\\n/g, "\n"),
       systemPrompt: file.content.trim(),

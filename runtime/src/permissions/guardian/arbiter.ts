@@ -500,7 +500,12 @@ export async function requestApproval(
         reason: "stale_modal_decision",
       };
     }
-    const approvalCache = resolveApprovalCache(opts.ctx.invocation);
+    // Automatic reviewers may only grant the current call. Session grants and
+    // policy amendments require an authoritative human resolver, and a prior
+    // automatic decision must never be replayed for a later call.
+    const approvalCache = shouldUseGuardian
+      ? null
+      : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
       approvalCache !== null
         ? buildApprovalCacheKeys(toolFromApprovalCtx(opts.ctx), opts.ctx.invocation, opts.args ?? {})
@@ -525,10 +530,15 @@ export async function requestApproval(
         if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
           throw new ModalApprovalError("stale_modal_decision");
         }
+        const oneShot = normalizeGuardianDecision(result.decision);
         return {
-          decision: result.decision,
+          decision: oneShot.decision,
           source: "guardian",
-          ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          ...(oneShot.reason !== undefined
+            ? { reason: oneShot.reason }
+            : result.reason !== undefined
+              ? { reason: result.reason }
+              : {}),
         };
       }
       const decision = await opts.resolver!.request({
@@ -579,6 +589,31 @@ export async function requestApproval(
 
   opts.onNoResolver?.(opts.ctx);
   return { decision: { kind: "denied" }, source: "default_deny" };
+}
+
+function normalizeGuardianDecision(
+  decision: ReviewDecision,
+): { readonly decision: ReviewDecision; readonly reason?: string } {
+  switch (decision.kind) {
+    case "approved":
+    case "denied":
+    case "timed_out":
+    case "abort":
+      return { decision };
+    case "approved_for_session":
+    case "approved_execpolicy_amendment":
+    case "network_policy_amendment":
+      return {
+        decision: { kind: "denied" },
+        reason:
+          "Automatic approval reviewers may grant only the current call; session grants and policy amendments require an authoritative human decision.",
+      };
+    default: {
+      const _exhaustive: never = decision;
+      void _exhaustive;
+      return { decision: { kind: "denied" } };
+    }
+  }
 }
 
 export async function arbitratePermissionMode(

@@ -64,7 +64,7 @@ import {
   getUsername,
 } from './secureStorage/macOsKeychainHelpers.js'
 import {
-  getSettings_DEPRECATED,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
@@ -130,7 +130,7 @@ export function isAnthropicAuthEnabled(): boolean {
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
-  const settings = getSettings_DEPRECATED() || {}
+  const settings = getExecutionAuthoritySettings()
   const apiKeyHelper = settings.apiKeyHelper
   const hasExternalAuthToken =
     process.env.ANTHROPIC_AUTH_TOKEN ||
@@ -384,75 +384,42 @@ export function getConfiguredApiKeyHelper(): string | undefined {
   if (isBareMode()) {
     return getSettingsForSource('flagSettings')?.apiKeyHelper
   }
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.apiKeyHelper
+  return getExecutionAuthoritySettings().apiKeyHelper
 }
 
 /**
  * Check if the configured apiKeyHelper comes from project settings (projectSettings or localSettings)
  */
 function isApiKeyHelperFromProjectOrLocalSettings(): boolean {
-  const apiKeyHelper = getConfiguredApiKeyHelper()
-  if (!apiKeyHelper) {
-    return false
-  }
-
-  const projectSettings = getSettingsForSource('projectSettings')
-  const localSettings = getSettingsForSource('localSettings')
-  return (
-    projectSettings?.apiKeyHelper === apiKeyHelper ||
-    localSettings?.apiKeyHelper === apiKeyHelper
-  )
+  return false
 }
 
 /**
  * Get the configured awsAuthRefresh from settings
  */
 function getConfiguredAwsAuthRefresh(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.awsAuthRefresh
+  return getExecutionAuthoritySettings().awsAuthRefresh
 }
 
 /**
  * Check if the configured awsAuthRefresh comes from project settings
  */
 export function isAwsAuthRefreshFromProjectSettings(): boolean {
-  const awsAuthRefresh = getConfiguredAwsAuthRefresh()
-  if (!awsAuthRefresh) {
-    return false
-  }
-
-  const projectSettings = getSettingsForSource('projectSettings')
-  const localSettings = getSettingsForSource('localSettings')
-  return (
-    projectSettings?.awsAuthRefresh === awsAuthRefresh ||
-    localSettings?.awsAuthRefresh === awsAuthRefresh
-  )
+  return false
 }
 
 /**
  * Get the configured awsCredentialExport from settings
  */
 function getConfiguredAwsCredentialExport(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.awsCredentialExport
+  return getExecutionAuthoritySettings().awsCredentialExport
 }
 
 /**
  * Check if the configured awsCredentialExport comes from project settings
  */
 export function isAwsCredentialExportFromProjectSettings(): boolean {
-  const awsCredentialExport = getConfiguredAwsCredentialExport()
-  if (!awsCredentialExport) {
-    return false
-  }
-
-  const projectSettings = getSettingsForSource('projectSettings')
-  const localSettings = getSettingsForSource('localSettings')
-  return (
-    projectSettings?.awsCredentialExport === awsCredentialExport ||
-    localSettings?.awsCredentialExport === awsCredentialExport
-  )
+  return false
 }
 
 /**
@@ -839,25 +806,14 @@ export function clearAwsCredentialsCache(): void {
  * Get the configured gcpAuthRefresh from settings
  */
 function getConfiguredGcpAuthRefresh(): string | undefined {
-  const mergedSettings = getSettings_DEPRECATED() || {}
-  return mergedSettings.gcpAuthRefresh
+  return getExecutionAuthoritySettings().gcpAuthRefresh
 }
 
 /**
  * Check if the configured gcpAuthRefresh comes from project settings
  */
 export function isGcpAuthRefreshFromProjectSettings(): boolean {
-  const gcpAuthRefresh = getConfiguredGcpAuthRefresh()
-  if (!gcpAuthRefresh) {
-    return false
-  }
-
-  const projectSettings = getSettingsForSource('projectSettings')
-  const localSettings = getSettingsForSource('localSettings')
-  return (
-    projectSettings?.gcpAuthRefresh === gcpAuthRefresh ||
-    localSettings?.gcpAuthRefresh === gcpAuthRefresh
-  )
+  return false
 }
 
 /** Short timeout for the GCP credentials probe. Without this, when no local

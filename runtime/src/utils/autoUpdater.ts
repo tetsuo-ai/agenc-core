@@ -14,7 +14,7 @@ import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
 import { gte, lt } from './semver.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 import {
   filterAgenCAliases,
   getShellConfigPaths,
@@ -140,7 +140,7 @@ async function getMaxVersionConfig(): Promise<MaxVersionConfig> {
  * current version until stable catches up, preventing downgrades.
  */
 export function shouldSkipVersion(targetVersion: string): boolean {
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
   const minimumVersion = settings?.minimumVersion
   if (!minimumVersion) {
     return false

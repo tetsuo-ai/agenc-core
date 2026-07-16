@@ -193,7 +193,7 @@ describe('AgentTool resume role provenance', () => {
     writeFileSync(
       rolePath,
       `---
-name: worker
+name: guarded-worker
 description: Guarded worker
 disallowedTools:
   - Write
@@ -212,11 +212,11 @@ Guarded prompt.
     switchSession('00000000-0000-4000-8000-000000000222' as never, null)
     const firstCatalog = await loadFreshAgentDefinitions(root)
     const first = firstCatalog.activeAgents.find(
-      definition => definition.agentType === 'worker',
+      definition => definition.agentType === 'guarded-worker',
     )
     expect(first).toBeDefined()
     const metadata = {
-      agentType: 'worker',
+      agentType: 'guarded-worker',
       agentRoleWorkspaceId: workspace.id,
       agentRoleFingerprint: requireAgentDefinitionRoleFingerprint(first!),
     }
@@ -231,12 +231,19 @@ Guarded prompt.
         await loadFreshAgentDefinitions(root),
       )
         .selectedAgent,
-    ).toMatchObject({ agentType: 'worker', permissionMode: 'plan' })
+    ).toMatchObject({ agentType: 'guarded-worker', disallowedTools: ['Write'] })
+    expect(
+      resolveAgentDefinitionForResume(
+        persistedMetadata,
+        workspace,
+        await loadFreshAgentDefinitions(root),
+      ).selectedAgent,
+    ).not.toHaveProperty('permissionMode')
 
     writeFileSync(
       rolePath,
       `---
-name: worker
+name: guarded-worker
 description: Guarded worker
 disallowedTools: []
 permissionMode: acceptEdits
@@ -246,7 +253,7 @@ Guarded prompt.
     )
     const secondCatalog = await loadFreshAgentDefinitions(root)
     const second = secondCatalog.activeAgents.find(
-      definition => definition.agentType === 'worker',
+      definition => definition.agentType === 'guarded-worker',
     )
     expect(second).toBeDefined()
     expect(requireAgentDefinitionRoleFingerprint(second!)).not.toBe(
@@ -254,7 +261,7 @@ Guarded prompt.
     )
     expect(() =>
       resolveAgentDefinitionForResume(metadata, workspace, secondCatalog),
-    ).toThrow("Cannot resume changed agent type 'worker'")
+    ).toThrow("Cannot resume changed agent type 'guarded-worker'")
   })
 
   it('rejects an edited role at the resume boundary before launch mutation', async () => {
@@ -324,7 +331,7 @@ Review and mutate freely.
     expect(launch).not.toHaveBeenCalled()
   })
 
-  it('propagates exact role memory authorization at the resume launch boundary', async () => {
+  it('does not let repository role metadata authorize memory or resume capabilities', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agenc-resume-boundary-memory-'))
     tempRoots.push(root)
     const session = configureBoundarySession(root)
@@ -362,15 +369,14 @@ Use only this role's project memory.
     )
     const launch = vi.fn((preflight: ResumeAgentLaunchPreflight) => {
       expect(preflight.selectedAgent.agentType).toBe('memory-reviewer')
-      expect(preflight.selectedAgent.getSystemPrompt()).toContain(
-        'memory written by the running agent before resume',
+      expect(preflight.selectedAgent.getSystemPrompt()).toBe(
+        "Use only this role's project memory.",
       )
-      expect(preflight.agentContext.memoryAuthorization).toEqual({
-        agentType: 'memory-reviewer',
-        scope: 'project',
-      })
-      expect(preflight.workerPermissionMode).toBe('plan')
-      expect(preflight.availableTools).toEqual([{ name: 'Read' }])
+      expect(preflight.selectedAgent).not.toHaveProperty('memory')
+      expect(preflight.selectedAgent).not.toHaveProperty('permissionMode')
+      expect(preflight.agentContext.memoryAuthorization).toBeUndefined()
+      expect(preflight.workerPermissionMode).toBe('default')
+      expect(preflight.availableTools).toEqual([])
       return {
         agentId,
         description: 'resumed memory reviewer',
@@ -391,6 +397,6 @@ Use only this role's project memory.
       ),
     ).resolves.toMatchObject({ agentId })
     expect(launch).toHaveBeenCalledOnce()
-    expect(resumeToolPoolCapture.modes).toEqual(['plan'])
+    expect(resumeToolPoolCapture.modes).toEqual([])
   })
 })

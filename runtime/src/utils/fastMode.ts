@@ -24,7 +24,7 @@ import {
 import { getAPIProvider } from './model/providers.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import {
-  getInitialSettings,
+  getExecutionAuthoritySettings,
   getSettingsForSource,
   updateSettingsForSource,
 } from './settings/settings.js'
@@ -145,7 +145,7 @@ export function getInitialFastModeSetting(model: ModelSetting): boolean {
   if (!isFastModeSupportedByModel(model)) {
     return false
   }
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
   // If per-session opt-in is required, fast mode starts off each session
   if (settings.fastModePerSessionOptIn) {
     return false

@@ -525,11 +525,32 @@ describe("registerAgentThreadTask", () => {
         expect.objectContaining({
           type: "tool_result",
           tool_use_id: "call-1",
-          content: [
+          name: "Read",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "text",
+              text: expect.stringContaining(
+                "untrusted workspace data from Read",
+              ),
+            }),
             expect.objectContaining({ type: "text", text: "file body" }),
-          ],
+          ]),
         }),
       ]);
+      const summaryToolResult = (
+        forkMessages?.[2]?.message.content as Array<{
+          readonly type?: string;
+          readonly content?: Array<{ readonly type?: string; readonly text?: string }>;
+        }> | undefined
+      )?.find((part) => part.type === "tool_result");
+      const summaryToolText = (summaryToolResult?.content ?? [])
+        .map((part) => part.text ?? "")
+        .join("\n");
+      expect(
+        summaryToolText.split(
+          "===== AGENC UNTRUSTED TOOL RESULT DATA =====",
+        ),
+      ).toHaveLength(3);
 
       await lifecycle.stop("agent-3", "done");
     } finally {

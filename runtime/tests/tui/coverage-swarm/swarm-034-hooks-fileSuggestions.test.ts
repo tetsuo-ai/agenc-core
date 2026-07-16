@@ -48,7 +48,10 @@ vi.mock('../../utils/cwd.js', () => ({
 }))
 
 vi.mock('../../utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => harness.projectSettings,
   getInitialSettings: () => harness.projectSettings,
+  getSettingsForSource: (source: string) =>
+    source === 'projectSettings' ? harness.projectSettings : undefined,
 }))
 
 vi.mock('../../utils/config.js', () => ({

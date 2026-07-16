@@ -24,7 +24,7 @@ import { toError } from '../../utils/errors.js'
 import { logMCPDebug } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
 import { getSecureStorage } from '../../utils/secureStorage/index.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { jsonParse } from '../../utils/slowOperations.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 
@@ -44,7 +44,7 @@ export type XaaIdpSettings = {
  * type doesn't have it at compile time. This is the one cast.
  */
 export function getXaaIdpSettings(): XaaIdpSettings | undefined {
-  return (getInitialSettings() as { xaaIdp?: XaaIdpSettings }).xaaIdp
+  return (getExecutionAuthoritySettings() as { xaaIdp?: XaaIdpSettings }).xaaIdp
 }
 
 const IDP_LOGIN_TIMEOUT_MS = 5 * 60 * 1000

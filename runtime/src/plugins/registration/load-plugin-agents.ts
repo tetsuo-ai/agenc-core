@@ -13,7 +13,7 @@ import type {
   EffortValue,
   PluginAgentDefinition,
 } from "../../tools/AgentTool/loadAgentsDir.js";
-import type { LoadedPlugin } from "../loader.js";
+import { isRepositoryControlledPlugin, type LoadedPlugin } from "../loader.js";
 import {
   collectMarkdownFiles,
   coerceString,
@@ -156,24 +156,31 @@ function createPluginAgent(
   file: ParsedMarkdownFile,
   roleCwd: string,
 ): PluginAgentDefinition | null {
+  const repositoryControlled = isRepositoryControlledPlugin(plugin);
   const agentType = agentName(plugin, file);
   const whenToUse =
     coerceString(file.frontmatter.description) ??
     coerceString(file.frontmatter["when-to-use"]) ??
     `Agent from ${plugin.name} plugin`;
-  const memory = parseMemoryScope(file.frontmatter.memory);
+  const memory = repositoryControlled
+    ? undefined
+    : parseMemoryScope(file.frontmatter.memory);
   const systemPrompt = substitutePluginTemplate(file.markdown.trim(), plugin);
-  const tools = addMemoryTools(parseTools(file.frontmatter.tools), memory);
+  const tools = repositoryControlled
+    ? undefined
+    : addMemoryTools(parseTools(file.frontmatter.tools), memory);
   const disallowedTools =
     file.frontmatter.disallowedTools !== undefined
       ? parseTools(file.frontmatter.disallowedTools)
       : undefined;
   const skills = splitList(file.frontmatter.skills);
-  const model = coerceString(file.frontmatter.model);
-  const effort = parseEffort(file.frontmatter.effort);
-  const maxTurns = parsePositiveInt(file.frontmatter.maxTurns);
-  const background = parseBoolean(file.frontmatter.background);
-  const isolation = file.frontmatter.isolation === "worktree" ? "worktree" : undefined;
+  const model = repositoryControlled ? undefined : coerceString(file.frontmatter.model);
+  const effort = repositoryControlled ? undefined : parseEffort(file.frontmatter.effort);
+  const maxTurns = repositoryControlled ? undefined : parsePositiveInt(file.frontmatter.maxTurns);
+  const background = !repositoryControlled && parseBoolean(file.frontmatter.background);
+  const isolation = !repositoryControlled && file.frontmatter.isolation === "worktree"
+    ? "worktree"
+    : undefined;
 
   return {
     agentType,
@@ -182,6 +189,7 @@ function createPluginAgent(
     filename: basename(file.filePath, ".md"),
     baseDir: file.baseDir,
     plugin: plugin.name,
+    ...(repositoryControlled ? { repositoryControlled: true } : {}),
     getSystemPrompt: () => {
       if (!memory || !isAutoMemoryEnabled()) return systemPrompt;
       return `${systemPrompt}\n\n${loadAgentMemoryPrompt(agentType, memory, roleCwd)}`;

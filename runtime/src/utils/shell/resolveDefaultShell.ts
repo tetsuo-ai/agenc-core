@@ -1,4 +1,4 @@
-import { getInitialSettings } from '../settings/settings.js'
+import { getExecutionAuthoritySettings } from '../settings/settings.js'
 
 /**
  * Resolve the default shell for input-box `!` commands.
@@ -10,5 +10,5 @@ import { getInitialSettings } from '../settings/settings.js'
  * PowerShell (would break existing Windows users with bash hooks).
  */
 export function resolveDefaultShell(): 'bash' | 'powershell' {
-  return getInitialSettings().defaultShell ?? 'bash'
+  return getExecutionAuthoritySettings().defaultShell ?? 'bash'
 }

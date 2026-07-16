@@ -35,6 +35,10 @@ import {
   buildTerminalToolResult,
 } from "./terminal-tool-result.js";
 import { ESCALATED_MAX_OUTPUT_TOKENS } from "../llm/openai-compatible-token-limits.js";
+import {
+  classifyUntrustedToolResult,
+  frameUntrustedToolResultContent,
+} from "../tools/untrusted-tool-result-framing.js";
 
 export const MAX_OUTPUT_TOKENS_ESCALATED = ESCALATED_MAX_OUTPUT_TOKENS;
 export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
@@ -120,7 +124,7 @@ function emitMaxOutputCompletedExecutorResults(
   for (const completed of getCompletedResults.call(executor)) {
     const metadata = completed.result.metadata;
     if (opts.appendCompletedHistory === true) {
-      appendCompletedExecutorResultHistory(state, completed);
+      appendCompletedExecutorResultHistory(session, state, completed);
     }
     state.completedToolResults.push({
       callId: completed.toolCall.id,
@@ -146,6 +150,7 @@ function emitMaxOutputCompletedExecutorResults(
 }
 
 function appendCompletedExecutorResultHistory(
+  session: Session,
   state: TurnState,
   completed: {
     readonly toolCall: LLMToolCall;
@@ -159,18 +164,39 @@ function appendCompletedExecutorResultHistory(
   );
   if (alreadyRecorded) return;
   appendMissingAssistantToolCalls(state, [completed.toolCall]);
+  const modelFacingContent = modelFacingToolResultContent(
+    session,
+    completed.toolCall.name,
+    completed.result.content,
+  );
   state.toolResults.push({
     uuid: crypto.randomUUID(),
     role: "user",
     toolCallId: completed.toolCall.id,
     toolName: completed.toolCall.name,
-    content: completed.result.content,
+    content: modelFacingContent,
   });
   state.messages.push({
     role: "tool",
     toolCallId: completed.toolCall.id,
-    content: completed.result.content,
+    toolName: completed.toolCall.name,
+    content: modelFacingContent,
   });
+}
+
+function modelFacingToolResultContent(
+  session: Session,
+  toolName: string,
+  content: LLMMessage["content"],
+): LLMMessage["content"] {
+  const registeredTool = session.services?.registry?.tools.find(
+    (tool) => tool.name === toolName,
+  );
+  return frameUntrustedToolResultContent(
+    toolName,
+    content,
+    classifyUntrustedToolResult(toolName, registeredTool),
+  );
 }
 
 function appendMissingAssistantToolCalls(
@@ -253,7 +279,7 @@ function emitMaxOutputExecutorClosures(
       opts.appendCompletedHistory === true &&
       shouldAppendTerminalExecutorClosureHistory(session, tool)
     ) {
-      appendTerminalExecutorClosureHistory(state, tool, result);
+      appendTerminalExecutorClosureHistory(session, state, tool, result);
     }
     completedIds.add(tool.id);
     state.completedToolResults.push({
@@ -312,6 +338,7 @@ function shouldAppendTerminalExecutorClosureHistory(
 }
 
 function appendTerminalExecutorClosureHistory(
+  session: Session,
   state: TurnState,
   tool: {
     readonly id: string;
@@ -325,17 +352,23 @@ function appendTerminalExecutorClosureHistory(
   );
   if (alreadyRecorded) return;
   appendMissingAssistantToolCalls(state, [tool.toolCall]);
+  const modelFacingContent = modelFacingToolResultContent(
+    session,
+    tool.toolName,
+    result.content,
+  );
   state.toolResults.push({
     uuid: crypto.randomUUID(),
     role: "user",
     toolCallId: tool.id,
     toolName: tool.toolName,
-    content: result.content,
+    content: modelFacingContent,
   });
   state.messages.push({
     role: "tool",
     toolCallId: tool.id,
-    content: result.content,
+    toolName: tool.toolName,
+    content: modelFacingContent,
   });
 }
 

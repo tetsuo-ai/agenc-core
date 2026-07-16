@@ -1948,7 +1948,7 @@ export const fetchToolsForClient = memoizeWithLRU(
                       },
                     ],
                     behavior: 'allow' as const,
-                    destination: 'localSettings' as const,
+                    destination: 'session' as const,
                   },
                 ],
               }

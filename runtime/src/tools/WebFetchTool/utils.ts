@@ -9,7 +9,7 @@ import {
   isBinaryContentType,
   persistBinaryContent,
 } from '../../utils/mcpOutputStorage.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import type { LookupFunction } from 'node:net'
 import type * as undici from 'undici'
@@ -521,7 +521,7 @@ export async function getURLMarkdownContent(
     // Check if the user has opted to skip the blocklist check
     // This is for enterprise customers with restrictive security policies
     // that prevent outbound connections to agenc.tech
-    const settings = getSettings_DEPRECATED()
+    const settings = getExecutionAuthoritySettings()
     if (!settings.skipWebFetchPreflight) {
       const checkResult = await checkDomainBlocklist(hostname)
       switch (checkResult.status) {

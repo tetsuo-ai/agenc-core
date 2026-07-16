@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { realpathSync } from 'node:fs'
 import { copyFile, writeFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { join, resolve, sep } from 'path'
@@ -19,7 +20,7 @@ import { isENOENT } from './errors.js'
 import { getEnvironmentKind } from './filePersistence/outputsScanner.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
-import { getInitialSettings } from './settings/settings.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { generateWordSlug } from './words.js'
 
 const MAX_SLUG_RETRIES = 10
@@ -77,7 +78,7 @@ export function clearAllPlanSlugs(): void {
 // mkdirSync result is stable for the session. Without memoization, each rendered tool
 // message triggers a mkdirSync syscall (regressed in #20005).
 export const getPlansDirectory = memoize(function getPlansDirectory(): string {
-  const settings = getInitialSettings()
+  const settings = getExecutionAuthoritySettings()
   const settingsDir = settings.plansDirectory
   let plansPath: string
 
@@ -86,8 +87,8 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
     const cwd = getCwd()
     const resolved = resolve(cwd, settingsDir)
 
-    // Validate path stays within project root to prevent path traversal
-    if (!resolved.startsWith(cwd + sep) && resolved !== cwd) {
+    const lexicalChild = resolved === cwd || resolved.startsWith(cwd + sep)
+    if (!lexicalChild) {
       logError(
         new Error(`plansDirectory must be within project root: ${settingsDir}`),
       )
@@ -103,6 +104,20 @@ export const getPlansDirectory = memoize(function getPlansDirectory(): string {
   // Ensure directory exists (mkdirSync with recursive: true is a no-op if it exists)
   try {
     getFsImplementation().mkdirSync(plansPath)
+    if (settingsDir) {
+      const canonicalCwd = realpathSync(getCwd())
+      const canonicalPlans = realpathSync(plansPath)
+      const withinWorkspace =
+        canonicalPlans === canonicalCwd ||
+        canonicalPlans.startsWith(canonicalCwd + sep)
+      if (!withinWorkspace) {
+        logError(
+          new Error(`plansDirectory resolves outside project root: ${settingsDir}`),
+        )
+        plansPath = join(getAgenCConfigHomeDir(), 'plans')
+        getFsImplementation().mkdirSync(plansPath)
+      }
+    }
   } catch (error) {
     logError(error)
   }
