@@ -10,15 +10,63 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: publish-npm-production
   cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: "25.9.0"
   NPM_VERSION: "11.17.0"
 
 jobs:
+  release-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Check out the exact release SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Bind the run to the reviewed source tag
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF_TYPE" = tag
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          expected_ref="refs/tags/agenc-v${version}"
+          test "$GITHUB_REF" = "$expected_ref"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Verify the App-owned local gate for this exact release SHA
+        env:
+          AGENC_LOCAL_GATE_APP_ID: ${{ vars.AGENC_LOCAL_GATE_APP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AGENC_LOCAL_GATE_APP_ID" =~ ^[1-9][0-9]*$ ]]
+          node scripts/verify-required-gate-check.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --app-id "$AGENC_LOCAL_GATE_APP_ID"
+
   pack:
+    needs: release-source
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
@@ -188,7 +236,6 @@ jobs:
               --prepared-root "$owned_root/verified-release" \
               --tag "$RELEASE_TAG"
             node packages/agenc/scripts/check-package-ready.mjs
-            npm test --workspace=@tetsuo-ai/agenc
             node scripts/npm-release.mjs pack --silent \
               --pack-destination "$artifacts" --workspace=@tetsuo-ai/agenc
           )

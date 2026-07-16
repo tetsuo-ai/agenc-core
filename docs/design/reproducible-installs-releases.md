@@ -2,8 +2,8 @@
 
 **Decision record:** 2026-07-14
 **Scope:** M0 “Make installs and releases reproducible”
-**Status:** implemented and locally verified on 2026-07-14; Docker registry publication remains
-disabled until the separate hosted PR/release-gates item proves native amd64 and arm64.
+**Status:** implemented and locally verified on 2026-07-14; Docker registry
+publication remains separately unauthorized and data-gated.
 
 The mandatory `npm run check:clean-build` gate passed from a clean committed tree. It reproduced
 569 installed packages and six release-facing artifacts across independent `.git`-free source
@@ -231,7 +231,9 @@ checkout, so a self-consistent forged tarball and receipt are insufficient.
 Docker publication is deliberately not authorized by this slice. A local
 single-architecture proof cannot justify a multi-platform tag, and the
 temporary verified Buildx binary cannot validate a later ambient invocation.
-The following hosted-gates checkbox must prove native amd64 and arm64, validate
+The local PR/release quality attestation does not expand that product scope. A future
+Docker-publication proposal must first show environment drift as a leading
+measured failure mode, then separately prove native amd64 and arm64, validate
 attestation subjects/SBOMs against the proven manifests, push the immutable
 version digest first, smoke the registry digest, and only then move `latest`.
 
@@ -303,10 +305,11 @@ artifact. npm/GitHub publication is immutable, so recovery uses the next patch
 version rather than overwriting released bytes.
 
 The current Docker acceptance proof is intentionally native-host only. It does
-not claim arm64 from an amd64 host or authorize GHCR. Windows ACL and native
-architecture behavior must run on their real hosted platforms in the next M0
-gate. `socket._handle.fd` is a Node implementation detail, so the real
-`verifiedBy=peerUid` smoke is mandatory on every supported Node/platform
+not claim arm64 from an amd64 host or authorize GHCR. The required local M0
+quality gate is Linux-only; native Windows ACL and architecture behavior remain
+release-matrix responsibilities, not an implied Docker-publication grant.
+`socket._handle.fd` is a Node implementation detail, so the real
+`verifiedBy=peerUid` smoke remains mandatory on every supported Node/platform
 release job. Node 25 is end-of-life and unavailable as a versioned Homebrew
 formula, so the Homebrew template stays disabled and a separately reviewed
 Node 26 migration is required after this compatibility bridge.

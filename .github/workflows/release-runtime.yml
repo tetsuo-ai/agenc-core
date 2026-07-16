@@ -15,6 +15,11 @@ name: release-runtime
 on:
   workflow_dispatch:
 
+concurrency:
+  group: release-runtime-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   contents: read
 
@@ -28,6 +33,9 @@ jobs:
   release-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      checks: read
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -51,6 +59,18 @@ jobs:
           test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Verify the App-owned local gate for this exact release SHA
+        env:
+          AGENC_LOCAL_GATE_APP_ID: ${{ vars.AGENC_LOCAL_GATE_APP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AGENC_LOCAL_GATE_APP_ID" =~ ^[1-9][0-9]*$ ]]
+          node scripts/verify-required-gate-check.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --app-id "$AGENC_LOCAL_GATE_APP_ID"
 
   linux-tarball:
     needs: release-source

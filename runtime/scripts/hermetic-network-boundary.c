@@ -7,6 +7,7 @@
 #include <linux/filter.h>
 #include <linux/openat2.h>
 #include <linux/seccomp.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stddef.h>
@@ -43,6 +44,10 @@
 #define AGENC_BOUNDARY_VIOLATION_EXIT 97
 #define AGENC_MAX_TRACED_TASKS 8192
 #define AGENC_ARRAY_LENGTH(value) (sizeof(value) / sizeof((value)[0]))
+#define AGENC_INSPECTION_ALLOWED 0
+#define AGENC_INSPECTION_VIOLATION -1
+#define AGENC_INSPECTION_TRACEE_GONE 1
+#define AGENC_INSPECTION_FATAL 2
 
 struct traced_task {
   pid_t pid;
@@ -59,24 +64,28 @@ static void handle_signal(int signal_number) {
   forwarded_signal = signal_number;
 }
 
-static void add_traced_task(pid_t pid, int newborn) {
+/*
+ * Returns 1 when the task was newly registered, 0 when it was already known,
+ * and -1 after a fatal bookkeeping failure.  Do not re-arm an existing task's
+ * newborn flag: the child's initial SIGSTOP can be reported before the
+ * parent's clone event on a busy, multithreaded tracee.
+ */
+static int add_traced_task(pid_t pid, int newborn) {
   size_t index;
   for (index = 0; index < traced_task_count; index += 1) {
     if (traced_tasks[index].pid == pid) {
-      if (newborn != 0) {
-        traced_tasks[index].newborn = 1;
-      }
-      return;
+      return 0;
     }
   }
   if (traced_task_count >= AGENC_MAX_TRACED_TASKS) {
     fprintf(stderr, "AGENC_OS_NETWORK_BOUNDARY_ERROR task limit exceeded\n");
     boundary_fatal = 1;
-    return;
+    return -1;
   }
   traced_tasks[traced_task_count].pid = pid;
   traced_tasks[traced_task_count].newborn = newborn;
   traced_task_count += 1;
+  return 1;
 }
 
 static int consume_newborn(pid_t pid) {
@@ -88,7 +97,29 @@ static int consume_newborn(pid_t pid) {
       return newborn;
     }
   }
-  add_traced_task(pid, 0);
+  return 0;
+}
+
+/*
+ * PTRACE_O_TRACE{CLONE,FORK,VFORK} automatically attaches children and makes
+ * each one start with SIGSTOP.  If that stop wins the waitpid ordering race
+ * with the parent's event, it is the first point at which we learn the PID.
+ */
+static int should_suppress_initial_stop(
+  pid_t pid,
+  int stop_signal,
+  unsigned int event
+) {
+  int registration = add_traced_task(pid, 0);
+  if (registration < 0) {
+    return -1;
+  }
+  if (stop_signal != SIGSTOP || event != 0) {
+    return 0;
+  }
+  if (registration > 0 || consume_newborn(pid) != 0) {
+    return 1;
+  }
   return 0;
 }
 
@@ -101,6 +132,59 @@ static void remove_traced_task(pid_t pid) {
       return;
     }
   }
+}
+
+/*
+ * Linux can return ESRCH after waitpid has reported a ptrace-stop when the
+ * stopped task dies concurrently.  Only this known-stopped call site may
+ * classify ESRCH as disappearance; every other errno keeps its caller's
+ * fail-closed outcome.
+ */
+static int classify_stopped_ptrace_error(
+  pid_t pid,
+  int error_number,
+  int non_esrch_result
+) {
+  if (error_number == ESRCH) {
+    remove_traced_task(pid);
+    return AGENC_INSPECTION_TRACEE_GONE;
+  }
+  return non_esrch_result;
+}
+
+static int decode_event_pid(unsigned long message, pid_t *pid) {
+  if (message == 0 || message > (unsigned long)INT_MAX) {
+    return -1;
+  }
+  *pid = (pid_t)message;
+  return 0;
+}
+
+static int read_event_pid(pid_t stopped_pid, pid_t *event_pid) {
+  unsigned long message = 0;
+  if (ptrace(PTRACE_GETEVENTMSG, stopped_pid, NULL, &message) != 0) {
+    int saved_errno = errno;
+    int classification = classify_stopped_ptrace_error(
+      stopped_pid,
+      saved_errno,
+      AGENC_INSPECTION_FATAL
+    );
+    if (classification != AGENC_INSPECTION_TRACEE_GONE) {
+      errno = saved_errno;
+      perror("AGENC_OS_NETWORK_BOUNDARY_ERROR geteventmsg");
+    }
+    return classification;
+  }
+  if (decode_event_pid(message, event_pid) != 0) {
+    fprintf(
+      stderr,
+      "AGENC_OS_NETWORK_BOUNDARY_ERROR invalid event pid=%lu tracee=%ld\n",
+      message,
+      (long)stopped_pid
+    );
+    return AGENC_INSPECTION_FATAL;
+  }
+  return AGENC_INSPECTION_ALLOWED;
 }
 
 static void kill_all_traced_tasks(void) {
@@ -244,7 +328,23 @@ static int report_violation(pid_t pid, const char *syscall_name, const char *det
     executable_hex
   );
   fflush(stderr);
-  return -1;
+  return AGENC_INSPECTION_VIOLATION;
+}
+
+static int report_unreadable_tracee(
+  pid_t pid,
+  const char *syscall_name,
+  const char *detail
+) {
+  int classification = classify_stopped_ptrace_error(
+    pid,
+    errno,
+    AGENC_INSPECTION_VIOLATION
+  );
+  if (classification == AGENC_INSPECTION_TRACEE_GONE) {
+    return classification;
+  }
+  return report_violation(pid, syscall_name, detail);
 }
 
 static int is_allowed_ipv4(const struct in_addr *address) {
@@ -499,7 +599,7 @@ static int inspect_socket_address(
   memset(&storage, 0, sizeof(storage));
   address_length = (socklen_t)remote_length;
   if (read_tracee_memory(pid, remote_address, &storage, address_length) != 0) {
-    return report_violation(pid, syscall_name, "unreadable-address");
+    return report_unreadable_tracee(pid, syscall_name, "unreadable-address");
   }
   family = storage.ss_family;
   if (family == AF_UNSPEC || family == AF_NETLINK) {
@@ -579,7 +679,7 @@ static int inspect_sendmsg(pid_t pid, const char *name, uint64_t remote_message)
     return report_violation(pid, name, "missing-message");
   }
   if (read_tracee_memory(pid, remote_message, &message, sizeof(message)) != 0) {
-    return report_violation(pid, name, "unreadable-message");
+    return report_unreadable_tracee(pid, name, "unreadable-message");
   }
   if (message.msg_name == NULL || message.msg_namelen == 0) {
     /* Connected sockets were already inspected at connect(2). */
@@ -604,18 +704,21 @@ static int inspect_sendmmsg(pid_t pid, const uint64_t arguments[6]) {
     struct mmsghdr message;
     uint64_t address = remote_messages + ((uint64_t)index * sizeof(message));
     if (read_tracee_memory(pid, address, &message, sizeof(message)) != 0) {
-      return report_violation(pid, "sendmmsg", "unreadable-message-vector");
+      return report_unreadable_tracee(
+        pid,
+        "sendmmsg",
+        "unreadable-message-vector"
+      );
     }
     if (message.msg_hdr.msg_name != NULL && message.msg_hdr.msg_namelen != 0) {
-      if (
-        inspect_socket_address(
-          pid,
-          "sendmmsg",
-          (uint64_t)(uintptr_t)message.msg_hdr.msg_name,
-          message.msg_hdr.msg_namelen
-        ) != 0
-      ) {
-        return -1;
+      int inspection = inspect_socket_address(
+        pid,
+        "sendmmsg",
+        (uint64_t)(uintptr_t)message.msg_hdr.msg_name,
+        message.msg_hdr.msg_namelen
+      );
+      if (inspection != AGENC_INSPECTION_ALLOWED) {
+        return inspection;
       }
     }
   }
@@ -655,7 +758,11 @@ static int inspect_clone3(pid_t pid, const uint64_t arguments[6]) {
   if (
     read_tracee_memory(pid, arguments[0], &clone_arguments, argument_size) != 0
   ) {
-    return report_violation(pid, "clone3", "unreadable-clone-arguments");
+    return report_unreadable_tracee(
+      pid,
+      "clone3",
+      "unreadable-clone-arguments"
+    );
   }
   return inspect_clone(pid, "clone3", clone_arguments.flags);
 }
@@ -673,7 +780,16 @@ static int inspect_seccomp_event(pid_t pid) {
     &syscall_info
   );
   if (result < 0) {
-    return report_violation(pid, "observer", "syscall-info-unavailable");
+    int classification = classify_stopped_ptrace_error(
+      pid,
+      errno,
+      AGENC_INSPECTION_FATAL
+    );
+    if (classification == AGENC_INSPECTION_TRACEE_GONE) {
+      return classification;
+    }
+    perror("AGENC_OS_NETWORK_BOUNDARY_ERROR syscall-info");
+    return classification;
   }
   if (
     syscall_info.op != PTRACE_SYSCALL_INFO_SECCOMP ||
@@ -1166,6 +1282,95 @@ static int run_sigtrap_canary(void) {
   return 0;
 }
 
+static void reset_traced_task_state(void) {
+  memset(traced_tasks, 0, sizeof(traced_tasks));
+  traced_task_count = 0;
+  boundary_failed = 0;
+  boundary_fatal = 0;
+}
+
+static int run_ptrace_state_canary(void) {
+  unsigned int index;
+  pid_t decoded_pid = 0;
+
+  reset_traced_task_state();
+  if (
+    add_traced_task(101, 0) != 1 ||
+    should_suppress_initial_stop(101, SIGTRAP, 0) != 0 ||
+    add_traced_task(201, 1) != 1 ||
+    should_suppress_initial_stop(201, SIGTRAP, PTRACE_EVENT_EXEC) != 0 ||
+    should_suppress_initial_stop(201, SIGSTOP, 0) != 1 ||
+    should_suppress_initial_stop(201, SIGUSR1, 0) != 0
+  ) {
+    return 2;
+  }
+
+  reset_traced_task_state();
+  if (
+    should_suppress_initial_stop(251, SIGTRAP, PTRACE_EVENT_EXEC) != 0 ||
+    should_suppress_initial_stop(301, SIGSTOP, 0) != 1 ||
+    add_traced_task(301, 1) != 0 ||
+    should_suppress_initial_stop(301, SIGTRAP, PTRACE_EVENT_SECCOMP) != 0
+  ) {
+    return 2;
+  }
+
+  reset_traced_task_state();
+  if (
+    add_traced_task(401, 0) != 1 ||
+    classify_stopped_ptrace_error(
+      401,
+      ESRCH,
+      AGENC_INSPECTION_FATAL
+    ) != AGENC_INSPECTION_TRACEE_GONE ||
+    traced_task_count != 0 ||
+    boundary_failed != 0 ||
+    boundary_fatal != 0 ||
+    add_traced_task(402, 0) != 1 ||
+    classify_stopped_ptrace_error(
+      402,
+      EIO,
+      AGENC_INSPECTION_FATAL
+    ) != AGENC_INSPECTION_FATAL ||
+    traced_task_count != 1 ||
+    decode_event_pid(403UL, &decoded_pid) != 0 ||
+    decoded_pid != 403 ||
+    decode_event_pid(0UL, &decoded_pid) == 0 ||
+    decode_event_pid(ULONG_MAX, &decoded_pid) == 0
+  ) {
+    return 2;
+  }
+
+  /* Exercise real auto-attach ordering with short-lived child creators. */
+  reset_traced_task_state();
+  for (index = 0; index < 128U; index += 1) {
+    pid_t child = fork();
+    pid_t waited;
+    int status;
+    if (child < 0) {
+      return 2;
+    }
+    if (child == 0) {
+      pid_t grandchild = fork();
+      if (grandchild < 0) {
+        _exit(2);
+      }
+      _exit(0);
+    }
+    do {
+      waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (
+      waited != child ||
+      !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0
+    ) {
+      return 2;
+    }
+  }
+  return 0;
+}
+
 static int trace_command(char *const command[]) {
   pid_t primary;
   int status;
@@ -1271,25 +1476,88 @@ static int trace_command(char *const command[]) {
       continue;
     }
 
-    add_traced_task(stopped_pid, 0);
-    if (boundary_fatal != 0) {
-      (void)kill(stopped_pid, SIGKILL);
-      (void)ptrace(PTRACE_CONT, stopped_pid, NULL, (void *)(intptr_t)SIGKILL);
-      continue;
-    }
-    if (consume_newborn(stopped_pid) != 0) {
-      (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
-      continue;
-    }
-
     stop_signal = WSTOPSIG(status);
     event = (unsigned int)status >> 16;
+    {
+      int initial_stop = should_suppress_initial_stop(
+        stopped_pid,
+        stop_signal,
+        event
+      );
+      if (boundary_fatal != 0) {
+        (void)kill(stopped_pid, SIGKILL);
+        (void)ptrace(
+          PTRACE_CONT,
+          stopped_pid,
+          NULL,
+          (void *)(intptr_t)SIGKILL
+        );
+        continue;
+      }
+      if (initial_stop > 0) {
+        (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
+        continue;
+      }
+    }
     if (stop_signal == SIGTRAP && event == PTRACE_EVENT_SECCOMP) {
-      if (inspect_seccomp_event(stopped_pid) != 0) {
+      int inspection = inspect_seccomp_event(stopped_pid);
+      if (inspection == AGENC_INSPECTION_FATAL) {
+        boundary_fatal = 1;
+        kill_all_traced_tasks();
+        (void)ptrace(
+          PTRACE_CONT,
+          stopped_pid,
+          NULL,
+          (void *)(intptr_t)SIGKILL
+        );
+      } else if (inspection == AGENC_INSPECTION_VIOLATION) {
         boundary_failed = 1;
         if (deny_current_syscall(stopped_pid) != 0) {
-          perror("AGENC_OS_NETWORK_BOUNDARY_ERROR deny-syscall");
-          boundary_fatal = 1;
+          int deny_error = errno;
+          int denial_failure = classify_stopped_ptrace_error(
+            stopped_pid,
+            deny_error,
+            AGENC_INSPECTION_FATAL
+          );
+          if (denial_failure != AGENC_INSPECTION_TRACEE_GONE) {
+            errno = deny_error;
+            perror("AGENC_OS_NETWORK_BOUNDARY_ERROR deny-syscall");
+            boundary_fatal = 1;
+            kill_all_traced_tasks();
+            (void)ptrace(
+              PTRACE_CONT,
+              stopped_pid,
+              NULL,
+              (void *)(intptr_t)SIGKILL
+            );
+          }
+        } else {
+          (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
+        }
+      } else if (inspection == AGENC_INSPECTION_ALLOWED) {
+        (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
+      } else if (inspection != AGENC_INSPECTION_TRACEE_GONE) {
+        fprintf(
+          stderr,
+          "AGENC_OS_NETWORK_BOUNDARY_ERROR invalid inspection result=%d pid=%ld\n",
+          inspection,
+          (long)stopped_pid
+        );
+        boundary_fatal = 1;
+        kill_all_traced_tasks();
+      }
+      continue;
+    }
+    if (
+      stop_signal == SIGTRAP &&
+      (event == PTRACE_EVENT_CLONE ||
+       event == PTRACE_EVENT_FORK ||
+       event == PTRACE_EVENT_VFORK)
+    ) {
+      pid_t new_pid = 0;
+      int event_read = read_event_pid(stopped_pid, &new_pid);
+      if (event_read == AGENC_INSPECTION_ALLOWED) {
+        if (add_traced_task(new_pid, 1) < 0) {
           kill_all_traced_tasks();
           (void)ptrace(
             PTRACE_CONT,
@@ -1300,32 +1568,42 @@ static int trace_command(char *const command[]) {
         } else {
           (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
         }
-      } else {
-        (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
-      }
-      continue;
-    }
-    if (
-      stop_signal == SIGTRAP &&
-      (event == PTRACE_EVENT_CLONE ||
-       event == PTRACE_EVENT_FORK ||
-       event == PTRACE_EVENT_VFORK)
-    ) {
-      unsigned long new_pid = 0;
-      if (ptrace(PTRACE_GETEVENTMSG, stopped_pid, NULL, &new_pid) != 0) {
-        perror("AGENC_OS_NETWORK_BOUNDARY_ERROR geteventmsg");
+      } else if (event_read != AGENC_INSPECTION_TRACEE_GONE) {
         boundary_fatal = 1;
         kill_all_traced_tasks();
-      } else {
-        add_traced_task((pid_t)new_pid, 1);
+        (void)ptrace(
+          PTRACE_CONT,
+          stopped_pid,
+          NULL,
+          (void *)(intptr_t)SIGKILL
+        );
       }
-      (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
       continue;
     }
     if (
       stop_signal == SIGTRAP &&
-      (event == PTRACE_EVENT_EXEC || event == PTRACE_EVENT_EXIT)
+      event == PTRACE_EVENT_EXEC
     ) {
+      pid_t former_pid = 0;
+      int event_read = read_event_pid(stopped_pid, &former_pid);
+      if (event_read == AGENC_INSPECTION_ALLOWED) {
+        if (former_pid != stopped_pid) {
+          remove_traced_task(former_pid);
+        }
+        (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
+      } else if (event_read != AGENC_INSPECTION_TRACEE_GONE) {
+        boundary_fatal = 1;
+        kill_all_traced_tasks();
+        (void)ptrace(
+          PTRACE_CONT,
+          stopped_pid,
+          NULL,
+          (void *)(intptr_t)SIGKILL
+        );
+      }
+      continue;
+    }
+    if (stop_signal == SIGTRAP && event == PTRACE_EVENT_EXIT) {
       (void)ptrace(PTRACE_CONT, stopped_pid, NULL, NULL);
       continue;
     }
@@ -1395,6 +1673,9 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && strcmp(argv[1], "--sigtrap-canary") == 0) {
     return run_sigtrap_canary();
+  }
+  if (argc == 2 && strcmp(argv[1], "--ptrace-state-canary") == 0) {
+    return run_ptrace_state_canary();
   }
   if (argc < 2) {
     fprintf(stderr, "usage: %s COMMAND [ARG ...]\n", argv[0]);

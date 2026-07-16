@@ -330,10 +330,13 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Local gates are authoritative** for correctness (no hosted test CI in
-  this checkout). Release workflow builds per-platform runtime tarballs on
-  demand (`workflow_dispatch` / release packaging under `packages/agenc` and
-  `.github` workflows); binaries publish to public `tetsuo-ai/agenc-releases`.
+- **Local required attestations** — the complete stable contract runs only on
+  the dedicated local gate host. A repository-scoped GitHub App records
+  `agenc-local-required-v1` for the exact PR head or merged-`main` SHA; the
+  no-bypass ruleset and release workflows enforce/read back that result without
+  running tests on GitHub. Trust boundaries and reproduction are documented in
+  [`ci-required-gates.md`](ci-required-gates.md). Release workflows still run
+  on demand; binaries publish to public `tetsuo-ai/agenc-releases`.
 
 Root development loop (from repo root):
 
@@ -342,6 +345,7 @@ npm ci
 npm run build
 npm run typecheck
 npm test
+npm run check:required-gates
 npm run validate:runtime
 npm run check:clean-build
 ```

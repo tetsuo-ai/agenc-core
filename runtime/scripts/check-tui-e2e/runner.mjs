@@ -15,7 +15,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { TuiSession } from "./harness.mjs";
+import { TuiSession, tuiE2eGateEnv } from "./harness.mjs";
 import {
   MOCK_MODEL,
   buildMockProviderEnv,
@@ -45,6 +45,7 @@ const PROVIDER_ENV_KEYS = [
   "OPENAI_COMPATIBLE_API_KEY",
   "API_TIMEOUT_MS",
   "AGENC_AUTH_MANAGED_KEYS_ENABLED",
+  "AGENC_ONBOARDING",
 ];
 
 function applyProcessEnv(nextEnv) {
@@ -298,7 +299,9 @@ async function dumpFailureLog(scenario, result) {
 
 async function startMockedGate() {
   const mockServer = await startMockModelServer();
-  applyProcessEnv(buildMockProviderEnv(mockServer.baseUrl, process.env));
+  applyProcessEnv(
+    tuiE2eGateEnv(buildMockProviderEnv(mockServer.baseUrl, process.env)),
+  );
   return mockServer;
 }
 

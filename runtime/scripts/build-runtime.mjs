@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -70,7 +70,10 @@ function externalPatterns(external = []) {
 }
 
 async function runBundle(config) {
-  rmSync(distDir, { recursive: true, force: true });
+  mkdirSync(distDir, { recursive: true });
+  for (const entry of readdirSync(distDir)) {
+    rmSync(join(distDir, entry), { recursive: true, force: true });
+  }
 
   const options = {
     absWorkingDir: runtimeRoot,

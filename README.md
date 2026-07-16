@@ -297,6 +297,7 @@ npm run test:live          # explicit provider/browser/devnet tests (may incur c
 npm run test:bun           # isolated Bun suite
 npm run validate:runtime   # typecheck + build + PTY startup smoke
 npm run check:agent-surface-contract
+npm run check:required-gates # exact local attestation contract; clean Linux checkout
 npm run check:clean-build  # two installs + byte-identical OCI builds + hardened smoke
 ```
 
@@ -371,9 +372,12 @@ The optional design-audit browser is likewise an explicit external process:
 it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
-**CI:** [`.github/workflows/release-runtime.yml`](.github/workflows/release-runtime.yml)
-builds multi-platform runtime tarballs on `workflow_dispatch`. There is no
-hosted test CI in this checkout — **local gates are authoritative**.
+**Required checks:** the complete suite runs on the trusted local gate host,
+never in GitHub Actions. A dedicated GitHub App records
+`agenc-local-required-v1` for the exact PR or merged-`main` SHA; the no-bypass
+ruleset and both dispatch-only release workflows only enforce/read back that
+result. Contract, trust boundary, setup, reproduction, and rollback details
+live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 

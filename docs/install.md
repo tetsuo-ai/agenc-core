@@ -442,15 +442,15 @@ resolved package inventory is stored at
 5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json}` 307-redirect
    to those release assets — Vercel project `agenc-get`, source in
    `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from that dir).
-6. Docker publication is intentionally disabled until the next M0 item lands
-   native amd64 and arm64 hosted release gates. Do not publish from an ambient
-   local `docker buildx` invocation: a version string does not prove the Buildx
-   binary, and one host architecture does not validate both native-addon
-   targets. The checked release path must reuse the checksum-verified Buildx
-   bytes, prove both native platform manifests, attach validated SBOM and
-   provenance whose subjects match those manifests, publish the immutable
-   version digest first, smoke the registry result, and only then advance
-   `latest` by digest. Until that workflow is merged, the local clean-build gate
+6. Docker publication is intentionally disabled, remains outside the hosted M0
+   quality-gate scope, and stays unauthorized until measured environment drift
+   earns that work. Do not publish from an ambient local `docker buildx` invocation: a
+   version string does not prove the Buildx binary, and one host architecture
+   does not validate both native-addon targets. Any separately approved path
+   must reuse the checksum-verified Buildx bytes, prove both native platform
+   manifests, attach validated SBOM and provenance whose subjects match those
+   manifests, publish the immutable version digest first, smoke the registry
+   result, and only then advance `latest` by digest. The local clean-build gate
    proves the current host image only and no GHCR release is authorized.
 7. Homebrew tap (`tetsuo-ai/homebrew-agenc`) remains disabled for 0.6.2. Do not
    fill or publish the template merely because darwin tarballs exist: first

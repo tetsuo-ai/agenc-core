@@ -219,13 +219,30 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("environment: npm-production");
     expect(workflow).toContain('NODE_VERSION: "25.9.0"');
     expect(workflow.match(/id-token: write/g)).toHaveLength(1);
-    const packJob = workflow.slice(0, workflow.indexOf("\n  publish:"));
+    const releaseSourceJob = workflow.slice(
+      workflow.indexOf("\n  release-source:"),
+      workflow.indexOf("\n  pack:"),
+    );
+    const packJob = workflow.slice(
+      workflow.indexOf("\n  pack:"),
+      workflow.indexOf("\n  publish:"),
+    );
+    const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
     expect(packJob).not.toContain("id-token: write");
     expect(packJob).not.toContain("actions/attest@");
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = tag');
     expect(workflow).toContain('expected_ref="refs/tags/agenc-v${version}"');
     expect(workflow).toContain('test "$REPOSITORY_VISIBILITY" = public');
-    expect(workflow.match(/git merge-base --is-ancestor/g)).toHaveLength(2);
+    expect(releaseSourceJob).toContain("checks: read");
+    expect(releaseSourceJob).toContain("AGENC_LOCAL_GATE_APP_ID");
+    expect(releaseSourceJob).toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).toContain('--sha "$GITHUB_SHA"');
+    expect(workflow).not.toContain("required-gates:");
+    expect(workflow).not.toContain("npm run check:required-gates");
+    for (const job of [releaseSourceJob, packJob, publishJob]) {
+      expect(job.match(/git merge-base --is-ancestor/g)).toHaveLength(1);
+      expect(job.match(/persist-credentials: false/g)).toHaveLength(1);
+    }
     expect(workflow).toContain("gh release verify \"$RELEASE_TAG\"");
     expect(workflow).toContain("gh release verify-asset");
     const releaseInventory = readFileSync(
@@ -238,7 +255,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain('--prepared-root "$owned_root/verified-release"');
     expect(workflow).toContain("agenc-runtime-manifest-v2.json");
     expect(workflow).toContain("--legacy-manifest");
-    expect(workflow).toContain("npm test --workspace=@tetsuo-ai/agenc");
+    expect(workflow).not.toContain("npm test --workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("git worktree add --detach");
     expect(workflow).toMatch(/\(\n\s+cd \"\$source\"[\s\S]+node scripts\/npm-release\.mjs pack/);
     expect(workflow).toContain("--workspace=@tetsuo-ai/agenc");
@@ -287,7 +304,6 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toMatch(/run:\s+npm publish/);
-    expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
     expect(workflow).toContain("npm ci --prefix \"$source\"");
     expect(workflow).toContain("npm ci --ignore-scripts --no-audit --no-fund");
     expect(workflow.indexOf("environment: npm-production")).toBeLessThan(
@@ -299,6 +315,25 @@ describe("reproducible install and release contract", () => {
     expect(workflow.indexOf("actions/attest@")).toBeLessThan(
       workflow.indexOf("npm-release.mjs publish"),
     );
+  });
+
+  test("runtime artifact jobs depend on an exact App-owned local-gate check", () => {
+    const workflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
+      "utf8",
+    );
+    const releaseSourceJob = workflow.slice(
+      workflow.indexOf("\n  release-source:"),
+      workflow.indexOf("\n  linux-tarball:"),
+    );
+    expect(releaseSourceJob).toContain("checks: read");
+    expect(releaseSourceJob).toContain("AGENC_LOCAL_GATE_APP_ID");
+    expect(releaseSourceJob).toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).toContain('--sha "$GITHUB_SHA"');
+    expect(workflow).not.toContain("required-gates:");
+    expect(workflow).not.toContain("npm run check:required-gates");
+    expect(workflow).toMatch(/\n  linux-tarball:\n    needs: release-source\n/u);
+    expect(workflow).toMatch(/\n  native-tarball:\n    needs: release-source\n/u);
   });
 
   test("the ESM bundle disables redundant per-module strict directives", () => {

@@ -525,9 +525,14 @@ export const HERMETIC_LAUNCH_TEST_INPUT_ENV_VARS = Object.freeze([
  * otherwise-correct tests fail. Windows has no fixed `/tmp`; its system temp
  * directory is derived from the OS root rather than user temp overrides.
  */
-export function createHermeticRunRoot(prefix) {
+export function createHermeticRunRoot(prefix, explicitBase) {
   let base
-  if (process.platform === 'win32') {
+  if (explicitBase !== undefined) {
+    if (typeof explicitBase !== 'string' || !isAbsolute(explicitBase) || explicitBase.includes('\0')) {
+      throw new Error('Hermetic test run base must be an absolute path')
+    }
+    base = explicitBase
+  } else if (process.platform === 'win32') {
     const systemRoot =
       process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.WINDIR
     if (typeof systemRoot !== 'string' || !isAbsolute(systemRoot)) {

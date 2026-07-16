@@ -1,0 +1,27 @@
+[Unit]
+Description=AgenC dedicated rootless Docker Engine
+Documentation=https://docs.docker.com/engine/security/rootless/
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=notify
+NotifyAccess=all
+Environment=PATH=/usr/bin:/usr/sbin:/bin:/sbin
+ExecStart=/usr/bin/dockerd-rootless.sh --host=unix://%t/docker.sock --data-root=/var/lib/agenc-gate-docker --storage-driver=overlay2 --exec-opt=native.cgroupdriver=systemd --log-driver=none --live-restore=false
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutStartSec=0
+TimeoutStopSec=30
+Restart=always
+RestartSec=2
+KillMode=mixed
+Delegate=yes
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=0
+TasksMax=infinity
+
+[Install]
+WantedBy=default.target

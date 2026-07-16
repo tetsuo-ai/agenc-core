@@ -38,7 +38,6 @@ const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const require = createRequire(path.join(RUNTIME_DIR, "package.json"));
 const pty = require("node-pty");
 
-const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
 const TEMP_HOME_DAEMON_START_ATTEMPTS = 3;
 const TEMP_HOME_DAEMON_READY_TIMEOUT_MS = 20_000;
 
@@ -46,10 +45,41 @@ function randomTempDaemonWebSocketPort() {
   return 17_766 + Math.floor(Math.random() * 10_000);
 }
 
-function tempDaemonEnv(home, wsPort) {
+export function resolveHarnessAgencHome(
+  env = process.env,
+  fallbackHome = homedir(),
+) {
+  if (env.AGENC_HOME && env.AGENC_HOME.length > 0) {
+    return env.AGENC_HOME;
+  }
+  return path.join(env.HOME || fallbackHome, ".agenc");
+}
+
+export function isolatedHomeEnv(home, baseEnv = process.env) {
+  const agencHome = path.join(home, ".agenc");
   return {
-    ...process.env,
+    ...baseEnv,
     HOME: home,
+    AGENC_CONFIG_DIR: agencHome,
+    AGENC_HOME: agencHome,
+  };
+}
+
+export function tuiE2eGateEnv(baseEnv = process.env) {
+  return {
+    ...baseEnv,
+    // Ordinary TUI scenarios exercise the configured product surface, not
+    // first-run setup. Keep them deterministic on clean runners without
+    // persisting synthetic onboarding state. `agenc onboard` overrides this
+    // process-locally with `force`, so the dedicated onboarding scenario
+    // continues to exercise the complete wizard.
+    AGENC_ONBOARDING: "0",
+  };
+}
+
+export function tempDaemonEnv(home, wsPort, baseEnv = process.env) {
+  return {
+    ...isolatedHomeEnv(home, baseEnv),
     AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
   };
 }
@@ -81,12 +111,16 @@ async function waitForTempDaemonReady(env, timeoutMs = TEMP_HOME_DAEMON_READY_TI
  * trust check uses realpath, so we add both the input path and its realpath
  * form so symlinked roots match on either side.
  */
-async function ensureProjectTrusted(projectPath) {
-  await mkdir(path.dirname(TRUST_FILE), { recursive: true });
+async function ensureProjectTrusted(projectPath, env = process.env) {
+  const trustFile = path.join(
+    resolveHarnessAgencHome(env),
+    "trusted-projects.json",
+  );
+  await mkdir(path.dirname(trustFile), { recursive: true });
   let trust = { version: 1, trustedProjects: [] };
-  if (existsSync(TRUST_FILE)) {
+  if (existsSync(trustFile)) {
     try {
-      const raw = await readFile(TRUST_FILE, "utf8");
+      const raw = await readFile(trustFile, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && Array.isArray(parsed.trustedProjects)) {
         trust = parsed;
@@ -117,7 +151,7 @@ async function ensureProjectTrusted(projectPath) {
     }
   }
   if (mutated) {
-    await writeFile(TRUST_FILE, JSON.stringify(trust, null, 2), "utf8");
+    await writeFile(trustFile, JSON.stringify(trust, null, 2), "utf8");
   }
 }
 
@@ -139,7 +173,7 @@ async function ensureProjectTrusted(projectPath) {
  */
 export async function createTempHome() {
   const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
-  const agencDir = path.join(home, ".agenc");
+  const agencDir = resolveHarnessAgencHome({ HOME: home });
   await mkdir(agencDir, { recursive: true });
   // Files to clone from the user's real ~/.agenc so the spawned agenc
   // doesn't fire onboarding, ask for an API key, or stall on trust.
@@ -150,7 +184,7 @@ export async function createTempHome() {
     "settings.json",
   ];
   for (const name of cloneFiles) {
-    const source = path.join(homedir(), ".agenc", name);
+    const source = path.join(resolveHarnessAgencHome(), name);
     if (existsSync(source)) {
       await copyFile(source, path.join(agencDir, name));
     }
@@ -205,7 +239,7 @@ export async function teardownTempHome(home) {
     spawnSync(
       process.execPath,
       [BIN_AGENC, "daemon", "stop"],
-      { encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 10_000 },
+      { encoding: "utf8", env: isolatedHomeEnv(home), timeout: 10_000 },
     );
   } catch {
     // best-effort
@@ -571,11 +605,7 @@ export class TuiSession {
     if (this.useTempHome) {
       const { home, wsPort } = await createTempHome();
       this.tempHome = home;
-      env = {
-        ...env,
-        HOME: home,
-        AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
-      };
+      env = tempDaemonEnv(home, wsPort, env);
       // Trust file lives under HOME — recompute under the temp HOME so
       // the trust dialog doesn't fire.
       const tempTrust = path.join(home, ".agenc", "trusted-projects.json");
@@ -588,7 +618,7 @@ export class TuiSession {
         "utf8",
       );
     } else {
-      await ensureProjectTrusted(this.cwd);
+      await ensureProjectTrusted(this.cwd, env);
     }
     this.term = pty.spawn(process.execPath, [BIN_AGENC, ...this.args], {
       name: "xterm-256color",

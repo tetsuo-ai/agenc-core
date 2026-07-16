@@ -23,7 +23,20 @@ import { createHermeticRunRoot } from '../tests/helpers/hermetic-env.mjs'
 
 export const PINNED_NODE_IMAGE =
   'node:25.9.0-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b'
-const DOCKER_HOST = 'unix:///var/run/docker.sock'
+export const DOCKER_LOG_BOUNDARY_ARGS = Object.freeze(['--log-driver=none'])
+export const DOCKER_GATE_LABEL_ARGS = Object.freeze(['--label', 'agenc.local-gate=true'])
+const DEFAULT_DOCKER_HOST = 'unix:///var/run/docker.sock'
+export function resolveDockerHost(value = process.env.DOCKER_HOST) {
+  if (value === undefined || value === '') return DEFAULT_DOCKER_HOST
+  if (!/^unix:\/\/\/run\/user\/[1-9][0-9]*\/docker\.sock$/u.test(value)) {
+    throw new Error(
+      'Hermetic tests accept only the default system socket or an explicit rootless Docker user socket',
+    )
+  }
+  return value
+}
+const DOCKER_HOST = resolveDockerHost()
+const ROOTLESS_DOCKER = DOCKER_HOST !== DEFAULT_DOCKER_HOST
 const BOUNDARY_EXIT = 97
 const MINIMUM_DOCKER_VERSION = Object.freeze([25, 0])
 const MINIMUM_DOCKER_API_VERSION = Object.freeze([1, 44])
@@ -410,9 +423,22 @@ export function boundaryPasswdEntry(uid, gid) {
   return `agenc-boundary:x:${uid}:${gid}:AgenC hermetic test:${BOUNDARY_ACCOUNT_HOME}:/usr/sbin/nologin\n`
 }
 
+export function containerIdentityForDockerHost({
+  rootless = ROOTLESS_DOCKER,
+  hostUid = process.getuid?.(),
+  hostGid = process.getgid?.(),
+} = {}) {
+  if (rootless) return Object.freeze({ uid: 0, gid: 0 })
+  if (!Number.isSafeInteger(hostUid) || hostUid < 0 || !Number.isSafeInteger(hostGid) || hostGid < 0) {
+    throw new Error('Hermetic host UID and GID must be non-negative integers')
+  }
+  return Object.freeze({ uid: hostUid, gid: hostGid })
+}
+
 function snapshotBoundaryPasswd(snapshotRoot) {
   const passwd = join(snapshotRoot, 'passwd')
-  writeFileSync(passwd, boundaryPasswdEntry(process.getuid(), process.getgid()), {
+  const identity = containerIdentityForDockerHost()
+  writeFileSync(passwd, boundaryPasswdEntry(identity.uid, identity.gid), {
     flag: 'wx',
     mode: 0o400,
   })
@@ -491,8 +517,7 @@ function installSignalHandlers(supervisorRoot) {
 }
 
 function commonContainerArgs(name, boundaryMountMode = 'readonly') {
-  const uid = process.getuid()
-  const gid = process.getgid()
+  const { uid, gid } = containerIdentityForDockerHost()
   const platform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64'
   const gitCommonMount = isWithin(repositoryRoot, gitCommonDirectory)
     ? []
@@ -519,6 +544,8 @@ function commonContainerArgs(name, boundaryMountMode = 'readonly') {
     platform,
     '--name',
     name,
+    ...DOCKER_LOG_BOUNDARY_ARGS,
+    ...DOCKER_GATE_LABEL_ARGS,
     '--network=none',
     '--dns=192.0.2.53',
     '--ipc=private',
@@ -527,6 +554,9 @@ function commonContainerArgs(name, boundaryMountMode = 'readonly') {
     '--security-opt=no-new-privileges=true',
     `--security-opt=seccomp=${activeDockerSeccompProfile}`,
     '--pids-limit=8192',
+    '--memory=12g',
+    '--memory-swap=12g',
+    '--cpus=8',
     '--ulimit=core=0:0',
     '--stop-timeout=5',
     '--read-only',
@@ -857,7 +887,10 @@ const canaries = [
   ['--unix-symlink-canary', ['target=unix-path-symlink']],
   ['--unix-noncanonical-canary', ['target=unix-path-noncanonical']],
 ]
-const allowedCanaries = ['--unix-private-canary']
+const allowedCanaries = [
+  '--unix-private-canary',
+  '--ptrace-state-canary',
+]
 const exitStatusCanaries = [['--sigtrap-canary', 133]]
 
 async function verifyObserver(supervisorRoot) {
@@ -987,8 +1020,9 @@ async function main() {
       'The authoritative npm test boundary requires a Linux Docker host. Use a Linux CI/dev host for the required gate; test:host-functional is non-authoritative.',
     )
   }
-  activeBoundaryRoot = createHermeticRunRoot('agc-')
-  const toolInputRoot = createHermeticRunRoot('agi-')
+  const dockerVisibleRunBase = process.env.AGENC_HERMETIC_RUN_BASE
+  activeBoundaryRoot = createHermeticRunRoot('agc-', dockerVisibleRunBase)
+  const toolInputRoot = createHermeticRunRoot('agi-', dockerVisibleRunBase)
   let uninstallSignalHandlers = () => {}
   try {
     assertSafeBindTree(repositoryRoot, 'repository')

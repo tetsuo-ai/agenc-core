@@ -35,13 +35,14 @@ function visit(path) {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink()) return;
   if (metadata.isDirectory()) {
-    chmodSync(path, 0o755);
+    if ((metadata.mode & 0o777) !== 0o755) chmodSync(path, 0o755);
     for (const name of readdirSync(path)) visit(resolve(path, name));
     return;
   }
   if (!metadata.isFile()) throw new Error(`unsupported package payload entry: ${path}`);
   const rel = relative(packageRoot, path);
-  chmodSync(path, executablePaths.has(rel) ? 0o755 : 0o644);
+  const desiredMode = executablePaths.has(rel) ? 0o755 : 0o644;
+  if ((metadata.mode & 0o777) !== desiredMode) chmodSync(path, desiredMode);
 }
 
 for (const entry of [...payloadRoots].sort()) {

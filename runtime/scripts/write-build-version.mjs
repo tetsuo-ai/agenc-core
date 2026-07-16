@@ -6,7 +6,7 @@
  * This script also copies runtime assets that must sit beside the built chunks.
  */
 
-import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
@@ -105,8 +105,10 @@ function writePackageBinShims() {
   mkdirSync(binDir, { recursive: true });
   for (const [name, source] of shims) {
     const shimPath = path.join(binDir, name);
-    writeFileSync(shimPath, source, { encoding: "utf8", mode: 0o755 });
-    chmodSync(shimPath, 0o755);
+    if (!existsSync(shimPath) || readFileSync(shimPath, "utf8") !== source) {
+      writeFileSync(shimPath, source, { encoding: "utf8", mode: 0o755 });
+    }
+    if ((lstatSync(shimPath).mode & 0o777) !== 0o755) chmodSync(shimPath, 0o755);
   }
 }
 
