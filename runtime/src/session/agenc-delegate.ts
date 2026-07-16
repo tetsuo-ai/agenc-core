@@ -723,6 +723,8 @@ export function spawnAgenCDelegateThread(
         for await (const phase of childSession.runTurn(userMessage, {
           ctx: reviewCtx,
           systemPrompt: req.systemPrompt ?? REVIEW_SYSTEM_PROMPT,
+          systemPromptTrust: "trusted_internal",
+          instructionPolicy: "workspace_review",
           history,
           signal: childController.signal,
           displayUserMessage: userMessage,

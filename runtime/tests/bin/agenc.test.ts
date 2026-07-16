@@ -1284,7 +1284,7 @@ describe("ConfigStore integration shape", () => {
 });
 
 describe("prepareTurnRuntimeInputs", () => {
-  it("reloads project instructions and MCP instructions on each call", async () => {
+  it("reloads MCP instructions while leaving workspace instructions to Session.runTurn", async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), "agenc-turn-inputs-"));
     const nested = join(repoRoot, "pkg");
     const memoryDir = join(repoRoot, ".agenc-memory");
@@ -1321,7 +1321,7 @@ describe("prepareTurnRuntimeInputs", () => {
       memoryMdPath,
       registry: { tools: [{ name: "bash" }] },
     });
-    expect(first.projectInstructions).toContain("PROJECT-ONE");
+    expect(first).not.toHaveProperty("projectInstructions");
     expect(first.memoryPromptText).toBe("");
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
@@ -1339,30 +1339,11 @@ describe("prepareTurnRuntimeInputs", () => {
       memoryMdPath,
       registry: { tools: [{ name: "bash" }] },
     });
-    expect(second.projectInstructions).toContain("PROJECT-TWO");
-    expect(second.projectInstructions).not.toContain("PROJECT-ONE");
+    expect(second).not.toHaveProperty("projectInstructions");
     expect(second.memoryPromptText).toBe("");
     expect(second.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-TWO" },
     ]);
-
-    await writeFile(
-      join(repoRoot, "AGENC.md"),
-      "PROJECT-THREE\n@include ../missing-secret.md",
-      "utf8",
-    );
-    await prepareTurnRuntimeInputs({
-      session,
-      configStore: store,
-      workspaceRoot: nested,
-      memoryDir,
-      memoryMdPath,
-      registry: { tools: [{ name: "bash" }] },
-    });
-    expect(
-      (session as unknown as { projectMemoryWarnings?: readonly string[] })
-        .projectMemoryWarnings?.[0],
-    ).toContain("AGENC.md include dropped");
 
     await rm(repoRoot, { recursive: true, force: true });
   });
@@ -1394,7 +1375,6 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       input: "hi",
       configStore: store,
       configReloadLatch: latch,
-      projectInstructions: "",
       memoryPromptText: "",
       allMemories: [],
       enabledToolNames: new Set<string>(),
@@ -1440,7 +1420,6 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
         input: `t${i}`,
         configStore: store,
         configReloadLatch: latch,
-        projectInstructions: "",
         memoryPromptText: "",
         allMemories: [],
         enabledToolNames: new Set<string>(),
@@ -1460,18 +1439,16 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(runTurnFn).toHaveBeenCalledTimes(3);
   });
 
-  it("reloads prompt inputs on each call so later turns see updated instructions", async () => {
+  it("reloads non-workspace prompt inputs on each call", async () => {
     const loadTurnInputsFn = vi
       .fn()
       .mockResolvedValueOnce({
-        projectInstructions: "PROJECT-ONE",
         memoryPromptText: "MEMORY-ONE",
         allMemories: [],
         enabledToolNames: new Set<string>(),
         mcpServers: [{ name: "alpha", instructions: "ALPHA" }],
       })
       .mockResolvedValueOnce({
-        projectInstructions: "PROJECT-TWO",
         memoryPromptText: "MEMORY-TWO",
         allMemories: [],
         enabledToolNames: new Set<string>(),
@@ -1518,13 +1495,12 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     }
 
     expect(loadTurnInputsFn).toHaveBeenCalledTimes(2);
-    expect(prompts[0]).toContain("PROJECT-ONE");
+    expect(prompts[0]).not.toContain("PROJECT-ONE");
     expect(prompts[0]).toContain("MEMORY-ONE");
     expect(prompts[0]).toContain('<mcp_server_instructions server="alpha"');
-    expect(prompts[1]).toContain("PROJECT-TWO");
+    expect(prompts[1]).not.toContain("PROJECT-TWO");
     expect(prompts[1]).toContain("MEMORY-TWO");
     expect(prompts[1]).toContain('<mcp_server_instructions server="beta"');
-    expect(prompts[1]).not.toContain("PROJECT-ONE");
     expect(prompts[1]).not.toContain("MEMORY-ONE");
     expect(prompts[1]).not.toContain("## alpha");
   });
@@ -1549,7 +1525,6 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       input: "hi",
       configStore: store,
       configReloadLatch: latch,
-      projectInstructions: "",
       memoryPromptText: "",
       allMemories: [],
       enabledToolNames: new Set<string>(),

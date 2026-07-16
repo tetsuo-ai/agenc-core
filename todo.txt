@@ -270,7 +270,7 @@ Why this is mandatory: these defects directly reduce patch quality, multiply
 cost, or let existing execution paths escape the intended workspace/policy
 boundary. They are higher leverage than new surface area.
 
-[ ] Deliver project instructions to every real model request.
+[x] Deliver project instructions to every real model request.
     - Inventory every instruction resolver and every model-request assembly
       call site, then converge `runtime/src/prompts/agenc-md.ts`,
       `runtime/src/prompts/project-instructions.ts`, and

@@ -2,7 +2,6 @@ import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
 import {
   getAdditionalDirectoriesForAgenCMd,
-  setCachedAgenCMdContent,
 } from './bootstrap/state.js'
 import { getLocalISODate } from './constants/common.js'
 import {
@@ -163,11 +162,6 @@ export const getUserContext = memoize(
     const agencMd = shouldDisableAgenCMd
       ? null
       : getAgenCMds(filterInjectedMemoryFiles(await getMemoryFiles()))
-    // Cache for the auto-mode classifier (yoloClassifier.ts reads this
-    // instead of importing agencmd.ts directly, which would create a
-    // cycle through permissions/filesystem → permissions → yoloClassifier).
-    setCachedAgenCMdContent(agencMd || null)
-
     logForDiagnosticsNoPII('info', 'user_context_completed', {
       duration_ms: Date.now() - startTime,
       agencmd_length: agencMd?.length ?? 0,

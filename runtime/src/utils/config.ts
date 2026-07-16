@@ -110,7 +110,6 @@ export type ProjectConfig = {
 
   hasCompletedProjectOnboarding?: boolean
   projectOnboardingSeenCount: number
-  hasAgenCMdExternalIncludesApproved?: boolean
   hasAgenCMdExternalIncludesWarningShown?: boolean
   // MCP server approval fields - migrated to settings but kept for backward compatibility
   enabledMcpjsonServers?: string[]
@@ -141,7 +140,6 @@ const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   disabledMcpjsonServers: [],
   hasTrustDialogAccepted: false,
   projectOnboardingSeenCount: 0,
-  hasAgenCMdExternalIncludesApproved: false,
   hasAgenCMdExternalIncludesWarningShown: false,
 }
 

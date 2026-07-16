@@ -374,20 +374,19 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 
-  it("prepends the review system prompt as the first message", async () => {
-    let observedFirst: string | null = null;
+  it("sends the review system prompt once through the provider system field", async () => {
+    let observedSystemPrompt: string | undefined;
     const provider = mkScriptedProvider({
       content: "reviewer text",
-      onChat: (messages) => {
-        const first = messages[0];
-        if (first && typeof first.content === "string") {
-          observedFirst = first.content;
-        }
+      onChat: (messages, options) => {
+        expect(messages.some((message) => message.role === "system")).toBe(false);
+        observedSystemPrompt = options?.systemPrompt;
       },
     });
     const session = mkSession(provider);
     await runAgenCReviewOneShot(session, mkOneShotRequest(session));
-    expect(observedFirst).toContain("# Review guidelines:");
+    expect(observedSystemPrompt).toContain("# Review guidelines:");
+    expect(observedSystemPrompt?.match(/# Review guidelines:/g)).toHaveLength(1);
   });
 
   it("passes the reviewer model, no-tool envelope, and reasoning effort to the provider", async () => {

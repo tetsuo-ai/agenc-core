@@ -203,6 +203,9 @@ describe("memory public access surface", () => {
       "Project",
       new Set<string>(),
       false,
+      0,
+      undefined,
+      tempDir,
     );
 
     expect(files).toHaveLength(1);

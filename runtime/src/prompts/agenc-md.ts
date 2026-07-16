@@ -24,25 +24,55 @@
  *
  * @module
  */
-import { realpath, stat } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { normalizeExternalText, readTextFile } from "./_deps/file-read.js";
+import { normalizeExternalText } from "./_deps/file-read.js";
+import {
+  type ExternalInstructionApprovalStore,
+  type InstructionFileIdentity,
+  instructionFileIdentityKey,
+  readInstructionFileSnapshot,
+} from "./secure-instruction-file.js";
 import {
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   DEFAULT_PROJECT_ROOT_MARKERS,
+  AGENTS_PROJECT_INSTRUCTION_FILE,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
   findProjectRoot,
   loadProjectInstructionChain,
+  projectInstructionDirectories,
   type ProjectInstructionChainEntry,
   type ProjectInstructionsConfig,
 } from "./project-instructions.js";
-import { DEFAULT_MANAGED_RULES_DIR, discoverInstructionRules, formatRulesBlock, projectRulesDir, userRulesDir } from "./rules/discovery.js";
+import {
+  DEFAULT_MANAGED_RULES_DIR,
+  discoverInstructionRulesDetailed,
+  formatRulesBlock,
+  projectRulesDir,
+  type RuleDiscoveryLedger,
+} from "./rules/discovery.js";
 
 /** Default max nesting depth for `@include` expansion. */
 const DEFAULT_INCLUDE_MAX_DEPTH = 10;
 /** Default total expansion budget (5 MiB) to guard against fork bombs. */
 const DEFAULT_INCLUDE_MAX_BYTES = 5 * 1024 * 1024;
+const MAX_INCLUDE_DEPTH_LIMIT = 64;
+const MAX_INCLUDE_REFERENCES = 512;
+
+function boundedIntegerOption(
+  name: string,
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 0 || resolved > maximum) {
+    throw new RangeError(`${name} must be a finite integer between 0 and ${maximum}`);
+  }
+  return resolved;
+}
 
 /** Filename convention for per-user global instructions. */
 const USER_INSTRUCTION_FILENAME = "AGENC.md";
@@ -63,6 +93,7 @@ export interface TierEntry {
   readonly content: string;
   readonly rawContent: string;
   readonly dropped: DroppedInclude[];
+  readonly dependencies: readonly string[];
 }
 
 export interface TieredInstructions {
@@ -77,6 +108,10 @@ export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig
   readonly cwd: string;
   /** Override `HOME` for testing. Defaults to `os.homedir()`. */
   readonly homeDir?: string;
+  /** Resolved AgenC config home (AGENC_CONFIG_DIR/AGENC_HOME), if relocated. */
+  readonly configHomeDir?: string;
+  /** Explicit source policy. Omitted means all four tiers. */
+  readonly enabledTiers?: readonly InstructionTier[];
   /**
    * Override the managed instructions path for testing. Defaults to
    * `$AGENC_MANAGED_INSTRUCTIONS` env var or
@@ -87,6 +122,8 @@ export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig
   readonly includeMaxDepth?: number;
   /** Max total `@include` expansion bytes. Default 5 MiB. */
   readonly includeMaxBytes?: number;
+  /** Trusted operator channel for exact external includes. Disabled by default. */
+  readonly externalApprovals?: ExternalInstructionApprovalStore;
 }
 
 /** Metadata about a rejected/skipped `@include` target. */
@@ -100,8 +137,16 @@ export interface DroppedInclude {
     | "not_found"
     | "read_error"
     | "not_regular_file"
+    | "symlink"
+    | "hard_link"
+    | "unstable"
+    | "approval_required"
+    | "approval_expired"
     | "invalid_path";
   readonly includingFile: string;
+  /** Local operator evidence; never rendered into the model-visible marker. */
+  readonly canonicalPath?: string;
+  readonly identity?: InstructionFileIdentity;
 }
 
 export interface ResolveIncludesOptions {
@@ -116,28 +161,56 @@ export interface ResolveIncludesOptions {
   readonly maxDepth?: number;
   /** Max total expansion size in bytes (default 5 MiB). */
   readonly maxBytes?: number;
+  /** Path of the file containing `content`; required for exact external approval. */
+  readonly includingFile?: string;
+  readonly includingFileSha256?: string;
+  /** Pinned workspace identity used to scope operator approvals. */
+  readonly workspaceRoot?: string;
+  readonly externalApprovals?: ExternalInstructionApprovalStore;
+  /** Shared byte ledger when several files contribute to one tier/envelope. */
+  readonly ledger?: InstructionExpansionLedger;
 }
 
 export interface ResolvedContent {
   readonly text: string;
   readonly included: string[];
   readonly dropped: DroppedInclude[];
+  readonly probes: readonly InstructionCacheProbe[];
+}
+
+interface InstructionCacheProbe {
+  readonly path: string;
+  readonly identity: InstructionFileIdentity | null;
+}
+
+interface InstructionExpansionLedger {
+  totalBytes: number;
+  references: number;
+}
+
+interface InstructionCacheEvidence {
+  readonly probes: Map<string, string | null>;
+  cacheable: boolean;
+}
+
+function recordCacheProbe(
+  evidence: InstructionCacheEvidence,
+  probe: InstructionCacheProbe,
+): void {
+  const key = probe.identity === null
+    ? null
+    : instructionFileIdentityKey(probe.identity);
+  const existing = evidence.probes.get(probe.path);
+  if (existing !== undefined && existing !== key) evidence.cacheable = false;
+  evidence.probes.set(probe.path, key);
 }
 
 /** Regex for `@include <path>` directives at line start. */
 const INCLUDE_LINE_RE = /^[ \t]*@include[ \t]+(.+?)[ \t]*$/gm;
 
-async function tryReadText(path: string): Promise<string | null> {
-  try {
-    return await readTextFile(path);
-  } catch {
-    return null;
-  }
-}
-
 async function pathExists(p: string): Promise<boolean> {
   try {
-    await stat(p);
+    await lstat(p);
     return true;
   } catch {
     return false;
@@ -162,7 +235,7 @@ export function isPathWithin(candidate: string, boundary: string): boolean {
   const rel = relative(absBoundary, absCandidate);
   if (rel === "" ) return true;
   // Any `..` component or an absolute rel path means candidate escapes.
-  if (rel.startsWith("..")) return false;
+  if (rel === ".." || rel.startsWith(`..${sep}`)) return false;
   if (isAbsolute(rel)) return false;
   return true;
 }
@@ -180,30 +253,6 @@ export function isPathWithin(candidate: string, boundary: string): boolean {
  * targets are surfaced separately through the `not_found` drop reason
  * after this check, so a false here is safe.
  */
-async function isPathWithinReal(
-  candidate: string,
-  boundary: string,
-): Promise<boolean> {
-  let realBoundary: string;
-  let realCandidate: string;
-  try {
-    realBoundary = await realpath(resolve(boundary));
-  } catch {
-    return false;
-  }
-  try {
-    realCandidate = await realpath(resolve(candidate));
-  } catch {
-    return false;
-  }
-  if (realCandidate === realBoundary) return true;
-  const rel = relative(realBoundary, realCandidate);
-  if (rel === "") return true;
-  if (rel.startsWith("..")) return false;
-  if (isAbsolute(rel)) return false;
-  return true;
-}
-
 /**
  * Expand `@include <path>` directives in `content` recursively.
  *
@@ -217,36 +266,82 @@ export async function resolveIncludes(
   content: string,
   opts: ResolveIncludesOptions,
 ): Promise<ResolvedContent> {
-  const maxDepth = opts.maxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;
-  const maxBytes = opts.maxBytes ?? DEFAULT_INCLUDE_MAX_BYTES;
+  const maxDepth = boundedIntegerOption(
+    "include max depth",
+    opts.maxDepth,
+    DEFAULT_INCLUDE_MAX_DEPTH,
+    MAX_INCLUDE_DEPTH_LIMIT,
+  );
+  const maxBytes = boundedIntegerOption(
+    "include max bytes",
+    opts.maxBytes,
+    DEFAULT_INCLUDE_MAX_BYTES,
+    DEFAULT_INCLUDE_MAX_BYTES,
+  );
   const included: string[] = [];
   const dropped: DroppedInclude[] = [];
-  // Byte ledger shared across recursion.
-  const state = { totalBytes: Buffer.byteLength(content, "utf8") };
+  const probes: InstructionCacheProbe[] = [];
+  // Byte ledger shared across recursion and, for project chains, across every
+  // ancestor file. This prevents N files from each independently consuming the
+  // advertised expansion cap.
+  const state = opts.ledger ?? { totalBytes: 0, references: 0 };
+  const contentBytes = Buffer.byteLength(content, "utf8");
+  const remainingForContent = Math.max(0, maxBytes - state.totalBytes);
+  if (contentBytes > remainingForContent) {
+    state.totalBytes = maxBytes;
+    return {
+      text: truncateUtf8Bytes(content, remainingForContent),
+      included,
+      dropped,
+      probes,
+    };
+  }
+  state.totalBytes += contentBytes;
 
   const text = await expandText({
     text: content,
     baseDir: opts.baseDir,
     projectRoot: resolve(opts.projectRoot),
-    includingFile: opts.baseDir,
+    workspaceRoot: resolve(opts.workspaceRoot ?? opts.projectRoot),
+    includingFile: opts.includingFile ?? opts.baseDir,
+    ...(opts.includingFileSha256 !== undefined
+      ? { includingFileSha256: opts.includingFileSha256 }
+      : {}),
+    externalApprovals: opts.externalApprovals,
     stack: [],
     depth: 0,
     maxDepth,
     maxBytes,
     included,
     dropped,
+    probes,
     state,
   });
 
-  return { text, included, dropped };
+  return { text, included, dropped, probes };
+}
+
+function truncateUtf8Bytes(content: string, maximumBytes: number): string {
+  if (maximumBytes <= 0) return "";
+  let bytes = 0;
+  let end = 0;
+  for (const char of content) {
+    const width = Buffer.byteLength(char, "utf8");
+    if (bytes + width > maximumBytes) break;
+    bytes += width;
+    end += char.length;
+  }
+  return content.slice(0, end);
 }
 
 interface ExpandCtx {
   text: string;
   baseDir: string;
   projectRoot: string;
+  workspaceRoot: string;
   /** Absolute path of the currently-including file (or baseDir root). */
   includingFile: string;
+  includingFileSha256?: string;
   /** Absolute paths of ancestors in the include chain (for cycle check). */
   stack: readonly string[];
   depth: number;
@@ -254,7 +349,9 @@ interface ExpandCtx {
   maxBytes: number;
   included: string[];
   dropped: DroppedInclude[];
-  state: { totalBytes: number };
+  probes: InstructionCacheProbe[];
+  state: InstructionExpansionLedger;
+  externalApprovals?: ExternalInstructionApprovalStore;
 }
 
 async function expandText(ctx: ExpandCtx): Promise<string> {
@@ -280,11 +377,18 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     const drop = (
       reason: DroppedInclude["reason"],
       extra?: string,
+      localEvidence?: Pick<DroppedInclude, "canonicalPath" | "identity">,
     ): string => {
       ctx.dropped.push({
         requestedPath: match.target,
         reason,
         includingFile: ctx.includingFile,
+        ...(localEvidence?.canonicalPath !== undefined
+          ? { canonicalPath: localEvidence.canonicalPath }
+          : {}),
+        ...(localEvidence?.identity !== undefined
+          ? { identity: localEvidence.identity }
+          : {}),
       });
       // Every reason carries a human-readable rejection marker with the
       // reason (and optional extra context such as cycle entry, depth
@@ -295,6 +399,13 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
         : `<!-- @include ${match.target} (rejected: ${reason}) -->`;
     };
 
+    if (ctx.state.references >= MAX_INCLUDE_REFERENCES) {
+      out += "<!-- further @include references rejected: reference_limit -->";
+      cursor = ctx.text.length;
+      break;
+    }
+    ctx.state.references += 1;
+
     // Null-byte / control-char guard. POSIX `open(2)` treats `\0` as the
     // path terminator and would silently truncate; reject up front so an
     // attacker can't smuggle `foo\0.md` past later checks.
@@ -304,32 +415,7 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     }
 
     const resolved = resolve(ctx.baseDir, match.target);
-
-    // I-75 boundary check (realpath-aware). Closes the symlink-escape
-    // attack where `<repo>/bad -> /etc/passwd` would pass lexical checks.
-    // Also rejects broken symlinks via the fail-closed realpath variant.
-    const within = await isPathWithinReal(resolved, ctx.projectRoot);
-    if (!within) {
-      // Distinguish "exists, escapes boundary" (path_escape) from "does
-      // not exist at all" (not_found) so callers get an honest signal.
-      // `isPathWithinReal` fails closed on missing paths too, so probe
-      // separately here.
-      if (!(await pathExists(resolved))) {
-        out += drop("not_found");
-      } else {
-        out += drop("path_escape");
-      }
-      continue;
-    }
-
-    // Cycle detection: resolved path already on the active stack.
-    if (ctx.stack.includes(resolved)) {
-      out += drop(
-        "circular",
-        `cycle via ${ctx.stack.length > 0 ? ctx.stack.join(" -> ") : "self"}`,
-      );
-      continue;
-    }
+    const lexicallyExternal = !isPathWithin(resolved, ctx.projectRoot);
 
     // Depth guard.
     if (ctx.depth + 1 > ctx.maxDepth) {
@@ -337,29 +423,75 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
       continue;
     }
 
-    // Regular-file gate. Must follow the realpath boundary check so we
-    // stat the canonical target. Rejects FIFOs, sockets, block/char
-    // devices (reading would block or leak `/dev/*`), symlinks to such
-    // nodes, and directories.
-    let targetStat;
-    try {
-      targetStat = await stat(resolved);
-    } catch {
-      out += drop("not_found");
+    const remainingBytes = Math.max(0, ctx.maxBytes - ctx.state.totalBytes);
+    const read = await readInstructionFileSnapshot({
+      requestedPath: resolved,
+      boundaryRoot: ctx.projectRoot,
+      workspaceRoot: ctx.workspaceRoot,
+      sourceClass: "include",
+      maximumBytes: remainingBytes,
+      includedBy: ctx.includingFile,
+      ...(ctx.includingFileSha256 !== undefined
+        ? { includedBySha256: ctx.includingFileSha256 }
+        : {}),
+      externalApprovals: ctx.externalApprovals,
+    });
+    if (!read.ok) {
+      ctx.probes.push({
+        path: read.canonicalPath ?? resolved,
+        identity: read.identity ?? null,
+      });
+      const mapped: DroppedInclude["reason"] = lexicallyExternal
+        ? read.reason === "approval_expired"
+          ? "approval_expired"
+          : "approval_required"
+        : read.reason === "not_found" || read.reason === "boundary_unavailable"
+          ? "not_found"
+          : read.reason === "outside_boundary"
+            ? "path_escape"
+            : read.reason === "too_large"
+              ? "max_bytes"
+              : read.reason === "not_regular_file"
+                ? "not_regular_file"
+                : read.reason === "symlink"
+                  ? "symlink"
+                  : read.reason === "hard_link"
+                    ? "hard_link"
+                    : read.reason === "unstable"
+                      ? "unstable"
+                      : read.reason === "approval_required"
+                        ? "approval_required"
+                        : read.reason === "approval_expired"
+                          ? "approval_expired"
+                          : "read_error";
+      const extra =
+        mapped === "max_bytes"
+          ? `cap=${ctx.maxBytes}B; used=${ctx.state.totalBytes}B`
+          : undefined;
+      out += drop(mapped, extra, {
+        ...(read.canonicalPath !== undefined
+          ? { canonicalPath: read.canonicalPath }
+          : {}),
+        ...(read.identity !== undefined ? { identity: read.identity } : {}),
+      });
       continue;
     }
-    if (!targetStat.isFile()) {
-      out += drop("not_regular_file");
+    const canonicalPath = read.snapshot.canonicalPath;
+    ctx.probes.push({
+      path: canonicalPath,
+      identity: read.snapshot.identity,
+    });
+
+    // Cycle detection is identity-path based after the secure open.
+    if (ctx.stack.includes(canonicalPath)) {
+      out += drop(
+        "circular",
+        `cycle via ${ctx.stack.length > 0 ? ctx.stack.join(" -> ") : "self"}`,
+      );
       continue;
     }
 
-    let raw: string;
-    try {
-      raw = await readTextFile(resolved);
-    } catch {
-      out += drop("read_error");
-      continue;
-    }
+    const raw = read.snapshot.text;
 
     // Byte-budget guard before recursion.
     const addBytes = Buffer.byteLength(raw, "utf8");
@@ -372,20 +504,24 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     }
     ctx.state.totalBytes += addBytes;
 
-    ctx.included.push(resolved);
+    ctx.included.push(canonicalPath);
     const okMarker = `<!-- @include ${match.target} -->`;
     const nested = await expandText({
       text: raw,
-      baseDir: pathDir(resolved),
+      baseDir: pathDir(canonicalPath),
       projectRoot: ctx.projectRoot,
-      includingFile: resolved,
-      stack: [...ctx.stack, resolved],
+      workspaceRoot: ctx.workspaceRoot,
+      includingFile: canonicalPath,
+      includingFileSha256: read.snapshot.sha256,
+      stack: [...ctx.stack, canonicalPath],
       depth: ctx.depth + 1,
       maxDepth: ctx.maxDepth,
       maxBytes: ctx.maxBytes,
       included: ctx.included,
       dropped: ctx.dropped,
+      probes: ctx.probes,
       state: ctx.state,
+      externalApprovals: ctx.externalApprovals,
     });
     out += `${okMarker}\n${nested}`;
   }
@@ -398,8 +534,7 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
  * repeatedly and clarifies intent in `expandText`.
  */
 function pathDir(p: string): string {
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return idx < 0 ? "." : p.slice(0, idx);
+  return dirname(p);
 }
 
 /**
@@ -413,16 +548,42 @@ async function loadTier(
   boundary: string,
   includeMaxDepth: number,
   includeMaxBytes: number,
+  workspaceRoot: string,
+  expansionLedger: InstructionExpansionLedger,
+  cacheEvidence: InstructionCacheEvidence,
+  externalApprovals?: ExternalInstructionApprovalStore,
 ): Promise<TierEntry | null> {
-  const raw = await tryReadText(filePath);
-  if (raw === null || raw.trim().length === 0) return null;
+  const remainingBytes = Math.max(
+    0,
+    includeMaxBytes - expansionLedger.totalBytes,
+  );
+  if (remainingBytes === 0) return null;
+  const read = await readInstructionFileSnapshot({
+    requestedPath: filePath,
+    boundaryRoot: boundary,
+    workspaceRoot,
+    sourceClass: tier,
+    maximumBytes: remainingBytes,
+  });
+  if (!read.ok || read.snapshot.text.trim().length === 0) return null;
+  recordCacheProbe(cacheEvidence, {
+    path: read.snapshot.canonicalPath,
+    identity: read.snapshot.identity,
+  });
+  const raw = read.snapshot.text;
 
   const resolved = await resolveIncludes(raw, {
     baseDir: pathDir(filePath),
     projectRoot: boundary,
     maxDepth: includeMaxDepth,
     maxBytes: includeMaxBytes,
+    includingFile: read.snapshot.canonicalPath,
+    includingFileSha256: read.snapshot.sha256,
+    workspaceRoot,
+    externalApprovals,
+    ledger: expansionLedger,
   });
+  for (const probe of resolved.probes) recordCacheProbe(cacheEvidence, probe);
 
   return {
     tier,
@@ -430,6 +591,7 @@ async function loadTier(
     content: resolved.text,
     rawContent: raw,
     dropped: resolved.dropped,
+    dependencies: [read.snapshot.canonicalPath, ...resolved.included],
   };
 }
 
@@ -445,21 +607,38 @@ async function appendUnconditionalRules(
   rulesDir: string,
   type: "Managed" | "User" | "Project" | "Local",
   boundaryDir?: string,
+  dependencyPaths?: string[],
+  cacheEvidence?: InstructionCacheEvidence,
+  resourceLedger?: RuleDiscoveryLedger,
 ): Promise<string> {
-  const rules = await discoverInstructionRules({
+  const discovery = await discoverInstructionRulesDetailed({
     rulesDir,
     type,
     ...(boundaryDir !== undefined ? { boundaryDir } : {}),
     includeUnconditional: true,
     includeConditional: false,
+    ...(resourceLedger !== undefined ? { resourceLedger } : {}),
   });
+  if (discovery.overflowed && cacheEvidence !== undefined) {
+    cacheEvidence.cacheable = false;
+  }
+  if (cacheEvidence !== undefined) {
+    for (const directory of discovery.directories) {
+      recordCacheProbe(cacheEvidence, directory);
+    }
+    for (const file of discovery.files) {
+      recordCacheProbe(cacheEvidence, { path: file.path, identity: file.identity });
+    }
+  }
+  const rules = discovery.rules;
+  dependencyPaths?.push(rulesDir, ...rules.map((rule) => rule.path));
   const block = formatRulesBlock(rules);
   if (block.length === 0) return content;
   return content.length === 0 ? block : `${content}\n\n${block}`;
 }
 
 /**
- * mtime-keyed cache for {@link loadTieredInstructions}.
+ * identity-keyed cache for {@link loadTieredInstructions}.
  *
  * Audit finding: prepareTurnRuntimeInputs reloads AGENC.md every turn,
  * even when the file is unchanged. Across 80 turns of a session that's
@@ -467,22 +646,22 @@ async function appendUnconditionalRules(
  * scan for content that did not change.
  *
  * Strategy: cache the resolved {@link TieredInstructions} keyed by
- * (cwd, managedPath, homeDir). On lookup, stat the four tier paths
- * recorded in the cached result; if every path's mtime matches, the
- * cached value is returned without re-reading. Any mismatch — or a
- * file appearing/disappearing — invalidates the entry and re-loads.
+ * (cwd, managedPath, config home, policy). Descriptor-bound identities for
+ * every opened file, stable identities for every traversed rule directory,
+ * and exact negative candidate probes are recorded. Any mismatch — including
+ * a file appearing/disappearing — invalidates and reloads.
  *
- * The four-stat probe is O(filesystem-attr-lookup) which is dominated
- * by syscall overhead, NOT by content read. On typical filesystems
- * this completes in &lt;1ms vs ~5-50ms for the full re-read+@include
- * walk on a moderately sized project.
+ * Cache publication verifies that every path still names its captured object;
+ * a concurrent mutation makes that resolution non-cacheable.
  *
  * Exposed as a separate module-scope state so tests can clear it via
  * {@link clearTieredInstructionsCacheForTesting}.
  */
 type CachedTieredInstructions = {
-  readonly fingerprint: string;
-  readonly cachedPaths: ReadonlyArray<{ readonly path: string; readonly mtimeMs: number }>;
+  readonly cachedPaths: ReadonlyArray<{
+    readonly path: string;
+    readonly identity: string | null;
+  }>;
   readonly result: TieredInstructions;
 };
 
@@ -497,15 +676,28 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
     process.env.AGENC_MANAGED_INSTRUCTIONS ??
     DEFAULT_MANAGED_INSTRUCTION_PATH;
   const home = opts.homeDir ?? homedir();
+  const configHome = opts.configHomeDir ?? join(home, ".agenc");
   // includeMaxDepth/Bytes also affect output, but most callers use the
   // defaults; key them too so a caller bumping the budget never gets a
   // stale shorter-budget result.
-  const includeMaxDepth = opts.includeMaxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;
-  const includeMaxBytes = opts.includeMaxBytes ?? DEFAULT_INCLUDE_MAX_BYTES;
+  const includeMaxDepth = boundedIntegerOption(
+    "include max depth",
+    opts.includeMaxDepth,
+    DEFAULT_INCLUDE_MAX_DEPTH,
+    MAX_INCLUDE_DEPTH_LIMIT,
+  );
+  const includeMaxBytes = boundedIntegerOption(
+    "include max bytes",
+    opts.includeMaxBytes,
+    DEFAULT_INCLUDE_MAX_BYTES,
+    DEFAULT_INCLUDE_MAX_BYTES,
+  );
   return [
     opts.cwd,
     managedPath,
     home,
+    configHome,
+    JSON.stringify(opts.enabledTiers ?? ["managed", "user", "project", "local"]),
     includeMaxDepth,
     includeMaxBytes,
     opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
@@ -513,10 +705,18 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
   ].join("|");
 }
 
-async function statMtimeMs(path: string): Promise<number | null> {
+async function statIdentity(path: string): Promise<string | null> {
   try {
-    const result = await stat(path);
-    return Number.isFinite(result.mtimeMs) ? result.mtimeMs : null;
+    const value = await lstat(path, { bigint: true });
+    return [
+      value.dev,
+      value.ino,
+      value.mode,
+      value.nlink,
+      value.size,
+      value.mtimeNs,
+      value.ctimeNs,
+    ].join(":");
   } catch {
     return null;
   }
@@ -525,37 +725,11 @@ async function statMtimeMs(path: string): Promise<number | null> {
 async function cachedTierPathsMatchDisk(
   cached: CachedTieredInstructions,
 ): Promise<boolean> {
-  // Negative cache marker: paths with mtimeMs === -1 represent "no
-  // file existed at this tier on the previous load." Re-stat such
-  // paths to detect a NEWLY appearing file (mtime present now → diff,
-  // re-load).
   for (const entry of cached.cachedPaths) {
-    const live = await statMtimeMs(entry.path);
-    if (entry.mtimeMs === -1) {
-      if (live !== null) return false; // a file appeared at this tier
-    } else if (live === null) {
-      return false; // file went missing
-    } else if (live !== entry.mtimeMs) {
-      return false; // mtime advanced
-    }
+    const live = await statIdentity(entry.path);
+    if (live !== entry.identity) return false;
   }
   return true;
-}
-
-function snapshotTierPaths(
-  result: TieredInstructions,
-): Array<{ path: string; mtimeMs: number }> {
-  // Track which file paths backed each tier so we can detect change
-  // on the next call. A null tier means "no file was found here";
-  // record the path that WOULD have been read with mtimeMs: -1 so a
-  // newly-created file invalidates the cache.
-  const entries: Array<{ path: string; mtimeMs: number }> = [];
-  for (const tier of [result.managed, result.user, result.project, result.local]) {
-    if (tier !== null) {
-      entries.push({ path: tier.path, mtimeMs: 0 });
-    }
-  }
-  return entries;
 }
 
 /** Test-only: drop all cached entries. Used by mtime-cache tests. */
@@ -578,35 +752,58 @@ export function clearTieredInstructionsCacheForTesting(): void {
 export async function loadTieredInstructions(
   opts: LoadTieredInstructionsOptions,
 ): Promise<TieredInstructions> {
+  // Exact approvals are revocable and expire independently of filesystem
+  // mtimes, so an approval-bearing resolution is never served from cache.
+  if (opts.externalApprovals !== undefined) {
+    return loadTieredInstructionsUncached(opts, {
+      probes: new Map(),
+      cacheable: false,
+    });
+  }
   const cacheKey = tieredInstructionsCacheKey(opts);
   const cached = tieredInstructionsCache.get(cacheKey);
   if (cached !== undefined && (await cachedTierPathsMatchDisk(cached))) {
     return cached.result;
   }
-  const result = await loadTieredInstructionsUncached(opts);
-  // Re-stat the loaded paths to capture the mtime AT the time the
-  // content was read — using stat() inline below would race with a
-  // concurrent writer. We stat once here; the subsequent
-  // cachedTierPathsMatchDisk call on the next turn re-stats and
-  // compares to this snapshot.
-  const tierPaths = snapshotTierPaths(result);
-  const cachedPaths: Array<{ path: string; mtimeMs: number }> = [];
-  for (const entry of tierPaths) {
-    const live = await statMtimeMs(entry.path);
-    cachedPaths.push({ path: entry.path, mtimeMs: live ?? -1 });
+  // Capture negative-candidate state before resolution. If a higher-priority
+  // file appears while the loader is running, the before/after mismatch makes
+  // this fill non-cacheable instead of pinning lower-priority content under the
+  // new file's identity.
+  const candidates = [...new Set(canonicalTierPaths(opts))];
+  const beforeCandidates = new Map<string, string | null>();
+  for (const candidate of candidates) {
+    beforeCandidates.set(candidate, await statIdentity(candidate));
   }
-  // Also probe the canonical tier paths that came back as `null` so a
-  // newly-created AGENC.md (e.g. user runs `touch AGENC.md` mid-session)
-  // forces a re-load on the next turn.
-  for (const candidate of canonicalTierPaths(opts)) {
-    if (cachedPaths.some((entry) => entry.path === candidate)) continue;
-    cachedPaths.push({ path: candidate, mtimeMs: -1 });
+
+  const evidence: InstructionCacheEvidence = {
+    probes: new Map(),
+    cacheable: true,
+  };
+  const result = await loadTieredInstructionsUncached(opts, evidence);
+
+  // Descriptor-bound file identities and stable directory-scan identities are
+  // authoritative. A post-load stat only verifies that the path still names
+  // that same object; it never replaces the captured identity.
+  for (const [path, expected] of evidence.probes) {
+    if ((await statIdentity(path)) !== expected) evidence.cacheable = false;
   }
-  tieredInstructionsCache.set(cacheKey, {
-    fingerprint: cacheKey,
-    cachedPaths,
-    result,
-  });
+  for (const candidate of candidates) {
+    if (evidence.probes.has(candidate)) continue;
+    const before = beforeCandidates.get(candidate) ?? null;
+    const after = await statIdentity(candidate);
+    if (after !== before) evidence.cacheable = false;
+    evidence.probes.set(candidate, before);
+  }
+
+  if (evidence.cacheable) {
+    tieredInstructionsCache.set(cacheKey, {
+      cachedPaths: [...evidence.probes].map(([path, identity]) => ({
+        path,
+        identity,
+      })),
+      result,
+    });
+  }
   return result;
 }
 
@@ -625,64 +822,126 @@ export async function loadTieredInstructions(
  * chain.
  */
 function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
+  const enabled = new Set<InstructionTier>(
+    opts.enabledTiers ?? ["managed", "user", "project", "local"],
+  );
+  if (enabled.size === 0) return [];
+
   const home = opts.homeDir ?? homedir();
   const managedPath =
     opts.managedPath ??
     process.env.AGENC_MANAGED_INSTRUCTIONS ??
     DEFAULT_MANAGED_INSTRUCTION_PATH;
-  const agencHome = join(home, ".agenc");
+  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
-  const cwdLocal = join(opts.cwd, LOCAL_INSTRUCTION_FILENAME);
-  const ancestorAgencMds = ancestorAgencMdCandidates(opts.cwd, home);
-  return [managedPath, userPrimary, cwdLocal, ...ancestorAgencMds];
+  const ancestorCandidates =
+    enabled.has("project") || enabled.has("local")
+      ? ancestorInstructionCandidates(
+          opts.cwd,
+          opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
+          enabled,
+        )
+      : [];
+  return [
+    ...(enabled.has("managed") ? [managedPath, DEFAULT_MANAGED_RULES_DIR] : []),
+    ...(enabled.has("user") ? [userPrimary, join(agencHome, "rules")] : []),
+    ...ancestorCandidates,
+  ];
 }
 
 /**
- * Probe the ancestor chain from cwd up to (and including) home for
- * AGENC.md candidate paths. Bounded by depth-30 so we never walk an
- * unexpectedly deep path tree.
+ * Probe the finite lexical ancestor chain from cwd to the filesystem root for
+ * instruction candidates and project-root markers.
  */
-function ancestorAgencMdCandidates(cwd: string, home: string): string[] {
+function ancestorInstructionCandidates(
+  cwd: string,
+  rootMarkers: readonly string[],
+  enabled: ReadonlySet<InstructionTier>,
+): string[] {
   const candidates: string[] = [];
   let current = resolve(cwd);
-  const homeResolved = resolve(home);
-  let depth = 0;
-  while (depth < 30) {
-    candidates.push(join(current, USER_INSTRUCTION_FILENAME));
-    if (current === homeResolved) break;
+  while (true) {
+    candidates.push(
+      ...(enabled.has("project")
+        ? [
+            join(current, "AGENC.override.md"),
+            join(current, PRIMARY_PROJECT_INSTRUCTION_FILE),
+            join(current, AGENTS_PROJECT_INSTRUCTION_FILE),
+            join(current, ".agenc", USER_INSTRUCTION_FILENAME),
+            projectRulesDir(current),
+          ]
+        : []),
+      ...(enabled.has("local")
+        ? [join(current, LOCAL_INSTRUCTION_FILENAME)]
+        : []),
+      ...rootMarkers.map((marker) => join(current, marker)),
+    );
     const parent = pathDir(current);
     if (parent === current) break; // root reached
     current = parent;
-    depth += 1;
   }
   return candidates;
 }
 
 async function loadTieredInstructionsUncached(
   opts: LoadTieredInstructionsOptions,
+  cacheEvidence: InstructionCacheEvidence,
 ): Promise<TieredInstructions> {
-  const includeMaxDepth = opts.includeMaxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;
-  const includeMaxBytes = opts.includeMaxBytes ?? DEFAULT_INCLUDE_MAX_BYTES;
+  const includeMaxDepth = boundedIntegerOption(
+    "include max depth",
+    opts.includeMaxDepth,
+    DEFAULT_INCLUDE_MAX_DEPTH,
+    MAX_INCLUDE_DEPTH_LIMIT,
+  );
+  const includeMaxBytes = boundedIntegerOption(
+    "include max bytes",
+    opts.includeMaxBytes,
+    DEFAULT_INCLUDE_MAX_BYTES,
+    DEFAULT_INCLUDE_MAX_BYTES,
+  );
   const home = opts.homeDir ?? homedir();
+  const enabled = new Set<InstructionTier>(
+    opts.enabledTiers ?? ["managed", "user", "project", "local"],
+  );
+  const expansionLedger: InstructionExpansionLedger = {
+    totalBytes: 0,
+    references: 0,
+  };
+  const ruleLedger: RuleDiscoveryLedger = {
+    scannedEntries: 0,
+    scannedDirectories: 0,
+    openedFiles: 0,
+    bytesRead: 0,
+    overflowed: false,
+  };
   const managedPath =
     opts.managedPath ??
     process.env.AGENC_MANAGED_INSTRUCTIONS ??
     DEFAULT_MANAGED_INSTRUCTION_PATH;
 
   // Managed tier — boundary is the managed file's directory.
-  const managedBase = await loadTier(
+  const managedBase = enabled.has("managed") ? await loadTier(
     "managed",
     managedPath,
     pathDir(managedPath),
     includeMaxDepth,
     includeMaxBytes,
-  );
+    opts.cwd,
+    expansionLedger,
+    cacheEvidence,
+    opts.externalApprovals,
+  ) : null;
   let managed = managedBase;
-  const managedRuleContent = await appendUnconditionalRules(
+  const managedDependencies = [...(managedBase?.dependencies ?? [])];
+  const managedRuleContent = enabled.has("managed") ? await appendUnconditionalRules(
     managedBase?.content ?? "",
     DEFAULT_MANAGED_RULES_DIR,
     "Managed",
-  );
+    pathDir(DEFAULT_MANAGED_RULES_DIR),
+    managedDependencies,
+    cacheEvidence,
+    ruleLedger,
+  ) : "";
   if (managedRuleContent.length > 0) {
     managed =
       managedBase === null
@@ -692,100 +951,165 @@ async function loadTieredInstructionsUncached(
             content: managedRuleContent,
             rawContent: managedRuleContent,
             dropped: [],
+            dependencies: managedDependencies,
           }
-        : { ...managedBase, content: managedRuleContent };
+        : {
+            ...managedBase,
+            content: managedRuleContent,
+            dependencies: managedDependencies,
+          };
   }
 
   // User tier — boundary is `~/.agenc`.
-  const agencHome = join(home, ".agenc");
+  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   let user: TierEntry | null = null;
-  if (await pathExists(userPrimary)) {
-    user = await loadTier("user", userPrimary, agencHome, includeMaxDepth, includeMaxBytes);
+  if (enabled.has("user") && await pathExists(userPrimary)) {
+    user = await loadTier(
+      "user",
+      userPrimary,
+      agencHome,
+      includeMaxDepth,
+      includeMaxBytes,
+      opts.cwd,
+      expansionLedger,
+      cacheEvidence,
+      opts.externalApprovals,
+    );
   }
-  const userRuleContent = await appendUnconditionalRules(
+  const userDependencies = [...(user?.dependencies ?? [])];
+  const userRuleContent = enabled.has("user") ? await appendUnconditionalRules(
     user?.content ?? "",
-    userRulesDir(home),
+    join(agencHome, "rules"),
     "User",
     agencHome,
-  );
+    userDependencies,
+    cacheEvidence,
+    ruleLedger,
+  ) : "";
   if (userRuleContent.length > 0) {
     user =
       user === null
         ? {
             tier: "user",
-            path: userRulesDir(home),
+            path: join(agencHome, "rules"),
             content: userRuleContent,
             rawContent: userRuleContent,
             dropped: [],
+            dependencies: userDependencies,
           }
-        : { ...user, content: userRuleContent };
+        : { ...user, content: userRuleContent, dependencies: userDependencies };
   }
 
   // Project tier — ancestor-walk via project-instructions loader.
-  const projectChain = await loadProjectInstructionChain({
-    cwd: opts.cwd,
-    projectRootMarkers:
-      opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
-    projectDocMaxBytes: opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
-  });
+  const projectChain =
+    enabled.has("project") && expansionLedger.totalBytes < includeMaxBytes
+      ? await loadProjectInstructionChain({
+          cwd: opts.cwd,
+          projectRootMarkers:
+            opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
+          projectDocMaxBytes:
+            opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
+        })
+      : [];
+  const discoveredProjectRoot =
+    projectChain[0]?.rootDir ??
+    (enabled.has("project") || enabled.has("local")
+      ? (await findProjectRoot(
+          opts.cwd,
+          opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
+        ))?.rootDir
+      : undefined) ?? resolve(opts.cwd);
+  const projectRootDir = discoveredProjectRoot;
   let projectTier: TierEntry | null = null;
-  if (projectChain.length > 0) {
+  if (enabled.has("project") && projectRootDir !== undefined) {
     const parts: string[] = [];
     const rawParts: string[] = [];
     const dropped: DroppedInclude[] = [];
+    const projectDependencies: string[] = [];
+    let singleProjectContent = "";
+    let singleProjectRaw = "";
 
-    for (const entry of projectChain) {
-      const resolved = await resolveIncludes(entry.content, {
-        baseDir: pathDir(entry.path),
-        projectRoot: entry.rootDir,
-        maxDepth: includeMaxDepth,
-        maxBytes: includeMaxBytes,
+    for (const dir of projectInstructionDirectories(projectRootDir, opts.cwd)) {
+      const entries = projectChain.filter((entry) => {
+        const parent = pathDir(entry.path);
+        const owner = parent.endsWith(`${sep}.agenc`) ? pathDir(parent) : parent;
+        return resolve(owner) === resolve(dir);
       });
-      dropped.push(...resolved.dropped);
-      const withRules = await appendUnconditionalRules(
-        resolved.text,
-        projectRulesDir(pathDir(entry.path)),
-        "Project",
-        pathDir(entry.path),
-      );
-      if (projectChain.length === 1) {
-        parts.push(withRules);
-        rawParts.push(entry.content);
-      } else {
-        parts.push(formatProjectTierChainEntry(entry, withRules));
+      for (const entry of entries) {
+        recordCacheProbe(cacheEvidence, {
+          path: entry.canonicalPath,
+          identity: entry.identity,
+        });
+        const resolved = await resolveIncludes(entry.content, {
+          baseDir: pathDir(entry.canonicalPath),
+          projectRoot: entry.rootDir,
+          maxDepth: includeMaxDepth,
+          maxBytes: includeMaxBytes,
+          includingFile: entry.canonicalPath,
+          includingFileSha256: entry.sha256,
+          workspaceRoot: entry.rootDir,
+          ledger: expansionLedger,
+          ...(opts.externalApprovals !== undefined
+            ? { externalApprovals: opts.externalApprovals }
+            : {}),
+        });
+        for (const probe of resolved.probes) recordCacheProbe(cacheEvidence, probe);
+        dropped.push(...resolved.dropped);
+        projectDependencies.push(entry.canonicalPath, ...resolved.included);
+        singleProjectContent = resolved.text;
+        singleProjectRaw = entry.content;
+        parts.push(formatProjectTierChainEntry(entry, resolved.text));
         rawParts.push(formatProjectTierChainEntry(entry, entry.content));
+      }
+      const ruleBlock = await appendUnconditionalRules(
+        "",
+        projectRulesDir(dir),
+        "Project",
+        dir,
+        projectDependencies,
+        cacheEvidence,
+        ruleLedger,
+      );
+      if (ruleBlock.length > 0) {
+        parts.push(ruleBlock);
+        rawParts.push(ruleBlock);
       }
     }
 
-    const nearestEntry = projectChain[projectChain.length - 1]!;
-    projectTier = {
-      tier: "project",
-      path: nearestEntry.path,
-      content: parts.join("\n\n"),
-      rawContent: rawParts.join("\n\n"),
-      dropped,
-    };
+    if (parts.length > 0) {
+      projectTier = {
+        tier: "project",
+        path: projectChain.at(-1)?.path ?? projectRulesDir(projectRootDir),
+        content:
+          parts.length === 1 && projectChain.length === 1
+            ? singleProjectContent
+            : parts.join("\n\n"),
+        rawContent:
+          rawParts.length === 1 && projectChain.length === 1
+            ? singleProjectRaw
+            : rawParts.join("\n\n"),
+        dropped,
+        dependencies: projectDependencies,
+      };
+    }
   }
 
   // Local tier — `<projectRoot>/AGENC.local.md` if a project root was
   // found, otherwise `<cwd>/AGENC.local.md`.
-  const discoveredProjectRoot =
-    projectChain[0]?.rootDir ??
-    (await findProjectRoot(
-      opts.cwd,
-      opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
-    ))?.rootDir;
-  const projectRootDir = discoveredProjectRoot;
   const localBase = projectRootDir ?? opts.cwd;
   const localPath = join(localBase, LOCAL_INSTRUCTION_FILENAME);
-  const local = await loadTier(
+  const local = enabled.has("local") ? await loadTier(
     "local",
     localPath,
     localBase,
     includeMaxDepth,
     includeMaxBytes,
-  );
+    projectRootDir ?? opts.cwd,
+    expansionLedger,
+    cacheEvidence,
+    opts.externalApprovals,
+  ) : null;
 
   return { managed, user, project: projectTier, local };
 }
@@ -805,16 +1129,24 @@ export function assembleTieredInstructions(tiers: TieredInstructions): string {
     // skipped `readTextFile` (unlikely, but cheap insurance per I-80/81).
     parts.push(`${header}\n\n${normalizeExternalText(entry.content).trim()}`);
   }
-  return parts.join("\n\n");
+  const assembled = parts.join("\n\n");
+  return Buffer.byteLength(assembled, "utf8") <= DEFAULT_INCLUDE_MAX_BYTES
+    ? assembled
+    : truncateUtf8Bytes(assembled, DEFAULT_INCLUDE_MAX_BYTES);
 }
 
 function formatDroppedInclude(drop: DroppedInclude): string {
-  return [
-    "AGENC.md include dropped:",
-    drop.requestedPath,
-    `(${drop.reason}`,
-    `from ${drop.includingFile})`,
+  const details = [
+    drop.reason,
+    `from ${drop.includingFile}`,
+    ...(drop.canonicalPath !== undefined
+      ? [`target ${drop.canonicalPath}`]
+      : []),
+    ...(drop.identity !== undefined
+      ? [`identity ${instructionFileIdentityKey(drop.identity)}`]
+      : []),
   ].join(" ");
+  return `AGENC.md include dropped: ${drop.requestedPath} (${details})`;
 }
 
 /**

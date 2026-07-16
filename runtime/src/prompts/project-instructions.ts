@@ -12,10 +12,13 @@
  *
  * @module
  */
-import { stat } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { readTextFile } from "./_deps/file-read.js";
+import {
+  type InstructionFileIdentity,
+  readInstructionFileSnapshot,
+} from "./secure-instruction-file.js";
 import {
   AGENTS_PROJECT_INSTRUCTION_FILE,
   CLAUDE_PROJECT_INSTRUCTION_FILE,
@@ -34,6 +37,8 @@ export {
  * the same directory when present.
  */
 const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
+const DOT_AGENC_PROJECT_INSTRUCTION_FILE = join(".agenc", "AGENC.md");
+const MAX_SECURE_PROJECT_FILE_BYTES = 5 * 1024 * 1024;
 
 /**
  * Default project-root markers used when config does not specify any.
@@ -54,6 +59,20 @@ export const DEFAULT_PROJECT_ROOT_MARKERS: readonly string[] = [
  * Content beyond the cap is truncated with an I-15-style marker.
  */
 export const DEFAULT_PROJECT_DOC_MAX_BYTES = 2 * 1024 * 1024;
+
+function projectDocumentByteLimit(value: number | undefined): number {
+  const limit = value ?? DEFAULT_PROJECT_DOC_MAX_BYTES;
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit < 0 ||
+    limit > MAX_SECURE_PROJECT_FILE_BYTES
+  ) {
+    throw new RangeError(
+      `projectDocMaxBytes must be a safe integer between 0 and ${MAX_SECURE_PROJECT_FILE_BYTES}`,
+    );
+  }
+  return limit;
+}
 
 /**
  * Local runtime config for project-instruction discovery.
@@ -86,8 +105,14 @@ export interface LoadProjectInstructionsOptions extends ProjectInstructionsConfi
 export interface ProjectInstructions {
   /** Absolute path to the file that was loaded. */
   readonly path: string;
+  /** Canonical path bound to the opened descriptor (approval/cache provenance). */
+  readonly canonicalPath: string;
   /** File contents after BOM strip + CRLF→LF normalization. */
   readonly content: string;
+  /** Digest of the exact descriptor-bound bytes captured from disk. */
+  readonly sha256: string;
+  /** Identity captured from the same open descriptor as the returned bytes. */
+  readonly identity: InstructionFileIdentity;
   /** True when truncation occurred at {@link projectDocMaxBytes}. */
   readonly truncated: boolean;
   /**
@@ -114,7 +139,7 @@ const TRUNCATION_MARKER =
 
 async function pathExists(p: string): Promise<boolean> {
   try {
-    await stat(p);
+    await lstat(p);
     return true;
   } catch {
     return false;
@@ -162,33 +187,92 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 
 async function readInstructionCandidate(
   dir: string,
-): Promise<{ path: string; content: string } | null> {
+  boundaryRoot: string = dir,
+  workspaceRoot: string = boundaryRoot,
+): Promise<{
+  path: string;
+  content: string;
+  sha256: string;
+  identity: InstructionFileIdentity;
+  canonicalPath: string;
+} | null> {
   for (const full of [
     join(dir, OVERRIDE_PROJECT_INSTRUCTION_FILE),
     ...getProjectInstructionFilePaths(dir),
   ]) {
-    try {
-      const stats = await stat(full);
-      if (!stats.isFile()) {
-        continue;
-      }
-      return { path: full, content: await readTextFile(full) };
-    } catch {
-      continue;
+    const read = await readInstructionFileSnapshot({
+      requestedPath: full,
+      boundaryRoot,
+      workspaceRoot,
+      sourceClass: "project",
+      maximumBytes: MAX_SECURE_PROJECT_FILE_BYTES,
+    });
+    if (read.ok) {
+      return {
+        path: full,
+        content: read.snapshot.text,
+        sha256: read.snapshot.sha256,
+        identity: read.snapshot.identity,
+        canonicalPath: read.snapshot.canonicalPath,
+      };
     }
   }
   return null;
 }
 
+async function readInstructionCandidates(
+  dir: string,
+  boundaryRoot: string,
+  workspaceRoot: string,
+): Promise<readonly {
+  path: string;
+  content: string;
+  sha256: string;
+  identity: InstructionFileIdentity;
+  canonicalPath: string;
+}[]> {
+  const primary = await readInstructionCandidate(dir, boundaryRoot, workspaceRoot);
+  const dotAgenCPath = join(dir, DOT_AGENC_PROJECT_INSTRUCTION_FILE);
+  const dotAgenC = await readInstructionFileSnapshot({
+    requestedPath: dotAgenCPath,
+    boundaryRoot,
+    workspaceRoot,
+    sourceClass: "project",
+    maximumBytes: MAX_SECURE_PROJECT_FILE_BYTES,
+  });
+  return [
+    ...(primary !== null ? [primary] : []),
+    ...(dotAgenC.ok
+      ? [{
+          path: dotAgenCPath,
+          content: dotAgenC.snapshot.text,
+          sha256: dotAgenC.snapshot.sha256,
+          identity: dotAgenC.snapshot.identity,
+          canonicalPath: dotAgenC.snapshot.canonicalPath,
+        }]
+      : []),
+  ];
+}
+
 async function findClosestProjectInstruction(
   cwd: string,
   rootDir: string,
-): Promise<{ path: string; content: string } | null> {
+): Promise<{
+  path: string;
+  content: string;
+  sha256: string;
+  identity: InstructionFileIdentity;
+  canonicalPath: string;
+} | null> {
   let currentDir = resolve(cwd);
   const boundaryDir = resolve(rootDir);
 
   while (true) {
-    const candidate = await readInstructionCandidate(currentDir);
+    const candidate = await readInstructionCandidate(
+      currentDir,
+      boundaryDir,
+      boundaryDir,
+    );
     if (candidate) {
       return candidate;
     }
@@ -217,10 +301,7 @@ export async function loadProjectInstructions(
     opts.projectRootMarkers !== undefined
       ? opts.projectRootMarkers
       : DEFAULT_PROJECT_ROOT_MARKERS;
-  const maxBytes =
-    typeof opts.projectDocMaxBytes === "number"
-      ? opts.projectDocMaxBytes
-      : DEFAULT_PROJECT_DOC_MAX_BYTES;
+  const maxBytes = projectDocumentByteLimit(opts.projectDocMaxBytes);
 
   if (maxBytes === 0) {
     return null;
@@ -241,7 +322,10 @@ export async function loadProjectInstructions(
   const truncated = truncateContentToBytes(candidate.content, maxBytes);
   return {
     path: candidate.path,
+    canonicalPath: candidate.canonicalPath,
     content: truncated.content,
+    sha256: candidate.sha256,
+    identity: candidate.identity,
     truncated: truncated.truncated,
     rootMarkerFound: effectiveRoot.marker,
     rootDir: resolve(effectiveRoot.rootDir),
@@ -279,12 +363,15 @@ function truncateUtf8AtCodePointBoundary(content: string, maxBytes: number): str
   return content.slice(0, end);
 }
 
-function directoriesFromRoot(rootDir: string, cwd: string): string[] {
+export function projectInstructionDirectories(
+  rootDir: string,
+  cwd: string,
+): string[] {
   const absRoot = resolve(rootDir);
   const absCwd = resolve(cwd);
   const rel = relative(absRoot, absCwd);
   if (
-    rel.startsWith("..") ||
+    rel === ".." ||
     rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
   ) {
     return [absRoot];
@@ -324,10 +411,7 @@ export async function loadProjectInstructionChain(
     opts.projectRootMarkers !== undefined
       ? opts.projectRootMarkers
       : DEFAULT_PROJECT_ROOT_MARKERS;
-  const maxBytes =
-    typeof opts.projectDocMaxBytes === "number"
-      ? opts.projectDocMaxBytes
-      : DEFAULT_PROJECT_DOC_MAX_BYTES;
+  const maxBytes = projectDocumentByteLimit(opts.projectDocMaxBytes);
 
   if (maxBytes === 0) {
     return [];
@@ -341,27 +425,32 @@ export async function loadProjectInstructionChain(
   const chain: ProjectInstructionChainEntry[] = [];
   let remainingBytes = maxBytes;
 
-  for (const dir of directoriesFromRoot(effectiveRoot.rootDir, opts.cwd)) {
-    const loaded = await readInstructionCandidate(dir);
-    if (!loaded) {
-      continue;
-    }
-
-    const truncated = truncateContentToBytes(loaded.content, remainingBytes);
-    chain.push({
-      path: loaded.path,
-      content: truncated.content,
-      truncated: truncated.truncated,
-      rootMarkerFound: effectiveRoot.marker,
-      rootDir: effectiveRoot.rootDir,
-    });
-
-    remainingBytes -= Math.min(
-      remainingBytes,
-      Buffer.byteLength(loaded.content, "utf8"),
+  for (const dir of projectInstructionDirectories(effectiveRoot.rootDir, opts.cwd)) {
+    const loadedEntries = await readInstructionCandidates(
+      dir,
+      effectiveRoot.rootDir,
+      effectiveRoot.rootDir,
     );
-    if (truncated.truncated || remainingBytes <= 0) {
-      break;
+    for (const loaded of loadedEntries) {
+      const truncated = truncateContentToBytes(loaded.content, remainingBytes);
+      chain.push({
+        path: loaded.path,
+        canonicalPath: loaded.canonicalPath,
+        content: truncated.content,
+        sha256: loaded.sha256,
+        identity: loaded.identity,
+        truncated: truncated.truncated,
+        rootMarkerFound: effectiveRoot.marker,
+        rootDir: effectiveRoot.rootDir,
+      });
+
+      remainingBytes -= Math.min(
+        remainingBytes,
+        Buffer.byteLength(loaded.content, "utf8"),
+      );
+      if (truncated.truncated || remainingBytes <= 0) {
+        return chain;
+      }
     }
   }
 

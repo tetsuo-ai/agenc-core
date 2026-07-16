@@ -42,6 +42,10 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
 }));
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
+  getAllowedSettingSources,
+  setAllowedSettingSources,
+} from "../bootstrap/state.js";
+import {
   enqueue,
   getCommandQueueSnapshot,
   resetCommandQueue,
@@ -635,11 +639,11 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
 
   test("adds trusted Ledger routing guidance only for an exact root-human @ledger turn", async () => {
     const captureSystemPrompt = async (rootHumanTurnText: string): Promise<string> => {
-      const seenMessages: LLMMessage[][] = [];
+      let seenSystemPrompt = "";
       const provider: LLMProvider = {
         ...mkProvider({ content: "done" }),
-        chatStream: async (messages) => {
-          seenMessages.push(messages.map((message) => ({ ...message })));
+        chatStream: async (_messages, _onChunk, options) => {
+          seenSystemPrompt = options?.systemPrompt ?? "";
           return {
             content: "done",
             toolCalls: [],
@@ -658,10 +662,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         displayUserMessage: null,
         rootHumanTurnText,
       }));
-      return seenMessages[0]
-        ?.filter((message) => message.role === "system")
-        .map(testMessageText)
-        .join("\n") ?? "";
+      return seenSystemPrompt;
     };
 
     const routed = await captureSystemPrompt(
@@ -2105,9 +2106,11 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
 
   test("bakes personality template into first-turn system prompt without developer update", async () => {
     const seenMessages: LLMMessage[][] = [];
+    const seenSystemPrompts: string[] = [];
     const provider = mkProvider({ content: "answer" });
-    provider.chatStream = async (messages) => {
+    provider.chatStream = async (messages, _onChunk, options) => {
       seenMessages.push(messages.map((message) => ({ ...message })));
+      seenSystemPrompts.push(options?.systemPrompt ?? "");
       return {
         content: "answer",
         toolCalls: [],
@@ -2135,10 +2138,8 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       systemPrompt: "base instructions",
     }));
 
-    expect(seenMessages[0]?.[0]).toEqual({
-      role: "system",
-      content: "pragmatic template\n\nbase instructions",
-    });
+    expect(seenMessages[0]?.some((message) => message.role === "system")).toBe(false);
+    expect(seenSystemPrompts[0]).toBe("pragmatic template\n\nbase instructions");
     expect(
       (seenMessages[0] ?? []).some((message) => message.role === "developer"),
     ).toBe(false);
@@ -2743,6 +2744,7 @@ describe("runTurn — live sampling request contract", () => {
           parallelToolCalls?: boolean;
           reasoningEffort?: string;
           skipCacheWrite?: boolean;
+          systemPrompt?: string;
         }
       | undefined;
     const provider: LLMProvider = {
@@ -2778,11 +2780,10 @@ describe("runTurn — live sampling request contract", () => {
 
     await drain(session.runTurn("hello", { ctx, skipCacheWrite: true }));
 
-    expect(seenMessages[0]).toEqual({
-      role: "system",
-      content: "Follow the local contract.",
-    });
-    expect(seenMessages[1]).toEqual({ role: "user", content: "hello" });
+    expect(seenMessages[0]).toEqual({ role: "user", content: "hello" });
+    expect(seenMessages.some((message) => message.role === "system")).toBe(false);
+    expect(seenOptions?.systemPrompt).toContain("Follow the local contract.");
+    expect(seenOptions?.systemPrompt?.match(/Follow the local contract\./g)).toHaveLength(1);
     expect(seenOptions?.toolRouting?.allowedToolNames).toEqual([
       "visible_tool",
     ]);
@@ -2792,6 +2793,248 @@ describe("runTurn — live sampling request contract", () => {
     expect(seenOptions?.parallelToolCalls).toBe(true);
     expect(seenOptions?.reasoningEffort).toBe("high");
     expect(seenOptions?.skipCacheWrite).toBe(true);
+  });
+
+  test("resolves on-disk workspace instructions for every turn and sends each source exactly once", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-live-instructions-"));
+    const sentinel = "PROJECT_SENTINEL_7a8e";
+    const updated = "PROJECT_SENTINEL_UPDATED_4f2c";
+    try {
+      writeFileSync(join(repo, "package.json"), "{}", "utf8");
+      writeFileSync(join(repo, "AGENC.md"), sentinel, "utf8");
+      const ctx = mkCtx();
+      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd = repo;
+      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+        "BASE_SENTINEL_8c1d";
+
+      const requests: Array<{ messages: LLMMessage[]; systemPrompt: string }> = [];
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (messages, _onChunk, options) => {
+        requests.push({
+          messages: messages.map((message) => ({ ...message })),
+          systemPrompt: options?.systemPrompt ?? "",
+        });
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+
+      await drain(session.runTurn("first", { ctx }));
+      writeFileSync(join(repo, "AGENC.md"), updated, "utf8");
+      await drain(session.runTurn("second", { ctx }));
+
+      expect(requests).toHaveLength(2);
+      expect(requests[0]!.messages.some((message) => message.role === "system")).toBe(false);
+      expect(requests[0]!.systemPrompt.match(new RegExp(sentinel, "g"))).toHaveLength(1);
+      expect(requests[0]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g)).toHaveLength(1);
+      expect(requests[1]!.systemPrompt).not.toContain(sentinel);
+      expect(requests[1]!.systemPrompt.match(new RegExp(updated, "g"))).toHaveLength(1);
+      expect(requests[1]!.systemPrompt.match(/BASE_SENTINEL_8c1d/g)).toHaveLength(1);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps an explicit agent/review prompt authoritative without duplicating workspace guidance", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-custom-instructions-"));
+    try {
+      writeFileSync(join(repo, "package.json"), "{}", "utf8");
+      writeFileSync(join(repo, "AGENC.md"), "PROJECT_CUSTOM_SENTINEL", "utf8");
+      const ctx = mkCtx();
+      (ctx as TurnContext & { cwd: string; baseInstructions?: string }).cwd = repo;
+      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions = "BASE_CORE_SENTINEL";
+      let systemPrompt = "";
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (_messages, _onChunk, options) => {
+        systemPrompt = options?.systemPrompt ?? "";
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+      await drain(session.runTurn("review", {
+        ctx,
+        systemPrompt: "CUSTOM_REVIEW_SENTINEL",
+        instructionPolicy: "workspace_review",
+      }));
+
+      expect(systemPrompt.match(/CUSTOM_REVIEW_SENTINEL/g)).toHaveLength(1);
+      expect(systemPrompt.match(/PROJECT_CUSTOM_SENTINEL/g)).toHaveLength(1);
+      expect(systemPrompt.match(/BASE_CORE_SENTINEL/g)).toHaveLength(1);
+      expect(systemPrompt.indexOf("PROJECT_CUSTOM_SENTINEL")).toBeLessThan(
+        systemPrompt.indexOf("CUSTOM_REVIEW_SENTINEL"),
+      );
+      expect(systemPrompt.indexOf("CUSTOM_REVIEW_SENTINEL")).toBeLessThan(
+        systemPrompt.indexOf("BASE_CORE_SENTINEL"),
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("pins instruction resolution to each turn workspace without cross-workspace leakage", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-workspace-isolation-"));
+    const repoA = join(root, "a");
+    const repoB = join(root, "b");
+    try {
+      mkdirSync(repoA);
+      mkdirSync(repoB);
+      for (const [repo, sentinel] of [
+        [repoA, "WORKSPACE_A_SENTINEL"],
+        [repoB, "WORKSPACE_B_SENTINEL"],
+      ] as const) {
+        writeFileSync(join(repo, "package.json"), "{}", "utf8");
+        writeFileSync(join(repo, "AGENC.md"), sentinel, "utf8");
+      }
+      const prompts: string[] = [];
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (_messages, _onChunk, options) => {
+        prompts.push(options?.systemPrompt ?? "");
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+      const ctxA = { ...mkCtx(), cwd: repoA, subId: "workspace-a" } as TurnContext;
+      const ctxB = { ...mkCtx(), cwd: repoB, subId: "workspace-b" } as TurnContext;
+      await drain(session.runTurn("A", { ctx: ctxA }));
+      await drain(session.runTurn("B", { ctx: ctxB }));
+
+      expect(prompts[0]).toContain("WORKSPACE_A_SENTINEL");
+      expect(prompts[0]).not.toContain("WORKSPACE_B_SENTINEL");
+      expect(prompts[1]).toContain("WORKSPACE_B_SENTINEL");
+      expect(prompts[1]).not.toContain("WORKSPACE_A_SENTINEL");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("honors hard-off, bare, and setting-source isolation at the provider boundary", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-live-source-policy-"));
+    const originalSources = [...getAllowedSettingSources()];
+    try {
+      writeFileSync(join(repo, "package.json"), "{}", "utf8");
+      writeFileSync(join(repo, "AGENC.md"), "REPO_POLICY_SENTINEL", "utf8");
+      const prompts: string[] = [];
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (_messages, _onChunk, options) => {
+        prompts.push(options?.systemPrompt ?? "");
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+      const ctx = { ...mkCtx(), cwd: repo } as TurnContext;
+
+      const restoreDisabled = withEnvVar("AGENC_DISABLE_AGENC_MDS", "1");
+      await drain(session.runTurn("disabled", { ctx }));
+      restoreDisabled();
+
+      const restoreBare = withEnvVar("AGENC_SIMPLE", "1");
+      await drain(session.runTurn("bare", { ctx }));
+      restoreBare();
+
+      setAllowedSettingSources([]);
+      await drain(session.runTurn("isolated sources", { ctx }));
+
+      expect(prompts).toHaveLength(3);
+      for (const prompt of prompts) expect(prompt).not.toContain("REPO_POLICY_SENTINEL");
+    } finally {
+      delete process.env.AGENC_DISABLE_AGENC_MDS;
+      delete process.env.AGENC_SIMPLE;
+      setAllowedSettingSources(originalSources);
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("loads user instructions from the configured AgenC home", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-live-config-home-"));
+    const repo = join(root, "repo");
+    const configHome = join(root, "profile");
+    try {
+      mkdirSync(repo);
+      mkdirSync(configHome);
+      writeFileSync(join(repo, "package.json"), "{}", "utf8");
+      writeFileSync(join(configHome, "AGENC.md"), "CONFIG_HOME_SENTINEL", "utf8");
+      let prompt = "";
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (_messages, _onChunk, options) => {
+        prompt = options?.systemPrompt ?? "";
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const restore = withEnvVar("AGENC_CONFIG_DIR", configHome);
+      const { session } = mkSession({ provider, registry: mkRegistry() });
+      await drain(session.runTurn("profile", { ctx: { ...mkCtx(), cwd: repo } as TurnContext }));
+      restore();
+      expect(prompt.match(/CONFIG_HOME_SENTINEL/g)).toHaveLength(1);
+    } finally {
+      delete process.env.AGENC_CONFIG_DIR;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("denies external includes, keeps target evidence out of the model, and warns the operator", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-live-external-deny-"));
+    const repo = join(root, "repo");
+    const target = join(root, "outside.md");
+    try {
+      mkdirSync(repo);
+      writeFileSync(join(repo, "package.json"), "{}", "utf8");
+      writeFileSync(join(repo, "AGENC.md"), "@include ../outside.md", "utf8");
+      writeFileSync(target, "EXTERNAL_SECRET_SENTINEL", "utf8");
+      let prompt = "";
+      const provider = mkProvider({ content: "ok" });
+      provider.chatStream = async (_messages, _onChunk, options) => {
+        prompt = options?.systemPrompt ?? "";
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session, events } = mkSession({ provider, registry: mkRegistry() });
+      await drain(session.runTurn("deny", { ctx: { ...mkCtx(), cwd: repo } as TurnContext }));
+
+      expect(prompt).toContain("rejected: approval_required");
+      expect(prompt).not.toContain("EXTERNAL_SECRET_SENTINEL");
+      expect(prompt).not.toContain(target);
+      expect(events).toContainEqual(expect.objectContaining({
+        msg: expect.objectContaining({
+          type: "warning",
+          payload: expect.objectContaining({
+            cause: "project_instruction_rejected",
+            message: expect.stringContaining(target),
+          }),
+        }),
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("plan mode sanitizes visible assistant text but still completes the raw proposed plan", async () => {
@@ -2961,6 +3204,7 @@ describe("runTurn — model request context ordering", () => {
       createEmptyToolPermissionContext({ mode: "plan" }),
     );
     let seenMessages: LLMMessage[] = [];
+    let seenSystemPrompt = "";
     const provider: LLMProvider = {
       name: "stub-provider",
       chat: async () => ({
@@ -2970,8 +3214,9 @@ describe("runTurn — model request context ordering", () => {
         model: "test-model",
         finishReason: "stop",
       }),
-      chatStream: async (messages) => {
+      chatStream: async (messages, _onChunk, options) => {
         seenMessages = messages.map((message) => ({ ...message }));
+        seenSystemPrompt = options?.systemPrompt ?? "";
         return {
           content: "ok",
           toolCalls: [],
@@ -2995,15 +3240,12 @@ describe("runTurn — model request context ordering", () => {
       }),
     );
 
-    expect(seenMessages[0]).toEqual({
-      role: "system",
-      content: "Follow the local contract.",
-    });
+    expect(seenSystemPrompt).toContain("Follow the local contract.");
     expect(
       seenMessages.filter((message) => message.role === "system"),
-    ).toHaveLength(1);
-    expect(seenMessages[1]?.role).toBe("user");
-    expect(String(seenMessages[1]?.content)).toContain("Plan mode is active");
+    ).toHaveLength(0);
+    expect(seenMessages[0]?.role).toBe("user");
+    expect(String(seenMessages[0]?.content)).toContain("Plan mode is active");
     expect(seenMessages.at(-1)).toEqual({ role: "user", content: "hello" });
   });
 });
@@ -4849,6 +5091,8 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
   test("compaction result rehydrates the full post-compact replacement history", async () => {
     const ctx = mkCtx();
+    (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+      "CURRENT_CORE_INSTRUCTIONS";
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
     const appendRollout = vi.fn();
@@ -4880,6 +5124,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     setAutoCompactImplForTests(fakeImpl);
 
     let seenMessages: LLMMessage[] = [];
+    let seenSystemPrompt = "";
     const provider: LLMProvider = {
       name: "stub-provider",
       chat: async () => ({
@@ -4889,8 +5134,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         model: "test-model",
         finishReason: "stop",
       }),
-      chatStream: async (messages) => {
+      chatStream: async (messages, _onChunk, options) => {
         seenMessages = messages.map((m) => ({ ...m }));
+        seenSystemPrompt = options?.systemPrompt ?? "";
         return {
           content: "ok",
           toolCalls: [],
@@ -4940,12 +5186,12 @@ describe("runTurn — runAutoCompact dispatcher", () => {
         (m) => typeof m.content === "string" && m.content.includes("KEPT TAIL"),
       ),
     ).toBe(true);
-    expect(
-      seenMessages.some((m) =>
-        typeof m.content === "string" &&
-        m.content.includes("POST-COMPACT SUMMARY"),
-      ),
-    ).toBe(true);
+    expect(seenSystemPrompt).toContain("POST-COMPACT SUMMARY");
+    expect(seenSystemPrompt).toContain("<durable_system_history>");
+    expect(seenSystemPrompt).toContain("untrusted historical context");
+    expect(seenSystemPrompt.indexOf("POST-COMPACT SUMMARY")).toBeLessThan(
+      seenSystemPrompt.indexOf("CURRENT_CORE_INSTRUCTIONS"),
+    );
   });
 
   test("pre-sampling compact keeps the unsent image turn after compacted history", async () => {
@@ -4960,11 +5206,13 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       },
     ];
     let seenMessages: LLMMessage[] = [];
+    let seenSystemPrompt = "";
     const { session } = mkSession({
       provider: {
         ...mkProvider({ content: "ok" }),
-        chatStream: async (messages) => {
+        chatStream: async (messages, _onChunk, options) => {
           seenMessages = messages.map((message) => ({ ...message }));
+          seenSystemPrompt = options?.systemPrompt ?? "";
           return {
             content: "ok",
             toolCalls: [],
@@ -4998,13 +5246,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
     await drain(session.runTurn(userContent, { ctx }));
 
-    expect(
-      seenMessages.some(
-        (message) =>
-          typeof message.content === "string" &&
-          message.content.includes("POST-COMPACT SUMMARY"),
-      ),
-    ).toBe(true);
+    expect(seenSystemPrompt).toContain("POST-COMPACT SUMMARY");
     const imageUser = seenMessages.find(
       (message) => message.role === "user" && Array.isArray(message.content),
     );

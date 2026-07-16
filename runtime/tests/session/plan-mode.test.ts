@@ -591,6 +591,11 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     (
       session as unknown as { onTaskFinished: () => Promise<void> }
     ).onTaskFinished = async () => {};
+    (
+      session as unknown as {
+        setProjectMemoryWarnings: (warnings: readonly string[]) => void;
+      }
+    ).setProjectMemoryWarnings = () => {};
 
     const ctx = {
       subId: "turn-1",
