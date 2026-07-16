@@ -142,17 +142,18 @@ and required results are not bound to the exact reviewed SHA.
     - Prove a clean clone can build the runtime, launcher, SDK, declarations,
       and Docker image without developer-local state.
 
-[ ] Add required local PR and release attestations.
+[x] Run required PR and release verification locally.
     - Run locally for every PR: typecheck, stable Vitest suite, build, SDK build
       and typecheck, agent-surface contract, SBOM check, and PTY/TUI startup
       smoke.
-    - GitHub must run no tests: a dedicated repository-scoped App records and
-      enforces only the authenticated exact-SHA local result. Release workflows
-      must read back a separate successful merged-`main` attestation for the
-      exact release SHA before producing artifacts.
-    - Document the exact App-bound GitHub ruleset; configure it on `main` with
-      strict source matching and no bypass actors, then prove a new unattested
-      SHA cannot merge.
+    - GitHub runs no tests and no App/ruleset attestation is required. Record
+      the exact tested SHA, commands, results, and every skip in the PR before
+      merge; GitHub is only the branch/PR/merge record.
+    - Before release, repeat the required gates locally against the immutable
+      release-tag commit, retain the reviewed evidence record defined in
+      `docs/ci-required-gates.md`, and bind its SHA-256 plus the tested commit to
+      the artifact workflow dispatch. Hosted release workflows are not PR
+      verification and are never invoked merely to test a change.
 
 M0 DONE WHEN:
 

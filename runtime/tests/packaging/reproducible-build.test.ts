@@ -4,6 +4,22 @@ import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const REPO_ROOT = resolve(process.cwd(), "..");
+const HOSTED_TEST_COMMANDS = [
+  "npm test",
+  "npm run test",
+  "npm run typecheck",
+  "npm run validate:runtime",
+  "npm run check:required-gates",
+  "npm run check:agent-surface-contract",
+  "npm run check:sbom",
+  "check:tui-runtime-startup",
+  "vitest",
+  "tsc --noEmit",
+] as const;
+
+function expectArtifactWorkflowWithoutHostedTests(workflow: string) {
+  for (const command of HOSTED_TEST_COMMANDS) expect(workflow).not.toContain(command);
+}
 
 describe("reproducible install and release contract", () => {
   test("standalone installers are generated from the canonical lock modules", () => {
@@ -233,12 +249,16 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = tag');
     expect(workflow).toContain('expected_ref="refs/tags/agenc-v${version}"');
     expect(workflow).toContain('test "$REPOSITORY_VISIBILITY" = public');
-    expect(releaseSourceJob).toContain("checks: read");
-    expect(releaseSourceJob).toContain("AGENC_LOCAL_GATE_APP_ID");
-    expect(releaseSourceJob).toContain("scripts/verify-required-gate-check.mjs");
-    expect(releaseSourceJob).toContain('--sha "$GITHUB_SHA"');
+    expect(releaseSourceJob).not.toContain("checks: read");
+    expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
+    expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).toContain("LOCAL_EVIDENCE_SHA256");
+    expect(releaseSourceJob).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
+    expect(releaseSourceJob).toContain(
+      'test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"',
+    );
     expect(workflow).not.toContain("required-gates:");
-    expect(workflow).not.toContain("npm run check:required-gates");
+    expectArtifactWorkflowWithoutHostedTests(workflow);
     for (const job of [releaseSourceJob, packJob, publishJob]) {
       expect(job.match(/git merge-base --is-ancestor/g)).toHaveLength(1);
       expect(job.match(/persist-credentials: false/g)).toHaveLength(1);
@@ -317,7 +337,7 @@ describe("reproducible install and release contract", () => {
     );
   });
 
-  test("runtime artifact jobs depend on an exact App-owned local-gate check", () => {
+  test("runtime artifact jobs bind to the exact release tag without running tests", () => {
     const workflow = readFileSync(
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
@@ -326,12 +346,16 @@ describe("reproducible install and release contract", () => {
       workflow.indexOf("\n  release-source:"),
       workflow.indexOf("\n  linux-tarball:"),
     );
-    expect(releaseSourceJob).toContain("checks: read");
-    expect(releaseSourceJob).toContain("AGENC_LOCAL_GATE_APP_ID");
-    expect(releaseSourceJob).toContain("scripts/verify-required-gate-check.mjs");
-    expect(releaseSourceJob).toContain('--sha "$GITHUB_SHA"');
+    expect(releaseSourceJob).not.toContain("checks: read");
+    expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
+    expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
+    expect(releaseSourceJob).toContain("LOCAL_EVIDENCE_SHA256");
+    expect(releaseSourceJob).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
+    expect(releaseSourceJob).toContain(
+      'test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"',
+    );
     expect(workflow).not.toContain("required-gates:");
-    expect(workflow).not.toContain("npm run check:required-gates");
+    expectArtifactWorkflowWithoutHostedTests(workflow);
     expect(workflow).toMatch(/\n  linux-tarball:\n    needs: release-source\n/u);
     expect(workflow).toMatch(/\n  native-tarball:\n    needs: release-source\n/u);
   });

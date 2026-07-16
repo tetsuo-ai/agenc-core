@@ -1,13 +1,25 @@
 # Publish the reviewed @tetsuo-ai/agenc launcher tarball with npm Trusted
 # Publishing. Configure npmjs.com for this exact workflow filename and the
 # `npm-production` environment, allow `npm publish`, and do not provide an npm
-# token. Dispatch only at the matching immutable source tag, after the runtime
-# release in tetsuo-ai/agenc-releases has been published and made immutable.
+# token. This is an artifact-publish workflow, not a test workflow. Before
+# dispatch, the operator must complete and retain the exact-tag local release
+# evidence defined in docs/ci-required-gates.md. Dispatch only at the matching
+# immutable source tag, after the runtime release in tetsuo-ai/agenc-releases
+# has been published and made immutable.
 
 name: publish-npm
 
 on:
   workflow_dispatch:
+    inputs:
+      tested_sha:
+        description: Full immutable release-tag commit tested locally
+        required: true
+        type: string
+      local_evidence_sha256:
+        description: SHA-256 of the reviewed local release evidence record
+        required: true
+        type: string
 
 concurrency:
   group: publish-npm-production
@@ -26,7 +38,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      checks: read
       contents: read
     steps:
       - name: Check out the exact release SHA
@@ -37,10 +48,15 @@ jobs:
           persist-credentials: false
       - name: Bind the run to the reviewed source tag
         env:
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
           test "$GITHUB_REF_TYPE" = tag
@@ -52,19 +68,6 @@ jobs:
           test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Verify the App-owned local gate for this exact release SHA
-        env:
-          AGENC_LOCAL_GATE_APP_ID: ${{ vars.AGENC_LOCAL_GATE_APP_ID }}
-          GITHUB_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$AGENC_LOCAL_GATE_APP_ID" =~ ^[1-9][0-9]*$ ]]
-          node scripts/verify-required-gate-check.mjs \
-            --repository "$GITHUB_REPOSITORY" \
-            --sha "$GITHUB_SHA" \
-            --app-id "$AGENC_LOCAL_GATE_APP_ID"
-
   pack:
     needs: release-source
     runs-on: ubuntu-24.04
