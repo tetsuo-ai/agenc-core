@@ -632,6 +632,113 @@ function runCapture(command, args, { cwd, env, uid, gid, timeoutMs = 30_000 } = 
   });
 }
 
+const SEALED_SOURCE_GIT_CONFIG = Object.freeze([
+  "--no-replace-objects",
+  "--no-optional-locks",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "submodule.recurse=false",
+  "-c",
+  "protocol.allow=never",
+  "-c",
+  "maintenance.auto=false",
+  "-c",
+  "gc.auto=0",
+  "-c",
+  "safe.bareRepository=explicit",
+]);
+
+function sealedSourceGitArguments(workspace, operation) {
+  return [
+    ...SEALED_SOURCE_GIT_CONFIG,
+    // Reset any multi-valued protected setting, then allow only this canonical
+    // checkout for the duration of this one unprivileged Git command.
+    "-c",
+    "safe.directory=",
+    "-c",
+    `safe.directory=${workspace}`,
+    "-C",
+    workspace,
+    ...operation,
+  ];
+}
+
+export async function verifyFinalCandidateSourceInWorker({
+  config,
+  gitPath,
+  workspace,
+  expectedSourceSha,
+  env,
+  runBase,
+  logFd,
+  parentUnit,
+  runWorker = runSystemdWorkerCaptured,
+}) {
+  if (typeof gitPath !== "string" || !path.isAbsolute(gitPath) || gitPath.includes("\0")) {
+    throw new TypeError("trusted final Git path must be absolute");
+  }
+  if (typeof workspace !== "string" || !path.isAbsolute(workspace) || workspace.includes("\0")) {
+    throw new TypeError("trusted final workspace must be absolute");
+  }
+  if (!/^[0-9a-f]{40}$/u.test(expectedSourceSha)) {
+    throw new TypeError("trusted final source SHA must be one lowercase commit ID");
+  }
+  if (typeof runWorker !== "function") {
+    throw new TypeError("sealed-source Git worker runner must be a function");
+  }
+  const canonicalWorkspace = realpathSync(workspace);
+  if (canonicalWorkspace !== workspace || canonicalWorkspace.includes("\n")) {
+    throw new GatekeeperFailure(
+      "SOURCE_INVALID",
+      "sealed candidate workspace must use its canonical path",
+    );
+  }
+  const workerOptions = {
+    config,
+    command: gitPath,
+    cwd: canonicalWorkspace,
+    env,
+    runBase,
+    readWritePaths: [],
+    timeoutMs: CHECKOUT_TIMEOUT_MS,
+    logFd,
+    networkAccess: false,
+    parentUnit,
+  };
+  const finalHead = (
+    await runWorker({
+      ...workerOptions,
+      args: sealedSourceGitArguments(
+        canonicalWorkspace,
+        ["rev-parse", "--verify", "HEAD^{commit}"],
+      ),
+      label: "verify final checked-out head in confined worker",
+    })
+  ).stdout.trim();
+  const finalStatus = (
+    await runWorker({
+      ...workerOptions,
+      args: sealedSourceGitArguments(
+        canonicalWorkspace,
+        [
+          "status",
+          "--porcelain=v1",
+          "--untracked-files=all",
+          "--ignore-submodules=all",
+        ],
+      ),
+      label: "verify final source cleanliness in confined worker",
+    })
+  ).stdout.trim();
+  if (finalHead !== expectedSourceSha || finalStatus !== "") {
+    throw new GatekeeperFailure("SOURCE_CHANGED", "candidate source changed during required gates");
+  }
+  return Object.freeze({ head: finalHead, status: finalStatus });
+}
+
 function workerEnvironment(config, runBase) {
   const privateHome = path.join(runBase, "home");
   const npmCache = path.join(runBase, "npm-cache");
@@ -2572,39 +2679,19 @@ async function defaultExecuteCandidate({ config, subject, workspace, runBase, lo
     acceptedExitCodes: [0, 10],
   });
   const gateFailed = gateResult.code === 10;
-  const finalHead = (
-    await runSystemdWorkerCaptured({
-      config,
-      command: git,
-      args: ["-C", workspace, "rev-parse", "HEAD"],
-      cwd: workspace,
-      env,
-      runBase,
-      readWritePaths: [],
-      timeoutMs: CHECKOUT_TIMEOUT_MS,
-      logFd,
-      label: "verify final checked-out head",
-      parentUnit,
-    })
-  ).stdout.trim();
-  const finalStatus = (
-    await runSystemdWorkerCaptured({
-      config,
-      command: git,
-      args: ["-C", workspace, "status", "--porcelain=v1", "--untracked-files=all"],
-      cwd: workspace,
-      env,
-      runBase,
-      readWritePaths: [],
-      timeoutMs: CHECKOUT_TIMEOUT_MS,
-      logFd,
-      label: "verify final source cleanliness",
-      parentUnit,
-    })
-  ).stdout.trim();
-  if (finalHead !== expectedSourceSha || finalStatus !== "") {
-    throw new GatekeeperFailure("SOURCE_CHANGED", "candidate source changed during required gates");
-  }
+  // The checkout and .git are root-owned after sealing. Keep native Git parsing
+  // in the confined worker and grant only these commands an exact, canonical
+  // safe.directory exception; the source remains read-only and networkless.
+  await verifyFinalCandidateSourceInWorker({
+    config,
+    gitPath: git,
+    workspace,
+    expectedSourceSha,
+    env,
+    runBase,
+    logFd,
+    parentUnit,
+  });
   const finalContract = computeRequiredGateContract({ repositoryRoot: workspace });
   if (finalContract.sha256 !== contract.sha256) {
     throw new GatekeeperFailure("CONTRACT_CHANGED", "gate contract changed during required gates");

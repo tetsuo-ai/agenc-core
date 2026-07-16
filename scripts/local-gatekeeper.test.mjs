@@ -44,6 +44,7 @@ import {
   runLocalGatePublisher,
   runLocalGateWorker,
   runLogged,
+  verifyFinalCandidateSourceInWorker,
 } from "./local-gatekeeper.mjs";
 import {
   REQUIRED_DOCKER_IMAGE,
@@ -218,7 +219,7 @@ test("candidate index rejects symlinks, gitlinks, and tracked scratch collisions
   }
 });
 
-test("candidate Git parsing is confined to transient worker units", () => {
+test("candidate Git parsing stays confined before and after source sealing", () => {
   const source = readFileSync(
     path.join(REQUIRED_GATE_REPOSITORY_ROOT, "scripts/local-gatekeeper.mjs"),
     "utf8",
@@ -229,6 +230,101 @@ test("candidate Git parsing is confined to transient worker units", () => {
   assert.match(source, /runSystemdWorkerCaptured\(\{[\s\S]*command: git/u);
   assert.match(source, /label: "fetch exact remote PR head",[\s\S]*?networkAccess: true/u);
   assert.match(source, /label: "checkout exact PR head",[\s\S]*?parentUnit,/u);
+  assert.match(
+    source,
+    /prepareAndSealCandidateSource\(workspace,[\s\S]*await verifyFinalCandidateSourceInWorker\(\{[\s\S]*gitPath: git,[\s\S]*expectedSourceSha,/u,
+  );
+  assert.match(source, /label: "verify final checked-out head in confined worker"/u);
+  assert.match(source, /label: "verify final source cleanliness in confined worker"/u);
+});
+
+test("sealed source verification grants one exact safe.directory to a confined worker", async () => {
+  const { root, config } = fixture();
+  const workspace = path.join(root, "sealed-source");
+  const runBase = path.join(root, "runs");
+  mkdirSync(workspace);
+  mkdirSync(runBase);
+  const env = Object.freeze({
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    HOME: path.join(runBase, "home"),
+    PATH: "/usr/bin:/bin",
+  });
+  try {
+    const calls = [];
+    const outputs = [`${SOURCE_SHA}\n`, ""];
+    const observed = await verifyFinalCandidateSourceInWorker({
+      config,
+      gitPath: "/usr/bin/git",
+      workspace,
+      expectedSourceSha: SOURCE_SHA,
+      env,
+      runBase,
+      logFd: 9,
+      parentUnit: "agenc-local-gate-dispatcher@pr-1505.service",
+      runWorker: async (options) => {
+        calls.push(options);
+        return { stdout: outputs.shift(), stderr: "", status: 0 };
+      },
+    });
+    assert.deepEqual(observed, { head: SOURCE_SHA, status: "" });
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.config, config);
+      assert.equal(call.command, "/usr/bin/git");
+      assert.equal(call.cwd, workspace);
+      assert.equal(call.env, env);
+      assert.equal(call.runBase, runBase);
+      assert.deepEqual(call.readWritePaths, []);
+      assert.equal(call.networkAccess, false);
+      assert.equal(call.parentUnit, "agenc-local-gate-dispatcher@pr-1505.service");
+      const commandSettings = call.args.flatMap((value, index) =>
+        call.args[index - 1] === "-c" ? [value] : []
+      );
+      assert.deepEqual(
+        commandSettings.filter((value) => value.startsWith("safe.directory=")),
+        ["safe.directory=", `safe.directory=${workspace}`],
+      );
+      assert.ok(commandSettings.includes("core.fsmonitor=false"));
+      assert.ok(commandSettings.includes("core.hooksPath=/dev/null"));
+      assert.ok(commandSettings.includes("submodule.recurse=false"));
+      assert.ok(commandSettings.includes("protocol.allow=never"));
+      assert.ok(commandSettings.includes("safe.bareRepository=explicit"));
+      assert.equal(commandSettings.some((value) => value.includes("*")), false);
+    }
+    assert.deepEqual(calls[0].args.slice(-3), ["rev-parse", "--verify", "HEAD^{commit}"]);
+    assert.deepEqual(calls[1].args.slice(-4), [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignore-submodules=all",
+    ]);
+
+    const rejectMutation = (head, status) => assert.rejects(
+      verifyFinalCandidateSourceInWorker({
+        config,
+        gitPath: "/usr/bin/git",
+        workspace,
+        expectedSourceSha: SOURCE_SHA,
+        env,
+        runBase,
+        logFd: 9,
+        parentUnit: "agenc-local-gate-dispatcher@pr-1505.service",
+        runWorker: async ({ args }) => ({
+          stdout: args.includes("rev-parse") ? `${head}\n` : status,
+          stderr: "",
+          status: 0,
+        }),
+      }),
+      /candidate source changed during required gates/u,
+    );
+    await rejectMutation(SOURCE_SHA, " M README.md\n");
+    await rejectMutation("2".repeat(40), "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("dependency acquisition accepts only SHA-512-pinned npm registry artifacts", () => {

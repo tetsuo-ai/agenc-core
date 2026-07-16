@@ -17,13 +17,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import {
-  artifactTreeDigest,
   assertExactSource,
   classifySystemdWorkerResult,
   createGateEnvironment,
   createRequiredGatesRoot,
   environmentForGate,
-  freezeArtifactTree,
   REQUIRED_GATES,
   REQUIRED_GATES_REPOSITORY_ROOT,
   REQUIRED_NODE_VERSION,
@@ -235,10 +233,10 @@ test("required gate contract is deterministic and mutation-sensitive", () => {
 
 test("artifact freeze rejects nested and root symlinks", (t) => {
   if (process.platform === "win32") return t.skip("POSIX symlink assertion");
-  const fixture = mkdtempSync(path.join(
-    REQUIRED_GATES_REPOSITORY_ROOT,
-    ".agenc-artifact-freeze-test-",
-  ));
+  // The authoritative gate mounts the candidate checkout read-only. Keep this
+  // fixture in the gate-private TMPDIR and import the trusted runner in a child
+  // with an explicitly injected repository root, matching that confinement.
+  const fixture = mkdtempSync(path.join(tmpdir(), "agenc-artifact-freeze-test-"));
   try {
     const target = path.join(fixture, "target");
     const nested = path.join(fixture, "nested");
@@ -248,25 +246,38 @@ test("artifact freeze rejects nested and root symlinks", (t) => {
     const nestedLink = path.join(nested, "00-linked-payload.txt");
     symlinkSync("../target/payload.txt", nestedLink);
 
-    assert.throws(
-      () => freezeArtifactTree(nested),
-      /artifact contains a symbolic link.*00-linked-payload\.txt/u,
-    );
-    assert.throws(
-      () => artifactTreeDigest(nested),
-      /artifact contains a symbolic link.*00-linked-payload\.txt/u,
-    );
-
     const rootLink = path.join(fixture, "linked-dist");
     symlinkSync("target", rootLink, "dir");
-    assert.throws(
-      () => freezeArtifactTree(rootLink),
-      /artifact contains a symbolic link.*linked-dist/u,
+    const probe = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        [
+          "import assert from 'node:assert/strict';",
+          "const runner = await import(process.argv[2]);",
+          "const nested = process.argv[3];",
+          "const rootLink = process.argv[4];",
+          "assert.throws(() => runner.freezeArtifactTree(nested), /artifact contains a symbolic link.*00-linked-payload\\.txt/u);",
+          "assert.throws(() => runner.artifactTreeDigest(nested), /artifact contains a symbolic link.*00-linked-payload\\.txt/u);",
+          "assert.throws(() => runner.freezeArtifactTree(rootLink), /artifact contains a symbolic link.*linked-dist/u);",
+          "assert.throws(() => runner.artifactTreeDigest(rootLink), /artifact contains a symbolic link.*linked-dist/u);",
+        ].join("\n"),
+        "/dev/null",
+        pathToFileURL(runnerPath).href,
+        nested,
+        rootLink,
+      ],
+      {
+        cwd: REQUIRED_GATES_REPOSITORY_ROOT,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          AGENC_REQUIRED_GATES_REPOSITORY_ROOT: fixture,
+        },
+      },
     );
-    assert.throws(
-      () => artifactTreeDigest(rootLink),
-      /artifact contains a symbolic link.*linked-dist/u,
-    );
+    assert.equal(probe.status, 0, probe.stderr);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
