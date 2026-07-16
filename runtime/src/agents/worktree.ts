@@ -46,6 +46,7 @@ import { runSupervisedProcess } from "../utils/supervisedProcess.js";
 import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import {
   hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
   worktreeMutationPermissions,
 } from "../sandbox/worktree-permissions.js";
 
@@ -297,9 +298,11 @@ export async function getOrCreateWorktree(
     // credential helpers, and transport helpers are not an implicit capability.
     const base = opts.base ?? "HEAD";
 
-    // `git worktree add -B <branch> <path> <base>`.
+    // Register metadata without materializing repository content. Checkout is
+    // a second, narrowly granted phase so a configured filter cannot write the
+    // common .git directory with Git's inherited authority.
     const addResult = await runGitMutation(
-      ["worktree", "add", "-B", branch, path, base],
+      ["worktree", "add", "--no-checkout", "-B", branch, path, base],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
       opts.gitRoot,
@@ -311,33 +314,54 @@ export async function getOrCreateWorktree(
       );
     }
 
+    const checkoutPermissions = worktreeCheckoutPermissions(opts.gitRoot, path);
+    const tearDownIncompleteWorktree = async (message: string): Promise<never> => {
+      await runGitMutation(
+        ["worktree", "remove", "--force", path],
+        opts.gitRoot,
+        opts.sandboxExecutionBroker,
+        opts.gitRoot,
+        [workspaceRoot],
+      );
+      throw new Error(message);
+    };
+
     // Optional sparse-checkout.
     if (opts.enableSparseCheckout && opts.sparsePatterns?.length) {
-      const init = await runGitMutation(
+      const init = await runGit(
         ["-C", path, "sparse-checkout", "init", "--cone"],
         opts.gitRoot,
         opts.sandboxExecutionBroker,
-        opts.gitRoot,
-        [path],
+        checkoutPermissions,
       );
       if (init.code !== 0) {
-        // I-35 teardown verify — failing to init still leaves the
-        // dir, so we treat this as a non-fatal warning. Callers can
-        // still use the worktree; sparse-checkout is disabled.
-        throw new Error(
+        await tearDownIncompleteWorktree(
           `sparse-checkout init failed: ${init.stderr.trim()}`,
         );
       }
-      const set = await runGitMutation(
+      const set = await runGit(
         ["-C", path, "sparse-checkout", "set", ...opts.sparsePatterns],
         opts.gitRoot,
         opts.sandboxExecutionBroker,
-        opts.gitRoot,
-        [path],
+        checkoutPermissions,
       );
       if (set.code !== 0) {
-        throw new Error(`sparse-checkout set failed: ${set.stderr.trim()}`);
+        await tearDownIncompleteWorktree(
+          `sparse-checkout set failed: ${set.stderr.trim()}`,
+        );
       }
+    }
+
+    const checkout = await runGit(
+      ["-C", path, "checkout", "HEAD"],
+      opts.gitRoot,
+      opts.sandboxExecutionBroker,
+      checkoutPermissions,
+    );
+    if (checkout.code !== 0) {
+      await tearDownIncompleteWorktree(
+        `git worktree checkout failed: ${checkout.stderr.trim() || checkout.stdout.trim()}`,
+      );
     }
 
     return { path, branch, gitRoot: opts.gitRoot, created: true };

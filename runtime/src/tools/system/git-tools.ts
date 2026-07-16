@@ -26,6 +26,7 @@ import {
 import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
 import {
   hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
   worktreeMutationPermissions,
 } from "../../sandbox/worktree-permissions.js";
 import { gitChildEnvironment } from "../../sandbox/git-environment.js";
@@ -415,7 +416,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (!safeWorktreePath.safe) {
         return errorResult(safeWorktreePath.reason ?? "worktreePath is outside allowed directories");
       }
-      const command = ["-C", repoRoot, "worktree", "add"];
+      const command = ["-C", repoRoot, "worktree", "add", "--no-checkout"];
       if (args.detached === true) command.push("--detach");
       const branch = toOptionalString(args.branch);
       const ref = toOptionalString(args.ref);
@@ -450,13 +451,34 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
           result.stderr.trim() || result.stdout.trim() || "git worktree add failed",
         );
       }
+      const checkout = await runGitToolCommand(
+        args,
+        ["-C", safeWorktreePath.resolved, "checkout", "HEAD"],
+        repoRoot,
+        undefined,
+        worktreeCheckoutPermissions(repoRoot, safeWorktreePath.resolved),
+      );
+      if (checkout.exitCode !== 0) {
+        await runGitToolCommand(
+          args,
+          ["-C", repoRoot, "worktree", "remove", "--force", safeWorktreePath.resolved],
+          repoRoot,
+          undefined,
+          worktreeMutationPermissions(repoRoot, [
+            dirname(safeWorktreePath.resolved),
+          ]),
+        );
+        return errorResult(
+          checkout.stderr.trim() || checkout.stdout.trim() || "git worktree checkout failed",
+        );
+      }
       return okResult({
         repoRoot,
         worktreePath: safeWorktreePath.resolved,
         branch: branch ?? null,
         ref: ref ?? null,
         detached: args.detached === true,
-        output: result.stdout.trim(),
+        output: [result.stdout.trim(), checkout.stdout.trim()].filter(Boolean).join("\n"),
       });
     },
   };

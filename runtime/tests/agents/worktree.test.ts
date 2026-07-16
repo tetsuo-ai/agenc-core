@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   STALE_WORKTREE_AGE_MS,
   cleanupStaleAgentWorktrees as cleanupStaleAgentWorktreesUnbound,
@@ -209,6 +209,33 @@ describe("getOrCreateWorktree", () => {
 
     expect(resumed.created).toBe(false);
     expect(isWorktreeStale(first.path)).toBe(false);
+  });
+
+  it("separates metadata registration from restricted checkout", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const broker = explicitDangerBroker.forkForCwd(repo);
+    const prepareSpawn = vi.spyOn(broker, "prepareSpawn");
+
+    const handle = await getOrCreateWorktreeUnbound({
+      gitRoot: repo,
+      slug: "two-phase",
+      sandboxExecutionBroker: broker,
+    });
+
+    const commands = prepareSpawn.mock.calls.map(([, command]) => command);
+    const add = commands.find((command) =>
+      command.args.includes("worktree") && command.args.includes("add")
+    );
+    const checkout = commands.find((command) =>
+      command.args.includes("checkout") && command.args.includes("HEAD")
+    );
+    expect(add?.args).toContain("--no-checkout");
+    expect(checkout).toBeDefined();
+    const checkoutPaths = checkout?.additionalPermissions?.fileSystem?.entries
+      .map((entry) => entry.path.kind === "path" ? entry.path.path : "");
+    expect(checkoutPaths).toContain(handle.path);
+    expect(checkoutPaths).not.toContain(join(repo, ".git"));
   });
 });
 

@@ -40,6 +40,7 @@ import { runSupervisedProcess } from './supervisedProcess.js'
 import type { AdditionalPermissionProfile } from '../sandbox/engine/index.js'
 import {
   hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
   worktreeMutationPermissions,
 } from '../sandbox/worktree-permissions.js'
 
@@ -427,10 +428,7 @@ async function getOrCreateWorktree(
     }
 
     const sparsePaths = getExecutionAuthoritySettings().worktree?.sparsePaths
-    const addArgs = ['worktree', 'add']
-    if (sparsePaths?.length) {
-      addArgs.push('--no-checkout')
-    }
+    const addArgs = ['worktree', 'add', '--no-checkout']
     // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
     // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
     addArgs.push('-B', worktreeBranch, worktreePath, baseBranch)
@@ -448,6 +446,21 @@ async function getOrCreateWorktree(
       throw new Error(`Failed to create worktree: ${createStderr}`)
     }
 
+    const checkoutPermissions = options?.processBoundary === undefined
+      ? undefined
+      : worktreeCheckoutPermissions(repoRoot, worktreePath)
+
+    const execCheckoutPhase = (
+      args: string[],
+      cwd: string,
+    ) => execWorktreeProcess(
+      gitExe(),
+      args,
+      { cwd },
+      options?.processBoundary,
+      checkoutPermissions,
+    )
+
     if (sparsePaths?.length) {
       // If sparse-checkout or checkout fail after --no-checkout, the worktree
       // is registered and HEAD is set but the working tree is empty. Next run's
@@ -464,28 +477,35 @@ async function getOrCreateWorktree(
         )
         throw new Error(msg)
       }
-      const { code: sparseCode, stderr: sparseErr } =
+      const { code: sparseCode, stderr: sparseErr } = await execCheckoutPhase(
+        ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
+        worktreePath,
+      )
+      if (sparseCode !== 0) {
+        await tearDown(`Failed to configure sparse-checkout: ${sparseErr}`)
+      }
+      const { code: coCode, stderr: coErr } = await execCheckoutPhase(
+        ['checkout', 'HEAD'],
+        worktreePath,
+      )
+      if (coCode !== 0) {
+        await tearDown(`Failed to checkout sparse worktree: ${coErr}`)
+      }
+    } else {
+      const { code: coCode, stderr: coErr } = await execCheckoutPhase(
+        ['checkout', 'HEAD'],
+        worktreePath,
+      )
+      if (coCode !== 0) {
         await execWorktreeMutation(
           gitExe(),
-          ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
-          { cwd: worktreePath },
+          ['worktree', 'remove', '--force', worktreePath],
+          { cwd: repoRoot },
           options?.processBoundary,
           repoRoot,
           [worktreePath],
         )
-      if (sparseCode !== 0) {
-        await tearDown(`Failed to configure sparse-checkout: ${sparseErr}`)
-      }
-      const { code: coCode, stderr: coErr } = await execWorktreeMutation(
-        gitExe(),
-        ['checkout', 'HEAD'],
-        { cwd: worktreePath },
-        options?.processBoundary,
-        repoRoot,
-        [worktreePath],
-      )
-      if (coCode !== 0) {
-        await tearDown(`Failed to checkout sparse worktree: ${coErr}`)
+        throw new Error(`Failed to checkout worktree: ${coErr}`)
       }
     }
 
