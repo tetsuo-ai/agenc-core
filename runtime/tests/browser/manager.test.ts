@@ -39,6 +39,16 @@ const { launchBrowserMock, terminationSeam } = vi.hoisted(() => ({
 vi.mock("../../src/browser/cdp.js", () => ({
   launchBrowser: launchBrowserMock,
   CdpConnection: class {},
+  BrowserLaunchCleanupError: class extends Error {
+    readonly child: unknown;
+    readonly cleanupError: Error;
+
+    constructor(message: string, child: unknown, cleanupError: Error) {
+      super(message);
+      this.child = child;
+      this.cleanupError = cleanupError;
+    }
+  },
 }));
 
 vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {

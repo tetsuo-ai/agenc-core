@@ -16,7 +16,11 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
-import { CdpConnection, launchBrowser } from "./cdp.js";
+import {
+  BrowserLaunchCleanupError,
+  CdpConnection,
+  launchBrowser,
+} from "./cdp.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { BrowserPage, BrowserActionError } from "./page.js";
 import { BrowserProxy } from "./proxy.js";
@@ -218,11 +222,30 @@ export class BrowserManager {
         proxy,
         label: "failed browser launch",
       };
+      let managerCleanupError: Error | undefined;
       try {
         await this.#cleanupOwnedBoundary(boundary);
       } catch (cleanupError) {
+        managerCleanupError = toError(cleanupError);
+      }
+      if (err instanceof BrowserLaunchCleanupError) {
+        // launchBrowser already attempted verified teardown. Do not silently
+        // retry that failed process boundary from an ordinary action: transfer
+        // ownership, poison the manager, and leave retry authority to closeAll.
+        boundary.child = err.child;
+        this.#retainBoundary(
+          boundary,
+          managerCleanupError === undefined
+            ? err.cleanupError
+            : new AggregateError(
+                [err.cleanupError, managerCleanupError],
+                "failed browser launch boundary cleanup remains incomplete",
+              ),
+        );
+      }
+      if (managerCleanupError !== undefined) {
         throw new AggregateError(
-          [err, cleanupError],
+          [err, managerCleanupError],
           "browser launch cleanup failed",
         );
       }

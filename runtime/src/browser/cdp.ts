@@ -64,6 +64,23 @@ export class CdpError extends Error {
   }
 }
 
+/**
+ * A launch failure whose spawned process tree could not be verified stopped.
+ * The caller becomes the owner of `child` and must retain it until a later
+ * process-tree cleanup succeeds.
+ */
+export class BrowserLaunchCleanupError extends CdpError {
+  readonly child: ChildProcess;
+  readonly cleanupError: Error;
+
+  constructor(message: string, child: ChildProcess, cleanupError: Error) {
+    super(message);
+    this.name = "BrowserLaunchCleanupError";
+    this.child = child;
+    this.cleanupError = cleanupError;
+  }
+}
+
 interface PendingCommand {
   resolve: (result: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -412,18 +429,20 @@ export async function launchBrowser(
   const writePipe = child.stdio[3] as Writable | null;
   const readPipe = child.stdio[4] as Readable | null;
   if (writePipe === null || readPipe === null) {
-    let cleanupDetail = "";
     try {
       await terminateProcessTreeAndWait(child, {
         label: "browser launch",
       });
     } catch (error) {
-      cleanupDetail = `; cleanup failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
+        child,
+        cleanupError,
+      );
     }
     throw new CdpError(
-      `browser did not expose the CDP pipe file descriptors${cleanupDetail}`,
+      "browser did not expose the CDP pipe file descriptors",
     );
   }
 
@@ -453,19 +472,25 @@ export async function launchBrowser(
   } catch (err) {
     connection.close();
     const detail = err instanceof Error ? err.message : String(err);
-    let cleanupDetail = "";
     try {
       await terminateProcessTreeAndWait(child, {
         label: "browser launch",
       });
     } catch (error) {
-      cleanupDetail = ` Cleanup also failed: ${
-        error instanceof Error ? error.message : String(error)
-      }.`;
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not establish a CDP pipe: ${detail}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+        child,
+        cleanupError,
+      );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}.${cleanupDetail} If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
     );
   }
   return { child, connection };
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
