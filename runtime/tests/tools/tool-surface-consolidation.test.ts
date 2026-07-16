@@ -4,6 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceUrl } from "../helpers/source-path.ts";
+import {
+  explicitDangerBroker,
+  withExplicitDangerBoundary,
+} from "../helpers/explicit-danger-boundary.js";
 
 import type { Tool, ToolUseContext } from "./Tool.js";
 import { applyToolApprovalConfigToPermissionContext } from "../permissions/tool-approval.js";
@@ -63,6 +67,7 @@ function toolContext(workspace?: string): ToolUseContext {
   return {
     abortController: new AbortController(),
     readFileState: new Map(),
+    services: { sandboxExecutionBroker: explicitDangerBroker },
     getAppState: () => ({
       toolPermissionContext: permissionContextForWorkspace(workspace),
     }),
@@ -260,7 +265,9 @@ describe("old-stack tool surface consolidation", () => {
         (async () => undefined) as never,
         {} as never,
       );
-      const daemon = await createBashTool({ cwd: workspace }).execute(input);
+      const daemon = await createBashTool({ cwd: workspace }).execute(
+        withExplicitDangerBoundary(input),
+      );
 
       expect(resultText(canonical.data)).toContain(workspace);
       expect(daemon.content).toContain(workspace);

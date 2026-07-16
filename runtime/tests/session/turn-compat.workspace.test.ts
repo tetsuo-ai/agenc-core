@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentRoleWorkspace } from '../../src/agents/role.js'
 import { PermissionModeRegistry } from '../../src/permissions/permission-mode.js'
 import { createEmptyToolPermissionContext } from '../../src/permissions/types.js'
+import { SandboxExecutionBroker } from '../../src/sandbox/execution-broker.js'
 import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
 import { Session } from '../../src/session/session.js'
 import {
@@ -126,6 +127,33 @@ describe('turn compatibility catalog boundary', () => {
       ),
     ).rejects.toThrow('agent role workspace mismatch')
     expect(toolsRead).not.toHaveBeenCalled()
+  })
+
+  it('forks the sandbox boundary onto the child execution cwd', async () => {
+    const authority = tempRoot('broker-authority')
+    const worktree = tempRoot('broker-worktree')
+    const parent = foregroundParent(authority)
+    parent.sessionConfiguration.cwd = worktree
+    const parentBroker = new SandboxExecutionBroker({
+      mode: 'danger_full_access',
+      cwd: authority,
+    })
+    ;(parent.services as { sandboxExecutionBroker?: SandboxExecutionBroker })
+      .sandboxExecutionBroker = parentBroker
+
+    const turn = await createTurnCompatSession(parent, {
+      messages: [],
+      systemPrompt: asSystemPrompt(['system']),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }),
+      toolUseContext: foregroundToolContext(authority, [], undefined),
+      querySource: 'repl_main_thread',
+    })
+
+    expect(turn.session.services.sandboxExecutionBroker?.cwd).toBe(worktree)
+    expect(turn.session.services.sandboxExecutionBroker).not.toBe(parentBroker)
+    expect(parentBroker.cwd).toBe(authority)
   })
 
   it('frames legacy tool history once before handing it to Session.runTurn', async () => {

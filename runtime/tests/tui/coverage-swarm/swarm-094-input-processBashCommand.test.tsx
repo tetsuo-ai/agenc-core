@@ -371,9 +371,7 @@ describe("processBashCommand coverage swarm 094", () => {
 
     expect(harness.PowerShellTool.call).toHaveBeenCalledWith(
       {
-        _dangerouslyDisableSandboxApproved: true,
         command: "Get-ChildItem",
-        dangerouslyDisableSandbox: true,
       },
       expect.any(Object),
       undefined,

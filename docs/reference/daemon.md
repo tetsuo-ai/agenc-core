@@ -141,6 +141,13 @@ Include session rewind/compact, `session.setModel`,
 MCP reconnect/enable/disable. Full list:
 `AGENC_DAEMON_INTERNAL_METHODS` in the protocol module.
 
+`commandExec.start` requires an explicit `permissionProfile` or legacy
+`sandboxPolicy`. Policy-less requests are rejected with
+`sandbox_surface_uncovered`; clients that intentionally need host execution
+must send `permissionProfile: ":danger-full-access"`. Restricted profiles use
+the packaged, non-workspace-writable sandbox helper and fail before spawn when
+platform isolation is unavailable.
+
 ### Server → client notifications
 
 Examples: `event.message_chunk`, `event.tool_request`,

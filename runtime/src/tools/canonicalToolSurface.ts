@@ -2,6 +2,7 @@ import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/index.mjs
 import { z } from "zod/v4";
 
 import { getSessionId } from "../bootstrap/state.js";
+import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import { getCwd } from "../utils/cwd.js";
 import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
@@ -11,6 +12,16 @@ import { createFileWriteTool } from "./system/file-write.js";
 import { createGlobTool } from "./system/glob.js";
 import { createGrepTool } from "./system/grep.js";
 import { withSignedSessionId } from "../agents/_deps/filesystem-args.js";
+import {
+  attachToolRuntimeContext,
+  readToolRuntimeContext,
+} from "./runtimes/context.js";
+import {
+  attachSandboxExecutionBroker,
+  readSandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+  type SandboxExecutionSurface,
+} from "../sandbox/execution-broker.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "./system/notebook-edit.js";
 import type { Tool as RuntimeTool, ToolResult as RuntimeToolResult } from "./types.js";
 import { buildTool, type Tool, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
@@ -422,11 +433,25 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
         options.name === "system.bash"
           ? buildBashProgressForwarder(input, onProgress)
           : undefined;
-      const result = await runtimeTool.execute({
+      const executionInput: Record<string, unknown> = {
         ...runtimeInput,
         __abortSignal: context.abortController.signal,
         ...(progressForwarder !== undefined ? { __onProgress: progressForwarder } : {}),
-      });
+      };
+      const runtimeContext = readToolRuntimeContext(input);
+      if (runtimeContext !== undefined) {
+        attachToolRuntimeContext(executionInput, runtimeContext);
+      }
+      const carriedBroker = readSandboxExecutionBroker(input) ??
+        sandboxBrokerFromToolUseContext(context);
+      if (carriedBroker !== undefined) {
+        attachSandboxExecutionBroker(
+          executionInput,
+          carriedBroker,
+          canonicalExecutionSurface(input, context),
+        );
+      }
+      const result = await runtimeTool.execute(executionInput);
       return { data: runtimeResultToData(result) };
     },
     mapToolResultToToolResultBlockParam: textToolResultBlock,
@@ -440,6 +465,40 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
       return canonicalResultText(content);
     },
   });
+}
+
+function canonicalExecutionSurface(
+  input: Record<string, unknown>,
+  context: ToolUseContext,
+): SandboxExecutionSurface {
+  if (context.agentId !== undefined) return "child_agent";
+  if (input.run_in_background === true || input.runInBackground === true) {
+    return "background";
+  }
+  return context.options?.isNonInteractiveSession === true
+    ? "print"
+    : "interactive";
+}
+
+function sandboxBrokerFromToolUseContext(
+  context: ToolUseContext,
+): SandboxExecutionBrokerLike | undefined {
+  const extended = context as ToolUseContext & {
+    readonly services?: { readonly sandboxExecutionBroker?: unknown };
+    readonly session?: {
+      readonly services?: { readonly sandboxExecutionBroker?: unknown };
+    };
+  };
+  const candidate = extended.services?.sandboxExecutionBroker ??
+    extended.session?.services?.sandboxExecutionBroker ??
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker;
+  if (typeof candidate !== "object" || candidate === null) return undefined;
+  const broker = candidate as Partial<SandboxExecutionBrokerLike>;
+  return typeof broker.prepareSpawn === "function" &&
+    typeof broker.runtimeSandbox === "function" &&
+    typeof broker.assertReady === "function"
+    ? (candidate as SandboxExecutionBrokerLike)
+    : undefined;
 }
 
 function mapCanonicalInput(

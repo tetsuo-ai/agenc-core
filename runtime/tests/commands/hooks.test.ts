@@ -4,6 +4,7 @@ import hooksCommand from "./hooks.js";
 import type { SlashCommandContext } from "./types.js";
 import type { Session } from "../session/session.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 function runtime(): ConfiguredHooksRuntime {
   const r = new ConfiguredHooksRuntime({
@@ -11,6 +12,7 @@ function runtime(): ConfiguredHooksRuntime {
     env: process.env,
     agencHome: "/tmp/agenc-test",
     shellPath: process.env.SHELL ?? "/bin/sh",
+    sandboxExecutionBroker: explicitDangerBroker,
     // These tests exercise hook diagnostics/dispatch; treat the workspace as
     // trusted (production establishes trust before command hooks run).
     isWorkspaceTrusted: () => true,

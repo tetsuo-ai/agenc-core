@@ -12,6 +12,15 @@ import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import type { Tool, ToolResult, ToolUseContext } from "../tools/Tool.js";
+import {
+  attachToolRuntimeContext,
+  readToolRuntimeContext,
+} from "../tools/runtimes/context.js";
+import {
+  attachSandboxExecutionBroker,
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+} from "../sandbox/execution-broker.js";
 import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
 import { appendSystemContext, prependUserContext } from "../utils/api.js";
@@ -110,15 +119,30 @@ export async function createTurnCompatSession(
   const { history, userMessage } = splitMessagesForTurn(
     prependUserContext([...params.messages], params.userContext),
   );
-  const registry = await createToolRegistryFromToolContext({
-    tools: params.toolUseContext.options.tools,
-    toolUseContext: params.toolUseContext,
-    canUseTool: params.canUseTool,
-  });
   const effectiveCwd =
     getCwdOverrideForCurrentContext() ??
     parent.sessionConfiguration.cwd ??
     parent.config.cwd;
+  const sandboxExecutionBroker =
+    parent.services.sandboxExecutionBroker?.forkForCwd(effectiveCwd);
+  const scopedToolUseContext = sandboxExecutionBroker === undefined
+    ? params.toolUseContext
+    : {
+        ...params.toolUseContext,
+        services: {
+          ...(
+            params.toolUseContext as ToolUseContext & {
+              readonly services?: Record<string, unknown>;
+            }
+          ).services,
+          sandboxExecutionBroker,
+        },
+      } as ToolUseContext;
+  const registry = await createToolRegistryFromToolContext({
+    tools: scopedToolUseContext.options.tools,
+    toolUseContext: scopedToolUseContext,
+    canUseTool: params.canUseTool,
+  });
   const sessionConfiguration = {
     ...parent.sessionConfiguration,
     cwd: effectiveCwd,
@@ -142,6 +166,9 @@ export async function createTurnCompatSession(
     services: {
       ...parent.services,
       registry,
+      ...(sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker }
+        : {}),
       hooks: {
         ...parent.services.hooks,
         preToolUseHooks: [],
@@ -179,7 +206,7 @@ export async function createTurnCompatSession(
         : {}),
     },
   });
-  attachToolContextSurface(session, params.toolUseContext);
+  attachToolContextSurface(session, scopedToolUseContext);
   return {
     session,
     history,
@@ -1015,6 +1042,7 @@ function runtimeToolFromOldTool(
         ? args.__callId
         : randomUUID();
       const input = stripInjectedArgs(args);
+      copyExecutionBoundary(args, input);
       const injectedProgress =
         typeof args.__onProgress === "function"
           ? args.__onProgress as (event: { chunk: string; stream?: "status" }) => void
@@ -1060,8 +1088,10 @@ function runtimeToolFromOldTool(
           },
         };
       }
+      const callInput = permission.updatedInput ?? input;
+      copyExecutionBoundary(input, callInput);
       const result = await tool.call(
-        permission.updatedInput ?? input,
+        callInput,
         toolContext,
         canUseTool,
         parentMessage,
@@ -1103,6 +1133,24 @@ function stripInjectedArgs(args: Record<string, unknown>): Record<string, unknow
     clean[key] = value;
   }
   return clean;
+}
+
+function copyExecutionBoundary(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+): void {
+  const runtimeContext = readToolRuntimeContext(source);
+  if (runtimeContext !== undefined) {
+    attachToolRuntimeContext(target, runtimeContext);
+  }
+  const broker = readSandboxExecutionBroker(source);
+  if (broker !== undefined) {
+    attachSandboxExecutionBroker(
+      target,
+      broker,
+      readSandboxExecutionSurface(source),
+    );
+  }
 }
 
 function oldToolResultToDispatchResult(

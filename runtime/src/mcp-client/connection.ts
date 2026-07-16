@@ -18,6 +18,7 @@ import { createSseMCPConnection } from "./transports/sse.js";
 import { createHttpMCPConnection } from "./transports/http.js";
 import { createWebSocketMCPConnection } from "./transports/websocket.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
 /**
  * Create an MCP client connection to an external server.
@@ -32,6 +33,7 @@ export async function createMCPConnection(
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const transportKind = config.transport ?? "stdio";
@@ -55,6 +57,7 @@ export async function createMCPConnection(
       logger,
       elicitationHandlers,
       samplingHandlers,
+      sandboxExecutionBroker,
     );
   }
 

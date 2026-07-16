@@ -2,9 +2,20 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { runAutoFixCheck } from "./autoFixRunner.js";
+import {
+  runAutoFixCheck,
+  type AutoFixCheckOptions,
+} from "./autoFixRunner.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 const TEST_CWD = process.cwd();
+
+function runAutoFixCheckWithBoundary(options: AutoFixCheckOptions) {
+  return runAutoFixCheck({
+    ...options,
+    sandboxExecutionBroker: explicitDangerBroker,
+  });
+}
 
 function processIsAlive(pid: number): boolean {
   try {
@@ -16,8 +27,17 @@ function processIsAlive(pid: number): boolean {
 }
 
 describe("runAutoFixCheck", () => {
+  test("fails closed before spawn when no sandbox boundary is supplied", async () => {
+    await expect(
+      runAutoFixCheck({
+        lint: 'node -e "process.stdout.write(\"must-not-run\")"',
+        timeout: 5_000,
+        cwd: TEST_CWD,
+      }),
+    ).rejects.toMatchObject({ code: "sandbox_surface_uncovered" });
+  });
   test("returns success when lint command exits 0", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"all clean\\")"',
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -28,7 +48,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("returns errors when lint command exits non-zero", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"error: unused var\\"); process.exit(1)"',
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -39,7 +59,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("returns errors when test command exits non-zero", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       test: 'node -e "console.log(\\"FAIL test_foo\\"); process.exit(1)"',
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -50,7 +70,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("runs both lint and test commands", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"lint ok\\")"',
       test: 'node -e "console.log(\\"test ok\\")"',
       timeout: 5_000,
@@ -62,7 +82,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("skips test if lint fails", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"lint error\\"); process.exit(1)"',
       test: 'node -e "console.log(\\"should not run\\")"',
       timeout: 5_000,
@@ -74,7 +94,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("handles timeout gracefully", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "setTimeout(() => {}, 10000)"',
       timeout: 100,
       cwd: TEST_CWD,
@@ -94,7 +114,7 @@ describe("runAutoFixCheck", () => {
       "setInterval(() => {}, 1000);",
     ].join(" ");
     try {
-      const result = await runAutoFixCheck({
+      const result = await runAutoFixCheckWithBoundary({
         lint: `node -e '${script}'`,
         timeout: 100,
         cwd: TEST_CWD,
@@ -112,7 +132,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("caps command output while reading", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint:
         "node -e 'process.stdout.write(\"x\".repeat(20000)); process.stderr.write(\"y\".repeat(20000))'",
       timeout: 5_000,
@@ -125,7 +145,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("caps multibyte command output by utf8 bytes", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: "node -e 'process.stdout.write(\"雪\".repeat(5000))'",
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -140,7 +160,7 @@ describe("runAutoFixCheck", () => {
     // Regression: decoding each Buffer chunk independently emitted U+FFFD when a
     // multibyte UTF-8 sequence straddled two 'data' events. '✓' is E2 9C 93;
     // emit [E2 9C] then [93] as separate writes to force the split.
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint:
         'node -e "process.stdout.write(Buffer.from([0xe2,0x9c])); setTimeout(() => process.stdout.write(Buffer.from([0x93])), 30)"',
       timeout: 5_000,
@@ -155,7 +175,7 @@ describe("runAutoFixCheck", () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort("test"), 50);
     const started = Date.now();
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "setTimeout(() => {}, 10000)"',
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -168,7 +188,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("returns success with no commands configured", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       timeout: 5_000,
       cwd: TEST_CWD,
     });
@@ -178,7 +198,7 @@ describe("runAutoFixCheck", () => {
   test("returns success when already aborted before command start", async () => {
     const controller = new AbortController();
     controller.abort("test");
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "process.exit(1)"',
       timeout: 5_000,
       cwd: TEST_CWD,
@@ -188,7 +208,7 @@ describe("runAutoFixCheck", () => {
   });
 
   test("formats error summary for assistant consumption", async () => {
-    const result = await runAutoFixCheck({
+    const result = await runAutoFixCheckWithBoundary({
       lint: 'node -e "console.log(\\"src/foo.ts:10:5 error no-unused-vars\\"); process.exit(1)"',
       timeout: 5_000,
       cwd: TEST_CWD,

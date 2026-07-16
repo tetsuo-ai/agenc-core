@@ -142,6 +142,7 @@ export function runtimePlatformSandboxStatus(
   const turn = context.invocation.turn as {
     readonly agencLinuxSandboxExe?: unknown;
     readonly config?: { readonly agencLinuxSandboxExe?: unknown };
+    readonly sandboxUnavailableReason?: unknown;
     readonly windowsSandboxLevel?: unknown;
   };
   switch (process.platform) {
@@ -175,6 +176,7 @@ function linuxSandboxStatus(
   turn: {
     readonly agencLinuxSandboxExe?: unknown;
     readonly config?: { readonly agencLinuxSandboxExe?: unknown };
+    readonly sandboxUnavailableReason?: unknown;
   },
 ): RuntimePlatformSandboxStatus {
   const candidate = stringValue(turn.agencLinuxSandboxExe) ??
@@ -182,7 +184,8 @@ function linuxSandboxStatus(
   if (candidate === undefined) {
     return {
       available: false,
-      reason: "agencLinuxSandboxExe is not configured",
+      reason: stringValue(turn.sandboxUnavailableReason) ??
+        "agencLinuxSandboxExe is not configured",
     };
   }
   const workspaceRoot = runtimeCwd(context);

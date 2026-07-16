@@ -12,6 +12,8 @@ import {
   permissionRuleExtractPrefix,
 } from '../BashTool/bashPermissions.js'
 import { parseForSecurity } from '../../utils/bash/ast.js'
+import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 
 const MONITOR_TOOL_NAME = 'Monitor'
 
@@ -148,6 +150,25 @@ export const MonitorTool = buildTool({
   async call(input, toolUseContext) {
     const { command, description } = input
     const { abortController, setAppState } = toolUseContext
+    const extendedContext = toolUseContext as typeof toolUseContext & {
+      readonly services?: {
+        readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+      }
+      readonly session?: {
+        readonly services?: {
+          readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+        }
+      }
+    }
+    const sandboxExecutionBroker =
+      extendedContext.services?.sandboxExecutionBroker ??
+      extendedContext.session?.services?.sandboxExecutionBroker ??
+      peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
+    if (sandboxExecutionBroker === undefined) {
+      throw new Error(
+        '[sandbox_surface_uncovered] Monitor execution has no session sandbox boundary',
+      )
+    }
 
     // Create the shell command — uses the same Shell.exec() as BashTool.
     // This is intentionally a shell execution (not execFile) because
@@ -157,7 +178,13 @@ export const MonitorTool = buildTool({
       command,
       abortController.signal,
       'bash',
-      { timeout: MONITOR_TIMEOUT_MS },
+      {
+        timeout: MONITOR_TIMEOUT_MS,
+        sandboxExecutionBroker,
+        sandboxExecutionSurface: toolUseContext.agentId
+          ? 'child_agent'
+          : 'background',
+      },
     )
 
     // Spawn as a background task with kind='monitor' — identical to

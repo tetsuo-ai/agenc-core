@@ -3,7 +3,12 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBashTool, isCommandAllowed, validateShellCommand } from "./bash.js";
+import {
+  createBashTool as createUnboundBashTool,
+  isCommandAllowed,
+  validateShellCommand,
+} from "./bash.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { DEFAULT_DENY_LIST, DEFAULT_DENY_PREFIXES, DANGEROUS_SHELL_PATTERNS } from "./types.js";
 import type { Logger } from "../../utils/logger.js";
@@ -32,6 +37,12 @@ import { statSync, writeFileSync } from "node:fs";
 const mockExecFile = vi.mocked(execFile);
 const mockSpawn = vi.mocked(spawn);
 const mockStatSync = vi.mocked(statSync);
+
+function createBashTool(
+  config?: Parameters<typeof createUnboundBashTool>[0],
+): ReturnType<typeof createUnboundBashTool> {
+  return bindExplicitDangerBoundary(createUnboundBashTool(config));
+}
 
 /** Create a fake ChildProcess for spawn mocking. */
 function createFakeChild() {

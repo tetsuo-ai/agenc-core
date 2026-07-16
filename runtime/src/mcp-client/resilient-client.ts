@@ -14,6 +14,7 @@ import type {
   MCPToolBridge,
 } from "./types.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type {
   MCPCallObserver,
   MCPToolBridgePermissionOptions,
@@ -129,6 +130,7 @@ interface ResilientMCPBridgeOptions {
   readonly elicitationHandlers?: MCPElicitationHandlers;
   /** Session-provided MCP sampling handler, re-registered on reconnect. */
   readonly samplingHandlers?: McpSamplingHandlers;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 /**
@@ -266,6 +268,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.logger,
         this.options.elicitationHandlers,
         this.options.samplingHandlers,
+        this.options.sandboxExecutionBroker,
       );
       // A `dispose()` racing this reconnect already cleared `reconnectTimer`
       // and disposed `this.inner`, but it cannot see the client we just

@@ -27,6 +27,7 @@ import type {
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
+import { runtimeSandboxForExec } from "./exec-command.js";
 
 const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
 
@@ -124,6 +125,11 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
         const ownerId = processOwnerIdFromToolArgs(
           rawArgs as Record<string, unknown>,
         );
+        const runtimeSandbox = runtimeSandboxForExec(
+          rawArgs,
+          config.cwd,
+          "background",
+        );
         const output = await config.unifiedExecManager.execCommand({
           cmd: command,
           workdir: config.cwd,
@@ -137,6 +143,7 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
             ? { __onProgress: args.__onProgress }
             : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
 
         const taskId =

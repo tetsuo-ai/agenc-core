@@ -1117,7 +1117,7 @@ export interface CommandExecTerminalSize extends JsonObject {
 
 export type CommandExecEnv = Readonly<Record<string, string | null>>;
 
-export interface CommandExecStartParams extends JsonObject {
+interface CommandExecStartBase extends JsonObject {
   readonly command: readonly string[];
   readonly processId?: string | null;
   readonly tty?: boolean;
@@ -1130,9 +1130,18 @@ export interface CommandExecStartParams extends JsonObject {
   readonly cwd?: string | null;
   readonly env?: CommandExecEnv | null;
   readonly size?: CommandExecTerminalSize | null;
-  readonly sandboxPolicy?: JsonObject | null;
-  readonly permissionProfile?: string | null;
 }
+
+export type CommandExecStartParams = CommandExecStartBase & (
+  | {
+      readonly permissionProfile: string;
+      readonly sandboxPolicy?: null;
+    }
+  | {
+      readonly sandboxPolicy: JsonObject;
+      readonly permissionProfile?: null;
+    }
+);
 
 export interface CommandExecResponse extends JsonObject {
   readonly exitCode: number;

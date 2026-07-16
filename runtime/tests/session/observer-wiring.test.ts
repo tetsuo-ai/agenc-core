@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Event, EventMsg } from "./event-log.js";
 import { createToolBridge } from "../mcp-client/tools.js";
 import { createBashTool } from "../tools/system/bash.js";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 import {
   createBashExecObserverForSession,
   createBashExecObserverForSlot,
@@ -124,10 +125,10 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
     const { session, msgs } = stubSession();
     const execObserver = createBashExecObserverForSession(session);
 
-    const tool = createBashTool({
+    const tool = bindExplicitDangerBoundary(createBashTool({
       cwd: process.cwd(),
       execObserver,
-    });
+    }));
 
     const result = await tool.execute({ command: "true" });
     expect(result.isError).toBeUndefined();

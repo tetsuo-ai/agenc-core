@@ -76,6 +76,10 @@ import {
   toolConfigAllowsTool,
 } from "./tools/config.js";
 import { canonicalModelToolName } from "./tools/model-tool-aliases.js";
+import {
+  attachSandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from "./sandbox/execution-broker.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -476,6 +480,8 @@ export interface BuildToolRegistryOptions {
   readonly bashExecObserver?: BashExecObserver;
   /** Shared AgenC-style unified exec process manager for exec_command/write_stdin. */
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
+  /** Authenticated policy for callers that use registry.dispatch directly. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /**
    * Live MCP tool source. This is intentionally a provider instead of a
    * one-time array because MCP startup happens after SessionConfigured.
@@ -954,6 +960,15 @@ export function buildToolRegistry(
         enumerable: false,
         configurable: true,
       });
+    }
+    if (options.sandboxExecutionBroker !== undefined) {
+      attachSandboxExecutionBroker(
+        args,
+        options.sandboxExecutionBroker,
+        args.run_in_background === true || args.runInBackground === true
+          ? "background"
+          : "tool",
+      );
     }
     const result = await spec.tool.execute(args);
     return {

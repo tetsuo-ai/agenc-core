@@ -21,6 +21,7 @@ import {
 } from "./orchestrator.js";
 import type { Tool } from "./types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { Policy } from "../sandbox/execpolicy/policy.js";
 import { REJECT_RULES_APPROVAL_REASON } from "../sandbox/escalation/unix-escalation.js";
 
@@ -566,6 +567,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       env: process.env,
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
+      sandboxExecutionBroker: explicitDangerBroker,
     });
     const target = {
       preToolUseHooks: [],

@@ -97,6 +97,7 @@ import type {
 import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -119,6 +120,7 @@ export interface BootstrapSessionServicesOptions {
   readonly registry: ToolRegistry;
   readonly mcpManager: SessionServices["mcpManager"];
   readonly unifiedExecManager: UnifiedExecProcessManagerLike;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
   readonly permissionModeRegistry: PermissionModeRegistry;
   readonly configStore: ConfigStore;
   readonly toolApprovals: RuntimeApprovalStore<unknown>;
@@ -679,10 +681,12 @@ export function buildBootstrapSessionServices(
     env: opts.env,
     agencHome: opts.agencHome,
     shellPath: opts.env.SHELL ?? "/bin/sh",
+    sandboxExecutionBroker: opts.sandboxExecutionBroker,
   });
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
     cwd: opts.workspaceRoot,
+    sandboxExecutionBroker: opts.sandboxExecutionBroker,
   });
   hooksRuntime.attachTarget(hooksService);
   const loadHooks = (cfg: ReturnType<ConfigStore["current"]>): void => {
@@ -713,6 +717,7 @@ export function buildBootstrapSessionServices(
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,
+    sandboxExecutionBroker: opts.sandboxExecutionBroker,
     hooks: hooksService,
     hooksRuntime,
     rollout: rolloutRecorder,

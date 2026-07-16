@@ -7,6 +7,7 @@ import {
 } from "./dispatcher.js";
 import { readHookSpecificOutput } from "./output-parser.js";
 import type { HooksMap } from "../../config/schema.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 function makeEngine(config: HooksMap): HookEngine {
   const engine = new HookEngine({
@@ -14,6 +15,7 @@ function makeEngine(config: HooksMap): HookEngine {
     env: process.env,
     shellPath: process.env.SHELL ?? "/bin/sh",
     sourcePath: "/tmp/agenc-hooks-test/config.toml",
+    sandboxExecutionBroker: explicitDangerBroker,
   });
   engine.load(config);
   return engine;

@@ -17,6 +17,7 @@ import {
 import type { Tool } from "./tools/types.js";
 import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
 import { createTaskTools } from "./tools/tasks/index.js";
+import { explicitDangerBroker } from "./helpers/explicit-danger-boundary.js";
 
 afterEach(() => {
   clearExitPlanModeApprovalsForTest();
@@ -222,7 +223,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("exec_command dispatch accepts AgenC-style cmd/workdir arguments", async () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
 
     const result = await registry.dispatch({
       id: "exec-1",
@@ -240,7 +244,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("dispatch wraps plain-string arguments using the consolidated registry surface", async () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
 
     const result = await registry.dispatch({
       id: "exec-plain-string",
@@ -665,7 +672,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("deferred bash surface is cataloged and loads by explicit selection", async () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
     const bash = registry.tools.find((tool) => tool.name === "system.bash");
 
     expect(bash).toMatchObject({

@@ -57,6 +57,11 @@ import {
   matchesPattern,
 } from "../../src/utils/hooks.js";
 import type { Message } from "../../src/types/message.js";
+import {
+  clearCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../../src/session/current-session.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000901";
@@ -80,6 +85,10 @@ async function configureHookSession(): Promise<{ configDir: string; cwd: string 
   process.env.AGENC_CONFIG_DIR = configDir;
   delete process.env.AGENC_HOME;
   resetStateForTests();
+  clearCurrentRuntimeSession();
+  setCurrentRuntimeSession({
+    services: { sandboxExecutionBroker: explicitDangerBroker },
+  } as never);
 
   const cwd = join(configDir, "workspace");
   await mkdir(cwd, { recursive: true });
@@ -119,6 +128,7 @@ function acceptInteractiveWorkspaceTrust(): void {
 }
 
 afterEach(async () => {
+  clearCurrentRuntimeSession();
   resetStateForTests();
   restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
   restoreOptionalEnv("AGENC_HOME", originalAgenCHome);

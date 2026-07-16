@@ -28,6 +28,7 @@ import {
 } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCCommandExecService } from "./command-exec.js";
+import { resolveDefaultLinuxSandboxExecutable } from "../sandbox/execution-broker.js";
 import {
   readDistVersion,
   removeDaemonRuntimeInfo,
@@ -1328,7 +1329,10 @@ async function runAgenCDaemonForeground(
       destroyEvictedClientConnection?.(clientId);
     },
   });
-  const commandExec = new AgenCCommandExecService();
+  const commandExec = new AgenCCommandExecService({
+    agencLinuxSandboxExe: resolveDefaultLinuxSandboxExecutable(),
+    allowGpu: activeConfig.sandbox?.allow_gpu === true,
+  });
   const cleanup = new AgenCCleanupRegistry();
   // Only the spawned, detached daemon (AGENC_DAEMON_RUN=1) redirects console
   // output into the size-capped rotating sink; a `--foreground` invocation run

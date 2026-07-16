@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { createBashTool } from "./bash.js";
+import { createBashTool as createUnboundBashTool } from "./bash.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createBashTool = (
+  config?: Parameters<typeof createUnboundBashTool>[0],
+) => bindExplicitDangerBoundary(createUnboundBashTool(config));
 
 describe("bash truncate() UTF-8 boundary safety", () => {
   test("truncation at a multi-byte boundary does not emit U+FFFD", async () => {

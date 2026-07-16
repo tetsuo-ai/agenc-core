@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { sourcePath } from "../helpers/source-path.ts";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 
@@ -22,6 +23,15 @@ function makeConfig(pidFile: string): MCPServerConfig {
     transport: "stdio",
     timeout: 10_000,
   };
+}
+
+function makeManager(pidFile: string): MCPManager {
+  const manager = new MCPManager([makeConfig(pidFile)]);
+  manager.setSandboxExecutionBroker(new SandboxExecutionBroker({
+    mode: "danger_full_access",
+    cwd: process.cwd(),
+  }));
+  return manager;
 }
 
 async function readPid(pidFile: string): Promise<number> {
@@ -70,7 +80,7 @@ describe("MCPManager stdio lifecycle", () => {
     tempDirs.add(dir);
     const pidFile = join(dir, "server.pid");
 
-    const manager = new MCPManager([makeConfig(pidFile)]);
+    const manager = makeManager(pidFile);
     await manager.start({ requireOneReady: true });
 
     const pid = await readPid(pidFile);
@@ -87,7 +97,7 @@ describe("MCPManager stdio lifecycle", () => {
     tempDirs.add(dir);
     const pidFile = join(dir, "server.pid");
 
-    const manager = new MCPManager([makeConfig(pidFile)]);
+    const manager = makeManager(pidFile);
     await manager.start({ requireOneReady: true });
 
     const firstPid = await readPid(pidFile);

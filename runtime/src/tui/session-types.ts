@@ -49,6 +49,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   };
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
+    readonly sandboxExecutionBroker?: SessionServices["sandboxExecutionBroker"];
     readonly configStore?: ConfigStore;
     readonly authManager?: SessionServices["authManager"];
     readonly mcpManager?: SessionServices["mcpManager"];

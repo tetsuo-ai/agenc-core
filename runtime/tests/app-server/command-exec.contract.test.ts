@@ -16,6 +16,37 @@ import type {
 
 const idleScript = "setInterval(() => {}, 1000)";
 
+const readySandboxProbe = (options: {
+  readonly mode: "read_only" | "workspace_write";
+  readonly platform: NodeJS.Platform;
+  readonly agencLinuxSandboxExe?: string;
+}) => ({
+  kind: "ready" as const,
+  mode: options.mode,
+  platform: options.platform,
+  ...(options.agencLinuxSandboxExe !== undefined
+    ? { helperPath: options.agencLinuxSandboxExe }
+    : {}),
+});
+
+/**
+ * These lifecycle/transport tests intentionally execute on the host. Keep that
+ * policy explicit so the production service can reject policy-less requests.
+ */
+class ExplicitDangerCommandExecService extends AgenCCommandExecService {
+  override start(
+    params: Parameters<AgenCCommandExecService["start"]>[0],
+    context: Parameters<AgenCCommandExecService["start"]>[1],
+  ): ReturnType<AgenCCommandExecService["start"]> {
+    return super.start(
+      params.permissionProfile !== undefined || params.sandboxPolicy !== undefined
+        ? params
+        : { ...params, permissionProfile: ":danger-full-access" },
+      context,
+    );
+  }
+}
+
 async function waitForNotification(
   notifications: readonly JsonObject[],
   predicate: (notification: JsonObject) => boolean,
@@ -220,7 +251,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("returns buffered stdout and stderr for non-streaming commands", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
 
     await expect(
       service.start(
@@ -243,7 +274,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("preserves empty and whitespace argv entries after the executable", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
 
     await expect(
       service.start(
@@ -290,9 +321,10 @@ describe("AgenC daemon command exec", () => {
         networkSandboxPolicy: request.permissions.network,
       })),
     };
-    const service = new AgenCCommandExecService({
+    const service = new ExplicitDangerCommandExecService({
       sandboxManager,
-      agencLinuxSandboxExe: "/tmp/agenc-linux-sandbox-test",
+      agencLinuxSandboxExe: process.execPath,
+      sandboxProbe: readySandboxProbe,
     });
 
     const result = await service.start(
@@ -327,6 +359,39 @@ describe("AgenC daemon command exec", () => {
     );
   });
 
+  it("fails before transform/spawn when required sandbox readiness fails", async () => {
+    const sandboxManager = {
+      selectInitial: vi.fn(() => "linux_seccomp" as const),
+      transform: vi.fn(),
+    };
+    const service = new ExplicitDangerCommandExecService({
+      sandboxManager,
+      agencLinuxSandboxExe: process.execPath,
+      sandboxProbe: (options) => ({
+        kind: "unavailable",
+        mode: options.mode,
+        platform: options.platform,
+        reason: "probe: user namespaces disabled by test",
+        remediation: "enable user namespaces",
+      }),
+    });
+
+    await expect(
+      service.start(
+        {
+          command: [process.execPath, "-e", "process.exit(99)"],
+          sandboxPolicy: { type: "readOnly" },
+          timeoutMs: 2_000,
+        },
+        { connectionId: "sandbox-readiness" },
+      ),
+    ).rejects.toMatchObject({
+      code: "sandbox_probe_failed",
+      surface: "command_exec",
+    });
+    expect(sandboxManager.transform).not.toHaveBeenCalled();
+  });
+
   it("accepts built-in permissionProfile ids as command-scoped sandbox profiles", async () => {
     const sandboxManager = {
       selectInitial: vi.fn(() => "linux_seccomp" as const),
@@ -342,9 +407,10 @@ describe("AgenC daemon command exec", () => {
         networkSandboxPolicy: request.permissions.network,
       })),
     };
-    const service = new AgenCCommandExecService({
+    const service = new ExplicitDangerCommandExecService({
       sandboxManager,
-      agencLinuxSandboxExe: "/tmp/agenc-linux-sandbox-test",
+      agencLinuxSandboxExe: process.execPath,
+      sandboxProbe: readySandboxProbe,
     });
 
     await expect(
@@ -380,7 +446,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("honors external sandboxPolicy without adding another managed sandbox", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
 
     await expect(
       service.start(
@@ -399,7 +465,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("streams stdout and stderr as base64 notifications", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const notifications: JsonObject[] = [];
 
     const result = await service.start(
@@ -447,7 +513,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("writes stdin and closes it for pipe-backed sessions", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const context = { connectionId: "stdin" };
     const started = service.start(
       {
@@ -480,7 +546,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("runs a byte-preserving PTY-backed session and resizes it", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const notifications: JsonObject[] = [];
     const context = {
       connectionId: "pty",
@@ -577,6 +643,7 @@ describe("AgenC daemon command exec", () => {
             "process.stdin.setRawMode?.(true); process.stdin.resume(); process.stdout.write('ready\\n'); process.stdin.on('data', (d) => process.stdout.write('got:' + Buffer.from(d).toString('hex') + '\\n')); setInterval(() => {}, 1000);",
           ],
           processId: "rpc-pty-1",
+          permissionProfile: ":danger-full-access",
           tty: true,
           size: { rows: 24, cols: 80 },
           disableTimeout: true,
@@ -657,6 +724,7 @@ describe("AgenC daemon command exec", () => {
           params: {
             command: ["bash", "-i"],
             processId: "cancel-pty-1",
+            permissionProfile: ":danger-full-access",
             tty: true,
             size: { rows: 24, cols: 80 },
             disableTimeout: true,
@@ -715,7 +783,7 @@ describe("AgenC daemon command exec", () => {
   );
 
   it("rejects duplicate process ids and terminates active sessions", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const context = { connectionId: "terminate" };
     const started = service.start(
       {
@@ -749,7 +817,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("terminates even when a detached descendant keeps stdio open", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const context = { connectionId: "leaked-stdio" };
     const started = service.start(
       {
@@ -776,7 +844,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("rejects unsafe or malformed commandExec requests", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
 
     await expect(
       service.start(
@@ -928,7 +996,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("terminates all sessions for a closed connection", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const context = { connectionId: "closed" };
     const started = service.start(
       {
@@ -953,7 +1021,7 @@ describe("AgenC daemon command exec", () => {
   });
 
   it("terminates every live child process during daemon cleanup", async () => {
-    const service = new AgenCCommandExecService();
+    const service = new ExplicitDangerCommandExecService();
     const first = service.start(
       {
         command: [process.execPath, "-e", idleScript],

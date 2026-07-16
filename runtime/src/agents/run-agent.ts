@@ -75,6 +75,10 @@ import { emitWarning } from "../session/event-log.js";
 import type { ThreadId } from "./registry.js";
 import { formatSubagentNotification, isFinal } from "./status.js";
 import { asRecord } from "../utils/record.js";
+import {
+  attachSandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -1168,6 +1172,7 @@ export function buildFilteredRegistry(
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
     readonly childToolPolicy?: ChildToolPolicy;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   },
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
@@ -1515,6 +1520,7 @@ function wrapToolForChild(
     readonly childConversationId: string;
     readonly worktree?: WorktreeHandle;
     readonly childToolPolicy?: ChildToolPolicy;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   },
 ): Tool {
   return {
@@ -1531,9 +1537,19 @@ function wrapToolForChild(
       if ("result" in policyResult) {
         return policyResult.result;
       }
-      return tool.execute(
-        injectChildToolArgs(policyResult.args, tool.name, opts),
+      const childArgs = injectChildToolArgs(
+        policyResult.args,
+        tool.name,
+        opts,
       );
+      if (opts.sandboxExecutionBroker !== undefined) {
+        attachSandboxExecutionBroker(
+          childArgs,
+          opts.sandboxExecutionBroker,
+          "child_agent",
+        );
+      }
+      return tool.execute(childArgs);
     },
   };
 }
@@ -1719,6 +1735,10 @@ function buildChildSession(
         : {}),
     },
   );
+  const sandboxExecutionBroker =
+    params.parent.services.sandboxExecutionBroker?.forkForCwd(
+      sessionConfiguration.cwd,
+    );
   const registry = buildFilteredRegistry(params.parent.services.registry, {
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
@@ -1733,6 +1753,9 @@ function buildChildSession(
     ),
     ...(params.childToolPolicy !== undefined
       ? { childToolPolicy: params.childToolPolicy }
+      : {}),
+    ...(sandboxExecutionBroker !== undefined
+      ? { sandboxExecutionBroker }
       : {}),
   });
 
@@ -1766,6 +1789,9 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      ...(sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker }
+        : {}),
       ...(startupPrewarm !== undefined ? { startupPrewarm } : {}),
       querySource: params.querySource ?? params.parent.services.querySource,
       permissionModeRegistry: new PermissionModeRegistry(

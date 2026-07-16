@@ -5,13 +5,21 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
-  createExecCommandTool,
+  createExecCommandTool as createUnboundExecCommandTool,
   runtimeSandboxForExec,
 } from "./exec-command.js";
-import { createWriteStdinTool } from "./write-stdin.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-stdin.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
+
+const createExecCommandTool = (
+  config: Parameters<typeof createUnboundExecCommandTool>[0],
+) => bindExplicitDangerBoundary(createUnboundExecCommandTool(config));
+const createWriteStdinTool = (
+  config: Parameters<typeof createUnboundWriteStdinTool>[0],
+) => bindExplicitDangerBoundary(createUnboundWriteStdinTool(config));
 
 function completedExecOutput(stdout: string): ExecCommandToolOutput {
   return {

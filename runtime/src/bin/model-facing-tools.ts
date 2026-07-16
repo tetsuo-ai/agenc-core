@@ -3515,10 +3515,16 @@ function createCronAndWorkflowTools(opts: ModelFacingToolOptions): readonly Tool
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
+        const runtimeSandbox = runtimeSandboxForExec(
+          args as Record<string, unknown>,
+          opts.workspaceRoot,
+          "workflow",
+        );
         const output = await opts.unifiedExecManager.execCommand({
           cmd: workflow.command,
           workdir: opts.workspaceRoot,
           ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
         return {
           content: formatUnifiedExecToolContent(output),

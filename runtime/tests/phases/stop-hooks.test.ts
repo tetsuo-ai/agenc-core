@@ -7,6 +7,7 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -337,6 +338,7 @@ describe("evaluateStopHooks", () => {
       env: process.env,
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
+      sandboxExecutionBroker: explicitDangerBroker,
       // This test exercises hook dispatch; treat the workspace as trusted
       // (production establishes trust before command hooks run).
       isWorkspaceTrusted: () => true,

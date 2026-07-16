@@ -76,6 +76,11 @@ function diagnosticFixture(
     warnings: [],
     ripgrepStatus: { working: true, mode: "system", systemPath: "/usr/bin/rg" },
     transactionGuard,
+    sandbox: {
+      kind: "not_required",
+      mode: "danger_full_access",
+      platform: process.platform,
+    },
   };
 }
 

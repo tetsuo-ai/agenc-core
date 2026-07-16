@@ -44,6 +44,7 @@ import {
   type MCPPromptRendered,
 } from "./prompts.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -200,6 +201,7 @@ export class MCPManager {
   private permissionOptions: MCPToolBridgePermissionOptions | undefined;
   private elicitationHandlers: MCPElicitationHandlers | undefined;
   private samplingHandlers: McpSamplingHandlers | undefined;
+  private sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -231,6 +233,12 @@ export class MCPManager {
 
   setSamplingHandlers(handlers: McpSamplingHandlers | undefined): void {
     this.samplingHandlers = handlers;
+  }
+
+  setSandboxExecutionBroker(
+    broker: SandboxExecutionBrokerLike | undefined,
+  ): void {
+    this.sandboxExecutionBroker = broker;
   }
 
   getConnectionState(name: string): MCPConnectionState | undefined {
@@ -781,6 +789,7 @@ export class MCPManager {
       this.logger,
       this.elicitationHandlers,
       this.samplingHandlers,
+      this.sandboxExecutionBroker,
     );
     try {
       if (startupGate?.isCancelled()) {
@@ -845,6 +854,9 @@ export class MCPManager {
             : {}),
           ...(this.samplingHandlers !== undefined
             ? { samplingHandlers: this.samplingHandlers }
+            : {}),
+          ...(this.sandboxExecutionBroker !== undefined
+            ? { sandboxExecutionBroker: this.sandboxExecutionBroker }
             : {}),
           // On automatic reconnect the resilient bridge rebuilds only the
           // tool surface and spawns a fresh client. Rebuild the resource +

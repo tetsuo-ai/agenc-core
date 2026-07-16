@@ -18,6 +18,10 @@ import {
 import { ENTER_WORKTREE_TOOL_NAME } from './constants.js'
 import { getEnterWorktreeToolPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import {
+  rebaseWorktreeSandboxBrokers,
+  requireWorktreeSandboxBrokers,
+} from '../worktree-sandbox-boundary.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -73,7 +77,9 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
   },
   renderToolUseMessage,
   renderToolResultMessage,
-  async call(input) {
+  async call(input, toolUseContext) {
+    const sandboxExecutionBrokers =
+      requireWorktreeSandboxBrokers(toolUseContext)
     // Validate not already in a worktree created by this session
     if (getCurrentWorktreeSession()) {
       throw new Error('Already in a worktree session')
@@ -92,6 +98,10 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
 
     process.chdir(worktreeSession.worktreePath)
     setCwd(worktreeSession.worktreePath)
+    rebaseWorktreeSandboxBrokers(
+      sandboxExecutionBrokers,
+      worktreeSession.worktreePath,
+    )
     setOriginalCwd(getCwd())
     saveWorktreeState(worktreeSession)
     // Clear cached system prompt sections so env_info_simple recomputes with worktree context

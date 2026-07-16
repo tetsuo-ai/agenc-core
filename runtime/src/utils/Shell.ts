@@ -39,6 +39,11 @@ import { createPowerShellProvider } from './shell/powershellProvider.js'
 import type { ShellProvider, ShellType } from './shell/shellProvider.js'
 import { subprocessEnv } from './subprocessEnv.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
+import type {
+  SandboxExecutionBrokerLike,
+  SandboxSpawnCommand,
+  SandboxExecutionSurface,
+} from '../sandbox/execution-broker.js'
 
 const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
 
@@ -171,6 +176,8 @@ export type ExecOptions = {
   shouldAutoBackground?: boolean
   /** When provided, stdout is piped (not sent to file) and this callback fires on each data chunk. */
   onStdout?: (data: string) => void
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike
+  sandboxExecutionSurface?: SandboxExecutionSurface
 }
 
 /**
@@ -190,6 +197,8 @@ export async function exec(
     shouldUseSandbox,
     shouldAutoBackground,
     onStdout,
+    sandboxExecutionBroker,
+    sandboxExecutionSurface,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
 
@@ -208,8 +217,12 @@ export async function exec(
   const { commandString: builtCommand, cwdFilePath } =
     await provider.buildExecCommand(command, {
       id,
-      sandboxTmpDir: shouldUseSandbox ? sandboxTmpDir : undefined,
-      useSandbox: shouldUseSandbox ?? false,
+      sandboxTmpDir:
+        shouldUseSandbox && sandboxExecutionBroker === undefined
+          ? sandboxTmpDir
+          : undefined,
+      useSandbox:
+        sandboxExecutionBroker === undefined && (shouldUseSandbox ?? false),
     })
 
   let commandString = builtCommand
@@ -264,10 +277,13 @@ export async function exec(
   //   • pass /bin/sh as the sandbox's inner shell to exec that invocation
   //   • outer spawn is also /bin/sh -c to parse the runtime's POSIX output
   // /bin/sh exists on every platform where sandbox is supported.
-  const isSandboxedPowerShell = shouldUseSandbox && shellType === 'powershell'
+  const isSandboxedPowerShell =
+    sandboxExecutionBroker === undefined &&
+    shouldUseSandbox === true &&
+    shellType === 'powershell'
   const sandboxBinShell = isSandboxedPowerShell ? '/bin/sh' : binShell
 
-  if (shouldUseSandbox) {
+  if (shouldUseSandbox && sandboxExecutionBroker === undefined) {
     commandString = await SandboxManager.wrapWithSandbox(
       commandString,
       sandboxBinShell,
@@ -288,6 +304,32 @@ export async function exec(
     ? ['-c', commandString]
     : provider.getSpawnArgs(commandString)
   const envOverrides = await provider.getEnvironmentOverrides(command)
+  const spawnEnv = {
+    ...subprocessEnv(),
+    ...(shellType === 'bash' ? { SHELL: binShell } : {}),
+    GIT_EDITOR: 'true',
+    AGENCCODE: '1',
+    ...envOverrides,
+    ...(process.env.USER_TYPE === 'ant'
+      ? { AGENC_SESSION_ID: getSessionId() }
+      : {}),
+  }
+  const unsandboxedSpawnCommand: SandboxSpawnCommand = {
+    program: spawnBinary,
+    args: shellArgs,
+    cwd,
+    env: Object.fromEntries(
+      Object.entries(spawnEnv).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+  }
+  const spawnCommand: SandboxSpawnCommand = sandboxExecutionBroker
+    ? sandboxExecutionBroker.prepareSpawn(
+        sandboxExecutionSurface ?? 'tool',
+        unsandboxedSpawnCommand,
+      )
+    : unsandboxedSpawnCommand
 
   // When onStdout is provided, use pipe mode: stdout flows through
   // StreamWrapper → TaskOutput in-memory buffer instead of a file fd.
@@ -324,20 +366,9 @@ export async function exec(
   }
 
   try {
-    const childProcess = spawn(spawnBinary, shellArgs, {
-      env: {
-        ...subprocessEnv(),
-        SHELL: shellType === 'bash' ? binShell : undefined,
-        GIT_EDITOR: 'true',
-        AGENCCODE: '1',
-        ...envOverrides,
-        ...(process.env.USER_TYPE === 'ant'
-          ? {
-              AGENC_SESSION_ID: getSessionId(),
-            }
-          : {}),
-      },
-      cwd,
+    const childProcess = spawn(spawnCommand.program, [...spawnCommand.args], {
+      env: spawnCommand.env,
+      cwd: spawnCommand.cwd,
       stdio: usePipeMode
         ? ['pipe', 'pipe', 'pipe']
         : ['pipe', outputHandle?.fd, outputHandle?.fd],
@@ -345,6 +376,9 @@ export async function exec(
       detached: provider.detached,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
+      ...(spawnCommand.argv0 !== undefined
+        ? { argv0: spawnCommand.argv0 }
+        : {}),
     })
 
     const shellCommand = wrapSpawn(

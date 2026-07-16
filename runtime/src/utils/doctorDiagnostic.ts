@@ -44,6 +44,10 @@ import {
   probeRipgrepAvailable,
 } from './ripgrep.js'
 import { SandboxManager } from './sandbox/sandbox-runtime.js'
+import {
+  SandboxExecutionBroker,
+  type SandboxExecutionStatus,
+} from '../sandbox/execution-broker.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
@@ -90,6 +94,7 @@ export type DiagnosticInfo = {
     systemPath: string | null
   }
   transactionGuard: TransactionGuardDoctorStatus
+  sandbox: SandboxExecutionStatus
 }
 
 export type TransactionGuardDoctorStatus = {
@@ -672,6 +677,47 @@ export function buildTransactionGuardWarning(
   }
 }
 
+export async function getSandboxDoctorStatus(opts?: {
+  config?: Pick<Awaited<ReturnType<typeof loadConfig>>['config'], 'sandbox_mode' | 'sandbox'> | null
+  env?: NodeJS.ProcessEnv
+  cwd?: string
+  probe?: ConstructorParameters<typeof SandboxExecutionBroker>[0]['probe']
+}): Promise<SandboxExecutionStatus> {
+  const env = opts?.env ?? process.env
+  let config = opts?.config === null ? undefined : opts?.config
+  if (config === undefined && opts?.config === undefined) {
+    try {
+      config = (await loadConfig({ onWarn: () => {} })).config
+    } catch {
+      // Defaults remain fail-closed when config is unreadable.
+    }
+  }
+  const rawMode = config?.sandbox_mode
+  const mode = rawMode === 'read-only'
+    ? 'read_only'
+    : rawMode === 'danger-full-access'
+      ? 'danger_full_access'
+      : 'workspace_write'
+  return new SandboxExecutionBroker({
+    mode,
+    cwd: opts?.cwd ?? getCwd() ?? process.cwd(),
+    env,
+    allowGpu: config?.sandbox?.allow_gpu === true,
+    ...(opts?.probe !== undefined ? { probe: opts.probe } : {}),
+  }).status()
+}
+
+export function buildSandboxWarning(
+  status: SandboxExecutionStatus,
+): { issue: string; fix: string } | null {
+  if (status.kind !== 'unavailable') return null
+  return {
+    issue: `[sandbox_required_unavailable] ${status.reason ?? 'required platform sandbox is unavailable'}`,
+    fix: status.remediation ??
+      'Install the required platform sandbox support or select danger-full-access explicitly.',
+  }
+}
+
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
@@ -777,6 +823,11 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   if (transactionGuardWarning) {
     warnings.push(transactionGuardWarning)
   }
+  const sandbox = await getSandboxDoctorStatus()
+  const sandboxWarning = buildSandboxWarning(sandbox)
+  if (sandboxWarning) {
+    warnings.push(sandboxWarning)
+  }
 
   // Get package manager info if running from package manager
   const packageManager =
@@ -802,6 +853,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     packageManager,
     ripgrepStatus,
     transactionGuard,
+    sandbox,
   }
 
   return diagnostic

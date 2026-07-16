@@ -169,6 +169,7 @@ describe("AgenC daemon cancellation and preemption", () => {
             terminatedPath,
           ],
           processId: "cancel-real-command",
+          permissionProfile: ":danger-full-access",
           timeoutMs: 60_000,
         },
       });

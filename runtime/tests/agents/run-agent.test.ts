@@ -47,6 +47,10 @@ import type {
   LLMResponse,
   StreamProgressCallback,
 } from "../llm/types.js";
+import {
+  SandboxExecutionBroker,
+  readSandboxExecutionBroker,
+} from "../sandbox/execution-broker.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
@@ -986,6 +990,10 @@ describe("runAgent", () => {
   });
 
   it("injects child session metadata and worktree roots into wrapped child tools", async () => {
+    const childBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/tmp/subagent-wt",
+    });
     const execute = vi.fn(async () => ({
       content: JSON.stringify({ ok: true }),
       isError: false,
@@ -1014,6 +1022,7 @@ describe("runAgent", () => {
           gitRoot: "/repo",
           created: false,
         },
+        sandboxExecutionBroker: childBroker,
       },
     );
 
@@ -1024,6 +1033,7 @@ describe("runAgent", () => {
     expect(parsed[SESSION_ID_ARG]).toBe("child-123");
     expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
     expect(parsed.value).toBe("hello");
+    expect(readSandboxExecutionBroker(parsed)).toBe(childBroker);
   });
 
   it("mergeRoleDisallowlist unions a role denylist into the disabled set", () => {

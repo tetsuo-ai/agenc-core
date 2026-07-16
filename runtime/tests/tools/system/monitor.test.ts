@@ -6,7 +6,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
-import { createMonitorTool } from "./monitor.js";
+import { createMonitorTool as createUnboundMonitorTool } from "./monitor.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createMonitorTool = (
+  config: Parameters<typeof createUnboundMonitorTool>[0],
+) => bindExplicitDangerBoundary(createUnboundMonitorTool(config));
 
 describe("Monitor (AgenC port)", () => {
   let manager: UnifiedExecProcessManager;

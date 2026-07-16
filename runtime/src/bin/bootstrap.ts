@@ -79,6 +79,7 @@ import { getSystemPrompt } from "../constants/prompts.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
@@ -640,6 +641,7 @@ function buildDeferredConfig(
   cwd: string,
   model: string,
   config: AgenCConfig,
+  sandboxStatus?: ReturnType<SandboxExecutionBroker["status"]>,
 ): Config {
   const modelReasoningEffort =
     config.reasoning_effort === "minimal"
@@ -681,6 +683,12 @@ function buildDeferredConfig(
       ? { agent_max_depth: config.agent_max_depth }
       : {}),
     cwd,
+    ...(sandboxStatus?.helperPath !== undefined
+      ? { agencLinuxSandboxExe: sandboxStatus.helperPath }
+      : {}),
+    ...(sandboxStatus?.kind === "unavailable" && sandboxStatus.reason !== undefined
+      ? { sandboxUnavailableReason: sandboxStatus.reason }
+      : {}),
     features: createManagedFeatures(config),
     /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
@@ -1068,12 +1076,21 @@ export async function bootstrapLocalRuntimeSession(
   const selectedProviderModel = managedKey.baseURL !== undefined
     ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
     : providerModel;
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: cli.allowDangerouslySkipPermissions
+      ? "danger_full_access"
+      : mapSandboxPolicy(startup.config.sandbox_mode),
+    cwd: workspaceRoot,
+    env,
+    allowGpu: startup.config.sandbox?.allow_gpu === true,
+  });
   const mcpManager = await createSessionMcpManagerFromSources(
     configStore.current(),
     env,
     {
       cwd: workspaceRoot,
       includeProjectMcpServers: cli.allowDangerouslySkipPermissions,
+      sandboxExecutionBroker,
     },
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
@@ -1135,6 +1152,7 @@ export async function bootstrapLocalRuntimeSession(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      sandboxExecutionBroker,
       codeModeService,
       // Coordinator mode restricts the LIVE surface to orchestration +
       // user-interaction tools: the coordinator directs workers, it
@@ -1228,10 +1246,15 @@ export async function bootstrapLocalRuntimeSession(
         });
     });
   }
-  const config = buildDeferredConfig(workspaceRoot, model, {
-    ...startup.config,
-    autonomous_mode: autonomousModeEnabled,
-  });
+  const config = buildDeferredConfig(
+    workspaceRoot,
+    model,
+    {
+      ...startup.config,
+      autonomous_mode: autonomousModeEnabled,
+    },
+    sandboxExecutionBroker.status(),
+  );
   const modelsManager = new StaticModelsManager({
     config: startup.config,
     fallbackProvider: profileProvider,
@@ -1352,6 +1375,7 @@ export async function bootstrapLocalRuntimeSession(
       model,
       sessionConfiguration,
       codeModeService,
+      sandboxExecutionBroker,
     });
 
   const shutdown = async (): Promise<void> => {

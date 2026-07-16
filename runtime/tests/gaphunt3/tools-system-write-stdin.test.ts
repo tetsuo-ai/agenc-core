@@ -5,6 +5,7 @@ import type {
   ExecCommandToolOutput,
   UnifiedExecProcessManagerLike,
 } from "src/unified-exec/types";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 // gaphunt3 #4: write_stdin must report an error when the underlying PTY
 // process was killed by a signal (exitCode === null, no process_id) instead
@@ -47,7 +48,7 @@ function makeManager(
 
 describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
   test("flags a signal-killed process (exitCode null, no process_id) as isError", async () => {
-    const tool = createWriteStdinTool({
+    const tool = bindExplicitDangerBoundary(createWriteStdinTool({
       unifiedExecManager: makeManager(
         baseOutput({
           exitCode: null,
@@ -57,7 +58,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
           timedOut: false,
         }),
       ),
-    });
+    }));
 
     const result = await tool.execute({ session_id: 1, chars: "" });
 
@@ -66,7 +67,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
   });
 
   test("flags a timed-out kill (exitCode null, no process_id, timedOut) as isError", async () => {
-    const tool = createWriteStdinTool({
+    const tool = bindExplicitDangerBoundary(createWriteStdinTool({
       unifiedExecManager: makeManager(
         baseOutput({
           exitCode: null,
@@ -75,7 +76,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
           timedOut: true,
         }),
       ),
-    });
+    }));
 
     const result = await tool.execute({ session_id: 1, chars: "" });
 
@@ -83,7 +84,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
   });
 
   test("does NOT flag a still-alive yielded process (exitCode null, process_id set)", async () => {
-    const tool = createWriteStdinTool({
+    const tool = bindExplicitDangerBoundary(createWriteStdinTool({
       unifiedExecManager: makeManager(
         baseOutput({
           exitCode: null,
@@ -93,7 +94,7 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
           timedOut: false,
         }),
       ),
-    });
+    }));
 
     const result = await tool.execute({ session_id: 7, chars: "" });
 
@@ -101,11 +102,11 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
   });
 
   test("does NOT flag a clean completion (exitCode 0)", async () => {
-    const tool = createWriteStdinTool({
+    const tool = bindExplicitDangerBoundary(createWriteStdinTool({
       unifiedExecManager: makeManager(
         baseOutput({ exitCode: 0, exit_code: 0 }),
       ),
-    });
+    }));
 
     const result = await tool.execute({ session_id: 1, chars: "" });
 
@@ -113,11 +114,11 @@ describe("write_stdin isError on signal kill (gaphunt3 #4)", () => {
   });
 
   test("flags a non-zero exit code as isError", async () => {
-    const tool = createWriteStdinTool({
+    const tool = bindExplicitDangerBoundary(createWriteStdinTool({
       unifiedExecManager: makeManager(
         baseOutput({ exitCode: 1, exit_code: 1 }),
       ),
-    });
+    }));
 
     const result = await tool.execute({ session_id: 1, chars: "" });
 
