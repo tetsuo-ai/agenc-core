@@ -16,6 +16,7 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -94,6 +95,7 @@ describe("loadBootstrapHooks", () => {
       env: process.env,
       agencHome: "/tmp/agenc-bootstrap-hooks-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
+      sandboxExecutionBroker: explicitDangerBroker,
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],
@@ -206,6 +208,7 @@ describe("SessionStart bootstrap hooks", () => {
       registry: { tools: [] } as never,
       mcpManager: {} as never,
       unifiedExecManager: {} as never,
+      sandboxExecutionBroker: explicitDangerBroker,
       permissionModeRegistry: new PermissionModeRegistry(
         createEmptyToolPermissionContext(),
       ),
@@ -373,6 +376,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         registry: { tools: [] } as never,
         mcpManager: {} as never,
         unifiedExecManager: {} as never,
+        sandboxExecutionBroker: explicitDangerBroker,
         permissionModeRegistry: new PermissionModeRegistry(
           createEmptyToolPermissionContext(),
         ),
@@ -456,6 +460,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       registry: { tools: [] } as never,
       mcpManager: {} as never,
       unifiedExecManager: {} as never,
+      sandboxExecutionBroker: explicitDangerBroker,
       permissionModeRegistry: new PermissionModeRegistry(
         createEmptyToolPermissionContext(),
       ),

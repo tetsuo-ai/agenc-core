@@ -124,6 +124,9 @@ export class HookEngine {
       stdin: `${JSON.stringify(input)}\n`,
       timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
       signal,
+      ...(this.opts.sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker: this.opts.sandboxExecutionBroker }
+        : {}),
     });
     return this.recordDiagnostic(hook, result, startedAtUnixMs);
   }

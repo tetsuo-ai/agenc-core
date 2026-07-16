@@ -28,6 +28,7 @@ import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   classifyCLI,
   extractFlagValues,
@@ -1402,11 +1403,31 @@ async function prepareOneShotPromptForDaemon(params: {
   | { readonly blocked: true; readonly blockMessage: string }
 > {
   const target = createOneShotHookTarget();
+  const argv = process.argv.slice(2);
+  const explicitDanger =
+    argv.includes("--yolo") ||
+    argv.includes("--dangerously-bypass-approvals-and-sandbox") ||
+    argv.includes("--dangerously-skip-permissions") ||
+    argv.includes("--allow-dangerously-skip-permissions");
+  const configuredSandbox = params.configStore.current().sandbox_mode;
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: explicitDanger
+      ? "danger_full_access"
+      : configuredSandbox === "read-only"
+        ? "read_only"
+        : configuredSandbox === "danger-full-access"
+          ? "danger_full_access"
+          : "workspace_write",
+    cwd: params.cwd,
+    env: params.env,
+    allowGpu: params.configStore.current().sandbox?.allow_gpu === true,
+  });
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: params.cwd,
     env: params.env,
     agencHome: params.agencHome,
     shellPath: params.env.SHELL ?? "/bin/sh",
+    sandboxExecutionBroker,
   });
   hooksRuntime.attachTarget(target);
   hooksRuntime.load(params.configStore.current().hooks);

@@ -79,6 +79,7 @@ export interface CreateSessionMcpServiceOptions {
 export interface ResolveSessionMcpConfigSourcesOptions {
   readonly cwd?: string;
   readonly includeProjectMcpServers?: boolean;
+  readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
 }
 
 type ConfiguredServerWithExtras = MCPServerConfig & {
@@ -170,8 +171,14 @@ function buildEffectiveServerMap(
  */
 export function createSessionMcpManager(
   configs: ReadonlyArray<MCPServerConfig>,
+  options: Pick<
+    ResolveSessionMcpConfigSourcesOptions,
+    "sandboxExecutionBroker"
+  > = {},
 ): MCPManager {
-  return new LiveMCPManager([...configs]);
+  const manager = new LiveMCPManager([...configs]);
+  manager.setSandboxExecutionBroker(options.sandboxExecutionBroker);
+  return manager;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -691,8 +698,12 @@ export async function resolveSessionMcpConfigFromSources(
 export function createSessionMcpManagerFromConfig(
   config: Pick<AgenCConfig, "mcp_servers"> | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  options: Pick<
+    ResolveSessionMcpConfigSourcesOptions,
+    "sandboxExecutionBroker"
+  > = {},
 ): MCPManager {
-  return createSessionMcpManager(resolveSessionMcpConfig(config, env));
+  return createSessionMcpManager(resolveSessionMcpConfig(config, env), options);
 }
 
 export async function createSessionMcpManagerFromSources(
@@ -702,6 +713,7 @@ export async function createSessionMcpManagerFromSources(
 ): Promise<MCPManager> {
   return createSessionMcpManager(
     await resolveSessionMcpConfigFromSources(config, env, options),
+    options,
   );
 }
 
@@ -713,8 +725,12 @@ export async function createSessionMcpManagerFromSources(
 export function createSessionMcpManagerFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   config?: Pick<AgenCConfig, "mcp_servers">,
+  options: Pick<
+    ResolveSessionMcpConfigSourcesOptions,
+    "sandboxExecutionBroker"
+  > = {},
 ): MCPManager {
-  return createSessionMcpManager(resolveSessionMcpConfig(config, env));
+  return createSessionMcpManager(resolveSessionMcpConfig(config, env), options);
 }
 
 export function requiredMcpServerNames(

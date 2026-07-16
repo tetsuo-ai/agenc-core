@@ -6,9 +6,9 @@
  * items wire into process execution.
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import {
-  AGENC_LINUX_SANDBOX_ARG0,
   SandboxTransformError,
   canWritePathWithCwd,
   getPlatformSandbox,
@@ -46,6 +46,7 @@ import {
   newWorkspaceWritePolicy,
   type SandboxPolicy as CompatibilitySandboxPolicy,
 } from "../../permissions/sandbox.js";
+import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
 
 export class SandboxManager {
   selectInitial(options: {
@@ -132,7 +133,33 @@ export class SandboxManager {
           isWsl1:
             platform === "linux" ? request.isWsl1 ?? isWsl1() : false,
         });
+        const nodeExecutable = trustedNodeExecutable();
+        if (
+          canWritePathWithCwd(
+            fileSystem,
+            nodeExecutable,
+            request.sandboxPolicyCwd,
+          )
+        ) {
+          throw new SandboxTransformError(
+            "writable_linux_sandbox_launcher",
+            "the Node executable used to launch the Linux sandbox is writable by the command permission profile",
+          );
+        }
+        if (
+          canWritePathWithCwd(
+            fileSystem,
+            request.agencLinuxSandboxExe,
+            request.sandboxPolicyCwd,
+          )
+        ) {
+          throw new SandboxTransformError(
+            "writable_linux_sandbox_helper",
+            "the Linux sandbox helper is writable by the command permission profile",
+          );
+        }
         command = [
+          nodeExecutable,
           request.agencLinuxSandboxExe,
           ...createLinuxSandboxCommandArgsForPermissionProfile(
             argv,
@@ -143,7 +170,9 @@ export class SandboxManager {
             allowProxyNetwork,
           ),
         ];
-        arg0 = linuxSandboxArg0Override(request.agencLinuxSandboxExe);
+        // A normal argv0 avoids commandExec's PTY argv0 compatibility wrapper,
+        // eliminating a second pre-sandbox Node process.
+        arg0 = path.basename(nodeExecutable);
         break;
       }
       case "windows_restricted_token":
@@ -156,7 +185,9 @@ export class SandboxManager {
     return {
       command,
       cwd: request.command.cwd,
-      env: request.command.env,
+      env: request.sandbox === "none"
+        ? request.command.env
+        : sanitizeSandboxLauncherEnvironment(request.command.env),
       ...(request.network !== undefined ? { network: request.network } : {}),
       sandbox: request.sandbox,
       windowsSandboxLevel: request.windowsSandboxLevel,
@@ -336,8 +367,10 @@ function ensureLinuxBubblewrapIsSupported(options: {
   }
 }
 
-function linuxSandboxArg0Override(executablePath: string): string {
-  return path.basename(executablePath) === AGENC_LINUX_SANDBOX_ARG0
-    ? executablePath
-    : AGENC_LINUX_SANDBOX_ARG0;
+function trustedNodeExecutable(): string {
+  try {
+    return realpathSync(process.execPath);
+  } catch {
+    return path.resolve(process.execPath);
+  }
 }

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { createBashTool } from "./bash.js";
+import { createBashTool as createUnboundBashTool } from "./bash.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createBashTool = (
+  config?: Parameters<typeof createUnboundBashTool>[0],
+) => bindExplicitDangerBoundary(createUnboundBashTool(config));
 
 describe("I-78 bash Buffer chunk accumulation", () => {
   test("multi-byte UTF-8 emoji split across chunks decodes intact", async () => {

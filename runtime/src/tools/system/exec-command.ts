@@ -17,6 +17,13 @@ import type {
   NetworkPolicyDecider,
 } from "../../sandbox/network-policy.js";
 import {
+  missingSandboxExecutionBoundary,
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+  SandboxExecutionError,
+  type SandboxExecutionSurface,
+} from "../../sandbox/execution-broker.js";
+import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
@@ -76,16 +83,42 @@ function isMcpShellPlaceholderCommand(command: string): boolean {
 export function runtimeSandboxForExec(
   args: Record<string, unknown>,
   fallbackCwd: string,
+  surface?: SandboxExecutionSurface,
 ): UnifiedExecRuntimeSandbox | undefined {
+  const executionSurface = surface ??
+    readSandboxExecutionSurface(args) ??
+    "tool";
   const context = readToolRuntimeContext(args);
+  if (context === undefined) {
+    const broker = readSandboxExecutionBroker(args);
+    if (broker === undefined) {
+      throw missingSandboxExecutionBoundary(executionSurface);
+    }
+    return broker.runtimeSandbox(executionSurface);
+  }
   if (
-    context === undefined ||
     !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
   ) {
     return undefined;
   }
   const platformSandbox = runtimePlatformSandboxStatus(context);
-  if (!platformSandbox.available) return undefined;
+  if (!platformSandbox.available) {
+    throw new SandboxExecutionError({
+      code: "sandbox_required_unavailable",
+      surface: executionSurface,
+      status: {
+        kind: "unavailable",
+        mode: context.sandboxMode,
+        platform: process.platform,
+        reason: platformSandbox.reason ?? "platform sandbox is unavailable",
+        remediation:
+          "Run `agenc doctor`; configure a trusted sandbox helper or select danger-full-access explicitly.",
+        ...(platformSandbox.agencLinuxSandboxExe !== undefined
+          ? { helperPath: platformSandbox.agencLinuxSandboxExe }
+          : {}),
+      },
+    });
+  }
   const turn = context.invocation.turn as {
     readonly agencLinuxSandboxExe?: unknown;
     readonly config?: {

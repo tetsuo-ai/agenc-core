@@ -30,6 +30,7 @@ import { FILE_EDIT_TOOL_NAME } from "../tools/system/file-edit.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import { FILE_WRITE_TOOL_NAME } from "../tools/system/file-write.js";
 import { createAgentRoleWorkspace } from "../agents/role.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 const PLUGIN_MCP_ENV_SERVER_FIXTURE = sourcePath(
   "plugins/test-fixtures/plugin-mcp-env-server.cjs",
@@ -479,6 +480,7 @@ describe("plugin registration", () => {
           ...config,
         })),
       );
+      manager.setSandboxExecutionBroker(explicitDangerBroker);
 
       try {
         await manager.start({ requireOneReady: true, timeoutMs: 10_000 });
@@ -1600,7 +1602,12 @@ async function withTempPlugin(
     } else {
       process.env.AGENC_PLUGIN_CACHE_DIR = previousCacheDir;
     }
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 10,
+    });
   }
 }
 

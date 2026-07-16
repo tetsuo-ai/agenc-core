@@ -340,6 +340,7 @@ OS-level confinement for shell execution lives in `runtime/src/sandbox/`:
 | --- | --- |
 | Linux | bubblewrap + Landlock helpers (`engine/bwrap.ts`, `engine/landlock.ts`, `linux-launcher/`) |
 | macOS | Seatbelt policies (`engine/seatbelt.ts`, `engine/policies/*.sbpl`) |
+| Windows | Restricted execution fails closed; use WSL2 or an explicit external sandbox |
 
 Runtime `read_only` and `workspace_write` profiles use a full-disk read
 baseline. Explicit deny-read entries still override it. `read_only` grants no
@@ -356,10 +357,19 @@ Related:
 - Network policy: `runtime/src/sandbox/network-policy.ts`
 - Escalation / approvals: `runtime/src/sandbox/escalation/`
 
-`--yolo` / `bypassPermissions` waives **approval prompts**, not kernel
-confinement. Sandbox must be explicitly enabled/configured to confine process
-execution. Docker sandbox driver and SSH remote exec targets remain roadmap
-items ([`../roadmap.md`](../roadmap.md)).
+`bypassPermissions` is an approval mode and does not by itself remove kernel
+confinement. The CLI `--yolo` flag is the deliberate combined escape hatch: it
+selects both bypassed prompts and `danger-full-access`. In `read-only` or
+`workspace-write`, missing/unhealthy platform support, a failed behavioral
+probe, a transform failure, or missing authenticated policy stops execution
+before spawn. Inspect readiness and remediation with `agenc doctor`.
+
+This invariant covers shell/unified-exec, Monitor, workflow/job, hook/cron,
+stdio MCP, daemon command exec, and child-agent paths. The design and stable
+error codes are documented in
+[`../design/fail-closed-sandbox-execution.md`](../design/fail-closed-sandbox-execution.md).
+Docker sandbox driver and SSH remote exec targets remain roadmap items
+([`../roadmap.md`](../roadmap.md)).
 
 ## Pre-execute guards
 

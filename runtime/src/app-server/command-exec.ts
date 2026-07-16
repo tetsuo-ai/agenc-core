@@ -12,6 +12,7 @@ import treeKill from "tree-kill";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
 import {
+  canWritePathWithCwd,
   externalFileSystemPolicy,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
@@ -23,6 +24,12 @@ import {
   type SandboxablePreference,
   type WindowsSandboxLevel,
 } from "../sandbox/engine/index.js";
+import {
+  probeSandboxExecutionStatus,
+  requiredSandboxExecutionError,
+  resolveTrustedLinuxSandboxExecutable,
+  type SandboxExecutionStatus,
+} from "../sandbox/execution-broker.js";
 import {
   JSON_RPC_VERSION,
   type CommandExecOutputDeltaParams,
@@ -119,6 +126,8 @@ export interface AgenCCommandExecServiceOptions {
   readonly windowsSandboxPrivateDesktop?: boolean;
   /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
   readonly allowGpu?: boolean;
+  /** Injectable only for deterministic readiness/fault tests. */
+  readonly sandboxProbe?: typeof probeSandboxExecutionStatus;
 }
 
 interface SpawnCommand {
@@ -198,6 +207,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #windowsSandboxLevel: WindowsSandboxLevel;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #allowGpu: boolean;
+  readonly #sandboxProbe: typeof probeSandboxExecutionStatus;
   #nextGeneratedProcessId = 1;
 
   constructor(options: AgenCCommandExecServiceOptions = {}) {
@@ -208,6 +218,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
     this.#allowGpu = options.allowGpu ?? false;
+    this.#sandboxProbe = options.sandboxProbe ?? probeSandboxExecutionStatus;
   }
 
   async start(
@@ -480,13 +491,9 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     const env = buildEnv(params.env);
     const sandboxRequest = commandExecSandboxRequest(params, cwd);
     if (sandboxRequest === undefined) {
-      return {
-        program,
-        args,
-        cwd,
-        env,
-        argv0: basename(program),
-      };
+      throw invalidArgument(
+        "[sandbox_surface_uncovered] commandExec.start requires an explicit permissionProfile or sandboxPolicy",
+      );
     }
 
     const sandbox = this.#sandboxManager.selectInitial({
@@ -496,10 +503,59 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       hasManagedNetworkRequirements: false,
     });
+    let readiness: SandboxExecutionStatus | undefined;
+    if (sandboxRequest.preference === "require") {
+      readiness = this.#sandboxProbe({
+        mode: commandExecRequiredSandboxMode(sandboxRequest.permissionProfile),
+        cwd: sandboxRequest.sandboxPolicyCwd,
+        env,
+        platform: process.platform,
+        ...(this.#agencLinuxSandboxExe !== undefined
+          ? { agencLinuxSandboxExe: this.#agencLinuxSandboxExe }
+          : {}),
+      });
+      if (readiness.kind !== "ready") {
+        throw requiredSandboxExecutionError("command_exec", readiness);
+      }
+    }
     if (sandbox === "none" && sandboxRequest.preference === "require") {
-      throw new Error(
-        "sandbox isolation was required for commandExec.start but no platform sandbox is available",
-      );
+      throw requiredSandboxExecutionError("command_exec", {
+        ...(readiness ?? {
+          mode: commandExecRequiredSandboxMode(
+            sandboxRequest.permissionProfile,
+          ),
+          platform: process.platform,
+        }),
+        kind: "unavailable",
+        reason:
+          "sandbox manager selected no platform isolation for a required command",
+        remediation:
+          "Run `agenc doctor`; repair the platform sandbox or select danger-full-access explicitly.",
+      });
+    }
+    let linuxSandboxExe = readiness?.helperPath ?? this.#agencLinuxSandboxExe;
+    if (sandbox === "linux_seccomp") {
+      if (linuxSandboxExe === undefined) {
+        throw new Error(
+          "[sandbox_required_unavailable] commandExec.start requires the packaged Linux sandbox helper",
+        );
+      }
+      const trusted = resolveTrustedLinuxSandboxExecutable(linuxSandboxExe, cwd);
+      if (trusted.error !== undefined) {
+        throw new Error(`[sandbox_required_unavailable] ${trusted.error}`);
+      }
+      linuxSandboxExe = trusted.path;
+      if (
+        canWritePathWithCwd(
+          sandboxRequest.permissionProfile.fileSystem,
+          linuxSandboxExe,
+          sandboxRequest.sandboxPolicyCwd,
+        )
+      ) {
+        throw new Error(
+          "[sandbox_required_unavailable] Linux sandbox helper is writable by the command permission profile",
+        );
+      }
     }
     const transformed = this.#sandboxManager.transform({
       command: { program, args, cwd, env },
@@ -507,8 +563,8 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       sandbox,
       enforceManagedNetwork: false,
       sandboxPolicyCwd: sandboxRequest.sandboxPolicyCwd,
-      ...(this.#agencLinuxSandboxExe !== undefined
-        ? { agencLinuxSandboxExe: this.#agencLinuxSandboxExe }
+      ...(linuxSandboxExe !== undefined
+        ? { agencLinuxSandboxExe: linuxSandboxExe }
         : {}),
       useLegacyLandlock: this.#useLegacyLandlock,
       windowsSandboxLevel: this.#windowsSandboxLevel,
@@ -793,6 +849,16 @@ function sandboxPreferenceForPermissionProfile(
   permissionProfile: PermissionProfile,
 ): SandboxablePreference {
   return permissionProfile.fileSystem.kind === "restricted" ? "require" : "auto";
+}
+
+function commandExecRequiredSandboxMode(
+  permissionProfile: PermissionProfile,
+): "read_only" | "workspace_write" {
+  return permissionProfile.fileSystem.entries.some(
+      (entry) => entry.access === "write",
+    )
+    ? "workspace_write"
+    : "read_only";
 }
 
 function legacySandboxPolicyType(policy: JsonObject): LegacySandboxPolicyType {

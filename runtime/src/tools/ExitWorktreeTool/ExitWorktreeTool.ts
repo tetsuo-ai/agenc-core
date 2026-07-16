@@ -25,6 +25,10 @@ import {
 import { EXIT_WORKTREE_TOOL_NAME } from './constants.js'
 import { getExitWorktreeToolPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import {
+  rebaseWorktreeSandboxBrokers,
+  requireWorktreeSandboxBrokers,
+} from '../worktree-sandbox-boundary.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -223,7 +227,9 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
   },
   renderToolUseMessage,
   renderToolResultMessage,
-  async call(input) {
+  async call(input, toolUseContext) {
+    const sandboxExecutionBrokers =
+      requireWorktreeSandboxBrokers(toolUseContext)
     const session = getCurrentWorktreeSession()
     if (!session) {
       // validateInput guards this, but the session is module-level mutable
@@ -260,6 +266,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     if (input.action === 'keep') {
       await keepWorktree()
       restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
+      rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
 
       const tmuxNote = tmuxSessionName
         ? ` Tmux session ${tmuxSessionName} is still running; reattach with: tmux attach -t ${tmuxSessionName}`
@@ -282,6 +289,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     }
     await cleanupWorktree()
     restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
+    rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
 
     const discardParts: string[] = []
     if (commits > 0) {

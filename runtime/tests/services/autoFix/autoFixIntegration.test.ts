@@ -7,6 +7,7 @@ import {
   shouldRunAutoFix,
 } from "./autoFixHook.js";
 import { runAutoFixCheck } from "./autoFixRunner.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 const TEST_CWD = process.cwd();
 
@@ -26,6 +27,7 @@ describe("autoFix end-to-end flow", () => {
       test: config!.test,
       timeout: config!.timeout,
       cwd: TEST_CWD,
+      sandboxExecutionBroker: explicitDangerBroker,
     });
     expect(result.hasErrors).toBe(true);
 
@@ -83,6 +85,7 @@ describe("autoFix end-to-end flow", () => {
       lint: config!.lint,
       timeout: config!.timeout,
       cwd: TEST_CWD,
+      sandboxExecutionBroker: explicitDangerBroker,
     });
     expect(result.hasErrors).toBe(false);
     expect(buildAutoFixContext(result)).toBeNull();

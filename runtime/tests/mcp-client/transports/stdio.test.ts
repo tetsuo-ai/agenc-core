@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Logger } from "../../_deps/logger.js";
+import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
 import {
   AgenCStdioClientTransport,
   DEFAULT_STDIO_ENV_VARS,
@@ -12,6 +13,10 @@ import {
 } from "./stdio.js";
 
 const tempDirs = new Set<string>();
+const explicitDangerBroker = new SandboxExecutionBroker({
+  mode: "danger_full_access",
+  cwd: process.cwd(),
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -45,14 +50,18 @@ describe("createStdioMCPEnvironment", () => {
 
 describe("AgenCStdioClientTransport", () => {
   it("decodes newline-delimited JSON-RPC messages from stdout", async () => {
-    const transport = new AgenCStdioClientTransport({
-      command: process.execPath,
-      args: [
-        "-e",
-        "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/notice',params:{ok:true}})+'\\n'); setTimeout(() => {}, 1000);",
-      ],
-      env: createStdioMCPEnvironment(undefined, undefined),
-    });
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/notice',params:{ok:true}})+'\\n'); setTimeout(() => {}, 1000);",
+        ],
+        env: createStdioMCPEnvironment(undefined, undefined),
+      },
+      undefined,
+      explicitDangerBroker,
+    );
 
     const message = new Promise((resolve) => {
       transport.onmessage = resolve;
@@ -119,14 +128,18 @@ describe("AgenCStdioClientTransport", () => {
       tempDirs.add(dir);
       const pidFile = join(dir, "child.pid");
 
-      const transport = new AgenCStdioClientTransport({
-        command: "/bin/sh",
-        args: [
-          "-c",
-          'sleep 300 & child_pid=$!; echo "$child_pid" > "$PID_FILE"; cat >/dev/null',
-        ],
-        env: createStdioMCPEnvironment({ PID_FILE: pidFile }, undefined),
-      });
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: "/bin/sh",
+          args: [
+            "-c",
+            'sleep 300 & child_pid=$!; echo "$child_pid" > "$PID_FILE"; cat >/dev/null',
+          ],
+          env: createStdioMCPEnvironment({ PID_FILE: pidFile }, undefined),
+        },
+        undefined,
+        explicitDangerBroker,
+      );
       await transport.start();
 
       const childPid = await waitForPidFile(pidFile);

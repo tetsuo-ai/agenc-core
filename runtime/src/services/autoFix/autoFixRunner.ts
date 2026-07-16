@@ -14,6 +14,11 @@
 
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 
 export interface AutoFixCheckOptions {
   readonly lint?: string;
@@ -21,6 +26,7 @@ export interface AutoFixCheckOptions {
   readonly timeout: number;
   readonly cwd: string;
   readonly signal?: AbortSignal;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 export interface AutoFixResult {
@@ -74,8 +80,25 @@ async function runCommand(
   command: string,
   cwd: string,
   timeout: number,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary("hook");
+  }
+  const isWindows = process.platform === "win32";
+  const shellProgram = isWindows
+    ? process.env.ComSpec ?? "cmd.exe"
+    : process.env.SHELL ?? "/bin/sh";
+  const shellArgs = isWindows
+    ? ["/d", "/s", "/c", command]
+    : ["-c", command];
+  const spawnCommand = sandboxExecutionBroker.prepareSpawn("hook", {
+    program: shellProgram,
+    args: shellArgs,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   return new Promise((resolve) => {
     if (signal?.aborted) {
       resolve({ stdout: "", stderr: "Aborted", exitCode: 1, timedOut: false });
@@ -94,11 +117,10 @@ async function runCommand(
     const errDecoder = new StringDecoder("utf8");
     let timer: NodeJS.Timeout | undefined;
     let forceTimer: NodeJS.Timeout | undefined;
-    const isWindows = process.platform === "win32";
-    const proc = spawn(command, [], {
-      cwd,
-      env: { ...process.env },
-      shell: true,
+    const proc = spawn(spawnCommand.program, [...spawnCommand.args], {
+      cwd: spawnCommand.cwd,
+      env: spawnCommand.env,
+      argv0: spawnCommand.argv0,
       windowsHide: true,
       detached: !isWindows,
     });
@@ -238,7 +260,14 @@ function buildErrorSummary(result: AutoFixResult): string | undefined {
 export async function runAutoFixCheck(
   options: AutoFixCheckOptions,
 ): Promise<AutoFixResult> {
-  const { lint, test, timeout, cwd, signal } = options;
+  const {
+    lint,
+    test,
+    timeout,
+    cwd,
+    signal,
+    sandboxExecutionBroker,
+  } = options;
 
   if (!lint && !test) {
     return { hasErrors: false };
@@ -258,7 +287,13 @@ export async function runAutoFixCheck(
   } = { hasErrors: false };
 
   if (lint) {
-    const lintResult = await runCommand(lint, cwd, timeout, signal);
+    const lintResult = await runCommand(
+      lint,
+      cwd,
+      timeout,
+      sandboxExecutionBroker,
+      signal,
+    );
     result.lintOutput = cappedCombinedOutput(lintResult.stdout, lintResult.stderr);
     result.lintExitCode = lintResult.exitCode;
 
@@ -276,7 +311,13 @@ export async function runAutoFixCheck(
   }
 
   if (test) {
-    const testResult = await runCommand(test, cwd, timeout, signal);
+    const testResult = await runCommand(
+      test,
+      cwd,
+      timeout,
+      sandboxExecutionBroker,
+      signal,
+    );
     result.testOutput = cappedCombinedOutput(testResult.stdout, testResult.stderr);
     result.testExitCode = testResult.exitCode;
 

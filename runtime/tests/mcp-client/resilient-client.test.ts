@@ -90,6 +90,7 @@ describe("ResilientMCPBridge", () => {
       logger,
       undefined,
       undefined,
+      undefined,
     );
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
@@ -144,6 +145,7 @@ describe("ResilientMCPBridge", () => {
       logger,
       undefined,
       samplingHandlers,
+      undefined,
     );
 
     await bridge.dispose();

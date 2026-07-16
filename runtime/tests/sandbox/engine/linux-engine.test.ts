@@ -126,7 +126,13 @@ describe("Linux sandbox engine", () => {
         program: "/bin/echo",
         args: ["ok"],
         cwd: "/repo",
-        env: { PATH: "/usr/bin" },
+        env: {
+          PATH: "/repo/fake-bin:/usr/bin",
+          NODE_OPTIONS: "--require=/repo/preload.cjs",
+          NODE_PATH: "/repo/node-modules",
+          LD_PRELOAD: "/repo/inject.so",
+          DYLD_INSERT_LIBRARIES: "/repo/inject.dylib",
+        },
         additionalPermissions: {
           network: { enabled: true },
           fileSystem: {
@@ -153,8 +159,16 @@ describe("Linux sandbox engine", () => {
       platform: "linux",
     });
 
-    expect(result.command[0]).toBe("/opt/agenc-linux-sandbox");
-    expect(result.arg0).toBe("/opt/agenc-linux-sandbox");
+    expect(result.command.slice(0, 2)).toEqual([
+      fs.realpathSync(process.execPath),
+      "/opt/agenc-linux-sandbox",
+    ]);
+    expect(result.arg0).toBe(path.basename(fs.realpathSync(process.execPath)));
+    expect(result.env.PATH).toBe("/repo/fake-bin:/usr/bin");
+    expect(result.env).not.toHaveProperty("NODE_OPTIONS");
+    expect(result.env).not.toHaveProperty("NODE_PATH");
+    expect(result.env).not.toHaveProperty("LD_PRELOAD");
+    expect(result.env).not.toHaveProperty("DYLD_INSERT_LIBRARIES");
     expect(result.command).toContain("--allow-network-for-proxy");
     const profileIndex = result.command.indexOf("--permission-profile");
     const serialized = result.command[profileIndex + 1];
@@ -170,9 +184,9 @@ describe("Linux sandbox engine", () => {
     });
   });
 
-  it("does not require bubblewrap on WSL1 for restricted full-disk write without proxy network", () => {
+  it("rejects a Linux launcher writable by a nominally restricted profile", () => {
     const manager = new SandboxManager();
-    const result = manager.transform({
+    const act = () => manager.transform({
       command: {
         program: "/bin/echo",
         args: ["ok"],
@@ -196,7 +210,9 @@ describe("Linux sandbox engine", () => {
       isWsl1: true,
     });
 
-    expect(result.command[0]).toBe("/opt/agenc-linux-sandbox");
+    expect(act).toThrowError(
+      expect.objectContaining({ code: "writable_linux_sandbox_launcher" }),
+    );
   });
 
   it("detects WSL1 and user namespace failures from command output", () => {

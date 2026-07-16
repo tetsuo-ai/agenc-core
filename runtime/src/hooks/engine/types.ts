@@ -5,6 +5,7 @@
  */
 
 import type { HookCommand, HookEventName } from "../../config/schema.js";
+import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 
 export type HookRunStatus =
   | "success"
@@ -58,6 +59,7 @@ export interface HookEngineOptions {
   readonly shellPath: string;
   readonly sourcePath: string;
   readonly maxDiagnostics?: number;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 export interface HookDispatchResult {

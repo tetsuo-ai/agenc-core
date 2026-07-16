@@ -11,7 +11,10 @@ import {
   type PreparedTurnRuntimeInputs,
 } from "./agenc.js";
 import { defaultConfig } from "../config/schema.js";
-import { trustProjectSync } from "../permissions/trust/project-trust.js";
+import {
+  resolveProjectTrustRootSync,
+  trustProjectSync,
+} from "../permissions/trust/project-trust.js";
 import type { PhaseEvent } from "../phases/events.js";
 import {
   canonicalizePath,
@@ -85,7 +88,7 @@ function restoreEnv(prevEnv: NodeJS.ProcessEnv): void {
 function trustWorkspaceForTest(agencHome: string, workspace: string): void {
   trustProjectSync({
     agencHome,
-    projectRoot: workspace,
+    projectRoot: resolveProjectTrustRootSync({ cwd: workspace }),
     env: process.env,
   });
 }
@@ -101,6 +104,8 @@ async function installOneShotHookConfig(
   await writeFile(
     join(agencHome, "config.toml"),
     `
+sandbox_mode = "danger-full-access"
+
 [[hooks.userPromptSubmit]]
 hooks = [{ type = "command", command = ${JSON.stringify(command)} }]
 `,
@@ -528,6 +533,7 @@ describe("TUI session UserPromptSubmit hooks", () => {
       .spyOn(process.stdout, "write")
       .mockImplementation(() => true);
     const spies = installOneShotDaemonSpies();
+    await writeFile(join(tmpCwd, "package.json"), "{}\n", "utf8");
     await writeFile(join(tmpCwd, "secret.txt"), "one-shot file body\n", "utf8");
     await installOneShotHookConfig(
       tmpHome,
@@ -594,6 +600,7 @@ process.stdin.on("end", () => {
       .spyOn(process.stderr, "write")
       .mockImplementation(() => true);
     const spies = installOneShotDaemonSpies();
+    await writeFile(join(tmpCwd, "package.json"), "{}\n", "utf8");
     await installOneShotHookConfig(
       tmpHome,
       "blocking-prompt-hook.cjs",

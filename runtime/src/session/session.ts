@@ -78,6 +78,7 @@ import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -719,6 +720,8 @@ export interface SessionServices {
   readonly mcpConnectionManager: McpConnectionManager;
   readonly mcpStartupCancellationToken: McpStartupCancellationToken;
   readonly unifiedExecManager: UnifiedExecProcessManager;
+  /** Final fail-closed boundary for every process spawned on behalf of a session. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   readonly shellZshPath?: string;
   readonly mainExecveWrapperExe?: string;
   readonly hooks: Hooks;

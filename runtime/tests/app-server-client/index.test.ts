@@ -271,6 +271,9 @@ describe("app-server-client daemon helpers", () => {
         context.baseSession.services.permissionModeRegistry.current();
       expect(permissionContext.mode).toBe("bypassPermissions");
       expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
+      expect(
+        context.baseSession.services.sandboxExecutionBroker?.mode,
+      ).toBe("danger_full_access");
     } finally {
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
@@ -298,6 +301,12 @@ describe("app-server-client daemon helpers", () => {
       });
       expect(context.baseSession.sessionConfiguration?.cwd).toBe(worktree);
       expect(context.workspaceRoot).toBe(worktree);
+      expect(
+        context.baseSession.services.sandboxExecutionBroker?.mode,
+      ).toBe("workspace_write");
+      expect(
+        context.baseSession.services.sandboxExecutionBroker?.cwd,
+      ).toBe(worktree);
     } finally {
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });

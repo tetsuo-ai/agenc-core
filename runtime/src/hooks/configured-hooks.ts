@@ -115,6 +115,7 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
+  readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   /**
    * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
    * when the current workspace is trusted (persisted in trusted-projects.json).
@@ -151,6 +152,9 @@ export class ConfiguredHooksRuntime {
       env: opts.env,
       shellPath: opts.shellPath,
       sourcePath: this.sourcePath(),
+      ...(opts.sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
+        : {}),
     });
     this.isWorkspaceTrusted =
       opts.isWorkspaceTrusted ??

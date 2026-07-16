@@ -20,6 +20,7 @@ import { subprocessEnv } from './subprocessEnv.js'
 import { getPlatform } from './platform.js'
 import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
+import { peekAmbientRuntimeSession } from '../session/current-session.js'
 import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
 import { buildPowerShellArgs } from './shell/powershellProvider.js'
 import {
@@ -1116,6 +1117,18 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
+  const sandboxExecutionBroker =
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
+  if (sandboxExecutionBroker === undefined) {
+    throw new Error(
+      '[sandbox_surface_uncovered] legacy hook execution has no session sandbox boundary',
+    )
+  }
+  const spawnEnv = Object.fromEntries(
+    Object.entries(envVars).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  )
   if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
@@ -1125,20 +1138,33 @@ async function execCommandHook(
           `PowerShell, or remove "shell": "powershell" to use bash.`,
       )
     }
-    child = spawn(pwshPath, buildPowerShellArgs(finalCommand), {
-      env: envVars,
+    const command = sandboxExecutionBroker.prepareSpawn('hook', {
+      program: pwshPath,
+      args: buildPowerShellArgs(finalCommand),
+      env: spawnEnv,
       cwd: safeCwd,
+    })
+    child = spawn(command.program, [...command.args], {
+      env: command.env,
+      cwd: command.cwd,
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams
   } else {
     // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
     // On other platforms, shell: true uses /bin/sh.
-    const shell = isWindows ? findGitBashPath() : true
-    child = spawn(finalCommand, [], {
-      env: envVars,
+    const shell = isWindows ? findGitBashPath() : '/bin/sh'
+    const command = sandboxExecutionBroker.prepareSpawn('hook', {
+      program: shell,
+      args: ['-c', finalCommand],
+      env: spawnEnv,
       cwd: safeCwd,
-      shell,
+    })
+    child = spawn(command.program, [...command.args], {
+      env: command.env,
+      cwd: command.cwd,
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
     }) as ChildProcessWithoutNullStreams

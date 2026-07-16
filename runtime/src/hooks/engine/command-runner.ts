@@ -5,6 +5,10 @@
  */
 
 import { spawn } from "node:child_process";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
 
 import type { CommandRunResult } from "./types.js";
 
@@ -18,6 +22,7 @@ export interface RunHookCommandOptions {
   readonly stdin: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 export async function runHookCommand(
@@ -33,12 +38,23 @@ export async function runHookCommand(
       error: "hook aborted",
     };
   }
+  const env = stringOnlyEnv(opts.env);
+  if (opts.sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary("hook");
+  }
+  const command = opts.sandboxExecutionBroker.prepareSpawn("hook", {
+    program: opts.shellPath,
+    args: ["-c", opts.command],
+    cwd: opts.cwd,
+    env,
+  });
   return new Promise((resolve) => {
-    const child = spawn(opts.shellPath, ["-c", opts.command], {
-      cwd: opts.cwd,
-      env: opts.env,
+    const child = spawn(command.program, [...command.args], {
+      cwd: command.cwd,
+      env: command.env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
     });
     let stdout = "";
     let stderr = "";
@@ -136,6 +152,14 @@ export async function runHookCommand(
     });
     child.stdin.end(opts.stdin);
   });
+}
+
+function stringOnlyEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
 }
 
 function appendBoundedOutput(

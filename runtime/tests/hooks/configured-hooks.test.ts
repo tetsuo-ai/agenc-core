@@ -6,10 +6,28 @@ import { tmpdir } from "node:os";
 import { describe, expect, test } from "vitest";
 
 import {
-  ConfiguredHooksRuntime,
+  ConfiguredHooksRuntime as ProductionConfiguredHooksRuntime,
   matchesPattern,
   type HookInstallTarget,
 } from "./configured-hooks.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+
+const explicitDangerBroker = new SandboxExecutionBroker({
+  mode: "danger_full_access",
+  cwd: process.cwd(),
+});
+
+class ConfiguredHooksRuntime extends ProductionConfiguredHooksRuntime {
+  constructor(
+    options: ConstructorParameters<typeof ProductionConfiguredHooksRuntime>[0],
+  ) {
+    super({
+      ...options,
+      sandboxExecutionBroker:
+        options.sandboxExecutionBroker ?? explicitDangerBroker,
+    });
+  }
+}
 
 describe("configured hooks runtime", () => {
   test("matches exact, pipe, wildcard, and regex patterns", () => {

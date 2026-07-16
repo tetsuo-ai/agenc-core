@@ -14,6 +14,7 @@ import { EXCLUSIVE, SHARED_READ } from "./concurrency.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 import { createExecCommandTool } from "./system/exec-command.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import { withExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 function mockRegistry(
   dispatch: (call: LLMToolCall) => Promise<ToolDispatchResult>,
@@ -251,7 +252,9 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
             writable: false,
             configurable: true,
           });
-          const result = await execCommand.execute(args);
+          const result = await execCommand.execute(
+            withExplicitDangerBoundary(args),
+          );
           return {
             content: result.content,
             isError: result.isError,

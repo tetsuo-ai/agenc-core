@@ -40,6 +40,13 @@ import { powershellToolHasPermission } from './powershellPermissions.js';
 import { getDefaultTimeoutMs, getMaxTimeoutMs, getPrompt } from './prompt.js';
 import { hasSyncSecurityConcerns, isReadOnlyCommand, resolveToCanonical } from './readOnlyValidation.js';
 import { POWERSHELL_TOOL_NAME } from './toolName.js';
+import {
+  SandboxExecutionError,
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+  type SandboxExecutionSurface,
+} from '../../sandbox/execution-broker.js';
+import { peekAmbientRuntimeSession } from '../../session/current-session.js';
 import { renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
 // Never use os.EOL for terminal output — \r\n on Windows breaks Ink rendering
 const EOL = '\n';
@@ -447,6 +454,19 @@ export const PowerShellTool = buildTool({
       setToolJSX
     } = toolUseContext;
     const isMainThread = !toolUseContext.agentId;
+    const sandboxExecutionSurface: SandboxExecutionSurface =
+      toolUseContext.agentId
+        ? 'child_agent'
+        : input.run_in_background
+          ? 'background'
+          : toolUseContext.options?.isNonInteractiveSession
+            ? 'print'
+            : 'interactive';
+    const sandboxExecutionBroker = readSandboxExecutionBroker(toolUseContext);
+    if (sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary(sandboxExecutionSurface);
+    }
+    sandboxExecutionBroker.assertReady(sandboxExecutionSurface);
     let progressCounter = 0;
     try {
       const commandGenerator = runPowerShellCommand({
@@ -459,7 +479,9 @@ export const PowerShellTool = buildTool({
         preventCwdChanges: !isMainThread,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId
+        agentId: toolUseContext.agentId,
+        sandboxExecutionBroker,
+        sandboxExecutionSurface
       });
       let generatorResult;
       do {
@@ -658,7 +680,9 @@ async function* runPowerShellCommand({
   preventCwdChanges,
   isMainThread,
   toolUseId,
-  agentId
+  agentId,
+  sandboxExecutionBroker,
+  sandboxExecutionSurface
 }: {
   input: PowerShellToolInput;
   abortController: AbortController;
@@ -668,6 +692,8 @@ async function* runPowerShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  sandboxExecutionBroker: SandboxExecutionBrokerLike;
+  sandboxExecutionSurface: SandboxExecutionSurface;
 }): AsyncGenerator<{
   type: 'progress';
   output: string;
@@ -739,9 +765,12 @@ async function* runPowerShellCommand({
         dangerouslyDisableSandbox,
         _dangerouslyDisableSandboxApproved
       }),
-      shouldAutoBackground
+      shouldAutoBackground,
+      sandboxExecutionBroker,
+      sandboxExecutionSurface
     });
   } catch (e) {
+    if (e instanceof SandboxExecutionError) throw e;
     logError(e);
     // Pre-flight failure: spawn/exec rejected before the command ran. Use
     // code 0 so call() returns stderr gracefully instead of throwing ShellError.
@@ -978,4 +1007,18 @@ async function* runPowerShellCommand({
       shellCommand.cleanup();
     }
   }
+}
+
+function readSandboxExecutionBroker(
+  context: Parameters<Tool['call']>[1],
+): SandboxExecutionBrokerLike | undefined {
+  const extended = context as Parameters<Tool['call']>[1] & {
+    readonly services?: { readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike };
+    readonly session?: {
+      readonly services?: { readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike };
+    };
+  };
+  return extended.services?.sandboxExecutionBroker ??
+    extended.session?.services?.sandboxExecutionBroker ??
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker;
 }

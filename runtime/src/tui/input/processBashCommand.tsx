@@ -80,8 +80,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
 
   // B-NEW2 paste-burst security gate. The burst detector flagged this
   // submission as suspectedPaste — unbracketed stdin arriving in a tight
-  // window. Bash mode runs with dangerouslyDisableSandbox: true, so we
-  // refuse to execute until the user confirms via the dialog. The flag is
+  // window. A pasted shell command still needs explicit confirmation before
+  // it reaches the authenticated sandbox execution boundary. The flag is
   // consumed (one-shot) so the next legitimate submission is not gated.
   if (consumeSuspectedPaste()) {
     const allowed = await awaitPasteConfirmation(inputString, setToolJSX);
@@ -129,9 +129,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
 
     const shellTool = usePowerShell ? PowerShellTool : CanonicalBashTool;
     const response = usePowerShell ? await PowerShellTool.call({
-      command: inputString,
-      dangerouslyDisableSandbox: true,
-      _dangerouslyDisableSandboxApproved: true
+      command: inputString
     }, bashModeContext, undefined, undefined, onProgress) : await CanonicalBashTool.call({
       command: inputString
     }, bashModeContext, undefined, undefined, onProgress);

@@ -33,6 +33,7 @@ import {
 } from "../session/mcp-startup.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { projectMcpManagerToConnections } from "../mcp-client/tui-connections.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
@@ -239,12 +240,27 @@ export async function createAgenCDaemonOnlyTuiContext(
     },
   });
   await skillsServices.skillsWatcher.start();
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: options.permissionMode === "bypassPermissions"
+      ? "danger_full_access"
+      : effectiveConfig.sandbox_mode === "read-only"
+        ? "read_only"
+        : effectiveConfig.sandbox_mode === "danger-full-access"
+          ? "danger_full_access"
+          : "workspace_write",
+    // Role authority remains anchored to the canonical checkout, while
+    // execution policy must follow the attached worktree/session cwd.
+    cwd: options.cwd,
+    env,
+    allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
+  });
   const mcpRuntimeManager = await createSessionMcpManagerFromSources(
     effectiveConfig,
     env,
     {
-      cwd: roleWorkspace.cwd,
+      cwd: options.cwd,
       includeProjectMcpServers: options.permissionMode === "bypassPermissions",
+      sandboxExecutionBroker,
     },
   );
   await mcpRuntimeManager.start();
@@ -273,6 +289,7 @@ export async function createAgenCDaemonOnlyTuiContext(
         }),
       ),
       configStore,
+      sandboxExecutionBroker,
       mcpManager: mcpService,
       skillsManager: skillsServices.skillsManager,
       pluginsManager: skillsServices.pluginsManager,

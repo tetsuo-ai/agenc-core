@@ -95,6 +95,13 @@ export function formatDiagnosticText(
         `(${guard.endpointReachable ? "reachable" : "UNREACHABLE"})`,
     );
   }
+  lines.push(
+    `  Sandbox:            ${info.sandbox.kind} ` +
+      `(mode: ${info.sandbox.mode}, platform: ${info.sandbox.platform})`,
+  );
+  if (info.sandbox.reason) {
+    lines.push(`    reason:   ${info.sandbox.reason}`);
+  }
 
   if (info.multipleInstallations.length > 0) {
     lines.push("");

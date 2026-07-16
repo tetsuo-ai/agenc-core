@@ -14,6 +14,7 @@ import {
   type ToolUseContext,
 } from '../../src/tools/Tool.ts'
 import { PowerShellTool } from '../../src/tools/PowerShellTool/PowerShellTool.tsx'
+import { SandboxExecutionBroker } from '../../src/sandbox/execution-broker.ts'
 
 let tempRoot: string | undefined
 
@@ -32,7 +33,9 @@ function findPowerShellExecutable(): string | null {
   return null
 }
 
-async function makeToolUseContext(): Promise<ToolUseContext> {
+async function makeToolUseContext(
+  boundary: 'danger' | 'unavailable' = 'danger',
+): Promise<ToolUseContext> {
   tempRoot = await mkdtemp(join(tmpdir(), 'agenc-powershell-tool-'))
   setProjectRoot(tempRoot)
   setOriginalCwd(tempRoot)
@@ -50,6 +53,25 @@ async function makeToolUseContext(): Promise<ToolUseContext> {
     setAppState() {},
     setToolJSX() {},
     toolUseId: 'powershell-smoke',
+    services: {
+      sandboxExecutionBroker: boundary === 'danger'
+        ? new SandboxExecutionBroker({
+            mode: 'danger_full_access',
+            cwd: tempRoot,
+          })
+        : new SandboxExecutionBroker({
+            mode: 'workspace_write',
+            cwd: tempRoot,
+            platform: 'linux',
+            probe: () => ({
+              kind: 'unavailable',
+              mode: 'workspace_write',
+              platform: 'linux',
+              reason: 'probe: namespaces disabled by test',
+              remediation: 'repair namespaces',
+            }),
+          }),
+    },
   } as unknown as ToolUseContext
 }
 
@@ -82,4 +104,22 @@ test('PowerShellTool executes a real PowerShell command when available', async (
   expect(result.data.interrupted).toBe(false)
   expect(result.data.stderr).toBe('')
   expect(result.data.stdout).toContain('agenc-powershell-smoke')
+})
+
+test('PowerShellTool preserves a required-sandbox readiness failure', async () => {
+  await expect(
+    PowerShellTool.call(
+      {
+        command: "Write-Output 'must-not-run'",
+        timeout: 5_000,
+        description: 'sandbox failure regression',
+      },
+      await makeToolUseContext('unavailable'),
+      undefined as never,
+      undefined as never,
+    ),
+  ).rejects.toMatchObject({
+    code: 'sandbox_probe_failed',
+    surface: 'interactive',
+  })
 })

@@ -25,18 +25,15 @@ function fakeRuntimeSandbox(
 }
 
 describe("applyRuntimeSandboxToSpawn (TOOL-03/04) — behavioral", () => {
-  it("passes through when no runtime sandbox context is attached", () => {
-    const result = applyRuntimeSandboxToSpawn({
+  it("fails closed when no runtime sandbox boundary is attached", () => {
+    expect(() => applyRuntimeSandboxToSpawn({
       toolArgs: { command: "echo hi" },
       fallbackCwd: process.cwd(),
       program: "/bin/echo",
       args: ["hi"],
       cwd: process.cwd(),
       env: { PATH: "/usr/bin" },
-    });
-    expect(result.program).toBe("/bin/echo");
-    expect(result.args).toEqual(["hi"]);
-    expect(result.env.PATH).toBe("/usr/bin");
+    })).toThrow("sandbox_surface_uncovered");
   });
 
   it("rewrites program/args via SandboxManager.transform when isolation is applied", () => {

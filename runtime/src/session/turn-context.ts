@@ -502,6 +502,7 @@ export interface Config {
   readonly ghostSnapshot: GhostSnapshotConfig;
   readonly agencSelfExe?: string;
   readonly agencLinuxSandboxExe?: string;
+  readonly sandboxUnavailableReason?: string;
   readonly agentRoles: ReadonlyArray<{ name: string; description: string }>;
   readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
@@ -686,6 +687,7 @@ export interface TurnContext {
 
   /** Linux sandbox helper exe path. */
   readonly agencLinuxSandboxExe?: string;
+  readonly sandboxUnavailableReason?: string;
 
   /** Tool-call readiness gate (set when tools are ready to dispatch). T7 wires. */
   readonly toolCallGate: ReadinessFlag;
@@ -1304,6 +1306,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     finalOutputJsonSchema: undefined,
     agencSelfExe: frozenConfig.agencSelfExe,
     agencLinuxSandboxExe: frozenConfig.agencLinuxSandboxExe,
+    sandboxUnavailableReason: frozenConfig.sandboxUnavailableReason,
     toolCallGate: new ReadinessFlag(),
     truncationPolicy: opts.modelInfo.truncationPolicy,
     jsRepl: opts.jsRepl ?? { id: `repl-${opts.conversationId}-${opts.subId}` },

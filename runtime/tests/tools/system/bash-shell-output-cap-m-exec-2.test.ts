@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createBashTool } from "../../../src/tools/system/bash.js";
+import { createBashTool as createUnboundBashTool } from "../../../src/tools/system/bash.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createBashTool = (
+  config?: Parameters<typeof createUnboundBashTool>[0],
+) => bindExplicitDangerBoundary(createUnboundBashTool(config));
 
 // M-EXEC-2 (core-todo.md): the shell-mode spawn path (runSpawnedCommand) accumulated
 // every stdout/stderr chunk into an unbounded Buffer[] and only truncated at flush, so

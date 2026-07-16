@@ -30,6 +30,10 @@ import {
   configureMcpHostRequestHandlers,
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 
@@ -172,7 +176,11 @@ export class AgenCStdioClientTransport implements Transport {
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
 
-  constructor(server: StdioTransportServerParameters, private readonly logger: Logger = silentLogger) {
+  constructor(
+    server: StdioTransportServerParameters,
+    private readonly logger: Logger = silentLogger,
+    private readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  ) {
     this.server = server;
   }
 
@@ -184,15 +192,27 @@ export class AgenCStdioClientTransport implements Transport {
     const env = { ...(this.server.env ?? {}) };
     const cwd = this.server.cwd ?? process.cwd();
     const command = resolveStdioProgram(this.server.command, env, cwd);
+    if (this.sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary("mcp_stdio");
+    }
+    const spawnCommand = this.sandboxExecutionBroker.prepareSpawn("mcp_stdio", {
+      program: command,
+      args: this.server.args ?? [],
+      cwd,
+      env,
+    });
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(command, [...(this.server.args ?? [])], {
-        cwd,
-        env,
+      const child = spawn(spawnCommand.program, [...spawnCommand.args], {
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         detached: process.platform !== "win32",
         windowsHide: process.platform === "win32",
+        ...(spawnCommand.argv0 !== undefined
+          ? { argv0: spawnCommand.argv0 }
+          : {}),
       });
 
       this.child = child;
@@ -322,6 +342,7 @@ export class AgenCStdioClientTransport implements Transport {
 function createStdioMCPTransport(
   config: MCPServerStdioConfig,
   logger: Logger = silentLogger,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): AgenCStdioClientTransport {
   const env = createStdioMCPEnvironment(config.env, config.env_vars);
   return new AgenCStdioClientTransport(
@@ -332,6 +353,7 @@ function createStdioMCPTransport(
       cwd: config.cwd,
     },
     logger,
+    sandboxExecutionBroker,
   );
 }
 
@@ -340,11 +362,16 @@ export async function createStdioMCPConnection(
   logger: Logger = silentLogger,
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const timeout = config.timeout ?? 30_000;
-  const transport = createStdioMCPTransport(config, logger);
+  const transport = createStdioMCPTransport(
+    config,
+    logger,
+    sandboxExecutionBroker,
+  );
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },
     {
