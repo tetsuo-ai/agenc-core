@@ -134,9 +134,11 @@ The selected sample size is fixed before the private holdout opens; there are no
 unblinded sample expansions or implicit interim looks.
 
 Power analysis is intentionally bounded before synchronous simulation: at most
-32 sensitivity cells, 500 million nested-bootstrap repository draws, and 100
-million synthetic attempt/comparator operations. Both estimates use `BigInt`
-and are checked before allocating the simulation grid. Operators must narrow an
+32 sensitivity cells, 1.5 billion conservative nested-bootstrap task additions,
+and 100 million synthetic attempt/comparator operations. Both estimates use
+`BigInt` and are checked before allocating the simulation grid. Each direct
+production-bootstrap invocation also fails before sample allocation when its
+worst-case work exceeds 500 million task additions. Operators must narrow an
 oversized grid or split exploratory diagnostics; they cannot bypass the bound
 inside a confirmatory power document.
 

@@ -1357,6 +1357,14 @@ describe("paired TFR inference", () => {
       "comparison-invalid",
       { resamples: 10_000, randomSeed: 1 },
     )).toThrow(/cannot exceed 100000 tasks/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      Array.from({ length: 501 }, (_, index) => ({
+        cluster: "repo",
+        difference: index % 2 === 0 ? 0.25 : -0.25,
+      })),
+      "comparison-invalid",
+      { resamples: 1_000_000, randomSeed: 1 },
+    )).toThrow(/cannot exceed 500000000 task additions/u);
     let getterCalls = 0;
     const accessorTask = {
       cluster: "repo",

@@ -76,6 +76,7 @@ export {
 } from "./evidence-ledger.js";
 export {
   EvaluationBundleValidationError,
+  MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS,
   createHoldoutAccessStatement,
   createInfrastructureClassificationStatement,
   createTrustAssessmentStatement,

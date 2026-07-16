@@ -5,7 +5,7 @@ import {
 import {
   EVAL_POWER_ALPHA,
   EVAL_POWER_ANALYSIS_VERSION,
-  EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS,
+  EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS,
   EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS,
   EVAL_POWER_MAXIMUM_COMPARISONS,
   EVAL_POWER_MAXIMUM_PILOT_ROWS,
@@ -22,6 +22,7 @@ import {
   EVAL_POWER_MINIMUM_REPETITIONS,
   EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
+  computeMaximumBootstrapTaskAdditionsPerResample,
   type FixedConfirmatoryPlan,
   type PowerAnalysisDocument,
 } from "./types.js";
@@ -680,8 +681,8 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
       if (Number.isSafeInteger(simulationReplications)
         && Number.isSafeInteger(design.confirmatoryInferenceResamples)
         && Number.isSafeInteger(design.confirmatoryRepetitionsPerSystemTask)) {
-        const totalRepositories = allocations.reduce<number>((sum, allocation) =>
-          sum + (Array.isArray(allocation) ? allocation.length : 0), 0);
+        const maximumTaskAdditionsPerResample =
+          computeMaximumBootstrapTaskAdditionsPerResample(allocations);
         const totalTasks = allocations.reduce<number>((sum, allocation) => sum + (Array.isArray(allocation)
           ? allocation.reduce<number>((taskSum, count) => taskSum + (typeof count === "number" ? count : 0), 0)
           : 0), 0);
@@ -689,7 +690,7 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
         const comparisonCount = expectedComparisonIds.length;
         const bootstrapWork = BigInt(simulationReplications as number)
           * BigInt(design.confirmatoryInferenceResamples as number)
-          * BigInt(totalRepositories)
+          * BigInt(maximumTaskAdditionsPerResample)
           * BigInt(scenarioCount)
           * BigInt(comparisonCount);
         const syntheticWork = BigInt(simulationReplications as number)
@@ -697,7 +698,7 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
           * BigInt(totalTasks)
           * BigInt(scenarioCount)
           * BigInt(comparisonCount);
-        if (bootstrapWork > BigInt(EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS)) {
+        if (bootstrapWork > BigInt(EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS)) {
           issues.push("power-analysis aggregate bootstrap work exceeds the synchronous ceiling");
         }
         if (syntheticWork > BigInt(EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS)) {

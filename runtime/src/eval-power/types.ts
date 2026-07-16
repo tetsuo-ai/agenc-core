@@ -10,7 +10,8 @@ export const EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS = 50 as const;
 export const EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES = 20 as const;
 export const EVAL_POWER_MINIMUM_REPETITIONS = 3 as const;
 export const EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS = 5 as const;
-export const EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS = 500_000_000 as const;
+/** Across the complete grid; conservatively counts largest-cluster task additions. */
+export const EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS = 1_500_000_000 as const;
 export const EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS = 100_000_000 as const;
 export const EVAL_POWER_MAXIMUM_PILOT_ROWS = 100_000 as const;
 export const EVAL_POWER_MAXIMUM_COMPARISONS = 128 as const;
@@ -19,6 +20,22 @@ export const EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN = 10_000 as const;
 export const EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES = 32 as const;
 export const EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS = 32 as const;
 export const EVAL_POWER_MAXIMUM_VALIDATION_ISSUES = 100 as const;
+
+/** Worst-case task additions for one bootstrap resample across reviewed designs. */
+export function computeMaximumBootstrapTaskAdditionsPerResample(
+  allocations: readonly unknown[],
+): number {
+  return allocations.reduce<number>((sum, allocation) => {
+    if (!Array.isArray(allocation) || allocation.length === 0) return sum;
+    let largestClusterSize = 0;
+    for (const count of allocation) {
+      if (Number.isSafeInteger(count) && (count as number) > largestClusterSize) {
+        largestClusterSize = count as number;
+      }
+    }
+    return sum + allocation.length * largestClusterSize;
+  }, 0);
+}
 
 export type BinaryOutcome = 0 | 1;
 

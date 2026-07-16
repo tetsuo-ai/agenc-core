@@ -47,6 +47,28 @@ function makePilotOutcomes(): PairedPilotBinaryOutcome[] {
   return outcomes;
 }
 
+function makeExtremeHeterogeneityOutcomes(): PairedPilotBinaryOutcome[] {
+  const profiles = [
+    ...Array.from({ length: 7 }, () => ({ primarySuccesses: 1, comparatorSuccesses: 0 })),
+    ...Array.from({ length: 17 }, () => ({ primarySuccesses: 0, comparatorSuccesses: 0 })),
+    ...Array.from({ length: 4 }, () => ({ primarySuccesses: 2, comparatorSuccesses: 0 })),
+    { primarySuccesses: 0, comparatorSuccesses: 3 },
+    { primarySuccesses: 3, comparatorSuccesses: 0 },
+  ];
+  return [
+    { comparisonId: "versus-alpha", comparatorSystemId: "alpha" },
+    { comparisonId: "versus-beta", comparatorSystemId: "beta" },
+  ].flatMap((comparison) => profiles.flatMap((profile, taskIndex) =>
+    Array.from({ length: 3 }, (_, trialIndex) => ({
+      ...comparison,
+      taskId: `task-${String(taskIndex).padStart(2, "0")}`,
+      repositoryId: `repo-${String(Math.floor(taskIndex / 2)).padStart(2, "0")}`,
+      trialId: `seed-${trialIndex}`,
+      primaryOutcome: (trialIndex < profile.primarySuccesses ? 1 : 0) as 0 | 1,
+      comparatorOutcome: (trialIndex < profile.comparatorSuccesses ? 1 : 0) as 0 | 1,
+    }))));
+}
+
 function makeInput(overrides: Partial<PowerAnalysisInput> = {}): PowerAnalysisInput {
   return {
     analysisId: "pilot-power-2026-07",
@@ -304,6 +326,19 @@ describe("evaluation pilot power analysis", () => {
     }))).toThrow(/assumed effect 0\.1 exceeds the pilot-supported maximum 0/u);
   });
 
+  test("calibrates extreme heterogeneity beyond the former fixed offset bracket", () => {
+    const document = computePowerAnalysis(makeInput({
+      outcomes: makeExtremeHeterogeneityOutcomes(),
+      heterogeneityMultipliers: [1, 2],
+    }));
+    const extremeCells = document.sensitivityGrid.filter((cell) =>
+      cell.assumedPairedDifference === 0.2 && cell.heterogeneityMultiplier === 2);
+    expect(extremeCells).toHaveLength(2);
+    expect(document.documentDigest).toBe(
+      "sha256:bab8a86951a46543d17c675d38db198347ca7982f9adc77c393d4c5f8d3f66c2",
+    );
+  }, 20_000);
+
   test("requires exact planning-effect membership before simulation", () => {
     const startedAt = performance.now();
     expect(() => computePowerAnalysis(makeInput({
@@ -435,6 +470,20 @@ describe("evaluation pilot power analysis", () => {
         comparisons: new Array(129).fill(document.pilot.comparisons[0]),
       },
     })).toThrow(/pilot\.comparisons cannot exceed 128 entries/u);
+    const excessiveBootstrapWork = {
+      ...document,
+      design: {
+        ...document.design,
+        candidateRepositoryTaskAllocations: [Array.from({ length: 20 }, () => 500)],
+      },
+    };
+    const excessiveBootstrapWorkWithDigest = {
+      ...excessiveBootstrapWork,
+      documentDigest: computeDocumentDigest(excessiveBootstrapWork),
+    };
+    expect(() => validatePowerAnalysisDocument(excessiveBootstrapWorkWithDigest)).toThrow(
+      /aggregate bootstrap work exceeds the synchronous ceiling/u,
+    );
     expect(performance.now() - startedAt).toBeLessThan(500);
 
     let error: unknown;

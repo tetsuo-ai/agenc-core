@@ -1410,6 +1410,8 @@ export interface RepositoryClusteredBootstrapInference {
 }
 
 const MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS = 100_000;
+/** Maximum per-call task additions before the synchronous primitive fails closed. */
+export const MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS = 500_000_000;
 
 function validateRepositoryClusteredBootstrapInput(
   taskDifferences: readonly RepositoryClusteredBootstrapTaskDifference[],
@@ -1549,6 +1551,17 @@ export function computeRepositoryClusteredPercentileInterval(
   }
   const clusters = [...grouped.keys()].sort();
   const clusterValues = clusters.map((cluster) => grouped.get(cluster) as readonly number[]);
+  const largestClusterSize = clusterValues.reduce(
+    (maximum, values) => Math.max(maximum, values.length),
+    0,
+  );
+  const maximumTasksPerResample = clusters.length * largestClusterSize;
+  const aggregateTaskAdditions = BigInt(inference.resamples) * BigInt(maximumTasksPerResample);
+  if (aggregateTaskAdditions > BigInt(MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS)) {
+    throw new EvaluationBundleValidationError([
+      `repository-clustered bootstrap cannot exceed ${MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS} task additions`,
+    ]);
+  }
   const random = randomGenerator(comparisonSeed(inference.randomSeed, comparisonId));
   const samples = new Array<number>(inference.resamples);
   for (let iteration = 0; iteration < inference.resamples; iteration += 1) {

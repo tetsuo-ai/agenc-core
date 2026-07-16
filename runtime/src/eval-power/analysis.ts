@@ -16,7 +16,7 @@ import {
   EVAL_POWER_MINIMUM_PILOT_REPOSITORIES,
   EVAL_POWER_MINIMUM_PILOT_TASKS,
   EVAL_POWER_MINIMUM_REPETITIONS,
-  EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS,
+  EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS,
   EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS,
   EVAL_POWER_MAXIMUM_COMPARISONS,
   EVAL_POWER_MAXIMUM_PILOT_ROWS,
@@ -27,6 +27,7 @@ import {
   EVAL_POWER_MAXIMUM_VALIDATION_ISSUES,
   EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
+  computeMaximumBootstrapTaskAdditionsPerResample,
   type FixedConfirmatoryPlan,
   type InterceptOnlyCr2Inference,
   type PairedPilotBinaryOutcome,
@@ -665,9 +666,8 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     && Number.isSafeInteger(input.confirmatoryInferenceResamples)
     && Array.isArray(input.candidateRepositoryTaskAllocations)
   ) {
-    const repositoryDrawsPerScenario = input.candidateRepositoryTaskAllocations.reduce(
-      (sum, allocation) => sum + (Array.isArray(allocation) ? allocation.length : 0),
-      0,
+    const maximumTaskAdditionsPerResample = computeMaximumBootstrapTaskAdditionsPerResample(
+      input.candidateRepositoryTaskAllocations,
     );
     const aggregateWork = BigInt(input.simulationReplications)
       * BigInt(input.confirmatoryInferenceResamples)
@@ -676,10 +676,10 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
       * BigInt(Math.max(1, Array.isArray(input.heterogeneityMultipliers)
         ? input.heterogeneityMultipliers.length
         : 0))
-      * BigInt(repositoryDrawsPerScenario);
-    if (aggregateWork > BigInt(EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS)) {
+      * BigInt(maximumTaskAdditionsPerResample);
+    if (aggregateWork > BigInt(EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS)) {
       issues.push(
-        `aggregate bootstrap work cannot exceed ${EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS} repository draws`,
+        `aggregate bootstrap work cannot exceed ${EVAL_POWER_MAXIMUM_AGGREGATE_BOOTSTRAP_TASK_ADDITIONS} task additions`,
       );
     }
     if (Number.isSafeInteger(input.confirmatoryRepetitionsPerSystemTask)) {
@@ -813,21 +813,47 @@ function createTargetComparatorProbabilities(
 
   // This monotone correction keeps the requested repository-population effect
   // exact while respecting the feasible comparator probability [0, 1].
-  let low = -2;
-  let high = 2;
+  // These data-derived saturation bounds prove that every task is at its
+  // feasible lower/upper effect at the corresponding endpoint, including
+  // the contract's maximum heterogeneity multiplier.
+  const saturationBounds = [...rawDesiredEffects].map(([taskId, desiredEffect]) => {
+    const task = comparison.tasks.get(taskId) as AggregatedTask;
+    return {
+      lower: task.primaryMean - desiredEffect - 1,
+      upper: task.primaryMean - desiredEffect,
+    };
+  });
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const bound of saturationBounds) {
+    low = Math.min(low, bound.lower);
+    high = Math.max(high, bound.upper);
+  }
   for (let iteration = 0; iteration < 80; iteration += 1) {
     const midpoint = (low + high) / 2;
     if (meanForOffset(midpoint) < assumedEffect) low = midpoint;
     else high = midpoint;
   }
   const offset = (low + high) / 2;
-  return new Map([...rawDesiredEffects].map(([taskId, desiredEffect]) => {
+  const targets = new Map([...rawDesiredEffects].map(([taskId, desiredEffect]) => {
     const task = comparison.tasks.get(taskId) as AggregatedTask;
     return [
       taskId,
       clampProbability(task.primaryMean - (desiredEffect + offset)),
     ];
   }));
+  const achievedEffect = average([...taskIdsByRepository.values()].map((taskIds) => average(
+    taskIds.map((taskId) => {
+      const task = comparison.tasks.get(taskId) as AggregatedTask;
+      return task.primaryMean - (targets.get(taskId) as number);
+    }),
+  )));
+  if (Math.abs(achievedEffect - assumedEffect) > 1e-12) {
+    throw new PowerAnalysisValidationError([
+      `effect calibration achieved ${round(achievedEffect)} instead of ${assumedEffect}`,
+    ]);
+  }
+  return targets;
 }
 
 function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot): readonly ScenarioModel[] {
@@ -838,7 +864,7 @@ function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot):
       (taskId) => (comparison.tasks.get(taskId) as AggregatedTask).primaryMean,
     ))),
   )));
-  const infeasibleEffect = effects.find((effect) => effect > maximumFeasibleEffect);
+  const infeasibleEffect = effects.find((effect) => effect - maximumFeasibleEffect > 1e-12);
   if (infeasibleEffect !== undefined) {
     throw new PowerAnalysisValidationError([
       `assumed effect ${infeasibleEffect} exceeds the pilot-supported maximum ${round(maximumFeasibleEffect)}`,
