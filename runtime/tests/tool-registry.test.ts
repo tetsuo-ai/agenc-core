@@ -550,7 +550,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-code-mode-glob-"));
     try {
       await writeFile(join(root, "hit.txt"), "hello\n");
-      const registry = buildToolRegistry({ workspaceRoot: root });
+      const registry = buildToolRegistry({
+        workspaceRoot: root,
+        sandboxExecutionBroker: explicitDangerBroker.forkForCwd(root),
+      });
 
       const result = await registry.dispatchCodeModeNestedTool?.({
         id: "exec-nested-2",

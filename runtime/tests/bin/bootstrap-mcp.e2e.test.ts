@@ -435,6 +435,9 @@ describe("bootstrapLocalRuntimeSession deferred built-in tool discovery", () => 
     try {
       boot = await bootstrapLocalRuntimeSession({
         apiKey: "test-key",
+        // This integration test intentionally executes host git. Declare the
+        // same explicit operator boundary as the live MCP cases above.
+        argv: ["node", "agenc", "--yolo"],
         env: {
           ...process.env,
           AGENC_HOME: home,

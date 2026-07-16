@@ -2,13 +2,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   createBashTool as createUnboundBashTool,
   isCommandAllowed,
   validateShellCommand,
 } from "./bash.js";
-import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+import {
+  bindExplicitDangerBoundary,
+  explicitDangerBroker,
+} from "../../helpers/explicit-danger-boundary.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { DEFAULT_DENY_LIST, DEFAULT_DENY_PREFIXES, DANGEROUS_SHELL_PATTERNS } from "./types.js";
 import type { Logger } from "../../utils/logger.js";
@@ -37,6 +40,17 @@ import { statSync, writeFileSync } from "node:fs";
 const mockExecFile = vi.mocked(execFile);
 const mockSpawn = vi.mocked(spawn);
 const mockStatSync = vi.mocked(statSync);
+
+// These unit tests own the child-process boundary and intentionally use fake
+// commands, filesystems, and working directories. Executable canonicalization
+// is covered by execution-broker.test.ts; keep this suite focused on Bash's
+// validation, invocation, timeout, and output behavior.
+vi.spyOn(explicitDangerBroker, "prepareSpawn").mockImplementation(
+  (_surface, command) => ({
+    ...command,
+    argv0: command.argv0 ?? basename(command.program),
+  }),
+);
 
 function createBashTool(
   config?: Parameters<typeof createUnboundBashTool>[0],
