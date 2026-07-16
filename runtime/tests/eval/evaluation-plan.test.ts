@@ -517,6 +517,24 @@ describe("pre-run evaluation plan validation", () => {
       holdoutDescriptor: lateSealDescriptor,
       powerAnalysis,
     })).toThrow(/created, sealed, and then preregistered/u);
+
+    const latePowerAnalysis = withDocumentDigest<PowerAnalysisDocument>({
+      ...powerAnalysis,
+      createdAt: "2026-07-15T12:00:01.000Z",
+    });
+    const latePowerPreregistration = withDocumentDigest<PreregistrationDocument>({
+      ...preregistration,
+      inference: {
+        ...preregistration.inference,
+        powerAnalysisDigest: latePowerAnalysis.documentDigest,
+      },
+    });
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration: latePowerPreregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: latePowerAnalysis,
+    })).toThrow(/power analysis must be created before or at preregistration/u);
   });
 
   test("rejects underpowered, malformed, and differently allocated reviewed artifacts", () => {
@@ -618,6 +636,12 @@ describe("pre-run evaluation plan validation", () => {
       ...input,
       holdoutDescriptor: privateDescriptor,
     })).toThrow(/development plan must not include a holdout descriptor/u);
+    expect(() => validateEvaluationPlan({
+      ...input,
+      powerAnalysis: { evil: true },
+    } as unknown as EvaluationPlanInput)).toThrow(
+      /non-superiority plan must not include a power-analysis document/u,
+    );
 
     expect(() => validateEvaluationPlan({
       ...input,

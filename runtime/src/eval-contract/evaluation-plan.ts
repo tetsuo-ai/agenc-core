@@ -215,7 +215,7 @@ function assertHoldoutPlan(
   } else {
     requirePlan(descriptor !== undefined, "private holdout plan requires its public descriptor", issues);
   }
-  if (descriptor) {
+  if (descriptor !== undefined) {
     requirePlan(
       descriptor.documentDigest === preregistration.suite.holdoutDescriptorDigest,
       "holdout descriptor digest does not match the preregistration",
@@ -253,6 +253,13 @@ function assertHoldoutPlan(
       issues,
     );
   }
+  if (preregistration.claim !== "superiority") {
+    requirePlan(
+      powerAnalysis === undefined,
+      "non-superiority plan must not include a power-analysis document",
+      issues,
+    );
+  }
   if (preregistration.claim === "superiority") {
     requirePlan(
       powerAnalysis !== undefined,
@@ -270,6 +277,11 @@ function assertHoldoutPlan(
         requirePlan(
           validatedPower.documentDigest === preregistration.inference.powerAnalysisDigest,
           "superiority power-analysis digest differs from the preregistration",
+          issues,
+        );
+        requirePlan(
+          compareUtcTimestamps(validatedPower.createdAt, preregistration.createdAt) <= 0,
+          "power analysis must be created before or at preregistration",
           issues,
         );
         requirePlan(
