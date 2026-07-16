@@ -184,9 +184,9 @@ describe("LSP singleton manager", () => {
     await shutdownLspServerManager();
   });
 
-  test("reinitialize continues when old shutdown fails", async () => {
+  test("reinitialize blocks replacement until old shutdown is retried", async () => {
     let factoryCalls = 0;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let oldStopAttempts = 0;
     const config = normalizeLspServerConfig("ts", {
       command: "typescript-language-server",
       extensionToLanguage: { ".ts": "typescript" },
@@ -200,7 +200,9 @@ describe("LSP singleton manager", () => {
         },
         start: async () => {},
         stop: async () => {
-          if (name === "old") throw new Error("old stop failed");
+          if (name === "old" && ++oldStopAttempts === 1) {
+            throw new Error("old stop failed");
+          }
         },
         restart: async () => {},
         isHealthy: () => true,
@@ -215,22 +217,65 @@ describe("LSP singleton manager", () => {
       instanceFactory: () => makeServer(factoryCalls++ === 0 ? "old" : "new"),
     };
 
-    try {
-      initializeLspServerManager(options);
-      await waitForInitialization();
-      reinitializeLspServerManager(options);
-      await waitForInitialization();
+    initializeLspServerManager(options);
+    await waitForInitialization();
+    reinitializeLspServerManager(options);
+    await waitForInitialization();
 
-      expect(getInitializationStatus().status).toBe("success");
-      expect(getLspServerManager()?.getAllServers().get("ts")?.name).toBe("new");
-      expect(warn).toHaveBeenCalledWith(
-        "[lsp] previous manager shutdown failed during reinitialize:",
-        expect.stringContaining("old stop failed"),
-      );
-    } finally {
-      warn.mockRestore();
-      await shutdownLspServerManager();
+    const failed = getInitializationStatus();
+    expect(failed.status).toBe("failed");
+    if (failed.status === "failed") {
+      expect(failed.error.message).toContain("old stop failed");
     }
+    expect(getLspServerManager()).toBeUndefined();
+    expect(factoryCalls).toBe(1);
+
+    reinitializeLspServerManager(options);
+    await waitForInitialization();
+    expect(oldStopAttempts).toBe(2);
+    expect(getInitializationStatus().status).toBe("success");
+    expect(getLspServerManager()?.getAllServers().get("ts")?.name).toBe("new");
+    expect(factoryCalls).toBe(2);
+    await shutdownLspServerManager();
+  });
+
+  test("shutdown preserves a failed owner for an explicit retry", async () => {
+    let stopAttempts = 0;
+    const config = normalizeLspServerConfig("ts", {
+      command: "typescript-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    const server = {
+      name: "ts",
+      config,
+      state: "running",
+      start: async () => {},
+      stop: async () => {
+        stopAttempts += 1;
+        if (stopAttempts === 1) throw new Error("shutdown survivor");
+      },
+      restart: async () => {},
+      isHealthy: () => true,
+      sendRequest: async () => ({}),
+      sendNotification: async () => {},
+      onNotification: () => {},
+      onRequest: () => {},
+    } as unknown as LSPServerInstance;
+    initializeLspServerManager({
+      configSource: () => ({ ts: config }),
+      instanceFactory: () => server,
+    });
+    await waitForInitialization();
+
+    await expect(shutdownLspServerManager()).rejects.toThrow(
+      "shutdown survivor",
+    );
+    expect(getInitializationStatus().status).toBe("failed");
+    expect(getLspServerManager()).toBeUndefined();
+
+    await expect(shutdownLspServerManager()).resolves.toBeUndefined();
+    expect(stopAttempts).toBe(2);
+    expect(getInitializationStatus().status).toBe("not-started");
   });
 
   test("reports connected only for starting or running servers", async () => {

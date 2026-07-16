@@ -37,7 +37,15 @@ const activeManagers = new Set<BrowserManager>();
 /** Graceful shutdown hook for the daemon cleanup registry. */
 export async function closeAllBrowserManagers(): Promise<void> {
   const managers = [...activeManagers];
-  await Promise.all(managers.map((manager) => manager.closeAll().catch(() => {})));
+  const results = await Promise.allSettled(
+    managers.map((manager) => manager.closeAll()),
+  );
+  const errors = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "browser manager shutdown failed");
+  }
 }
 
 export interface BrowserManagerOptions {
@@ -63,6 +71,17 @@ interface TabEntry {
   readonly page: BrowserPage;
 }
 
+interface BrowserBoundary {
+  child: ChildProcess | undefined;
+  proxy: BrowserProxy | undefined;
+  readonly label: string;
+}
+
+interface RetainedBrowserBoundary {
+  readonly boundary: BrowserBoundary;
+  failure: Error;
+}
+
 export class BrowserManager {
   readonly #options: BrowserManagerOptions;
   #child: ChildProcess | undefined;
@@ -75,7 +94,7 @@ export class BrowserManager {
   #launching: Promise<void> | undefined;
   #closing: Promise<void> | undefined;
   #processCleanup: Promise<void> | undefined;
-  #cleanupFailure: Error | undefined;
+  #retainedBoundaries: RetainedBrowserBoundary[] = [];
   #shutdownGeneration = 0;
   #launchAuthorityCwd: string | undefined;
   #tempProfileDir: string | undefined;
@@ -194,19 +213,20 @@ export class BrowserManager {
           : {}),
       });
     } catch (err) {
-      const errors: unknown[] = [err];
+      const boundary: BrowserBoundary = {
+        child: undefined,
+        proxy,
+        label: "failed browser launch",
+      };
       try {
-        await proxy.stop();
-      } catch (error) {
-        errors.push(error);
+        await this.#cleanupOwnedBoundary(boundary);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [err, cleanupError],
+          "browser launch cleanup failed",
+        );
       }
-      try {
-        this.#cleanupTempProfile();
-      } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length === 1) throw err;
-      throw new AggregateError(errors, "browser launch cleanup failed");
+      throw err;
     }
 
     if (
@@ -214,11 +234,11 @@ export class BrowserManager {
       authorityCwd !== this.#options.sandboxExecutionBroker?.cwd
     ) {
       launched.connection.close();
-      await this.#cleanupBrowserBoundary(
-        launched.child,
+      await this.#cleanupOwnedBoundary({
+        child: launched.child,
         proxy,
-        "stale browser launch",
-      );
+        label: "stale browser launch",
+      });
       return;
     }
 
@@ -231,13 +251,11 @@ export class BrowserManager {
     launched.child.once("exit", () => {
       if (this.#child === launched.child) {
         const stoppedProxy = this.#teardownState();
-        this.#trackUnexpectedCleanup(
-          this.#cleanupBrowserBoundary(
-            launched.child,
-            stoppedProxy,
-            "browser after unexpected exit",
-          ),
-        );
+        this.#trackUnexpectedCleanup({
+          child: launched.child,
+          proxy: stoppedProxy,
+          label: "browser after unexpected exit",
+        });
       }
     });
     process.once("exit", this.#exitListener);
@@ -406,6 +424,12 @@ export class BrowserManager {
     if (child !== undefined) {
       signalProcessTree(child, "SIGKILL");
     }
+    for (const { boundary } of this.#retainedBoundaries) {
+      if (boundary.child !== undefined) {
+        signalProcessTree(boundary.child, "SIGKILL");
+      }
+      void boundary.proxy?.stop();
+    }
     if (this.#tempProfileDir !== undefined) {
       rmSync(this.#tempProfileDir, { recursive: true, force: true });
       this.#tempProfileDir = undefined;
@@ -437,15 +461,16 @@ export class BrowserManager {
         errors.push(error);
       }
     }
+    if (this.#processCleanup !== undefined) await this.#processCleanup;
     try {
-      await this.#awaitProcessCleanup();
+      await this.#retryRetainedBoundaries();
     } catch (error) {
       errors.push(error);
     }
     const child = this.#child;
     const proxy = this.#teardownState();
     try {
-      await this.#cleanupBrowserBoundary(child, proxy, "browser");
+      await this.#cleanupOwnedBoundary({ child, proxy, label: "browser" });
     } catch (error) {
       errors.push(error);
     }
@@ -457,54 +482,95 @@ export class BrowserManager {
 
   async #awaitProcessCleanup(): Promise<void> {
     if (this.#processCleanup !== undefined) await this.#processCleanup;
-    if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure;
+    if (this.#retainedBoundaries.length === 1) {
+      throw this.#retainedBoundaries[0]!.failure;
+    }
+    if (this.#retainedBoundaries.length > 1) {
+      throw new AggregateError(
+        this.#retainedBoundaries.map(({ failure }) => failure),
+        "browser boundary cleanup remains incomplete",
+      );
+    }
   }
 
-  #trackUnexpectedCleanup(operation: Promise<void>): void {
+  #trackUnexpectedCleanup(boundary: BrowserBoundary): void {
     // Keep daemon shutdown aware of this manager until its orphan-resistant
     // cleanup has settled, even though the CDP state is already torn down.
     activeManagers.add(this);
     let tracked!: Promise<void>;
-    tracked = operation
-      .catch((error) => {
-        this.#cleanupFailure =
-          error instanceof Error ? error : new Error(String(error));
+    tracked = this.#cleanupOwnedBoundary(boundary)
+      .catch(() => {
+        // #cleanupOwnedBoundary retains the failed ownership record. The next
+        // action observes that poison; an explicit close retries it.
       })
       .finally(() => {
         if (this.#processCleanup === tracked) this.#processCleanup = undefined;
-        if (this.#cleanupFailure === undefined && this.#child === undefined) {
+        if (
+          this.#retainedBoundaries.length === 0 &&
+          this.#child === undefined
+        ) {
           activeManagers.delete(this);
         }
       });
     this.#processCleanup = tracked;
   }
 
-  async #cleanupBrowserBoundary(
-    child: ChildProcess | undefined,
-    proxy: BrowserProxy | undefined,
-    label: string,
-  ): Promise<void> {
+  async #cleanupOwnedBoundary(boundary: BrowserBoundary): Promise<void> {
     const errors: unknown[] = [];
-    if (child !== undefined) {
+    if (boundary.child !== undefined) {
       try {
-        await terminateProcessTreeAndWait(child, { label });
+        await terminateProcessTreeAndWait(boundary.child, {
+          label: boundary.label,
+        });
+        boundary.child = undefined;
       } catch (error) {
         errors.push(error);
       }
     }
-    try {
-      await proxy?.stop();
-    } catch (error) {
-      errors.push(error);
+    if (boundary.proxy !== undefined) {
+      try {
+        await boundary.proxy.stop();
+        boundary.proxy = undefined;
+      } catch (error) {
+        errors.push(error);
+      }
     }
     try {
       this.#cleanupTempProfile();
     } catch (error) {
       errors.push(error);
     }
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(errors, `${label} cleanup failed`);
+    if (errors.length === 0) return;
+    const failure = errors.length === 1
+      ? toError(errors[0])
+      : new AggregateError(errors, `${boundary.label} cleanup failed`);
+    this.#retainBoundary(boundary, failure);
+    throw failure;
+  }
+
+  #retainBoundary(boundary: BrowserBoundary, failure: Error): void {
+    const retained = this.#retainedBoundaries.find(
+      (candidate) => candidate.boundary === boundary,
+    );
+    if (retained !== undefined) retained.failure = failure;
+    else this.#retainedBoundaries.push({ boundary, failure });
+    activeManagers.add(this);
+  }
+
+  async #retryRetainedBoundaries(): Promise<void> {
+    const failures: unknown[] = [];
+    for (const retained of [...this.#retainedBoundaries]) {
+      try {
+        await this.#cleanupOwnedBoundary(retained.boundary);
+        const index = this.#retainedBoundaries.indexOf(retained);
+        if (index >= 0) this.#retainedBoundaries.splice(index, 1);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "browser boundary retry failed");
     }
   }
 
@@ -514,4 +580,8 @@ export class BrowserManager {
       this.#tempProfileDir = undefined;
     }
   }
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

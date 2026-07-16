@@ -52,6 +52,10 @@ export function createLSPServerManager(
   const servers = new Map<string, LSPServerInstance>();
   const extensionMap = new Map<string, string[]>();
   const openedFiles = new Map<string, { serverName: string; version: number }>();
+  // A rejected stop is an unverified process owner, even if the instance
+  // happened to transition its public state to `stopped` before rejecting.
+  // Keep that owner retryable until a later shutdown proves cleanup.
+  const shutdownFailures = new Set<string>();
   const instanceFactory =
     options.instanceFactory ??
     ((name: string, config: ScopedLspServerConfig) =>
@@ -109,7 +113,8 @@ export function createLSPServerManager(
 
   async function shutdown(): Promise<void> {
     const toStop = Array.from(servers.entries()).filter(
-      ([, server]) =>
+      ([name, server]) =>
+        shutdownFailures.has(name) ||
         server.state === "running" ||
         server.state === "starting" ||
         server.state === "error",
@@ -117,21 +122,49 @@ export function createLSPServerManager(
     const results = await Promise.allSettled(
       toStop.map(([, server]) => server.stop()),
     );
-    servers.clear();
-    extensionMap.clear();
-    openedFiles.clear();
+    const attempted = new Set(toStop.map(([name]) => name));
+    const errors: unknown[] = [];
+    const errorMessages: string[] = [];
+    results.forEach((result, index) => {
+      const name = toStop[index]![0];
+      if (result.status === "fulfilled") {
+        shutdownFailures.delete(name);
+        servers.delete(name);
+        return;
+      }
+      shutdownFailures.add(name);
+      errors.push(result.reason);
+      errorMessages.push(`${name}: ${errorMessage(result.reason)}`);
+    });
 
-    const errors = results
-      .map((result, index) =>
-        result.status === "rejected"
-          ? `${toStop[index]![0]}: ${errorMessage(result.reason)}`
-          : null,
-      )
-      .filter((value): value is string => value !== null);
+    // Instances that never started have no process ownership to retain.
+    for (const name of [...servers.keys()]) {
+      if (!attempted.has(name) && !shutdownFailures.has(name)) {
+        servers.delete(name);
+      }
+    }
+    rebuildRetainedRouting();
+
     if (errors.length > 0) {
-      throw new Error(
-        `Failed to stop ${errors.length} LSP server(s): ${errors.join("; ")}`,
+      throw new AggregateError(
+        errors,
+        `Failed to stop ${errors.length} LSP server(s): ${errorMessages.join("; ")}`,
       );
+    }
+  }
+
+  function rebuildRetainedRouting(): void {
+    extensionMap.clear();
+    for (const [serverName, server] of servers) {
+      for (const ext of Object.keys(server.config.extensionToLanguage)) {
+        const normalized = ext.toLowerCase();
+        const names = extensionMap.get(normalized) ?? [];
+        names.push(serverName);
+        extensionMap.set(normalized, names);
+      }
+    }
+    for (const [uri, opened] of openedFiles) {
+      if (!servers.has(opened.serverName)) openedFiles.delete(uri);
     }
   }
 

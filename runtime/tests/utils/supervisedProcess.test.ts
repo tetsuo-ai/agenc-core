@@ -1,5 +1,16 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, readFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -42,6 +53,41 @@ async function waitForProcessExit(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return !processIsRunning(pid);
+}
+
+async function withFakeWindowsTaskkill(
+  exitCode: number,
+  run: (logPath: string) => Promise<void>,
+): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "agenc-taskkill-test-"));
+  const system32 = join(dir, "System32");
+  const taskkill = join(system32, "taskkill.exe");
+  const logPath = join(dir, "taskkill.log");
+  mkdirSync(system32);
+  writeFileSync(
+    taskkill,
+    `#!/bin/sh\nsleep 0.05\nprintf '%s ' "$@" >> "$AGENC_TASKKILL_TEST_LOG"\nprintf '\\n' >> "$AGENC_TASKKILL_TEST_LOG"\nexit ${exitCode}\n`,
+  );
+  chmodSync(taskkill, 0o700);
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const previousSystemRoot = process.env.SystemRoot;
+  const previousLog = process.env.AGENC_TASKKILL_TEST_LOG;
+  Object.defineProperty(process, "platform", {
+    ...platformDescriptor,
+    value: "win32",
+  });
+  process.env.SystemRoot = dir;
+  process.env.AGENC_TASKKILL_TEST_LOG = logPath;
+  try {
+    await run(logPath);
+  } finally {
+    Object.defineProperty(process, "platform", platformDescriptor);
+    if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = previousSystemRoot;
+    if (previousLog === undefined) delete process.env.AGENC_TASKKILL_TEST_LOG;
+    else process.env.AGENC_TASKKILL_TEST_LOG = previousLog;
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("runSupervisedProcess", () => {
@@ -166,4 +212,48 @@ describe("runSupervisedProcess", () => {
       expect(processIsRunning(child.pid!)).toBe(false);
     },
   );
+});
+
+describe("terminateProcessTreeAndWait on Windows", () => {
+  const exitedLeader = {
+    pid: 4_242,
+    exitCode: 0,
+    signalCode: null,
+    kill: () => true,
+  };
+
+  it("awaits taskkill /T even when the process leader already exited", async () => {
+    await withFakeWindowsTaskkill(0, async (logPath) => {
+      await terminateProcessTreeAndWait(exitedLeader, {
+        terminateGraceMs: 500,
+        killGraceMs: 500,
+        label: "Windows test process",
+      });
+
+      expect(readFileSync(logPath, "utf8").trim()).toBe("/PID 4242 /T");
+    });
+  });
+
+  it("fails closed when taskkill cannot verify tree teardown", async () => {
+    await withFakeWindowsTaskkill(9, async (logPath) => {
+      await expect(
+        terminateProcessTreeAndWait(exitedLeader, {
+          terminateGraceMs: 500,
+          killGraceMs: 500,
+          label: "Windows test process",
+        }),
+      ).rejects.toMatchObject({
+        name: "AggregateError",
+        message:
+          "Windows test process tree cleanup could not be verified by taskkill /T (pid 4242)",
+      });
+
+      expect(
+        readFileSync(logPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.trim()),
+      ).toEqual(["/PID 4242 /T", "/PID 4242 /T /F"]);
+    });
+  });
 });

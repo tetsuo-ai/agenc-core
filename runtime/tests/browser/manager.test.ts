@@ -28,8 +28,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { launchBrowserMock } = vi.hoisted(() => ({
+const { launchBrowserMock, terminationSeam } = vi.hoisted(() => ({
   launchBrowserMock: vi.fn(),
+  terminationSeam: {
+    failuresRemaining: 0,
+    calls: [] as string[],
+  },
 }));
 
 vi.mock("../../src/browser/cdp.js", () => ({
@@ -37,7 +41,29 @@ vi.mock("../../src/browser/cdp.js", () => ({
   CdpConnection: class {},
 }));
 
-import { BrowserManager } from "../../src/browser/manager.js";
+vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../src/utils/supervisedProcess.js")
+  >();
+  return {
+    ...actual,
+    terminateProcessTreeAndWait: async (
+      ...args: Parameters<typeof actual.terminateProcessTreeAndWait>
+    ): Promise<void> => {
+      terminationSeam.calls.push(args[1]?.label ?? "process");
+      if (terminationSeam.failuresRemaining > 0) {
+        terminationSeam.failuresRemaining -= 1;
+        throw new Error("injected process-tree cleanup failure");
+      }
+      await actual.terminateProcessTreeAndWait(...args);
+    },
+  };
+});
+
+import {
+  BrowserManager,
+  closeAllBrowserManagers,
+} from "../../src/browser/manager.js";
 import { BrowserProxy } from "../../src/browser/proxy.js";
 import type { BrowserPolicy } from "../../src/browser/config.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
@@ -57,9 +83,12 @@ function track(mgr: BrowserManager): BrowserManager {
 }
 
 afterEach(async () => {
+  terminationSeam.failuresRemaining = 0;
   while (managers.length > 0) {
     await managers.pop()?.closeAll().catch(() => {});
   }
+  await closeAllBrowserManagers().catch(() => {});
+  terminationSeam.calls = [];
   launchBrowserMock.mockReset();
 });
 
@@ -309,6 +338,80 @@ describe("BrowserManager shutdown/launch race", () => {
     },
     10_000,
   );
+
+  test("poisons a failed browser boundary until explicit cleanup succeeds", async () => {
+    const child = makeFakeChild();
+    launchBrowserMock.mockResolvedValue({
+      child,
+      connection: makeFakeConnection(),
+    });
+    const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
+    await mgr.page().catch(() => {});
+
+    terminationSeam.failuresRemaining = 1;
+    await expect(mgr.closeAll()).rejects.toThrow(
+      "injected process-tree cleanup failure",
+    );
+    expect(launchBrowserMock).toHaveBeenCalledTimes(1);
+
+    await expect(mgr.page()).rejects.toThrow(
+      "injected process-tree cleanup failure",
+    );
+    expect(launchBrowserMock).toHaveBeenCalledTimes(1);
+
+    await expect(mgr.closeAll()).resolves.toBeUndefined();
+    expect(child.killed).toBe(true);
+  });
+
+  test("retains failed unexpected-exit cleanup without launching a replacement", async () => {
+    const child = makeFakeChild();
+    launchBrowserMock.mockResolvedValue({
+      child,
+      connection: makeFakeConnection(),
+    });
+    const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
+    await mgr.page().catch(() => {});
+
+    terminationSeam.failuresRemaining = 1;
+    child.exitCode = 23;
+    child.emit("exit", 23, null);
+    await waitFor(() => terminationSeam.calls.length === 1);
+
+    await expect(mgr.page()).rejects.toThrow(
+      "injected process-tree cleanup failure",
+    );
+    expect(launchBrowserMock).toHaveBeenCalledTimes(1);
+
+    await expect(mgr.closeAll()).resolves.toBeUndefined();
+  });
+
+  test("global shutdown settles every browser manager and aggregates failures", async () => {
+    const failedChild = makeFakeChild();
+    const successfulChild = makeFakeChild();
+    launchBrowserMock
+      .mockResolvedValueOnce({
+        child: failedChild,
+        connection: makeFakeConnection(),
+      })
+      .mockResolvedValueOnce({
+        child: successfulChild,
+        connection: makeFakeConnection(),
+      });
+    const first = track(new BrowserManager({ policy: BASE_POLICY }));
+    const second = track(new BrowserManager({ policy: BASE_POLICY }));
+    await Promise.all([first.page().catch(() => {}), second.page().catch(() => {})]);
+
+    terminationSeam.failuresRemaining = 1;
+    await expect(closeAllBrowserManagers()).rejects.toMatchObject({
+      name: "AggregateError",
+      message: "browser manager shutdown failed",
+    });
+    expect(successfulChild.killed).toBe(true);
+    expect(terminationSeam.calls).toHaveLength(2);
+
+    await expect(closeAllBrowserManagers()).resolves.toBeUndefined();
+    expect(failedChild.killed).toBe(true);
+  });
 });
 
 describe("BrowserManager fallback temp profile", () => {

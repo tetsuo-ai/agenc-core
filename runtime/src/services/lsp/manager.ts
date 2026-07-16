@@ -12,7 +12,7 @@ import {
   type LSPServerManagerOptions,
 } from "./LSPServerManager.js";
 import { registerLSPNotificationHandlers } from "./passiveFeedback.js";
-import { errorMessage, toError } from "../../utils/errors.js";
+import { toError } from "../../utils/errors.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { clearLSPDiagnosticScope } from "./LSPDiagnosticRegistry.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
@@ -21,6 +21,8 @@ type InitializationState = "not-started" | "pending" | "success" | "failed";
 
 interface LspManagerState {
   manager: LSPServerManager | undefined;
+  /** Manager whose process ownership has not yet been verified as stopped. */
+  cleanupManager: LSPServerManager | undefined;
   initializationState: InitializationState;
   initializationError: Error | undefined;
   initializationGeneration: number;
@@ -32,6 +34,7 @@ interface LspManagerState {
 function createManagerState(): LspManagerState {
   return {
     manager: undefined,
+    cleanupManager: undefined,
     initializationState: "not-started",
     initializationError: undefined,
     initializationGeneration: 0,
@@ -161,6 +164,9 @@ export function initializeLspServerManager(
   }
 
   if (state.initializationState === "failed") {
+    // A failed shutdown is a poisoned ownership boundary, not permission to
+    // construct a replacement. Only reinitialize/shutdown may retry it.
+    if (state.cleanupManager !== undefined) return;
     state.manager = undefined;
     state.initializationError = undefined;
   }
@@ -198,8 +204,9 @@ export function reinitializeLspServerManager(
   const effectiveOptions = Object.keys(options).length > 0
     ? options
     : (state.lastManagerOptions ?? {});
-  const oldManager = state.manager;
+  const oldManager = state.cleanupManager ?? state.manager;
   state.manager = undefined;
+  state.cleanupManager = oldManager;
   state.initializationState = "pending";
   state.initializationError = undefined;
   state.lastManagerOptions = effectiveOptions;
@@ -207,16 +214,9 @@ export function reinitializeLspServerManager(
 
   state.initializationPromise = (async () => {
     if (oldManager) {
-      try {
-        await oldManager.shutdown();
-      } catch (error) {
-        // Old server cleanup is best-effort during config reload; a stale
-        // shutdown failure must not prevent the replacement config loading.
-        // eslint-disable-next-line no-console
-        console.warn(
-          "[lsp] previous manager shutdown failed during reinitialize:",
-          errorMessage(error),
-        );
+      await oldManager.shutdown();
+      if (state.cleanupManager === oldManager) {
+        state.cleanupManager = undefined;
       }
     }
     if (generation !== state.initializationGeneration) return;
@@ -234,6 +234,9 @@ export function reinitializeLspServerManager(
     if (generation !== state.initializationGeneration) return;
     state.initializationState = "failed";
     state.initializationError = toError(error);
+    if (state.cleanupManager === undefined && state.manager !== undefined) {
+      state.cleanupManager = state.manager;
+    }
     state.manager = undefined;
   });
 }
@@ -243,20 +246,21 @@ export async function shutdownLspServerManager(
 ): Promise<void> {
   const state = stateForScope(scope, false);
   if (state === undefined) return;
-  const manager = state.manager;
+  const manager = state.cleanupManager ?? state.manager;
   const pending = state.initializationPromise;
   const generation = ++state.initializationGeneration;
   state.manager = undefined;
-  state.initializationState = "not-started";
+  state.cleanupManager = manager;
+  state.initializationState = "pending";
   state.initializationError = undefined;
   state.initializationPromise = undefined;
-  state.lastManagerOptions = undefined;
   try {
     await pending?.catch(() => {});
     await manager?.shutdown();
-  } finally {
+    if (state.cleanupManager === manager) state.cleanupManager = undefined;
     if (generation === state.initializationGeneration) {
       state.initializationState = "not-started";
+      state.lastManagerOptions = undefined;
     }
     if (scope !== undefined) {
       clearLSPDiagnosticScope(scope);
@@ -265,6 +269,13 @@ export async function shutdownLspServerManager(
       scopedManagerStates.delete(scope);
       activeManagerStates.delete(state);
     }
+  } catch (error) {
+    if (generation === state.initializationGeneration) {
+      state.initializationState = "failed";
+      state.initializationError = toError(error);
+      state.cleanupManager = manager;
+    }
+    throw error;
   }
 }
 
@@ -305,10 +316,19 @@ async function quiesceLspManagerState(
   const pending = state.initializationPromise;
   state.initializationGeneration += 1;
   state.manager = undefined;
-  state.initializationState = "not-started";
+  state.cleanupManager ??= manager;
+  state.initializationState = "pending";
   state.initializationError = undefined;
   state.initializationPromise = undefined;
-  await pending?.catch(() => {});
-  await manager?.shutdown();
-  clearLSPDiagnosticScope(scope);
+  try {
+    await pending?.catch(() => {});
+    await state.cleanupManager?.shutdown();
+    state.cleanupManager = undefined;
+    state.initializationState = "not-started";
+    clearLSPDiagnosticScope(scope);
+  } catch (error) {
+    state.initializationState = "failed";
+    state.initializationError = toError(error);
+    throw error;
+  }
 }

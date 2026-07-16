@@ -267,6 +267,15 @@ export async function terminateProcessTreeAndWait(
   child: ProcessTreeChild,
   options: TerminateProcessTreeOptions = {},
 ): Promise<void> {
+  // A Windows ChildProcess only reports the leader's state. Once that leader
+  // exits, Node has no API with which to enumerate (or prove the absence of)
+  // descendants. `taskkill /T` is therefore the ownership boundary: await its
+  // result even when `exitCode` already says the leader is gone, and never
+  // infer tree cleanup from the leader alone.
+  if (process.platform === "win32" && child.pid !== undefined) {
+    await terminateWindowsProcessTree(child.pid, options);
+    return;
+  }
   if (!isProcessTreeAlive(child)) return;
   signalProcessTree(child, "SIGTERM");
   if (
@@ -290,6 +299,105 @@ export async function terminateProcessTreeAndWait(
     `${options.label ?? "process"} tree survived forced shutdown` +
       (child.pid === undefined ? "" : ` (pid ${child.pid})`),
   );
+}
+
+async function terminateWindowsProcessTree(
+  pid: number,
+  options: TerminateProcessTreeOptions,
+): Promise<void> {
+  const taskkill = windowsTaskkillPath();
+  const label = options.label ?? "process";
+  if (taskkill === undefined) {
+    throw new Error(
+      `${label} tree cleanup cannot be verified: taskkill.exe is unavailable (pid ${pid})`,
+    );
+  }
+
+  let gracefulError: Error;
+  try {
+    await runWindowsTaskkill(
+      taskkill,
+      pid,
+      false,
+      options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS,
+    );
+    return;
+  } catch (error) {
+    gracefulError = toError(error);
+  }
+
+  try {
+    await runWindowsTaskkill(
+      taskkill,
+      pid,
+      true,
+      options.killGraceMs ?? DEFAULT_SETTLE_BACKSTOP_MS,
+    );
+  } catch (error) {
+    throw new AggregateError(
+      [gracefulError, toError(error)],
+      `${label} tree cleanup could not be verified by taskkill /T (pid ${pid})`,
+    );
+  }
+}
+
+function runWindowsTaskkill(
+  taskkill: string,
+  pid: number,
+  force: boolean,
+  timeoutMs: number,
+): Promise<void> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    return Promise.reject(
+      new Error("Windows process tree timeout must be finite and non-negative"),
+    );
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let killer: ChildProcess;
+    try {
+      killer = spawn(
+        taskkill,
+        ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
+        { stdio: "ignore", windowsHide: true },
+      );
+    } catch (error) {
+      reject(toError(error));
+      return;
+    }
+
+    let settled = false;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      killer.removeAllListeners();
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const timer = setTimeout(() => {
+      safeKill(killer, "SIGKILL");
+      settle(
+        new Error(
+          `taskkill ${force ? "/T /F" : "/T"} timed out for pid ${pid}`,
+        ),
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    killer.once("error", (error) => settle(error));
+    killer.once("close", (code, signal) => {
+      if (code === 0) {
+        settle();
+        return;
+      }
+      settle(
+        new Error(
+          `taskkill ${force ? "/T /F" : "/T"} failed for pid ${pid}` +
+            (code === null ? ` (signal ${signal ?? "unknown"})` : ` (exit ${code})`),
+        ),
+      );
+    });
+  });
 }
 
 export async function waitForProcessTreeExit(
@@ -351,11 +459,8 @@ export function signalProcessTree(
       return;
     }
   }
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  const taskkill = systemRoot === undefined
-    ? undefined
-    : join(systemRoot, "System32", "taskkill.exe");
-  if (taskkill === undefined || !existsSync(taskkill)) {
+  const taskkill = windowsTaskkillPath();
+  if (taskkill === undefined) {
     safeKill(child, signal);
     return;
   }
@@ -374,6 +479,13 @@ export function signalProcessTree(
   killer.once("close", (code) => {
     if (code !== 0) fallback();
   });
+}
+
+function windowsTaskkillPath(): string | undefined {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (systemRoot === undefined) return undefined;
+  const taskkill = join(systemRoot, "System32", "taskkill.exe");
+  return existsSync(taskkill) ? taskkill : undefined;
 }
 
 function safeKill(
