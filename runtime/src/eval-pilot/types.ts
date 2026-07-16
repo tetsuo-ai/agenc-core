@@ -13,6 +13,8 @@ export const EVALUATION_PILOT_MAXIMUM_TASKS_PER_REPOSITORY = 2 as const;
 export const EVALUATION_PILOT_MAXIMUM_DOCUMENT_BYTES = 4 * 1024 * 1024;
 export const EVALUATION_PILOT_MAXIMUM_ARTIFACT_BYTES = 16 * 1024 * 1024;
 export const EVALUATION_PILOT_MAXIMUM_TOTAL_ARTIFACT_BYTES = 256 * 1024 * 1024;
+export const EVALUATION_PILOT_MAXIMUM_SUPPORTING_ARTIFACTS_PER_TASK = 64;
+export const EVALUATION_PILOT_MAXIMUM_NEGATIVE_PATCHES = 8;
 
 export const EVALUATION_PILOT_CATEGORIES = [
   "multi_file_fix",
@@ -80,6 +82,11 @@ export interface EvaluationPilotTaskCuration {
     readonly independentSolveReview: ContentArtifact;
     readonly negativePatchReview: ContentArtifact;
     readonly stressorEvidence: ContentArtifact;
+    /**
+     * Every byte-level digest referenced by the QA evidence documents. Identity
+     * commitments are deliberately excluded because they are not artifacts.
+     */
+    readonly supportingArtifacts: readonly ContentArtifact[];
   };
 }
 

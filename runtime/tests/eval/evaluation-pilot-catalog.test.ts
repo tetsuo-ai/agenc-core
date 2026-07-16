@@ -209,6 +209,15 @@ function buildPilotFixture(options: {
 
   const tasks = suite.tasks.map((task, index): EvaluationPilotTaskCuration => {
     const stressors = [EVALUATION_PILOT_STRESSORS[index % EVALUATION_PILOT_STRESSORS.length]];
+    const supportingArtifacts: ContentArtifact[] = [];
+    const supportingDigest = (label: string, mediaType = "application/octet-stream") => {
+      const content = mediaType === "application/json"
+        ? `${JSON.stringify({ evidence: label })}\n`
+        : `${label}\n`;
+      const artifact = artifactForBytes(blobs, Buffer.from(content, "utf8"), mediaType);
+      supportingArtifacts.push(artifact);
+      return artifact.digest;
+    };
     const sourceRow = {
       kind: "agenc.eval.pilot-source-row",
       evidenceVersion: "1.0.0",
@@ -234,8 +243,14 @@ function buildPilotFixture(options: {
         baseFailsTargetChecks: true,
         basePassesRegressionChecks: true,
         referencePassesAllChecks: true,
-        environmentDigest: digest(`${task.taskId}:environment:${runIndex}`),
-        evidenceDigest: digest(`${task.taskId}:preflight:${runIndex}`),
+        environmentDigest: supportingDigest(
+          `${task.taskId}:environment:${runIndex}`,
+          "application/json",
+        ),
+        evidenceDigest: supportingDigest(
+          `${task.taskId}:preflight:${runIndex}`,
+          "text/plain",
+        ),
       })),
     };
     const independentSolve = {
@@ -248,9 +263,15 @@ function buildPilotFixture(options: {
       reviewerIndependentOfTaskAuthor: true,
       verifierInaccessibleDuringSolve: true,
       startedFromPinnedBase: true,
-      solutionPatchDigest: digest(`${task.taskId}:independent-solution`),
+      solutionPatchDigest: supportingDigest(
+        `${task.taskId}:independent-solution`,
+        "text/x-diff",
+      ),
       solutionAccepted: true,
-      reviewEvidenceDigest: digest(`${task.taskId}:independent-review`),
+      reviewEvidenceDigest: supportingDigest(
+        `${task.taskId}:independent-review`,
+        "application/json",
+      ),
     };
     const negativePatches = {
       kind: "agenc.eval.pilot-negative-patch-review",
@@ -264,13 +285,19 @@ function buildPilotFixture(options: {
       allNegativePatchesRejected: true,
       negativePatches: [
         {
-          patchDigest: digest(`${task.taskId}:incomplete-patch`),
-          rejectionEvidenceDigest: digest(`${task.taskId}:incomplete-rejection`),
+          patchDigest: supportingDigest(`${task.taskId}:incomplete-patch`, "text/x-diff"),
+          rejectionEvidenceDigest: supportingDigest(
+            `${task.taskId}:incomplete-rejection`,
+            "application/json",
+          ),
           failureClass: "incomplete_fix",
         },
         {
-          patchDigest: digest(`${task.taskId}:overfit-patch`),
-          rejectionEvidenceDigest: digest(`${task.taskId}:overfit-rejection`),
+          patchDigest: supportingDigest(`${task.taskId}:overfit-patch`, "text/x-diff"),
+          rejectionEvidenceDigest: supportingDigest(
+            `${task.taskId}:overfit-rejection`,
+            "application/json",
+          ),
           failureClass: "overfit_fix",
         },
       ],
@@ -285,9 +312,18 @@ function buildPilotFixture(options: {
       mechanisms: stressors.map((stressor) => ({
         stressor,
         mechanism: EVALUATION_PILOT_STRESSOR_MECHANISMS[stressor],
-        implementationDigest: digest(`${task.taskId}:${stressor}:implementation`),
-        policyDigest: digest(`${task.taskId}:${stressor}:policy`),
-        evidenceDigest: digest(`${task.taskId}:${stressor}:evidence`),
+        implementationDigest: supportingDigest(
+          `${task.taskId}:${stressor}:implementation`,
+          "application/javascript",
+        ),
+        policyDigest: supportingDigest(
+          `${task.taskId}:${stressor}:policy`,
+          "application/json",
+        ),
+        evidenceDigest: supportingDigest(
+          `${task.taskId}:${stressor}:evidence`,
+          "application/json",
+        ),
         productSpecificSemantics: false,
         ...(stressor === "repository_prompt_injection"
           ? { setupPatchDigest: task.setupPatch.digest }
@@ -320,6 +356,7 @@ function buildPilotFixture(options: {
         independentSolveReview: jsonArtifact(blobs, independentSolve),
         negativePatchReview: jsonArtifact(blobs, negativePatches),
         stressorEvidence: jsonArtifact(blobs, stressorEvidence),
+        supportingArtifacts,
       },
     };
   }).sort((left, right) => left.selectionKeyDigest.localeCompare(right.selectionKeyDigest));
@@ -505,6 +542,11 @@ describe("evaluation development pilot curation protocol", () => {
     });
     expect(loaded.taskEvidence.size).toBe(30);
     expect(loaded.agentTasks).toHaveLength(30);
+    expect(Object.isFrozen(loaded)).toBe(true);
+    expect(Object.isFrozen(loaded.document)).toBe(true);
+    expect(Object.isFrozen(loaded.suite.tasks[0])).toBe(true);
+    expect((loaded.operatorTasks as Map<string, OperatorTaskDocument>).set).toBeUndefined();
+    expect((loaded.taskEvidence as Map<string, unknown>).set).toBeUndefined();
     const taskId = fixture.document.tasks[0].taskId;
     const projection = projectEvaluationPilotTaskForAgent(loaded, taskId);
     expect(projection).toEqual(projectTaskForAgent(loaded.operatorTasks.get(taskId)!));
@@ -553,12 +595,25 @@ describe("evaluation development pilot curation protocol", () => {
     expect(() => projectEvaluationPilotTaskForAgent(loaded, "not-curated")).toThrow(
       /not present in the validated pilot/u,
     );
+    const forgedCatalog = {
+      ...loaded,
+      operatorTasks: new Map(loaded.operatorTasks),
+    };
+    expect(() => projectEvaluationPilotTaskForAgent(forgedCatalog, taskId)).toThrow(
+      /not present in the validated pilot/u,
+    );
   });
 
   it("commits and verifies every bound operator artifact while allowing shared empty setup patches", async () => {
     const fixture = buildPilotFixture({ sharedZeroByteSetup: true });
     const inventory = getEvaluationPilotRequiredArtifacts(fixture.document, fixture.suite);
-    expect(inventory).toHaveLength(272);
+    const supportingCount = fixture.document.tasks.reduce(
+      (total, task) => total + task.qa.supportingArtifacts.length,
+      0,
+    );
+    expect(inventory).toHaveLength(272 + supportingCount);
+    expect(inventory.filter((entry) => entry.role === "qualification_support"))
+      .toHaveLength(supportingCount);
     expect(inventory.filter((entry) => entry.role === "stressor_evidence")).toHaveLength(30);
     for (const role of [
       "operator_setup_patch",
@@ -644,6 +699,39 @@ describe("evaluation development pilot curation protocol", () => {
         casRoot: symlinked.root,
       })).rejects.toThrow(/regular non-symlink/u);
     }
+  });
+
+  it("loads every digest-referenced QA byte and rejects missing or tampered support", async () => {
+    const fixture = buildPilotFixture();
+    const [missingArtifact, tamperedArtifact] = fixture.document.tasks[0].qa.supportingArtifacts;
+    if (!missingArtifact || !tamperedArtifact) throw new Error("missing supporting fixture artifacts");
+
+    const missing = await materializeFixture(fixture);
+    await rm(path.join(
+      missing.root,
+      "cas",
+      "sha256",
+      missingArtifact.digest.slice("sha256:".length),
+    ));
+    await expect(loadAndValidateEvaluationPilotCatalog(missing.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: missing.root,
+    })).rejects.toThrow(/ENOENT|no such file/u);
+
+    const tampered = await materializeFixture(fixture);
+    await writeFile(
+      path.join(
+        tampered.root,
+        "cas",
+        "sha256",
+        tamperedArtifact.digest.slice("sha256:".length),
+      ),
+      Buffer.alloc(tamperedArtifact.sizeBytes, 0x78),
+    );
+    await expect(loadAndValidateEvaluationPilotCatalog(tampered.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: tampered.root,
+    })).rejects.toThrow(/content digest mismatch/u);
   });
 
   it("requires protected operator artifacts to be unique and included in the aggregate commitment", () => {
@@ -797,7 +885,7 @@ describe("evaluation development pilot curation protocol", () => {
       draft.negativePatches = (draft.negativePatches as unknown[]).slice(0, 1);
     });
     expect(() => validateEvaluationPilotEvidenceDocuments(fixture.document, fixture.suite, weakNegatives))
-      .toThrow(/at least two rejected negative patches/u);
+      .toThrow(/between two and 8 rejected negative patches/u);
 
     const wrongJoin = mutateEvidence(fixture, taskId, "sourceRow", (draft) => {
       draft.taskId = "task-elsewhere";
@@ -811,6 +899,49 @@ describe("evaluation development pilot curation protocol", () => {
     expect(() =>
       validateEvaluationPilotEvidenceDocuments(fixture.document, fixture.suite, unknownEvidenceField)
     ).toThrow(/must contain exactly/u);
+
+    const fabricatedDigest = mutateEvidence(
+      fixture,
+      taskId,
+      "upstreamTriplePreflight",
+      (draft) => {
+        const runs = draft.runs as Array<Record<string, unknown>>;
+        runs[0].evidenceDigest = digest("fabricated-without-cas-bytes");
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      fabricatedDigest,
+    )).toThrow(/must resolve to a declared qualification supporting artifact/u);
+
+    const excessNegatives = mutateEvidence(fixture, taskId, "negativePatchReview", (draft) => {
+      const patches = draft.negativePatches as Array<Record<string, unknown>>;
+      draft.negativePatches = Array.from({ length: 9 }, (_, index) => ({
+        ...patches[index % patches.length],
+        failureClass: "regression",
+      }));
+    });
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      excessNegatives,
+    )).toThrow(/between two and 8 rejected negative patches/u);
+
+    const unreferencedDraft = jsonClone(fixture.document) as unknown as Record<string, unknown>;
+    const curated = (unreferencedDraft.tasks as Array<Record<string, unknown>>)
+      .find((task) => task.taskId === taskId)!;
+    const qa = curated.qa as Record<string, unknown>;
+    (qa.supportingArtifacts as ContentArtifact[]).push(fixture.suite.tasks[0].setupPatch);
+    const unreferenced = finalizePilotDocument(
+      unreferencedDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      unreferenced,
+      fixture.suite,
+      fixture.evidence,
+    )).toThrow(/supporting artifacts must exactly match evidence digest references/u);
   });
 
   it("requires complete product-neutral stressor evidence bound to labels and setup content", async () => {
@@ -894,6 +1025,21 @@ describe("evaluation development pilot curation protocol", () => {
       fixture.suite,
       unboundSetup,
     )).toThrow(/setup patch digest mismatch/u);
+
+    const excessiveMechanisms = mutateEvidence(
+      fixture,
+      promptTask.taskId,
+      "stressorEvidence",
+      (draft) => {
+        const mechanism = (draft.mechanisms as Array<Record<string, unknown>>)[0];
+        draft.mechanisms = Array.from({ length: 5 }, () => ({ ...mechanism }));
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      excessiveMechanisms,
+    )).toThrow(/array of at most 4 entries/u);
   });
 
   it("rejects duplicate-key, invalid UTF-8, oversized, and symlinked curation documents", async () => {

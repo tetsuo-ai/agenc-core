@@ -15,6 +15,8 @@ import {
 import {
   EVALUATION_PILOT_CATEGORIES,
   EVALUATION_PILOT_MAXIMUM_ARTIFACT_BYTES,
+  EVALUATION_PILOT_MAXIMUM_NEGATIVE_PATCHES,
+  EVALUATION_PILOT_MAXIMUM_SUPPORTING_ARTIFACTS_PER_TASK,
   EVALUATION_PILOT_MAXIMUM_TASKS_PER_REPOSITORY,
   EVALUATION_PILOT_MAXIMUM_TOTAL_ARTIFACT_BYTES,
   EVALUATION_PILOT_MINIMUM_REPOSITORIES,
@@ -37,16 +39,27 @@ import {
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const TIMESTAMP_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u;
+const MAXIMUM_REPORTED_ISSUES = 256;
 
 let compiledSchema: ValidateFunction | undefined;
+const validatedAgentTasks = new WeakMap<
+  ValidatedEvaluationPilotCatalog,
+  ReadonlyMap<string, ReturnType<typeof projectTaskForAgent>>
+>();
 
 export class EvaluationPilotValidationError extends Error {
   readonly issues: readonly string[];
 
   constructor(issues: readonly string[]) {
-    super(`evaluation pilot validation failed:\n- ${issues.join("\n- ")}`);
+    const boundedIssues = issues.length > MAXIMUM_REPORTED_ISSUES
+      ? [
+        ...issues.slice(0, MAXIMUM_REPORTED_ISSUES - 1),
+        `${issues.length - MAXIMUM_REPORTED_ISSUES + 1} additional issues omitted`,
+      ]
+      : [...issues];
+    super(`evaluation pilot validation failed:\n- ${boundedIssues.join("\n- ")}`);
     this.name = "EvaluationPilotValidationError";
-    this.issues = issues;
+    this.issues = Object.freeze(boundedIssues);
   }
 }
 
@@ -59,12 +72,68 @@ export interface EvaluationPilotRequiredArtifact {
     | "independent_solve_review"
     | "negative_patch_review"
     | "stressor_evidence"
+    | "qualification_support"
     | "operator_setup_patch"
     | "operator_hidden_verifier_bundle"
     | "operator_reference_solution_patch"
     | "operator_reference_validation_evidence";
   readonly taskId: string | null;
   readonly artifact: ContentArtifact;
+}
+
+class ImmutableMapView<K, V> implements ReadonlyMap<K, V> {
+  readonly #entries: Map<K, V>;
+
+  constructor(entries: Iterable<readonly [K, V]>) {
+    this.#entries = new Map(entries);
+    Object.freeze(this);
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#entries.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#entries.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#entries.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#entries.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#entries.values();
+  }
+
+  forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.#entries) callbackfn.call(thisArg, value, key, this);
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.#entries[Symbol.iterator]();
+  }
+
+  get [Symbol.toStringTag](): string {
+    return "ImmutableMapView";
+  }
+}
+
+function deepFreezeJson<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreezeJson(child);
+  return Object.freeze(value);
+}
+
+function immutableJsonSnapshot<T>(value: T): T {
+  return deepFreezeJson(structuredClone(value));
 }
 
 export interface EvaluationPilotEvidenceDocuments {
@@ -205,6 +274,9 @@ export function getEvaluationPilotRequiredArtifacts(
         artifact: task.qa.stressorEvidence,
       },
     );
+    for (const artifact of task.qa.supportingArtifacts) {
+      artifacts.push({ role: "qualification_support", taskId: task.taskId, artifact });
+    }
   }
   for (const task of suite.tasks) {
     artifacts.push(
@@ -331,6 +403,19 @@ function assertPilotTaskSet(
       `${curated.taskId}: source row digest must equal its artifact digest`,
       issues,
     );
+    requireCondition(
+      curated.qa.supportingArtifacts.length > 0 &&
+        curated.qa.supportingArtifacts.length <=
+          EVALUATION_PILOT_MAXIMUM_SUPPORTING_ARTIFACTS_PER_TASK,
+      `${curated.taskId}: qualification supporting artifact count is outside the pilot limit`,
+      issues,
+    );
+    requireCondition(
+      new Set(curated.qa.supportingArtifacts.map((artifact) => artifact.digest)).size ===
+        curated.qa.supportingArtifacts.length,
+      `${curated.taskId}: qualification supporting artifact digests must be unique`,
+      issues,
+    );
     familyCounts.set(
       curated.repositoryFamily,
       (familyCounts.get(curated.repositoryFamily) ?? 0) + 1,
@@ -454,7 +539,9 @@ export function validateEvaluationPilotCurationDocument(
       assertArtifact(artifact, label, issues);
     }
   }
-  const curationArtifacts = artifacts.filter(({ role }) => !role.startsWith("operator_"));
+  const curationArtifacts = artifacts.filter(
+    ({ role }) => !role.startsWith("operator_") && role !== "qualification_support",
+  );
   requireCondition(
     new Set(curationArtifacts.map(({ artifact }) => artifact.digest)).size ===
       curationArtifacts.length,
@@ -534,6 +621,23 @@ function expectDigest(value: unknown, label: string, issues: string[]): value is
   const valid = typeof value === "string" && DIGEST_PATTERN.test(value);
   requireCondition(valid, `${label} must be a lowercase SHA-256 digest`, issues);
   return valid;
+}
+
+function expectSupportingArtifactDigest(
+  value: unknown,
+  label: string,
+  supportingDigests: ReadonlySet<string>,
+  referencedDigests: Set<string>,
+  issues: string[],
+): value is Sha256Digest {
+  if (!expectDigest(value, label, issues)) return false;
+  requireCondition(
+    supportingDigests.has(value),
+    `${label} must resolve to a declared qualification supporting artifact`,
+    issues,
+  );
+  if (supportingDigests.has(value)) referencedDigests.add(value);
+  return true;
 }
 
 function expectString(value: unknown, label: string, issues: string[]): value is string {
@@ -617,6 +721,8 @@ function validatePreflight(
   value: unknown,
   curated: EvaluationPilotTaskCuration,
   task: OperatorTaskDocument,
+  supportingDigests: ReadonlySet<string>,
+  referencedDigests: Set<string>,
   issues: string[],
 ): EvaluationPilotUpstreamPreflightEvidence | undefined {
   const label = `${curated.taskId}.upstream preflight evidence`;
@@ -654,8 +760,20 @@ function validatePreflight(
     requireCondition(run.baseFailsTargetChecks === true, `${label}.runs[${index}] must prove the base fails target checks`, issues);
     requireCondition(run.basePassesRegressionChecks === true, `${label}.runs[${index}] must prove base regressions pass`, issues);
     requireCondition(run.referencePassesAllChecks === true, `${label}.runs[${index}] must prove the reference passes`, issues);
-    expectDigest(run.environmentDigest, `${label}.runs[${index}].environmentDigest`, issues);
-    expectDigest(run.evidenceDigest, `${label}.runs[${index}].evidenceDigest`, issues);
+    expectSupportingArtifactDigest(
+      run.environmentDigest,
+      `${label}.runs[${index}].environmentDigest`,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    );
+    expectSupportingArtifactDigest(
+      run.evidenceDigest,
+      `${label}.runs[${index}].evidenceDigest`,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    );
   }
   return record as unknown as EvaluationPilotUpstreamPreflightEvidence;
 }
@@ -664,6 +782,8 @@ function validateIndependentSolve(
   value: unknown,
   curated: EvaluationPilotTaskCuration,
   task: OperatorTaskDocument,
+  supportingDigests: ReadonlySet<string>,
+  referencedDigests: Set<string>,
   issues: string[],
 ): EvaluationPilotIndependentSolveEvidence | undefined {
   const label = `${curated.taskId}.independent solve evidence`;
@@ -692,8 +812,20 @@ function validateIndependentSolve(
   requireCondition(record.startedFromPinnedBase === true, `${label} solve must start from the pinned base`, issues);
   requireCondition(record.solutionAccepted === true, `${label} independent solution must be accepted`, issues);
   expectDigest(record.reviewerIdentityDigest, `${label}.reviewerIdentityDigest`, issues);
-  expectDigest(record.solutionPatchDigest, `${label}.solutionPatchDigest`, issues);
-  expectDigest(record.reviewEvidenceDigest, `${label}.reviewEvidenceDigest`, issues);
+  expectSupportingArtifactDigest(
+    record.solutionPatchDigest,
+    `${label}.solutionPatchDigest`,
+    supportingDigests,
+    referencedDigests,
+    issues,
+  );
+  expectSupportingArtifactDigest(
+    record.reviewEvidenceDigest,
+    `${label}.reviewEvidenceDigest`,
+    supportingDigests,
+    referencedDigests,
+    issues,
+  );
   return record as unknown as EvaluationPilotIndependentSolveEvidence;
 }
 
@@ -701,6 +833,8 @@ function validateNegativePatches(
   value: unknown,
   curated: EvaluationPilotTaskCuration,
   task: OperatorTaskDocument,
+  supportingDigests: ReadonlySet<string>,
+  referencedDigests: Set<string>,
   issues: string[],
 ): EvaluationPilotNegativePatchEvidence | undefined {
   const label = `${curated.taskId}.negative patch evidence`;
@@ -726,8 +860,14 @@ function validateNegativePatches(
   requireCondition(record.implementationIndependenceReviewed === true, `${label} must review implementation independence`, issues);
   requireCondition(record.allNegativePatchesRejected === true, `${label} must reject every negative patch`, issues);
   expectDigest(record.reviewerIdentityDigest, `${label}.reviewerIdentityDigest`, issues);
-  if (!Array.isArray(record.negativePatches) || record.negativePatches.length < 2) {
-    issues.push(`${label} must contain at least two rejected negative patches`);
+  if (
+    !Array.isArray(record.negativePatches) ||
+    record.negativePatches.length < 2 ||
+    record.negativePatches.length > EVALUATION_PILOT_MAXIMUM_NEGATIVE_PATCHES
+  ) {
+    issues.push(
+      `${label} must contain between two and ${EVALUATION_PILOT_MAXIMUM_NEGATIVE_PATCHES} rejected negative patches`,
+    );
     return undefined;
   }
   const patchDigests: string[] = [];
@@ -738,12 +878,20 @@ function validateNegativePatches(
       "failureClass",
     ], `${label}.negativePatches[${index}]`, issues);
     if (!patch) continue;
-    if (expectDigest(patch.patchDigest, `${label}.negativePatches[${index}].patchDigest`, issues)) {
+    if (expectSupportingArtifactDigest(
+      patch.patchDigest,
+      `${label}.negativePatches[${index}].patchDigest`,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    )) {
       patchDigests.push(patch.patchDigest);
     }
-    expectDigest(
+    expectSupportingArtifactDigest(
       patch.rejectionEvidenceDigest,
       `${label}.negativePatches[${index}].rejectionEvidenceDigest`,
+      supportingDigests,
+      referencedDigests,
       issues,
     );
     requireCondition(
@@ -762,6 +910,8 @@ function validateStressorEvidence(
   value: unknown,
   curated: EvaluationPilotTaskCuration,
   task: OperatorTaskDocument,
+  supportingDigests: ReadonlySet<string>,
+  referencedDigests: Set<string>,
   issues: string[],
 ): EvaluationPilotStressorEvidence | undefined {
   const label = `${curated.taskId}.stressor evidence`;
@@ -797,8 +947,13 @@ function validateStressorEvidence(
     assertExactSet(declaredStressors, curated.stressors, `${label}.declaredStressors`, issues);
   }
 
-  if (!Array.isArray(record.mechanisms)) {
-    issues.push(`${label}.mechanisms must be an array`);
+  if (
+    !Array.isArray(record.mechanisms) ||
+    record.mechanisms.length > EVALUATION_PILOT_STRESSORS.length
+  ) {
+    issues.push(
+      `${label}.mechanisms must be an array of at most ${EVALUATION_PILOT_STRESSORS.length} entries`,
+    );
     return undefined;
   }
   const mechanismStressors: string[] = [];
@@ -838,13 +993,27 @@ function validateStressorEvidence(
       `${label}.mechanisms[${index}] must confirm productSpecificSemantics=false`,
       issues,
     );
-    expectDigest(
+    expectSupportingArtifactDigest(
       mechanism.implementationDigest,
       `${label}.mechanisms[${index}].implementationDigest`,
+      supportingDigests,
+      referencedDigests,
       issues,
     );
-    expectDigest(mechanism.policyDigest, `${label}.mechanisms[${index}].policyDigest`, issues);
-    expectDigest(mechanism.evidenceDigest, `${label}.mechanisms[${index}].evidenceDigest`, issues);
+    expectSupportingArtifactDigest(
+      mechanism.policyDigest,
+      `${label}.mechanisms[${index}].policyDigest`,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    );
+    expectSupportingArtifactDigest(
+      mechanism.evidenceDigest,
+      `${label}.mechanisms[${index}].evidenceDigest`,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    );
     if (typedStressor === "repository_prompt_injection") {
       requireCondition(
         mechanism.setupPatchDigest === task.setupPatch.digest,
@@ -879,29 +1048,47 @@ export function validateEvaluationPilotEvidenceDocuments(
     const task = operatorTasks.get(curated.taskId);
     const joined = evidence.taskEvidence.get(curated.taskId);
     if (!task || !joined) continue;
+    const supportingDigests = new Set(
+      curated.qa.supportingArtifacts.map((artifact) => artifact.digest),
+    );
+    const referencedDigests = new Set<string>();
     const sourceRow = validateSourceRow(joined.sourceRow, document, curated, task, issues);
     const upstreamTriplePreflight = validatePreflight(
       joined.upstreamTriplePreflight,
       curated,
       task,
+      supportingDigests,
+      referencedDigests,
       issues,
     );
     const independentSolveReview = validateIndependentSolve(
       joined.independentSolveReview,
       curated,
       task,
+      supportingDigests,
+      referencedDigests,
       issues,
     );
     const negativePatchReview = validateNegativePatches(
       joined.negativePatchReview,
       curated,
       task,
+      supportingDigests,
+      referencedDigests,
       issues,
     );
     const stressorEvidence = validateStressorEvidence(
       joined.stressorEvidence,
       curated,
       task,
+      supportingDigests,
+      referencedDigests,
+      issues,
+    );
+    requireCondition(
+      referencedDigests.size === supportingDigests.size &&
+        [...supportingDigests].every((digest) => referencedDigests.has(digest)),
+      `${curated.taskId}: qualification supporting artifacts must exactly match evidence digest references`,
       issues,
     );
     if (
@@ -926,31 +1113,48 @@ export function validateEvaluationPilotEvidenceDocuments(
   }
   if (issues.length > 0 || !licenseEvidence) throw new EvaluationPilotValidationError(issues);
 
-  const agentTasks = document.tasks.map((curated) => {
-    const operatorTask = operatorTasks.get(curated.taskId);
+  const frozenDocument = immutableJsonSnapshot(document);
+  const frozenSuite = immutableJsonSnapshot(suite);
+  const frozenOperatorTasks = new ImmutableMapView(
+    frozenSuite.tasks.map((task) => [task.taskId, task] as const),
+  );
+  const frozenTaskEvidence = new ImmutableMapView(
+    [...taskEvidence].map(([taskId, joined]) => [
+      taskId,
+      immutableJsonSnapshot(joined),
+    ] as const),
+  );
+  const frozenLicenseEvidence = immutableJsonSnapshot(licenseEvidence);
+  const agentTasks = Object.freeze(frozenDocument.tasks.map((curated) => {
+    const operatorTask = frozenOperatorTasks.get(curated.taskId);
     if (!operatorTask) {
       throw new EvaluationPilotValidationError([`${curated.taskId}: operator task disappeared`]);
     }
-    return projectTaskForAgent(operatorTask);
-  });
-  return {
-    document,
-    suite,
-    operatorTasks,
-    taskEvidence,
-    licenseEvidence,
+    return immutableJsonSnapshot(projectTaskForAgent(operatorTask));
+  }));
+  const catalog = Object.freeze({
+    document: frozenDocument,
+    suite: frozenSuite,
+    operatorTasks: frozenOperatorTasks,
+    taskEvidence: frozenTaskEvidence,
+    licenseEvidence: frozenLicenseEvidence,
     agentTasks,
-  };
+  }) satisfies ValidatedEvaluationPilotCatalog;
+  validatedAgentTasks.set(
+    catalog,
+    new ImmutableMapView(agentTasks.map((task) => [task.taskId, task] as const)),
+  );
+  return catalog;
 }
 
 export function projectEvaluationPilotTaskForAgent(
   catalog: ValidatedEvaluationPilotCatalog,
   taskId: string,
 ) {
-  expectString(taskId, "taskId", []);
-  const operatorTask = catalog.operatorTasks.get(taskId);
-  if (!operatorTask || !catalog.taskEvidence.has(taskId)) {
+  const taskIndex = validatedAgentTasks.get(catalog);
+  const agentTask = taskIndex?.get(taskId);
+  if (!expectString(taskId, "taskId", []) || !agentTask) {
     throw new EvaluationPilotValidationError([`${taskId}: not present in the validated pilot`]);
   }
-  return projectTaskForAgent(operatorTask);
+  return agentTask;
 }
