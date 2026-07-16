@@ -19,12 +19,15 @@ import {
   EVALUATION_PILOT_MAXIMUM_TOTAL_ARTIFACT_BYTES,
   EVALUATION_PILOT_MINIMUM_REPOSITORIES,
   EVALUATION_PILOT_STRESSORS,
+  EVALUATION_PILOT_STRESSOR_MECHANISMS,
   EVALUATION_PILOT_TASK_COUNT,
   type EvaluationPilotCurationDocument,
   type EvaluationPilotIndependentSolveEvidence,
   type EvaluationPilotLicenseEvidence,
   type EvaluationPilotNegativePatchEvidence,
   type EvaluationPilotSourceRowEvidence,
+  type EvaluationPilotStressor,
+  type EvaluationPilotStressorEvidence,
   type EvaluationPilotTaskCuration,
   type EvaluationPilotTaskEvidence,
   type EvaluationPilotUpstreamPreflightEvidence,
@@ -55,6 +58,7 @@ export interface EvaluationPilotRequiredArtifact {
     | "upstream_triple_preflight"
     | "independent_solve_review"
     | "negative_patch_review"
+    | "stressor_evidence"
     | "operator_setup_patch"
     | "operator_hidden_verifier_bundle"
     | "operator_reference_solution_patch"
@@ -72,6 +76,7 @@ export interface EvaluationPilotEvidenceDocuments {
       readonly upstreamTriplePreflight: unknown;
       readonly independentSolveReview: unknown;
       readonly negativePatchReview: unknown;
+      readonly stressorEvidence: unknown;
     }
   >;
 }
@@ -193,6 +198,11 @@ export function getEvaluationPilotRequiredArtifacts(
         role: "negative_patch_review",
         taskId: task.taskId,
         artifact: task.qa.negativePatchReview,
+      },
+      {
+        role: "stressor_evidence",
+        taskId: task.taskId,
+        artifact: task.qa.stressorEvidence,
       },
     );
   }
@@ -748,6 +758,105 @@ function validateNegativePatches(
   return record as unknown as EvaluationPilotNegativePatchEvidence;
 }
 
+function validateStressorEvidence(
+  value: unknown,
+  curated: EvaluationPilotTaskCuration,
+  task: OperatorTaskDocument,
+  issues: string[],
+): EvaluationPilotStressorEvidence | undefined {
+  const label = `${curated.taskId}.stressor evidence`;
+  const record = exactObject(value, [
+    "kind",
+    "evidenceVersion",
+    "taskId",
+    "operatorTaskDigest",
+    "status",
+    "declaredStressors",
+    "mechanisms",
+  ], label, issues);
+  if (!record) return undefined;
+  requireCondition(record.kind === "agenc.eval.pilot-stressor-evidence", `${label} kind is invalid`, issues);
+  requireCondition(record.evidenceVersion === "1.0.0", `${label} version is invalid`, issues);
+  requireCondition(record.taskId === task.taskId, `${label} taskId mismatch`, issues);
+  requireCondition(record.operatorTaskDigest === task.documentDigest, `${label} task digest mismatch`, issues);
+  requireCondition(record.status === "complete", `${label} must be complete`, issues);
+
+  if (!Array.isArray(record.declaredStressors)) {
+    issues.push(`${label}.declaredStressors must be an array`);
+  } else {
+    const declaredStressors = record.declaredStressors.filter(
+      (stressor): stressor is EvaluationPilotStressor =>
+        typeof stressor === "string" &&
+        EVALUATION_PILOT_STRESSORS.includes(stressor as EvaluationPilotStressor),
+    );
+    requireCondition(
+      declaredStressors.length === record.declaredStressors.length,
+      `${label}.declaredStressors contains an invalid stressor`,
+      issues,
+    );
+    assertExactSet(declaredStressors, curated.stressors, `${label}.declaredStressors`, issues);
+  }
+
+  if (!Array.isArray(record.mechanisms)) {
+    issues.push(`${label}.mechanisms must be an array`);
+    return undefined;
+  }
+  const mechanismStressors: string[] = [];
+  for (let index = 0; index < record.mechanisms.length; index += 1) {
+    const candidate = record.mechanisms[index];
+    const candidateStressor = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).stressor
+      : undefined;
+    const promptInjection = candidateStressor === "repository_prompt_injection";
+    const mechanism = exactObject(candidate, [
+      "stressor",
+      "mechanism",
+      "implementationDigest",
+      "policyDigest",
+      "evidenceDigest",
+      "productSpecificSemantics",
+      ...(promptInjection ? ["setupPatchDigest"] : []),
+    ], `${label}.mechanisms[${index}]`, issues);
+    if (!mechanism) continue;
+    const stressor = mechanism.stressor;
+    if (
+      typeof stressor !== "string" ||
+      !EVALUATION_PILOT_STRESSORS.includes(stressor as EvaluationPilotStressor)
+    ) {
+      issues.push(`${label}.mechanisms[${index}].stressor is invalid`);
+      continue;
+    }
+    const typedStressor = stressor as EvaluationPilotStressor;
+    mechanismStressors.push(typedStressor);
+    requireCondition(
+      mechanism.mechanism === EVALUATION_PILOT_STRESSOR_MECHANISMS[typedStressor],
+      `${label}.mechanisms[${index}] must use the product-neutral ${typedStressor} mechanism`,
+      issues,
+    );
+    requireCondition(
+      mechanism.productSpecificSemantics === false,
+      `${label}.mechanisms[${index}] must confirm productSpecificSemantics=false`,
+      issues,
+    );
+    expectDigest(
+      mechanism.implementationDigest,
+      `${label}.mechanisms[${index}].implementationDigest`,
+      issues,
+    );
+    expectDigest(mechanism.policyDigest, `${label}.mechanisms[${index}].policyDigest`, issues);
+    expectDigest(mechanism.evidenceDigest, `${label}.mechanisms[${index}].evidenceDigest`, issues);
+    if (typedStressor === "repository_prompt_injection") {
+      requireCondition(
+        mechanism.setupPatchDigest === task.setupPatch.digest,
+        `${label}.mechanisms[${index}] setup patch digest mismatch`,
+        issues,
+      );
+    }
+  }
+  assertExactSet(mechanismStressors, curated.stressors, `${label}.mechanism stressors`, issues);
+  return record as unknown as EvaluationPilotStressorEvidence;
+}
+
 export function validateEvaluationPilotEvidenceDocuments(
   documentValue: unknown,
   suiteValue: unknown,
@@ -789,12 +898,25 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       issues,
     );
-    if (sourceRow && upstreamTriplePreflight && independentSolveReview && negativePatchReview) {
+    const stressorEvidence = validateStressorEvidence(
+      joined.stressorEvidence,
+      curated,
+      task,
+      issues,
+    );
+    if (
+      sourceRow &&
+      upstreamTriplePreflight &&
+      independentSolveReview &&
+      negativePatchReview &&
+      stressorEvidence
+    ) {
       taskEvidence.set(curated.taskId, {
         sourceRow,
         upstreamTriplePreflight,
         independentSolveReview,
         negativePatchReview,
+        stressorEvidence,
       });
     }
   }

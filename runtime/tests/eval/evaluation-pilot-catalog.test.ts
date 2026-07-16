@@ -16,6 +16,7 @@ import {
   EVALUATION_PILOT_CATEGORIES,
   EVALUATION_PILOT_MAXIMUM_DOCUMENT_BYTES,
   EVALUATION_PILOT_STRESSORS,
+  EVALUATION_PILOT_STRESSOR_MECHANISMS,
   EvaluationPilotValidationError,
   computeEvaluationPilotArtifactSetDigest,
   computeEvaluationPilotSelectedRowsDigest,
@@ -203,9 +204,11 @@ function buildPilotFixture(options: {
     readonly upstreamTriplePreflight: unknown;
     readonly independentSolveReview: unknown;
     readonly negativePatchReview: unknown;
+    readonly stressorEvidence: unknown;
   }>();
 
   const tasks = suite.tasks.map((task, index): EvaluationPilotTaskCuration => {
+    const stressors = [EVALUATION_PILOT_STRESSORS[index % EVALUATION_PILOT_STRESSORS.length]];
     const sourceRow = {
       kind: "agenc.eval.pilot-source-row",
       evidenceVersion: "1.0.0",
@@ -272,11 +275,31 @@ function buildPilotFixture(options: {
         },
       ],
     };
+    const stressorEvidence = {
+      kind: "agenc.eval.pilot-stressor-evidence",
+      evidenceVersion: "1.0.0",
+      taskId: task.taskId,
+      operatorTaskDigest: task.documentDigest,
+      status: "complete",
+      declaredStressors: stressors,
+      mechanisms: stressors.map((stressor) => ({
+        stressor,
+        mechanism: EVALUATION_PILOT_STRESSOR_MECHANISMS[stressor],
+        implementationDigest: digest(`${task.taskId}:${stressor}:implementation`),
+        policyDigest: digest(`${task.taskId}:${stressor}:policy`),
+        evidenceDigest: digest(`${task.taskId}:${stressor}:evidence`),
+        productSpecificSemantics: false,
+        ...(stressor === "repository_prompt_injection"
+          ? { setupPatchDigest: task.setupPatch.digest }
+          : {}),
+      })),
+    };
     joinedEvidence.set(task.taskId, {
       sourceRow,
       upstreamTriplePreflight: preflight,
       independentSolveReview: independentSolve,
       negativePatchReview: negativePatches,
+      stressorEvidence,
     });
     const sourceArtifact = jsonArtifact(blobs, sourceRow);
     return {
@@ -285,7 +308,7 @@ function buildPilotFixture(options: {
       repositoryFamily: task.repository.cluster,
       eligibility: "development_public_issue_eligible",
       category: EVALUATION_PILOT_CATEGORIES[index % EVALUATION_PILOT_CATEGORIES.length],
-      stressors: [EVALUATION_PILOT_STRESSORS[index % EVALUATION_PILOT_STRESSORS.length]],
+      stressors,
       selectionKeyDigest: digest(`selection-key:${index}`),
       source: {
         rowId: `row-${index}`,
@@ -296,6 +319,7 @@ function buildPilotFixture(options: {
         upstreamTriplePreflight: jsonArtifact(blobs, preflight),
         independentSolveReview: jsonArtifact(blobs, independentSolve),
         negativePatchReview: jsonArtifact(blobs, negativePatches),
+        stressorEvidence: jsonArtifact(blobs, stressorEvidence),
       },
     };
   }).sort((left, right) => left.selectionKeyDigest.localeCompare(right.selectionKeyDigest));
@@ -389,7 +413,12 @@ async function materializeFixture(fixture: PilotFixture): Promise<{ root: string
 function mutateEvidence(
   fixture: PilotFixture,
   taskId: string,
-  field: "sourceRow" | "upstreamTriplePreflight" | "independentSolveReview" | "negativePatchReview",
+  field:
+    | "sourceRow"
+    | "upstreamTriplePreflight"
+    | "independentSolveReview"
+    | "negativePatchReview"
+    | "stressorEvidence",
   mutate: (draft: Record<string, unknown>) => void,
 ): EvaluationPilotEvidenceDocuments {
   const taskEvidence = new Map(fixture.evidence.taskEvidence);
@@ -514,10 +543,13 @@ describe("evaluation development pilot curation protocol", () => {
       "upstreamTriplePreflight",
       "independentSolveReview",
       "negativePatchReview",
+      "stressorEvidence",
       "selectionKeyDigest",
     ]) {
       expect(projectedBytes).not.toContain(forbidden);
     }
+    const curated = fixture.document.tasks.find((task) => task.taskId === taskId)!;
+    expect(projectedBytes).not.toContain(curated.qa.stressorEvidence.digest);
     expect(() => projectEvaluationPilotTaskForAgent(loaded, "not-curated")).toThrow(
       /not present in the validated pilot/u,
     );
@@ -526,7 +558,8 @@ describe("evaluation development pilot curation protocol", () => {
   it("commits and verifies every bound operator artifact while allowing shared empty setup patches", async () => {
     const fixture = buildPilotFixture({ sharedZeroByteSetup: true });
     const inventory = getEvaluationPilotRequiredArtifacts(fixture.document, fixture.suite);
-    expect(inventory).toHaveLength(242);
+    expect(inventory).toHaveLength(272);
+    expect(inventory.filter((entry) => entry.role === "stressor_evidence")).toHaveLength(30);
     for (const role of [
       "operator_setup_patch",
       "operator_hidden_verifier_bundle",
@@ -778,6 +811,89 @@ describe("evaluation development pilot curation protocol", () => {
     expect(() =>
       validateEvaluationPilotEvidenceDocuments(fixture.document, fixture.suite, unknownEvidenceField)
     ).toThrow(/must contain exactly/u);
+  });
+
+  it("requires complete product-neutral stressor evidence bound to labels and setup content", async () => {
+    const fixture = buildPilotFixture();
+    const promptTask = fixture.document.tasks.find(
+      (task) => task.stressors.includes("repository_prompt_injection"),
+    );
+    if (!promptTask) throw new Error("missing prompt-injection fixture task");
+
+    const missingDescriptor = resignContract(fixture.document, (draft) => {
+      const task = (draft.tasks as Array<Record<string, unknown>>)
+        .find((entry) => entry.taskId === promptTask.taskId)!;
+      delete (task.qa as Record<string, unknown>).stressorEvidence;
+    });
+    expect(() => validateEvaluationPilotCurationDocument(missingDescriptor, fixture.suite)).toThrow(
+      /must have required property 'stressorEvidence'/u,
+    );
+
+    const missingArtifact = await materializeFixture(fixture);
+    await rm(path.join(
+      missingArtifact.root,
+      "cas",
+      "sha256",
+      promptTask.qa.stressorEvidence.digest.slice("sha256:".length),
+    ));
+    await expect(loadAndValidateEvaluationPilotCatalog(missingArtifact.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: missingArtifact.root,
+    })).rejects.toThrow(/ENOENT|no such file/u);
+
+    const mislabeled = mutateEvidence(fixture, promptTask.taskId, "stressorEvidence", (draft) => {
+      draft.declaredStressors = ["tool_timeout"];
+    });
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      mislabeled,
+    )).toThrow(/declaredStressors must contain exactly repository_prompt_injection/u);
+
+    const missingMechanism = mutateEvidence(
+      fixture,
+      promptTask.taskId,
+      "stressorEvidence",
+      (draft) => {
+        draft.mechanisms = [];
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      missingMechanism,
+    )).toThrow(/mechanism stressors must contain exactly repository_prompt_injection/u);
+
+    const productSpecific = mutateEvidence(
+      fixture,
+      promptTask.taskId,
+      "stressorEvidence",
+      (draft) => {
+        const mechanism = (draft.mechanisms as Array<Record<string, unknown>>)[0];
+        mechanism.mechanism = "agenc_only_prompt_injection";
+        mechanism.productSpecificSemantics = true;
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      productSpecific,
+    )).toThrow(/product-neutral repository_prompt_injection mechanism|productSpecificSemantics=false/u);
+
+    const unboundSetup = mutateEvidence(
+      fixture,
+      promptTask.taskId,
+      "stressorEvidence",
+      (draft) => {
+        const mechanism = (draft.mechanisms as Array<Record<string, unknown>>)[0];
+        mechanism.setupPatchDigest = digest("unbound-setup-patch");
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      fixture.document,
+      fixture.suite,
+      unboundSetup,
+    )).toThrow(/setup patch digest mismatch/u);
   });
 
   it("rejects duplicate-key, invalid UTF-8, oversized, and symlinked curation documents", async () => {

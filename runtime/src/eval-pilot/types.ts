@@ -31,6 +31,13 @@ export const EVALUATION_PILOT_STRESSORS = [
   "collaboration_beneficial",
 ] as const;
 
+export const EVALUATION_PILOT_STRESSOR_MECHANISMS = {
+  tool_timeout: "harness_shell_deadline_with_recovery",
+  partial_output: "harness_output_cap_with_continuation",
+  repository_prompt_injection: "setup_patch_untrusted_repository_content",
+  collaboration_beneficial: "task_decomposition_review",
+} as const;
+
 export type EvaluationPilotProtocolVersion = typeof EVALUATION_PILOT_PROTOCOL_VERSION;
 export type EvaluationPilotCategory = (typeof EVALUATION_PILOT_CATEGORIES)[number];
 export type EvaluationPilotStressor = (typeof EVALUATION_PILOT_STRESSORS)[number];
@@ -72,6 +79,7 @@ export interface EvaluationPilotTaskCuration {
     readonly upstreamTriplePreflight: ContentArtifact;
     readonly independentSolveReview: ContentArtifact;
     readonly negativePatchReview: ContentArtifact;
+    readonly stressorEvidence: ContentArtifact;
   };
 }
 
@@ -182,6 +190,42 @@ export interface EvaluationPilotNegativePatchEvidence {
   ];
 }
 
+export interface EvaluationPilotStressorEvidence {
+  readonly kind: "agenc.eval.pilot-stressor-evidence";
+  readonly evidenceVersion: "1.0.0";
+  readonly taskId: string;
+  readonly operatorTaskDigest: Sha256Digest;
+  readonly status: "complete";
+  readonly declaredStressors: readonly EvaluationPilotStressor[];
+  readonly mechanisms: readonly EvaluationPilotStressorMechanismEvidence[];
+}
+
+interface EvaluationPilotStressorMechanismBase {
+  readonly implementationDigest: Sha256Digest;
+  readonly policyDigest: Sha256Digest;
+  readonly evidenceDigest: Sha256Digest;
+  readonly productSpecificSemantics: false;
+}
+
+export type EvaluationPilotStressorMechanismEvidence =
+  | (EvaluationPilotStressorMechanismBase & {
+    readonly stressor: "tool_timeout";
+    readonly mechanism: "harness_shell_deadline_with_recovery";
+  })
+  | (EvaluationPilotStressorMechanismBase & {
+    readonly stressor: "partial_output";
+    readonly mechanism: "harness_output_cap_with_continuation";
+  })
+  | (EvaluationPilotStressorMechanismBase & {
+    readonly stressor: "repository_prompt_injection";
+    readonly mechanism: "setup_patch_untrusted_repository_content";
+    readonly setupPatchDigest: Sha256Digest;
+  })
+  | (EvaluationPilotStressorMechanismBase & {
+    readonly stressor: "collaboration_beneficial";
+    readonly mechanism: "task_decomposition_review";
+  });
+
 export interface EvaluationPilotRejectedNegativePatch {
   readonly patchDigest: Sha256Digest;
   readonly rejectionEvidenceDigest: Sha256Digest;
@@ -193,6 +237,7 @@ export interface EvaluationPilotTaskEvidence {
   readonly upstreamTriplePreflight: EvaluationPilotUpstreamPreflightEvidence;
   readonly independentSolveReview: EvaluationPilotIndependentSolveEvidence;
   readonly negativePatchReview: EvaluationPilotNegativePatchEvidence;
+  readonly stressorEvidence: EvaluationPilotStressorEvidence;
 }
 
 export interface ValidatedEvaluationPilotCatalog {

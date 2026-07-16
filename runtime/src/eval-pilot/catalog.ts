@@ -324,6 +324,7 @@ export async function loadAndValidateEvaluationPilotCatalog(
       readonly upstreamTriplePreflight: unknown;
       readonly independentSolveReview: unknown;
       readonly negativePatchReview: unknown;
+      readonly stressorEvidence: unknown;
     }
   >();
   for (const task of document.tasks) {
@@ -332,6 +333,7 @@ export async function loadAndValidateEvaluationPilotCatalog(
       upstreamTriplePreflight: parsedArtifacts.get(task.qa.upstreamTriplePreflight.digest),
       independentSolveReview: parsedArtifacts.get(task.qa.independentSolveReview.digest),
       negativePatchReview: parsedArtifacts.get(task.qa.negativePatchReview.digest),
+      stressorEvidence: parsedArtifacts.get(task.qa.stressorEvidence.digest),
     });
   }
   const evidence: EvaluationPilotEvidenceDocuments = {

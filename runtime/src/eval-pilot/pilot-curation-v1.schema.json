@@ -246,12 +246,14 @@
           "required": [
             "upstreamTriplePreflight",
             "independentSolveReview",
-            "negativePatchReview"
+            "negativePatchReview",
+            "stressorEvidence"
           ],
           "properties": {
             "upstreamTriplePreflight": { "$ref": "#/definitions/jsonArtifact" },
             "independentSolveReview": { "$ref": "#/definitions/jsonArtifact" },
-            "negativePatchReview": { "$ref": "#/definitions/jsonArtifact" }
+            "negativePatchReview": { "$ref": "#/definitions/jsonArtifact" },
+            "stressorEvidence": { "$ref": "#/definitions/jsonArtifact" }
           }
         }
       }
