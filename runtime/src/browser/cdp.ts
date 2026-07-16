@@ -399,7 +399,7 @@ export async function launchBrowser(
     env: spawnCommand.env,
     argv0: spawnCommand.argv0,
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-    detached: false,
+    detached: process.platform !== "win32",
   });
 
   let stderrTail = "";

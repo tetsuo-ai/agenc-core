@@ -276,9 +276,9 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     )) ?? { changedFiles: 0, commits: 0 }
 
     if (input.action === 'keep') {
+      await rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
       await keepWorktree()
       restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
-      rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
 
       const tmuxNote = tmuxSessionName
         ? ` Tmux session ${tmuxSessionName} is still running; reattach with: tmux attach -t ${tmuxSessionName}`
@@ -299,9 +299,9 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     if (tmuxSessionName) {
       await killTmuxSession(tmuxSessionName, sandboxExecutionBroker)
     }
-    await cleanupWorktree(sandboxExecutionBroker)
+    await rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
     restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
-    rebaseWorktreeSandboxBrokers(sandboxExecutionBrokers, originalCwd)
+    await cleanupWorktree(sandboxExecutionBroker)
 
     const discardParts: string[] = []
     if (commits > 0) {

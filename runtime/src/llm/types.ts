@@ -9,6 +9,7 @@
 
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import { isRecord } from "../utils/record.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
 /**
  * Message role in a conversation
@@ -836,6 +837,12 @@ export interface LLMProviderStartupPrewarmHandle {
   dispose?(): Promise<void> | void;
 }
 
+/** Authority inherited by a provider instance owned by one child session. */
+export interface LLMProviderSessionForkOptions {
+  readonly cwd: string;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
+}
+
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -857,6 +864,13 @@ export interface LLMProvider {
     | Promise<LLMProviderStartupPrewarmHandle | void>
     | LLMProviderStartupPrewarmHandle
     | void;
+  /**
+   * Create an independently owned provider for a child session. Process-backed
+   * adapters must not share their parent process across sandbox authorities.
+   */
+  forkForSession?(options: LLMProviderSessionForkOptions): LLMProvider;
+  /** Release provider-owned sockets, subprocesses, and other live resources. */
+  dispose?(): Promise<void> | void;
   /** Optional debug/replay hook for fetching a stored provider response by ID. */
   retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
   /** Optional debug/replay hook for deleting a stored provider response by ID. */

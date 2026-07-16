@@ -14,15 +14,16 @@
  *
  * @module
  */
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
+  type SandboxSpawnCommand,
 } from "../../sandbox/execution-broker.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 
 export type NormalizedUserPdfInput = {
   readonly kind: "local";
@@ -43,6 +44,8 @@ const PDF_MAGIC = "%PDF-";
 
 export const PDF_TEXT_EXTRACTION_MAX_BYTES = 256 * 1024;
 const PDF_TEXT_EXTRACTION_TIMEOUT_MS = 120_000;
+const PDF_TEXT_EXTRACTION_PROCESS_MAX_BYTES =
+  PDF_TEXT_EXTRACTION_MAX_BYTES + 256 * 1024;
 
 export interface UserPdfNormalizationOptions {
   readonly cwd?: string;
@@ -126,7 +129,7 @@ async function extractPdfText(
   };
 }
 
-function runPdfTextExtractor(
+async function runPdfTextExtractor(
   filePath: string,
   options: UserPdfNormalizationOptions,
 ): Promise<
@@ -140,83 +143,80 @@ function runPdfTextExtractor(
   if (options.sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("tool");
   }
-  const command = options.sandboxExecutionBroker.prepareSpawn("tool", {
-    program: "pdftotext",
-    args: ["-layout", "-nopgbrk", "-q", filePath, "-"],
-    cwd: options.cwd ?? path.dirname(filePath),
-    env: scrubEnvForChildProcess(process.env),
-  });
-  return new Promise((resolve) => {
-    const child = spawn(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+  let command: SandboxSpawnCommand;
+  try {
+    command = options.sandboxExecutionBroker.prepareSpawn("tool", {
+      program: "pdftotext",
+      args: ["-layout", "-nopgbrk", "-q", filePath, "-"],
+      cwd: options.cwd ?? path.dirname(filePath),
+      env: scrubEnvForChildProcess(process.env),
     });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-    let truncated = false;
-    let timedOut = false;
-    let settled = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, PDF_TEXT_EXTRACTION_TIMEOUT_MS);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (stdoutBytes >= PDF_TEXT_EXTRACTION_MAX_BYTES) {
-        truncated = true;
-        child.kill("SIGTERM");
-        return;
-      }
-      const remaining = PDF_TEXT_EXTRACTION_MAX_BYTES - stdoutBytes;
-      if (chunk.byteLength > remaining) {
-        stdout.push(chunk.subarray(0, remaining));
-        stdoutBytes += remaining;
-        truncated = true;
-        child.kill("SIGTERM");
-        return;
-      }
-      stdout.push(chunk);
-      stdoutBytes += chunk.byteLength;
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.push(chunk);
-    });
-
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ kind: "error", error: pdfExtractionErrorMessage(error) });
-    });
-
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (truncated) {
-        resolve({ kind: "ok", stdout, truncated: true });
-        return;
-      }
-      if (timedOut) {
-        resolve({ kind: "error", error: "PDF text extraction timed out." });
-        return;
-      }
-      if (code === 0) {
-        resolve({ kind: "ok", stdout, truncated: false });
-        return;
-      }
-      resolve({
+  } catch (error) {
+    if (isExecutableUnavailable(error)) {
+      return {
         kind: "error",
-        error: pdfExtractionErrorMessage({
-          stderr: Buffer.concat(stderr).toString("utf8"),
-        }),
-      });
-    });
+        error: pdfExtractionErrorMessage({ code: "ENOENT" }),
+      };
+    }
+    throw error;
+  }
+  let stdoutBytes = 0;
+  let exceededTextLimit = false;
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: PDF_TEXT_EXTRACTION_TIMEOUT_MS,
+    maxOutputBytes: PDF_TEXT_EXTRACTION_PROCESS_MAX_BYTES,
+    onStdout: (chunk, control) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > PDF_TEXT_EXTRACTION_MAX_BYTES) {
+        exceededTextLimit = true;
+        control.stop();
+      }
+    },
   });
+
+  const stdout = result.stdout.subarray(0, PDF_TEXT_EXTRACTION_MAX_BYTES);
+  const truncated =
+    exceededTextLimit ||
+    (result.stopReason === "output_limit" &&
+      result.stdout.byteLength >= PDF_TEXT_EXTRACTION_MAX_BYTES);
+  if (truncated) {
+    return { kind: "ok", stdout: [stdout], truncated: true };
+  }
+  if (result.stopReason === "timeout") {
+    return { kind: "error", error: "PDF text extraction timed out." };
+  }
+  if (result.error !== undefined) {
+    return {
+      kind: "error",
+      error: pdfExtractionErrorMessage(result.error),
+    };
+  }
+  if (result.stopReason === "output_limit") {
+    return {
+      kind: "error",
+      error: "PDF text extraction exceeded its output limit.",
+    };
+  }
+  if (result.exitCode === 0) {
+    return { kind: "ok", stdout: [stdout], truncated: false };
+  }
+  return {
+    kind: "error",
+    error: pdfExtractionErrorMessage({
+      stderr: result.stderr.toString("utf8"),
+    }),
+  };
+}
+
+function isExecutableUnavailable(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if (/executable not found or not executable:/u.test(current.message)) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
 }
 
 function normalizeExtractedText(value: Buffer): string {

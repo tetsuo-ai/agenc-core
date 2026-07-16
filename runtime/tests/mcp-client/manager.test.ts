@@ -1,7 +1,11 @@
+import { resolve } from "node:path";
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 
 // Mock the connection and tools modules
 vi.mock("./connection.js", () => ({
@@ -177,6 +181,72 @@ describe("MCPManager", () => {
 
     expect(mockCreateMCPConnection).not.toHaveBeenCalled();
     expect(manager.getTools()).toHaveLength(0);
+  });
+
+  it("restarts a running manager under the rebased sandbox authority", async () => {
+    const oldCwd = resolve("old-workspace");
+    const newCwd = resolve("new-workspace");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const observedCwds: string[] = [];
+    mockCreateMCPConnection.mockImplementation(
+      async (_config, _logger, _elicitation, _sampling, scopedBroker) => {
+        observedCwds.push(scopedBroker?.cwd ?? "missing");
+        return { close: vi.fn().mockResolvedValue(undefined) };
+      },
+    );
+    mockCreateToolBridge.mockImplementation(async () =>
+      makeMockBridge("srv1", ["toolA"]),
+    );
+
+    const controller = new AbortController();
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start({
+      signal: controller.signal,
+      timeoutMs: 1_234,
+      requireOneReady: true,
+      requiredServers: ["srv1"],
+    });
+    controller.abort("original startup is over");
+    const restartSpy = vi.spyOn(manager, "start");
+
+    await transitionSandboxExecutionBroker(broker, newCwd);
+
+    expect(observedCwds).toEqual([oldCwd, newCwd]);
+    expect(restartSpy).toHaveBeenCalledOnce();
+    expect(restartSpy).toHaveBeenCalledWith({
+      timeoutMs: 1_234,
+      requireOneReady: true,
+      requiredServers: ["srv1"],
+    });
+    expect(manager.getConnectionState("srv1")).toEqual({ type: "connected" });
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("does not start a never-started manager during a sandbox transition", async () => {
+    const oldCwd = resolve("old-workspace");
+    const newCwd = resolve("new-workspace");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    const startSpy = vi.spyOn(manager, "start");
+    const stopSpy = vi.spyOn(manager, "stop");
+
+    await transitionSandboxExecutionBroker(broker, newCwd);
+
+    expect(broker.cwd).toBe(newCwd);
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(mockCreateMCPConnection).not.toHaveBeenCalled();
+    manager.setSandboxExecutionBroker(undefined);
   });
 
   it("logs and continues when one server fails to connect", async () => {

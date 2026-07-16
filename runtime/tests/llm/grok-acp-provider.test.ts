@@ -1,7 +1,9 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import {
   flattenMessagesForAcp,
@@ -13,6 +15,7 @@ import {
   readProviderFactoryOptions,
 } from '../../src/llm/provider.ts'
 import type { LLMMessage } from '../../src/llm/types.ts'
+import { transitionSandboxExecutionBroker } from '../../src/sandbox/execution-lifecycle.ts'
 import { explicitDangerBroker } from '../helpers/explicit-danger-boundary.ts'
 
 const FIXTURE = join(
@@ -34,16 +37,20 @@ describe('composer model detection', () => {
 })
 
 describe('factory routing', () => {
-  test('composer models construct the ACP provider without an API key', () => {
+  test('composer models construct the ACP provider without an API key', async () => {
     const provider = createProvider('grok', {
       model: 'grok-composer-2.5-fast',
       extra: { sandboxExecutionBroker: explicitDangerBroker },
     })
-    expect(provider.name).toBe('grok')
-    expect(provider).toBeInstanceOf(GrokAcpProvider)
+    try {
+      expect(provider.name).toBe('grok')
+      expect(provider).toBeInstanceOf(GrokAcpProvider)
+    } finally {
+      await provider.dispose?.()
+    }
   })
 
-  test('composer factory options preserve the exact sandbox broker across recreation', () => {
+  test('composer factory options preserve the exact sandbox broker across recreation', async () => {
     const broker = explicitDangerBroker.forkForCwd(process.cwd())
     const provider = createProvider('grok', {
       model: 'grok-composer-2.5-fast',
@@ -61,8 +68,8 @@ describe('factory routing', () => {
         readProviderFactoryOptions(recreated).extra?.sandboxExecutionBroker,
       ).toBe(broker)
     } finally {
-      provider.dispose?.()
-      recreated?.dispose?.()
+      await provider.dispose?.()
+      await recreated?.dispose?.()
     }
   })
 
@@ -113,7 +120,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       expect(response.finishReason).toBe('stop')
       expect(response.toolCalls).toEqual([])
     } finally {
-      provider.dispose()
+      await provider.dispose()
     }
   })
 
@@ -135,7 +142,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
         chunks.filter(chunk => !chunk.done).map(chunk => chunk.content).join(''),
       ).toBe(response.content)
     } finally {
-      provider.dispose()
+      await provider.dispose()
     }
   })
 
@@ -152,11 +159,11 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       // process gets mock-session-2 and keeps the selected model.
       expect(second.content).toBe('[grok-composer-2.5-fast] Hello world')
     } finally {
-      provider.dispose()
+      await provider.dispose()
     }
   })
 
-  test('missing Grok CLI surfaces a helpful provider error', async () => {
+  test('missing Grok CLI surfaces the executable boundary error', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
       binaryPath: 'definitely-not-a-real-grok-binary',
@@ -166,12 +173,88 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       await expect(
         provider.chat([{ role: 'user', content: 'hi' }]),
       ).rejects.toMatchObject({
-        name: 'LLMProviderError',
-        message: expect.stringContaining('Grok Build CLI'),
+        name: 'SandboxExecutionError',
+        code: 'sandbox_transform_failed',
+        message: expect.stringContaining('executable not found'),
       })
       expect(await provider.healthCheck()).toBe(false)
     } finally {
-      provider.dispose()
+      await provider.dispose()
+    }
+  })
+
+  test('uses the broker cwd and restarts lazily after a broker transition', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-provider-cwd-'))
+    const initialCwd = join(root, 'initial')
+    const rebasedCwd = join(root, 'rebased')
+    const staleCwd = join(root, 'stale-config')
+    await Promise.all([
+      mkdir(initialCwd),
+      mkdir(rebasedCwd),
+      mkdir(staleCwd),
+    ])
+    const broker = explicitDangerBroker.forkForCwd(initialCwd)
+    const prepareSpawn = vi.spyOn(broker, 'prepareSpawn')
+    const provider = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      cwd: staleCwd,
+      sandboxExecutionBroker: broker,
+    })
+
+    try {
+      await provider.chat([{ role: 'user', content: 'before transition' }])
+      expect(prepareSpawn).toHaveBeenCalledTimes(1)
+      expect(prepareSpawn.mock.calls[0]?.[1].cwd).toBe(initialCwd)
+
+      await transitionSandboxExecutionBroker(broker, rebasedCwd)
+      // Resume is intentionally lazy: a workspace transition does not launch
+      // a provider process until the next model call.
+      expect(prepareSpawn).toHaveBeenCalledTimes(1)
+
+      await provider.chat([{ role: 'user', content: 'after transition' }])
+      expect(prepareSpawn).toHaveBeenCalledTimes(2)
+      expect(prepareSpawn.mock.calls[1]?.[1].cwd).toBe(rebasedCwd)
+    } finally {
+      await provider.dispose()
+      prepareSpawn.mockRestore()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('forkForSession creates an independently brokered provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-provider-fork-'))
+    const parentCwd = join(root, 'parent')
+    const childCwd = join(root, 'child')
+    await Promise.all([mkdir(parentCwd), mkdir(childCwd)])
+    const parentBroker = explicitDangerBroker.forkForCwd(parentCwd)
+    const childBroker = explicitDangerBroker.forkForCwd(childCwd)
+    const parentSpawn = vi.spyOn(parentBroker, 'prepareSpawn')
+    const childSpawn = vi.spyOn(childBroker, 'prepareSpawn')
+    const parent = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      sandboxExecutionBroker: parentBroker,
+    })
+    const child = parent.forkForSession({
+      cwd: childCwd,
+      sandboxExecutionBroker: childBroker,
+    })
+
+    try {
+      await Promise.all([
+        parent.chat([{ role: 'user', content: 'parent' }]),
+        child.chat([{ role: 'user', content: 'child' }]),
+      ])
+      expect(parentSpawn).toHaveBeenCalledTimes(1)
+      expect(parentSpawn.mock.calls[0]?.[1].cwd).toBe(parentCwd)
+      expect(childSpawn).toHaveBeenCalledTimes(1)
+      expect(childSpawn.mock.calls[0]?.[1].cwd).toBe(childCwd)
+    } finally {
+      await Promise.all([parent.dispose(), child.dispose()])
+      parentSpawn.mockRestore()
+      childSpawn.mockRestore()
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

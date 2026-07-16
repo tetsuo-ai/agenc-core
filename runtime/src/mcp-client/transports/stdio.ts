@@ -34,6 +34,10 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
+import {
+  isProcessTreeAlive,
+  signalProcessTree,
+} from "../../utils/supervisedProcess.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 
@@ -190,7 +194,7 @@ export class AgenCStdioClientTransport implements Transport {
     }
 
     const env = { ...(this.server.env ?? {}) };
-    const cwd = this.server.cwd ?? process.cwd();
+    const cwd = this.server.cwd ?? this.sandboxExecutionBroker?.cwd ?? process.cwd();
     const command = resolveStdioProgram(this.server.command, env, cwd);
     if (this.sandboxExecutionBroker === undefined) {
       throw missingSandboxExecutionBoundary("mcp_stdio");
@@ -252,15 +256,25 @@ export class AgenCStdioClientTransport implements Transport {
       // best-effort
     }
 
-    terminateProcessTree(child, "SIGTERM");
-    if (!(await waitForChildClose(child, PROCESS_GROUP_TERM_GRACE_MS))) {
-      terminateProcessTree(child, "SIGKILL");
+    signalProcessTree(child, "SIGTERM");
+    await waitForChildClose(child, PROCESS_GROUP_TERM_GRACE_MS);
+    if (isProcessTreeAlive(child)) {
+      signalProcessTree(child, "SIGKILL");
       await waitForChildClose(child, PROCESS_GROUP_TERM_GRACE_MS);
     }
+    const terminationError = isProcessTreeAlive(child)
+      ? new Error("MCP stdio process tree survived forced shutdown")
+      : undefined;
 
     this.flushStderr();
     this.readBuffer.clear();
     this.notifyClosed();
+    if (terminationError !== undefined) {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      throw terminationError;
+    }
   }
 
   async send(message: JSONRPCMessage): Promise<void> {
@@ -442,32 +456,4 @@ async function waitForChildClose(
     };
     child.once("close", onClose);
   });
-}
-
-function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-
-  if (process.platform === "win32") {
-    try {
-      const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      taskkill.unref();
-    } catch {
-      child.kill(signal);
-    }
-    return;
-  }
-
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      child.kill(signal);
-    } catch {
-      // best-effort
-    }
-  }
 }

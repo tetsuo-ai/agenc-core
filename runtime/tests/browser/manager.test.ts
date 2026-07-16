@@ -32,6 +32,7 @@ vi.mock("../../src/browser/cdp.js", () => ({
 import { BrowserManager } from "../../src/browser/manager.js";
 import { BrowserProxy } from "../../src/browser/proxy.js";
 import type { BrowserPolicy } from "../../src/browser/config.js";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 
 const BASE_POLICY: BrowserPolicy = {
   headless: true,
@@ -158,5 +159,35 @@ describe("BrowserManager fallback temp profile", () => {
 
     await mgr.closeAll();
     expect(existsSync(dir)).toBe(false);
+  });
+
+  test("forked browser authorities never reuse the root persistent profile", async () => {
+    launchBrowserMock.mockResolvedValue({
+      child: makeFakeChild(),
+      connection: makeFakeConnection(),
+    });
+    const rootBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: tmpdir(),
+    });
+    const childBroker = rootBroker.forkForCwd(join(tmpdir(), "child-workspace"));
+    const mgr = track(
+      new BrowserManager({
+        agencHome: join(tmpdir(), "persistent-agenc-home"),
+        policy: {
+          ...BASE_POLICY,
+          profileDir: join(tmpdir(), "configured-root-profile"),
+        },
+        sandboxExecutionBroker: childBroker,
+      }),
+    );
+
+    await mgr.page().catch(() => {});
+
+    const launchOptions = launchBrowserMock.mock.calls[0]?.[0] as {
+      userDataDir: string;
+    };
+    expect(launchOptions.userDataDir).toContain("agenc-browser-child-");
+    expect(launchOptions.userDataDir).not.toContain("configured-root-profile");
   });
 });

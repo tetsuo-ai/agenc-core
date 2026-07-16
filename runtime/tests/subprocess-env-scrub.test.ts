@@ -22,6 +22,11 @@ const SECRETS: Record<string, string> = {
   GITHUB_TOKEN: 'gh-secret',
   GH_TOKEN: 'gh-cli-secret',
   AGENC_OAUTH_TOKEN: 'oauth-secret',
+  ANTHROPIC_CUSTOM_HEADERS: 'x-sensitive-header: secret',
+  GOOGLE_APPLICATION_CREDENTIALS: '/tmp/provider-credentials.json',
+  AZURE_CLIENT_CERTIFICATE_PATH: '/tmp/client-certificate.pem',
+  ALL_INPUTS: '{"token":"secret"}',
+  SSH_SIGNING_KEY: '/tmp/signing-key',
 }
 
 const TOUCHED_KEYS = [

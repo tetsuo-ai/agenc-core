@@ -43,7 +43,8 @@ import { platform as osPlatform, type as osType, release as osRelease } from "no
 import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
-import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { gitChildEnvironment } from "../sandbox/git-environment.js";
+import { hardenGitWorktreeMutationArgs } from "../sandbox/worktree-permissions.js";
 import {
   AUTONOMOUS_TICK_TAG,
   isAutonomousModeEnabled,
@@ -392,10 +393,15 @@ function readGitBranch(
   if (sandboxExecutionBroker === undefined) return null;
   const command = sandboxExecutionBroker.prepareSpawn("tool", {
     program: "git",
-    args: ["rev-parse", "--abbrev-ref", "HEAD"],
+    args: hardenGitWorktreeMutationArgs([
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD",
+    ]),
     cwd,
-    env: scrubEnvForChildProcess(process.env),
+    env: gitChildEnvironment(process.env),
     argv0: "git",
+    trustedExecutable: true,
   });
   try {
     const result = spawnSync(command.program, [...command.args], {

@@ -49,6 +49,10 @@ import { AsyncQueue, BehaviorSubject } from "./_deps/utils.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
@@ -486,11 +490,18 @@ function createDisabledToolRegistry(): ToolRegistry {
   } as unknown as ToolRegistry;
 }
 
+interface DelegateProviderLease {
+  readonly provider: LLMProvider;
+  readonly ownedProvider?: LLMProvider;
+}
+
 function createDelegateProvider(
   parentProvider: LLMProvider,
   reviewerModel: string,
+  cwd: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
   finalOutputJsonSchema?: unknown,
-): LLMProvider {
+): DelegateProviderLease {
   const structuredOutput =
     finalOutputJsonSchema !== undefined
       ? ({
@@ -498,23 +509,35 @@ function createDelegateProvider(
         } as LLMChatOptions["structuredOutput"])
       : undefined;
   let provider = parentProvider;
-  const providerName = readProviderIdentity(parentProvider);
-  if (providerName !== null) {
-    try {
+  if (parentProvider.forkForSession !== undefined) {
+    if (sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary("provider");
+    }
+    provider = parentProvider.forkForSession({
+      cwd,
+      sandboxExecutionBroker,
+    });
+  } else {
+    const providerName = readProviderIdentity(parentProvider);
+    const factoryOptions = readProviderFactoryOptions(parentProvider);
+    if (providerName !== null) {
       provider = createProvider(providerName, {
-        ...readProviderFactoryOptions(parentProvider),
+        ...factoryOptions,
         model: reviewerModel,
         tools: [],
-        ...(finalOutputJsonSchema !== undefined
-          ? { extra: { structuredOutput: finalOutputJsonSchema } }
-          : {}),
+        extra: {
+          ...(factoryOptions.extra ?? {}),
+          ...(sandboxExecutionBroker !== undefined
+            ? { sandboxExecutionBroker }
+            : {}),
+          ...(finalOutputJsonSchema !== undefined
+            ? { structuredOutput: finalOutputJsonSchema }
+            : {}),
+        },
       });
-    } catch {
-      provider = parentProvider;
     }
   }
-  return {
-    ...provider,
+  const delegatedProvider: LLMProvider = {
     name: provider.name,
     healthCheck: (...args: Parameters<LLMProvider["healthCheck"]>) =>
       provider.healthCheck(...args),
@@ -547,6 +570,25 @@ function createDelegateProvider(
       }
       return provider.chatStream(messages, onChunk, mergedOptions);
     },
+    ...(provider.getExecutionProfile !== undefined
+      ? { getExecutionProfile: () => provider.getExecutionProfile!() }
+      : {}),
+    ...(provider.retrieveStoredResponse !== undefined
+      ? {
+          retrieveStoredResponse: (responseId: string) =>
+            provider.retrieveStoredResponse!(responseId),
+        }
+      : {}),
+    ...(provider.deleteStoredResponse !== undefined
+      ? {
+          deleteStoredResponse: (responseId: string) =>
+            provider.deleteStoredResponse!(responseId),
+        }
+      : {}),
+  };
+  return {
+    provider: delegatedProvider,
+    ...(provider !== parentProvider ? { ownedProvider: provider } : {}),
   };
 }
 
@@ -575,10 +617,16 @@ function buildChildSessionConfiguration(
 function buildChildServices(
   parent: Session,
   provider: LLMProvider,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
 ): SessionServices {
   return {
     ...parent.services,
     provider,
+    ...(sandboxExecutionBroker !== undefined
+      ? { sandboxExecutionBroker }
+      : {}),
+    lspManager: undefined,
+    startupPrewarm: undefined,
     registry: createDisabledToolRegistry(),
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
@@ -651,15 +699,22 @@ export function spawnAgenCDelegateThread(
   reviewerModelInfo: ModelInfo,
   childController: AbortController,
 ): InternalDelegateThread {
-  const provider = createDelegateProvider(
-    parent.provider,
-    reviewerModel,
-    req.finalOutputJsonSchema,
-  );
   const childSessionConfiguration = buildChildSessionConfiguration(
     req.parentContext,
     reviewerModel,
   );
+  const sandboxExecutionBroker =
+    parent.services.sandboxExecutionBroker?.forkForCwd(
+      childSessionConfiguration.cwd,
+    );
+  const providerLease = createDelegateProvider(
+    parent.provider,
+    reviewerModel,
+    childSessionConfiguration.cwd,
+    sandboxExecutionBroker,
+    req.finalOutputJsonSchema,
+  );
+  const provider = providerLease.provider;
   const childSession = new Session({
     conversationId: `${parent.conversationId}:review:${req.subId}`,
     roleWorkspace: parent.roleWorkspace,
@@ -669,7 +724,7 @@ export function spawnAgenCDelegateThread(
       history: [...(req.initialHistory ?? [])],
     },
     features: parent.features,
-    services: buildChildServices(parent, provider),
+    services: buildChildServices(parent, provider, sandboxExecutionBroker),
     jsRepl: parent.jsRepl,
     config: req.config,
     modelInfo: reviewerModelInfo,
@@ -747,7 +802,16 @@ export function spawnAgenCDelegateThread(
       unsubscribe();
       rxEvent.close();
       txSub.close();
-      await childSession.shutdown().catch(() => {});
+      try {
+        await childSession.shutdown();
+      } catch (error) {
+        runError ??= error instanceof Error ? error : new Error(String(error));
+      }
+      try {
+        await providerLease.ownedProvider?.dispose?.();
+      } catch (error) {
+        runError ??= error instanceof Error ? error : new Error(String(error));
+      }
     }
   })();
 

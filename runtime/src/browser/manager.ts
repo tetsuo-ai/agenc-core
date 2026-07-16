@@ -23,6 +23,7 @@ import { BrowserProxy } from "./proxy.js";
 import { resolveBrowserExecutable } from "./executable.js";
 import type { BrowserPolicy } from "./config.js";
 import type { HostLookup } from "./ssrf.js";
+import { signalProcessTree } from "../utils/supervisedProcess.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -91,6 +92,15 @@ export class BrowserManager {
    * unpredictable 0700 directory and never reuses an existing one.
    */
   #ensureProfileDir(): string {
+    // Child sessions get an ephemeral profile. Sharing the root session's
+    // persistent cookies/storage across independently sandboxed browser
+    // processes would silently collapse their authority boundary.
+    if ((this.#options.sandboxExecutionBroker?.forkDepth ?? 0) > 0) {
+      if (this.#tempProfileDir === undefined) {
+        this.#tempProfileDir = mkdtempSync(join(tmpdir(), "agenc-browser-child-"));
+      }
+      return this.#tempProfileDir;
+    }
     const configured = this.#options.policy.profileDir;
     if (configured !== undefined) {
       mkdirSync(configured, { recursive: true, mode: 0o700 });
@@ -163,7 +173,10 @@ export class BrowserManager {
     this.#tabs = [];
     this.#activeTabId = 0;
     launched.child.once("exit", () => {
-      if (this.#child === launched.child) this.#teardownState();
+      if (this.#child === launched.child) {
+        const stoppedProxy = this.#teardownState();
+        void stoppedProxy?.stop();
+      }
     });
     process.once("exit", this.#exitListener);
     activeManagers.add(this);
@@ -305,7 +318,7 @@ export class BrowserManager {
     this.#touchIdle();
   }
 
-  #teardownState(): void {
+  #teardownState(): BrowserProxy | undefined {
     if (this.#idleTimer !== undefined) {
       clearTimeout(this.#idleTimer);
       this.#idleTimer = undefined;
@@ -316,17 +329,19 @@ export class BrowserManager {
     this.#connection?.close();
     this.#connection = undefined;
     this.#child = undefined;
-    void this.#proxy?.stop();
+    const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);
     process.removeListener("exit", this.#exitListener);
+    return proxy;
   }
 
   #killNow(): void {
     const child = this.#child;
-    this.#teardownState();
+    const proxy = this.#teardownState();
+    void proxy?.stop();
     if (child !== undefined && child.exitCode === null) {
-      child.kill("SIGKILL");
+      signalProcessTree(child, "SIGKILL");
     }
     if (this.#tempProfileDir !== undefined) {
       rmSync(this.#tempProfileDir, { recursive: true, force: true });
@@ -342,22 +357,18 @@ export class BrowserManager {
     const launching = this.#launching;
     if (launching !== undefined) await launching.catch(() => {});
     const child = this.#child;
-    this.#teardownState();
+    const proxy = this.#teardownState();
     if (child === undefined || child.exitCode !== null) {
+      await proxy?.stop();
       this.#cleanupTempProfile();
       return;
     }
-    await new Promise<void>((resolve) => {
-      const killTimer = setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
-      }, 500);
-      killTimer.unref?.();
-      child.once("exit", () => {
-        clearTimeout(killTimer);
-        resolve();
-      });
-      child.kill("SIGTERM");
-    });
+    signalProcessTree(child, "SIGTERM");
+    if (!(await waitForExit(child, 500))) {
+      signalProcessTree(child, "SIGKILL");
+      await waitForExit(child, 1_000);
+    }
+    await proxy?.stop();
     this.#cleanupTempProfile();
   }
 
@@ -367,4 +378,21 @@ export class BrowserManager {
       this.#tempProfileDir = undefined;
     }
   }
+}
+
+function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const done = (exited: boolean): void => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => done(true);
+    const timer = setTimeout(() => done(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
 }

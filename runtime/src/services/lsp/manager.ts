@@ -14,6 +14,8 @@ import {
 import { registerLSPNotificationHandlers } from "./passiveFeedback.js";
 import { errorMessage, toError } from "../../utils/errors.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import { clearLSPDiagnosticScope } from "./LSPDiagnosticRegistry.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
 
 type InitializationState = "not-started" | "pending" | "success" | "failed";
 
@@ -24,6 +26,7 @@ interface LspManagerState {
   initializationGeneration: number;
   initializationPromise: Promise<void> | undefined;
   lastManagerOptions: LSPServerManagerOptions | undefined;
+  lifecycleUnregister: (() => void) | undefined;
 }
 
 function createManagerState(): LspManagerState {
@@ -34,6 +37,7 @@ function createManagerState(): LspManagerState {
     initializationGeneration: 0,
     initializationPromise: undefined,
     lastManagerOptions: undefined,
+    lifecycleUnregister: undefined,
   };
 }
 
@@ -69,6 +73,7 @@ function lspDisabledByEnv(): boolean {
 export function _resetLspManagerForTesting(): void {
   for (const state of activeManagerStates) {
     state.initializationGeneration += 1;
+    state.lifecycleUnregister?.();
   }
   defaultManagerState = createManagerState();
   scopedManagerStates = new WeakMap();
@@ -130,11 +135,27 @@ export async function waitForInitialization(
   }
 }
 
+export function initializeForkedLspServerManager(
+  parentScope: SandboxExecutionBrokerLike | undefined,
+  childScope: SandboxExecutionBrokerLike,
+  workspaceRoot: string,
+): void {
+  const parentState = stateForScope(parentScope, false);
+  const options = parentState?.lastManagerOptions;
+  if (options === undefined) return;
+  initializeLspServerManager({
+    ...options,
+    workspaceRoot,
+    sandboxExecutionBroker: childScope,
+  });
+}
+
 export function initializeLspServerManager(
   options: LSPServerManagerOptions = {},
 ): void {
   if (lspDisabledByEnv()) return;
   const state = stateForScope(options.sandboxExecutionBroker, true)!;
+  ensureLspLifecycleRegistration(state, options.sandboxExecutionBroker);
   if (state.manager !== undefined && state.initializationState !== "failed") {
     return;
   }
@@ -155,7 +176,10 @@ export function initializeLspServerManager(
       if (generation !== state.initializationGeneration) return;
       state.initializationState = "success";
       if (state.manager) {
-        registerLSPNotificationHandlers(state.manager);
+        registerLSPNotificationHandlers(
+          state.manager,
+          options.sandboxExecutionBroker,
+        );
       }
     })
     .catch((error: unknown) => {
@@ -201,7 +225,10 @@ export function reinitializeLspServerManager(
     if (generation !== state.initializationGeneration) return;
     state.initializationState = "success";
     if (state.manager) {
-      registerLSPNotificationHandlers(state.manager);
+      registerLSPNotificationHandlers(
+        state.manager,
+        effectiveOptions.sandboxExecutionBroker,
+      );
     }
   })().catch((error: unknown) => {
     if (generation !== state.initializationGeneration) return;
@@ -232,8 +259,56 @@ export async function shutdownLspServerManager(
       state.initializationState = "not-started";
     }
     if (scope !== undefined) {
+      clearLSPDiagnosticScope(scope);
+      state.lifecycleUnregister?.();
+      state.lifecycleUnregister = undefined;
       scopedManagerStates.delete(scope);
       activeManagerStates.delete(state);
     }
   }
+}
+
+function ensureLspLifecycleRegistration(
+  state: LspManagerState,
+  scope: SandboxExecutionBrokerLike | undefined,
+): void {
+  if (scope === undefined || state.lifecycleUnregister !== undefined) return;
+  let resumeOptions: LSPServerManagerOptions | undefined;
+  state.lifecycleUnregister = registerSandboxExecutionLifecycleParticipant(
+    scope,
+    {
+      name: "lsp",
+      quiesce: async () => {
+        resumeOptions = state.lastManagerOptions;
+        await quiesceLspManagerState(state, scope);
+      },
+      resume: async (cwd) => {
+        if (resumeOptions === undefined) return;
+        initializeLspServerManager({
+          ...resumeOptions,
+          workspaceRoot: cwd,
+          sandboxExecutionBroker: scope,
+        });
+        await waitForInitialization(scope);
+        const status = getInitializationStatus(scope);
+        if (status.status === "failed") throw status.error;
+      },
+    },
+  );
+}
+
+async function quiesceLspManagerState(
+  state: LspManagerState,
+  scope: SandboxExecutionBrokerLike,
+): Promise<void> {
+  const manager = state.manager;
+  const pending = state.initializationPromise;
+  state.initializationGeneration += 1;
+  state.manager = undefined;
+  state.initializationState = "not-started";
+  state.initializationError = undefined;
+  state.initializationPromise = undefined;
+  await pending?.catch(() => {});
+  await manager?.shutdown();
+  clearLSPDiagnosticScope(scope);
 }

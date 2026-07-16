@@ -17,8 +17,8 @@ export function notifyLspFileChanged(
     peekAmbientRuntimeSession()?.services.sandboxExecutionBroker,
 ): void {
   const absolutePath = resolve(filePath);
-  clearDeliveredDiagnosticsForFile(absolutePath);
-  clearDeliveredDiagnosticsForFile(pathToFileURL(absolutePath).href);
+  clearDeliveredDiagnosticsForFile(absolutePath, scope);
+  clearDeliveredDiagnosticsForFile(pathToFileURL(absolutePath).href, scope);
   const manager = getLspServerManager(scope);
   if (!manager) return;
   void (async () => {

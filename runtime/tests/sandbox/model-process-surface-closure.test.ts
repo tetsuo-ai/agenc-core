@@ -221,6 +221,24 @@ describe("model-controlled helper process sandbox closure", () => {
     await expectMarkerAbsent();
   });
 
+  test("PDF mentions retain the pdftotext install hint when resolution fails", async () => {
+    const pdf = join(root, "missing-pdftotext.pdf");
+    await writeFile(pdf, "%PDF-1.4\n", "utf8");
+    process.env.PATH = bin;
+
+    const result = await normalizeUserPdfInput(pdf, {
+      cwd: root,
+      sandboxExecutionBroker: new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: root,
+      }),
+    });
+
+    expect(result?.fallbackTextError).toContain("install poppler-utils");
+    expect(result?.fallbackTextError).toContain("pdftotext");
+    await expectMarkerAbsent();
+  });
+
   test("tool helpers reject a missing authenticated boundary without spawning", async () => {
     await expect(
       createGrepTool({ allowedPaths: [root] }).execute({

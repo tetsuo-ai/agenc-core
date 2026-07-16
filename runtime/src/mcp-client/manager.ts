@@ -45,6 +45,7 @@ import {
 } from "./prompts.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/execution-lifecycle.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -202,6 +203,10 @@ export class MCPManager {
   private elicitationHandlers: MCPElicitationHandlers | undefined;
   private samplingHandlers: McpSamplingHandlers | undefined;
   private sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
+  private unregisterSandboxLifecycle: (() => void) | undefined;
+  private running = false;
+  private restartAfterSandboxTransition = false;
+  private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -238,7 +243,25 @@ export class MCPManager {
   setSandboxExecutionBroker(
     broker: SandboxExecutionBrokerLike | undefined,
   ): void {
+    if (this.sandboxExecutionBroker === broker) return;
+    this.unregisterSandboxLifecycle?.();
+    this.unregisterSandboxLifecycle = undefined;
     this.sandboxExecutionBroker = broker;
+    if (broker !== undefined) {
+      this.unregisterSandboxLifecycle =
+        registerSandboxExecutionLifecycleParticipant(broker, {
+          name: "mcp-manager",
+          quiesce: async () => {
+            this.restartAfterSandboxTransition = this.running;
+            if (this.running) await this.stop();
+          },
+          resume: async () => {
+            if (!this.restartAfterSandboxTransition) return;
+            this.restartAfterSandboxTransition = false;
+            await this.start(this.lastStartOpts);
+          },
+        });
+    }
   }
 
   getConnectionState(name: string): MCPConnectionState | undefined {
@@ -269,6 +292,16 @@ export class MCPManager {
    * connect-timeout.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    this.lastStartOpts = {
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.requireOneReady !== undefined
+        ? { requireOneReady: opts.requireOneReady }
+        : {}),
+      ...(opts.requiredServers !== undefined
+        ? { requiredServers: [...opts.requiredServers] }
+        : {}),
+    };
+    this.running = true;
     this.resetConnectionStates();
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false);
 
@@ -360,6 +393,7 @@ export class MCPManager {
    * Disconnect from all MCP servers and clean up resources.
    */
   async stop(): Promise<void> {
+    this.running = false;
     const bridges = Array.from(this.bridges.values());
     const resourceBridges = Array.from(this.resourceBridges.values());
     const promptBridges = Array.from(this.promptBridges.values());

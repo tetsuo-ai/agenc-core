@@ -324,12 +324,11 @@ export const FileWriteTool = buildTool({
     writeTextContent(fullFilePath, content, enc, 'LF')
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
-    const lspManager = getLspServerManager(
-      lspScopeFromToolUseContext(toolUseContext),
-    )
+    const lspScope = lspScopeFromToolUseContext(toolUseContext)
+    const lspManager = getLspServerManager(lspScope)
     if (lspManager) {
       // Clear previously delivered diagnostics so new ones will be shown
-      clearDeliveredDiagnosticsForFile(`file://${fullFilePath}`)
+      clearDeliveredDiagnosticsForFile(`file://${fullFilePath}`, lspScope)
       // didChange: Content has been modified
       lspManager.changeFile(fullFilePath, content).catch((err: Error) => {
         logForDebugging(

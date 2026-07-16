@@ -35,6 +35,8 @@ import {
   type SandboxExecutionSurface,
 } from '../sandbox/execution-broker.js'
 import { scrubEnvForChildProcess } from '../unified-exec/scrub-env.js'
+import { gitChildEnvironment } from '../sandbox/git-environment.js'
+import { runSupervisedProcess } from './supervisedProcess.js'
 import type { AdditionalPermissionProfile } from '../sandbox/engine/index.js'
 import {
   hardenGitWorktreeMutationArgs,
@@ -227,7 +229,7 @@ type WorktreeProcessBoundary = {
   surface: SandboxExecutionSurface
 }
 
-function execWorktreeProcess(
+async function execWorktreeProcess(
   file: string,
   args: string[],
   options: {
@@ -245,21 +247,32 @@ function execWorktreeProcess(
     boundary.surface,
     {
     program: file,
-    args,
+    args: file === gitExe() ? hardenGitWorktreeMutationArgs(args) : args,
     cwd: options.cwd,
-    env: scrubEnvForChildProcess(options.env ?? process.env),
+    env: file === gitExe()
+      ? gitChildEnvironment(options.env ?? process.env)
+      : scrubEnvForChildProcess(options.env ?? process.env),
     argv0: basename(file),
     ...(additionalPermissions !== undefined
       ? { additionalPermissions }
       : {}),
+    trustedExecutable: true,
     },
   )
-  return execFileNoThrowWithCwd(command.program, [...command.args], {
-    ...options,
-    cwd: command.cwd,
-    env: command.env,
-    argv0: command.argv0,
+  const result = await runSupervisedProcess(command, {
+    timeoutMs: 60_000,
+    maxOutputBytes: 4 * 1024 * 1024,
   })
+  return {
+    stdout: result.stdout.toString('utf8'),
+    stderr: result.stderr.toString('utf8'),
+    code: result.exitCode ?? 1,
+    ...(result.error !== undefined
+      ? { error: result.error.message }
+      : result.stopReason !== undefined
+        ? { error: `worktree helper stopped (${result.stopReason})` }
+        : {}),
+  }
 }
 
 function execWorktreeMutation(
@@ -276,7 +289,7 @@ function execWorktreeMutation(
 ) {
   return execWorktreeProcess(
     file,
-    boundary === undefined ? args : hardenGitWorktreeMutationArgs(args),
+    args,
     options,
     boundary,
     boundary === undefined
@@ -375,10 +388,9 @@ async function getOrCreateWorktree(
       }
       baseBranch = 'FETCH_HEAD'
     } else {
-      // If origin/<branch> already exists locally, skip fetch. In large repos
-      // (210k files, 16M objects) fetch burns ~6-8s on a local commit-graph
-      // scan before even hitting the network. A slightly stale base is fine —
-      // the user can pull in the worktree if they want latest.
+      // Use the locally available remote-tracking branch when present. Worktree
+      // creation must not perform an implicit network operation: callers that
+      // need a fresher base can fetch explicitly before creating the worktree.
       // resolveRef reads the loose/packed ref directly; when it succeeds we
       // already have the SHA, so the later rev-parse is skipped entirely.
       const [defaultBranch, gitDir] = await Promise.all([
@@ -393,14 +405,7 @@ async function getOrCreateWorktree(
         baseBranch = originRef
         baseSha = originSha
       } else {
-        const { code: fetchCode } = await execWorktreeMutation(
-          gitExe(),
-          ['fetch', 'origin', defaultBranch],
-          { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
-          options?.processBoundary,
-          repoRoot,
-        )
-        baseBranch = fetchCode === 0 ? originRef : 'HEAD'
+        baseBranch = 'HEAD'
       }
     }
 

@@ -8,6 +8,7 @@ import {
 import type { ToolUseContext } from "./Tool.js";
 import { execFileNoThrowWithCwd } from "../utils/execFileNoThrow.js";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 
 export function requireWorktreeSandboxBrokers(
   context: ToolUseContext,
@@ -37,11 +38,13 @@ export function requireWorktreeSandboxBrokers(
   return [...brokers];
 }
 
-export function rebaseWorktreeSandboxBrokers(
+export async function rebaseWorktreeSandboxBrokers(
   brokers: readonly SandboxExecutionBrokerLike[],
   cwd: string,
-): void {
-  for (const broker of brokers) broker.rebase(cwd);
+): Promise<void> {
+  for (const broker of brokers) {
+    await transitionSandboxExecutionBroker(broker, cwd);
+  }
 }
 
 export function runWorktreeSandboxedProcess(

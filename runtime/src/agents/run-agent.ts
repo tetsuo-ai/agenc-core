@@ -35,7 +35,6 @@ import type {
 } from "../services/PromptSuggestion/runtime.js";
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
-import type { StartupPrewarmStore } from "../session/startup-prewarm.js";
 import {
   readProviderFactoryOptions,
   readProviderIdentity,
@@ -77,8 +76,13 @@ import { formatSubagentNotification, isFinal } from "./status.js";
 import { asRecord } from "../utils/record.js";
 import {
   attachSandboxExecutionBroker,
+  missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
+import {
+  initializeForkedLspServerManager,
+  shutdownLspServerManager,
+} from "../services/lsp/manager.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -462,47 +466,23 @@ function wrapStartupPrewarmHandleForAgentSummary(
   };
 }
 
-function wrapStartupPrewarmForAgentSummary(
-  store: StartupPrewarmStore,
-  capture: AgentSummaryProviderRequestCapture,
-): StartupPrewarmStore {
-  return {
-    setProviderHandle(handle) {
-      store.setProviderHandle(
-        wrapStartupPrewarmHandleForAgentSummary(handle, capture),
-      );
-    },
-    setProviderTask(task, opts) {
-      store.setProviderTask(
-        Promise.resolve(task).then((handle) =>
-          handle
-            ? wrapStartupPrewarmHandleForAgentSummary(handle, capture)
-            : undefined,
-        ),
-        opts,
-      );
-    },
-    async consumeProviderHandle(opts) {
-      const handle = await store.consumeProviderHandle(opts);
-      return handle
-        ? wrapStartupPrewarmHandleForAgentSummary(handle, capture)
-        : undefined;
-    },
-    expireProviderHandle: () => store.expireProviderHandle(),
-    clear: () => store.clear(),
-  };
-}
-
 function wrapProviderForAgentSummary(
   provider: LLMProvider,
   capture: AgentSummaryProviderRequestCapture,
 ): LLMProvider {
   return {
-    ...provider,
+    name: provider.name,
+    chat: (messages, options) => provider.chat(messages, options),
+    healthCheck: () => provider.healthCheck(),
     chatStream(messages, onChunk, options) {
       captureAgentSummaryProviderRequest(capture, messages, options);
       return provider.chatStream(messages, onChunk, options);
     },
+    ...(provider.getExecutionProfile !== undefined
+      ? {
+          getExecutionProfile: () => provider.getExecutionProfile!(),
+        }
+      : {}),
     ...(provider.prewarmStartup !== undefined
       ? {
           prewarmStartup(params: LLMProviderStartupPrewarmParams) {
@@ -524,6 +504,18 @@ function wrapProviderForAgentSummary(
                 : handle,
             );
           },
+        }
+      : {}),
+    ...(provider.retrieveStoredResponse !== undefined
+      ? {
+          retrieveStoredResponse: (responseId: string) =>
+            provider.retrieveStoredResponse!(responseId),
+        }
+      : {}),
+    ...(provider.deleteStoredResponse !== undefined
+      ? {
+          deleteStoredResponse: (responseId: string) =>
+            provider.deleteStoredResponse!(responseId),
         }
       : {}),
   };
@@ -1711,11 +1703,14 @@ function splitInitialMessages(
   };
 }
 
-function buildChildSession(
+interface ChildSessionAuthority {
+  readonly sessionConfiguration: Session["sessionConfiguration"];
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
+function prepareChildSessionAuthority(
   params: RunAgentParams,
-  provider: LLMProvider,
-  startupPrewarm?: StartupPrewarmStore,
-): ChildSession {
+): ChildSessionAuthority {
   const roleConfig = params.live.role.config;
   const childModel = params.model ?? roleConfig.model;
   const childReasoningEffort =
@@ -1739,6 +1734,27 @@ function buildChildSession(
     params.parent.services.sandboxExecutionBroker?.forkForCwd(
       sessionConfiguration.cwd,
     );
+  return {
+    sessionConfiguration,
+    ...(sandboxExecutionBroker !== undefined
+      ? { sandboxExecutionBroker }
+      : {}),
+  };
+}
+
+function buildChildSession(
+  params: RunAgentParams,
+  provider: LLMProvider,
+  authority: ChildSessionAuthority,
+): ChildSession {
+  const { sessionConfiguration, sandboxExecutionBroker } = authority;
+  if (sandboxExecutionBroker !== undefined) {
+    initializeForkedLspServerManager(
+      params.parent.services.sandboxExecutionBroker,
+      sandboxExecutionBroker,
+      sessionConfiguration.cwd,
+    );
+  }
   const registry = buildFilteredRegistry(params.parent.services.registry, {
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
@@ -1789,10 +1805,13 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      lspManager: undefined,
       ...(sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker }
         : {}),
-      ...(startupPrewarm !== undefined ? { startupPrewarm } : {}),
+      // Startup-prewarm handles are session-owned; sharing the parent's store
+      // lets a child consume or clear the parent's provider resources.
+      startupPrewarm: undefined,
       querySource: params.querySource ?? params.parent.services.querySource,
       permissionModeRegistry: new PermissionModeRegistry(
         params.parent.permissionModeRegistry.current(),
@@ -1915,6 +1934,7 @@ export async function* runAgent(
   }
 
   let childSession: ChildSession | null = null;
+  let ownedChildProvider: LLMProvider | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -2062,21 +2082,26 @@ export async function* runAgent(
         }),
       );
     };
+    const childAuthority = prepareChildSessionAuthority(params);
+    if (
+      provider.forkForSession !== undefined &&
+      childAuthority.sandboxExecutionBroker === undefined
+    ) {
+      throw missingSandboxExecutionBoundary("provider");
+    }
+    const childProviderBase =
+      childAuthority.sandboxExecutionBroker !== undefined &&
+        provider.forkForSession !== undefined
+        ? provider.forkForSession({
+            cwd: childAuthority.sessionConfiguration.cwd,
+            sandboxExecutionBroker: childAuthority.sandboxExecutionBroker,
+          })
+        : provider;
+    if (childProviderBase !== provider) ownedChildProvider = childProviderBase;
     const childProvider = params.onCacheSafeParams
-      ? wrapProviderForAgentSummary(provider, captureCacheSafeParams)
-      : provider;
-    const childStartupPrewarm =
-      params.onCacheSafeParams && parent.services.startupPrewarm !== undefined
-        ? wrapStartupPrewarmForAgentSummary(
-            parent.services.startupPrewarm,
-            captureCacheSafeParams,
-          )
-        : parent.services.startupPrewarm;
-    childSession = buildChildSession(
-      params,
-      childProvider,
-      childStartupPrewarm,
-    );
+      ? wrapProviderForAgentSummary(childProviderBase, captureCacheSafeParams)
+      : childProviderBase;
+    childSession = buildChildSession(params, childProvider, childAuthority);
     const { history, userMessage } = splitInitialMessages(
       params.initialMessages,
       params.taskPrompt,
@@ -2414,13 +2439,35 @@ export async function* runAgent(
     if (forwardMergedAbort !== null) {
       merged.signal.removeEventListener("abort", forwardMergedAbort);
     }
+    const cleanupErrors: unknown[] = [];
     if (childSession !== null) {
-      await childSession.shutdown();
+      try {
+        await shutdownLspServerManager(
+          childSession.services.sandboxExecutionBroker,
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await childSession.shutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (ownedChildProvider !== null) {
+      try {
+        await ownedChildProvider.dispose?.();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
     parent.abortController.signal.removeEventListener("abort", onParentAbort);
     live.abortController.signal.removeEventListener("abort", onLiveAbort);
     if (params.externalSignal && onExternalAbort !== null) {
       params.externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "subagent resource cleanup failed");
     }
   }
 }

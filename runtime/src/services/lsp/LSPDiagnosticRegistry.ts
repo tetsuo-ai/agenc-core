@@ -20,15 +20,41 @@ export interface PendingLSPDiagnostic {
   attachmentSent: boolean;
 }
 
+export type LSPDiagnosticScope = object;
+
 const MAX_DIAGNOSTICS_PER_FILE = 10;
 const MAX_TOTAL_DIAGNOSTICS = 30;
 const MAX_DELIVERED_FILES = 500;
 export const MAX_DELIVERED_DIAGNOSTICS_PER_FILE = 100;
 
-const pendingDiagnostics = new Map<string, PendingLSPDiagnostic>();
-const deliveredDiagnostics = new LRUCache<string, Set<string>>({
-  max: MAX_DELIVERED_FILES,
-});
+interface LSPDiagnosticState {
+  readonly pendingDiagnostics: Map<string, PendingLSPDiagnostic>;
+  readonly deliveredDiagnostics: LRUCache<string, Set<string>>;
+}
+
+function createDiagnosticState(): LSPDiagnosticState {
+  return {
+    pendingDiagnostics: new Map(),
+    deliveredDiagnostics: new LRUCache({ max: MAX_DELIVERED_FILES }),
+  };
+}
+
+let defaultDiagnosticState = createDiagnosticState();
+let scopedDiagnosticStates = new WeakMap<LSPDiagnosticScope, LSPDiagnosticState>();
+let activeDiagnosticStates = new Set<LSPDiagnosticState>([defaultDiagnosticState]);
+
+function stateForScope(
+  scope: LSPDiagnosticScope | undefined,
+  create: boolean,
+): LSPDiagnosticState | undefined {
+  if (scope === undefined) return defaultDiagnosticState;
+  const existing = scopedDiagnosticStates.get(scope);
+  if (existing !== undefined || !create) return existing;
+  const state = createDiagnosticState();
+  scopedDiagnosticStates.set(scope, state);
+  activeDiagnosticStates.add(state);
+  return state;
+}
 
 function pendingKey(serverName: string, uri: string): string {
   return `${serverName}\u0000${uri}`;
@@ -84,6 +110,7 @@ function fileMatches(a: string, b: string): boolean {
 
 function deduplicateDiagnosticFiles(
   files: readonly DiagnosticFile[],
+  state: LSPDiagnosticState,
 ): DiagnosticFile[] {
   const perFileSeen = new Map<string, Set<string>>();
   const out = new Map<string, DiagnosticFile>();
@@ -91,7 +118,7 @@ function deduplicateDiagnosticFiles(
   for (const file of files) {
     const seen = perFileSeen.get(file.uri) ?? new Set<string>();
     perFileSeen.set(file.uri, seen);
-    const delivered = deliveredDiagnostics.get(file.uri) ?? new Set<string>();
+    const delivered = state.deliveredDiagnostics.get(file.uri) ?? new Set<string>();
     const target = out.get(file.uri) ?? { uri: file.uri, diagnostics: [] };
     out.set(file.uri, target);
 
@@ -124,8 +151,12 @@ function sortAndCapDiagnosticFiles(files: DiagnosticFile[]): DiagnosticFile[] {
   return files.filter((file) => file.diagnostics.length > 0);
 }
 
-function rememberDeliveredDiagnostic(fileUri: string, key: string): void {
-  const delivered = deliveredDiagnostics.get(fileUri) ?? new Set<string>();
+function rememberDeliveredDiagnostic(
+  state: LSPDiagnosticState,
+  fileUri: string,
+  key: string,
+): void {
+  const delivered = state.deliveredDiagnostics.get(fileUri) ?? new Set<string>();
   if (delivered.has(key)) {
     delivered.delete(key);
   }
@@ -135,23 +166,30 @@ function rememberDeliveredDiagnostic(fileUri: string, key: string): void {
     if (oldest === undefined) break;
     delivered.delete(oldest);
   }
-  deliveredDiagnostics.set(fileUri, delivered);
+  state.deliveredDiagnostics.set(fileUri, delivered);
 }
 
-function reconcileDeliveredDiagnosticsForFile(file: DiagnosticFile): void {
+function clearDeliveredInState(state: LSPDiagnosticState, fileUri: string): void {
+  for (const key of fileKeys(fileUri)) state.deliveredDiagnostics.delete(key);
+}
+
+function reconcileDeliveredDiagnosticsForFile(
+  state: LSPDiagnosticState,
+  file: DiagnosticFile,
+): void {
   if (file.diagnostics.length === 0) {
-    clearDeliveredDiagnosticsForFile(file.uri);
+    clearDeliveredInState(state, file.uri);
     return;
   }
   const currentKeys = new Set(file.diagnostics.map(diagnosticKey));
   for (const key of fileKeys(file.uri)) {
-    const delivered = deliveredDiagnostics.get(key);
+    const delivered = state.deliveredDiagnostics.get(key);
     if (!delivered) continue;
     for (const deliveredKey of Array.from(delivered)) {
       if (!currentKeys.has(deliveredKey)) delivered.delete(deliveredKey);
     }
     if (delivered.size === 0) {
-      deliveredDiagnostics.delete(key);
+      state.deliveredDiagnostics.delete(key);
     }
   }
 }
@@ -159,15 +197,16 @@ function reconcileDeliveredDiagnosticsForFile(file: DiagnosticFile): void {
 export function registerPendingLSPDiagnostic(input: {
   readonly serverName: string;
   readonly files: DiagnosticFile[];
-}): void {
+}, scope?: LSPDiagnosticScope): void {
+  const state = stateForScope(scope, true)!;
   for (const file of input.files) {
-    reconcileDeliveredDiagnosticsForFile(file);
+    reconcileDeliveredDiagnosticsForFile(state, file);
     const key = pendingKey(input.serverName, file.uri);
     if (file.diagnostics.length === 0) {
-      pendingDiagnostics.delete(key);
+      state.pendingDiagnostics.delete(key);
       continue;
     }
-    pendingDiagnostics.set(key, {
+    state.pendingDiagnostics.set(key, {
       serverName: input.serverName,
       files: [file],
       timestamp: Date.now(),
@@ -176,15 +215,17 @@ export function registerPendingLSPDiagnostic(input: {
   }
 }
 
-export function checkForLSPDiagnostics(): Array<{
+export function checkForLSPDiagnostics(scope?: LSPDiagnosticScope): Array<{
   readonly serverName: string;
   readonly files: DiagnosticFile[];
 }> {
+  const state = stateForScope(scope, false);
+  if (state === undefined) return [];
   const allFiles: DiagnosticFile[] = [];
   const serverNames = new Set<string>();
   const diagnosticsToMark: PendingLSPDiagnostic[] = [];
 
-  for (const diagnostic of pendingDiagnostics.values()) {
+  for (const diagnostic of state.pendingDiagnostics.values()) {
     if (diagnostic.attachmentSent) continue;
     allFiles.push(...diagnostic.files);
     serverNames.add(diagnostic.serverName);
@@ -192,15 +233,17 @@ export function checkForLSPDiagnostics(): Array<{
   }
   if (allFiles.length === 0) return [];
 
-  let deduped = sortAndCapDiagnosticFiles(deduplicateDiagnosticFiles(allFiles));
+  const deduped = sortAndCapDiagnosticFiles(
+    deduplicateDiagnosticFiles(allFiles, state),
+  );
   for (const diagnostic of diagnosticsToMark) diagnostic.attachmentSent = true;
-  for (const [id, diagnostic] of pendingDiagnostics.entries()) {
-    if (diagnostic.attachmentSent) pendingDiagnostics.delete(id);
+  for (const [id, diagnostic] of state.pendingDiagnostics.entries()) {
+    if (diagnostic.attachmentSent) state.pendingDiagnostics.delete(id);
   }
 
   for (const file of deduped) {
     for (const diagnostic of file.diagnostics) {
-      rememberDeliveredDiagnostic(file.uri, diagnosticKey(diagnostic));
+      rememberDeliveredDiagnostic(state, file.uri, diagnosticKey(diagnostic));
     }
   }
 
@@ -213,11 +256,16 @@ export function checkForLSPDiagnostics(): Array<{
   ];
 }
 
-export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
+export function peekLSPDiagnosticsForFile(
+  file: string,
+  scope?: LSPDiagnosticScope,
+): DiagnosticEntry[] {
+  const state = stateForScope(scope, false);
+  if (state === undefined) return [];
   const seen = new Set<string>();
   const diagnostics: DiagnosticEntry[] = [];
 
-  for (const pending of pendingDiagnostics.values()) {
+  for (const pending of state.pendingDiagnostics.values()) {
     if (pending.attachmentSent) continue;
     for (const diagnosticFile of pending.files) {
       if (!fileMatches(diagnosticFile.uri, file)) continue;
@@ -225,7 +273,7 @@ export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
       // entry's LRU recency and risk evicting another file's delivered-dedup set
       // (which would re-deliver already-seen diagnostics as "new").
       const delivered =
-        deliveredDiagnostics.peek(diagnosticFile.uri) ?? new Set();
+        state.deliveredDiagnostics.peek(diagnosticFile.uri) ?? new Set();
       for (const diagnostic of diagnosticFile.diagnostics) {
         const key = diagnosticKey(diagnostic);
         if (seen.has(key) || delivered.has(key)) continue;
@@ -238,21 +286,37 @@ export function peekLSPDiagnosticsForFile(file: string): DiagnosticEntry[] {
   return sortAndCapDiagnosticFiles([{ uri: file, diagnostics }])[0]?.diagnostics ?? [];
 }
 
-export function clearAllLSPDiagnostics(): void {
-  pendingDiagnostics.clear();
+export function clearAllLSPDiagnostics(scope?: LSPDiagnosticScope): void {
+  stateForScope(scope, false)?.pendingDiagnostics.clear();
 }
 
 export function resetAllLSPDiagnosticState(): void {
-  pendingDiagnostics.clear();
-  deliveredDiagnostics.clear();
-}
-
-export function clearDeliveredDiagnosticsForFile(fileUri: string): void {
-  for (const key of fileKeys(fileUri)) {
-    deliveredDiagnostics.delete(key);
+  for (const state of activeDiagnosticStates) {
+    state.pendingDiagnostics.clear();
+    state.deliveredDiagnostics.clear();
   }
+  defaultDiagnosticState = createDiagnosticState();
+  scopedDiagnosticStates = new WeakMap();
+  activeDiagnosticStates = new Set([defaultDiagnosticState]);
 }
 
-export function getPendingLSPDiagnosticCount(): number {
-  return pendingDiagnostics.size;
+export function clearDeliveredDiagnosticsForFile(
+  fileUri: string,
+  scope?: LSPDiagnosticScope,
+): void {
+  const state = stateForScope(scope, false);
+  if (state !== undefined) clearDeliveredInState(state, fileUri);
+}
+
+export function clearLSPDiagnosticScope(scope: LSPDiagnosticScope): void {
+  const state = stateForScope(scope, false);
+  if (state === undefined) return;
+  state.pendingDiagnostics.clear();
+  state.deliveredDiagnostics.clear();
+  scopedDiagnosticStates.delete(scope);
+  activeDiagnosticStates.delete(state);
+}
+
+export function getPendingLSPDiagnosticCount(scope?: LSPDiagnosticScope): number {
+  return stateForScope(scope, false)?.pendingDiagnostics.size ?? 0;
 }

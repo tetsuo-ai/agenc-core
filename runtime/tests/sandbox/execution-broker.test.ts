@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -44,6 +51,50 @@ afterEach(() => {
 });
 
 describe("SandboxExecutionBroker", () => {
+  it("rejects a privileged executable resolved from the writable workspace PATH", () => {
+    const root = tempRoot("agenc-sandbox-broker-path-shim-");
+    const executableName = process.platform === "win32" ? "git.cmd" : "git";
+    const workspaceShim = join(root, executableName);
+    writeFileSync(
+      workspaceShim,
+      process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+    );
+    chmodSync(workspaceShim, 0o755);
+    const transform = vi.fn();
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      platform: process.platform,
+      sandboxManager: {
+        selectInitial: vi.fn(() => "linux_seccomp" as const),
+        transform,
+      } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(() =>
+      broker.prepareSpawn("tool", {
+        program: "git",
+        args: ["status"],
+        cwd: root,
+        env: {
+          PATH: root,
+          ...(process.platform === "win32" ? { PATHEXT: ".CMD" } : {}),
+        },
+        trustedExecutable: true,
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        code: "sandbox_transform_failed",
+        surface: "tool",
+        status: expect.objectContaining({
+          reason: expect.stringContaining("privileged executable is writable"),
+        }),
+      }),
+    );
+    expect(transform).not.toHaveBeenCalled();
+  });
+
   it("rejects a process tool when its authenticated boundary is missing", () => {
     const root = tempRoot("agenc-sandbox-broker-uncovered-");
 
@@ -117,7 +168,7 @@ describe("SandboxExecutionBroker", () => {
       });
 
       expect(command).toMatchObject({
-        program: "/bin/echo",
+        program: realpathSync("/bin/echo"),
         args: ["ok"],
         cwd: root,
       });
@@ -156,7 +207,7 @@ describe("SandboxExecutionBroker", () => {
     expect(transform).toHaveBeenCalledOnce();
   });
 
-  it("rebases captured boundaries and forks independent child roots", () => {
+  it("rebases captured boundaries and forks independent child roots", async () => {
     const root = tempRoot("agenc-sandbox-broker-root-");
     const child = tempRoot("agenc-sandbox-broker-child-");
     const sibling = tempRoot("agenc-sandbox-broker-sibling-");
@@ -174,13 +225,16 @@ describe("SandboxExecutionBroker", () => {
     const brokers = requireWorktreeSandboxBrokers({
       services: { sandboxExecutionBroker: broker },
     } as never);
-    rebaseWorktreeSandboxBrokers(brokers, child);
+    await rebaseWorktreeSandboxBrokers(brokers, child);
     broker.status();
     const fork = broker.forkForCwd(sibling);
     fork.status();
 
     expect(broker.cwd).toBe(child);
     expect(fork.cwd).toBe(sibling);
+    expect(broker.forkDepth).toBe(0);
+    expect(fork.forkDepth).toBe(1);
+    expect(fork.forkForCwd(root).forkDepth).toBe(2);
     expect(probedCwds).toEqual([root, child, sibling]);
   });
 

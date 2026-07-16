@@ -19,6 +19,7 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
 import { resolveBrowserPolicy } from "../../browser/config.js";
 import { loadConfig } from "../../config/loader.js";
 import { resolveAgencHome } from "../../config/env.js";
@@ -136,15 +137,22 @@ function describeAction(input: BrowserToolInput): string {
 export function createBrowserTool(
   options: CreateBrowserToolOptions = {},
 ): Tool {
-  let manager: BrowserManager | undefined = options.manager;
-  let initializing: Promise<BrowserManager> | undefined;
+  const injectedManager = options.manager;
+  const managers = new WeakMap<SandboxExecutionBrokerLike, BrowserManager>();
+  const initializations = new WeakMap<
+    SandboxExecutionBrokerLike,
+    Promise<BrowserManager>
+  >();
 
   async function ensureManager(
     sandboxExecutionBroker: SandboxExecutionBrokerLike,
   ): Promise<BrowserManager> {
-    if (manager !== undefined) return manager;
-    if (initializing !== undefined) return initializing;
-    initializing = (async () => {
+    if (injectedManager !== undefined) return injectedManager;
+    const existing = managers.get(sandboxExecutionBroker);
+    if (existing !== undefined) return existing;
+    const pending = initializations.get(sandboxExecutionBroker);
+    if (pending !== undefined) return pending;
+    const initializing = (async () => {
       let browserConfig;
       try {
         const loaded = await loadConfig();
@@ -159,13 +167,22 @@ export function createBrowserTool(
         policy,
         sandboxExecutionBroker,
       });
-      manager = created;
+      managers.set(sandboxExecutionBroker, created);
+      registerSandboxExecutionLifecycleParticipant(
+        sandboxExecutionBroker,
+        {
+          name: "browser",
+          quiesce: () => created.closeAll(),
+          resume: async () => {},
+        },
+      );
       return created;
     })();
+    initializations.set(sandboxExecutionBroker, initializing);
     try {
       return await initializing;
     } finally {
-      initializing = undefined;
+      initializations.delete(sandboxExecutionBroker);
     }
   }
 

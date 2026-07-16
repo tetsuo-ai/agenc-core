@@ -18,6 +18,8 @@
  *    the spawn env carries GROK_OAUTH2_REFERRER=agenc for attribution.
  */
 
+import { resolve } from "node:path";
+
 import {
   allowPermissionDecision,
   GROK_ACP_AUTH_METHOD_API_KEY,
@@ -32,12 +34,16 @@ import {
   SandboxExecutionError,
   type SandboxExecutionBrokerLike,
 } from "../../../sandbox/execution-broker.js";
+import {
+  registerSandboxExecutionLifecycleParticipant,
+} from "../../../sandbox/execution-lifecycle.js";
 import { LLMProviderError } from "../../errors.js";
 import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
   LLMProviderExecutionProfile,
+  LLMProviderSessionForkOptions,
   LLMResponse,
   StreamProgressCallback,
 } from "../../types.js";
@@ -51,7 +57,7 @@ export function isGrokComposerModel(model: string | undefined): boolean {
 
 export interface GrokAcpProviderConfig {
   model: string;
-  /** Workspace the CLI session is anchored to (default: process.cwd()). */
+  /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd?: string;
   /** Grok CLI binary override (default: `grok`, or AGENC_GROK_CLI). */
   binaryPath?: string;
@@ -119,10 +125,31 @@ export class GrokAcpProvider implements LLMProvider {
 
   private readonly config: GrokAcpProviderConfig;
   private client: XaiAcpClient | null = null;
-  private ready: Promise<void> | null = null;
+  private ready: Promise<XaiAcpClient> | null = null;
+  private suspended = false;
+  private disposed = false;
+  private disposal: Promise<void> | null = null;
+  private clientClose: Promise<void> | null = null;
+  private unregisterLifecycle: (() => void) | null = null;
 
   constructor(config: GrokAcpProviderConfig) {
     this.config = config;
+    const broker = config.sandboxExecutionBroker;
+    if (broker !== undefined) {
+      this.unregisterLifecycle = registerSandboxExecutionLifecycleParticipant(
+        broker,
+        {
+          name: "grok-acp-provider",
+          quiesce: async () => {
+            this.suspended = true;
+            await this.closeClient();
+          },
+          resume: async () => {
+            if (!this.disposed) this.suspended = false;
+          },
+        },
+      );
+    }
   }
 
   async chat(
@@ -163,10 +190,32 @@ export class GrokAcpProvider implements LLMProvider {
     };
   }
 
-  dispose(): void {
-    this.client?.dispose();
-    this.client = null;
-    this.ready = null;
+  forkForSession(options: LLMProviderSessionForkOptions): GrokAcpProvider {
+    if (
+      resolve(options.cwd) !== resolve(options.sandboxExecutionBroker.cwd)
+    ) {
+      throw new LLMProviderError(
+        this.name,
+        "child provider cwd does not match its sandbox authority",
+      );
+    }
+    return new GrokAcpProvider({
+      ...this.config,
+      // The broker is authoritative; keeping this field aligned avoids stale
+      // diagnostics in callers that still inspect the deprecated option.
+      cwd: options.sandboxExecutionBroker.cwd,
+      sandboxExecutionBroker: options.sandboxExecutionBroker,
+    });
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal !== null) return this.disposal;
+    this.disposed = true;
+    this.suspended = true;
+    this.unregisterLifecycle?.();
+    this.unregisterLifecycle = null;
+    this.disposal = this.closeClient();
+    return this.disposal;
   }
 
   private env(): NodeJS.ProcessEnv {
@@ -212,18 +261,62 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   private ensureReady(): Promise<XaiAcpClient> {
-    if (this.ready !== null && this.client !== null && !this.client.isClosed) {
-      return this.ready.then(() => this.client as XaiAcpClient);
+    if (this.disposed) {
+      return Promise.reject(
+        new LLMProviderError(this.name, "composer provider is disposed"),
+      );
+    }
+    if (this.suspended) {
+      return Promise.reject(
+        new LLMProviderError(
+          this.name,
+          "composer provider is quiesced for a workspace transition",
+        ),
+      );
+    }
+    const existingReady = this.ready;
+    if (existingReady !== null) {
+      return existingReady.then((client) => {
+        if (!client.isClosed) return client;
+        if (this.ready === existingReady) this.ready = null;
+        return this.ensureReady();
+      });
+    }
+
+    const ready = this.startClient();
+    this.ready = ready;
+    void ready.catch(() => {
+      if (this.ready === ready) this.ready = null;
+    });
+    return ready;
+  }
+
+  private async startClient(): Promise<XaiAcpClient> {
+    const staleClient = this.client;
+    if (staleClient !== null) {
+      this.client = null;
+      await this.trackClientClose(staleClient);
+    }
+    if (this.disposed || this.suspended) {
+      throw new LLMProviderError(
+        this.name,
+        this.disposed
+          ? "composer provider is disposed"
+          : "composer provider is quiesced for a workspace transition",
+      );
     }
     const env = this.env();
+    const broker = this.config.sandboxExecutionBroker;
     const client = new XaiAcpClient({
       ...(this.resolveBinary() !== undefined
         ? { command: this.resolveBinary() }
         : {}),
-      cwd: this.config.cwd ?? process.cwd(),
+      // Never inherit ambient process.cwd(): this broker is the authenticated
+      // authority and is updated atomically by workspace transitions.
+      cwd: broker?.cwd ?? "",
       env,
-      ...(this.config.sandboxExecutionBroker !== undefined
-        ? { sandboxExecutionBroker: this.config.sandboxExecutionBroker }
+      ...(broker !== undefined
+        ? { sandboxExecutionBroker: broker }
         : {}),
       clientInfo: { name: "agenc", version: "0" },
       onPermissionRequest: resolvePermissionHandler(env),
@@ -232,16 +325,33 @@ export class GrokAcpProvider implements LLMProvider {
         : {}),
     });
     this.client = client;
-    this.ready = (async () => {
+    try {
       await client.initialize();
       await client.authenticate(resolveAuthMethodId(env));
-    })().catch(error => {
-      client.dispose();
-      this.client = null;
-      this.ready = null;
+      return client;
+    } catch (error) {
+      await client.dispose();
+      if (this.client === client) this.client = null;
       throw error;
+    }
+  }
+
+  private async closeClient(): Promise<void> {
+    if (this.clientClose !== null) return this.clientClose;
+    const client = this.client;
+    this.client = null;
+    this.ready = null;
+    return this.trackClientClose(client);
+  }
+
+  private trackClientClose(client: XaiAcpClient | null): Promise<void> {
+    if (this.clientClose !== null) return this.clientClose;
+    const closing = client?.dispose() ?? Promise.resolve();
+    const tracked = closing.finally(() => {
+      if (this.clientClose === tracked) this.clientClose = null;
     });
-    return this.ready.then(() => client);
+    this.clientClose = tracked;
+    return tracked;
   }
 
   private resolveBinary(): string | undefined {

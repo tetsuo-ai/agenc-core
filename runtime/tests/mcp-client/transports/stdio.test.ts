@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,6 +49,41 @@ describe("createStdioMCPEnvironment", () => {
 });
 
 describe("AgenCStdioClientTransport", () => {
+  it("defaults the child cwd to the sandbox broker authority", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-cwd-"));
+    tempDirs.add(dir);
+    const expectedCwd = await realpath(dir);
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: dir,
+    });
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/cwd',params:{cwd:process.cwd()}})+'\\n'); setTimeout(() => {}, 1000);",
+        ],
+        env: createStdioMCPEnvironment(undefined, undefined),
+      },
+      undefined,
+      broker,
+    );
+    const message = new Promise((resolve) => {
+      transport.onmessage = resolve;
+    });
+
+    try {
+      await transport.start();
+      await expect(message).resolves.toMatchObject({
+        method: "server/cwd",
+        params: { cwd: expectedCwd },
+      });
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("decodes newline-delimited JSON-RPC messages from stdout", async () => {
     const transport = new AgenCStdioClientTransport(
       {

@@ -466,7 +466,8 @@ export async function* runAgent({
 
   const [baseUserContext, baseSystemContext] = await Promise.all([
     override?.userContext ?? getUserContext(),
-    override?.systemContext ?? getSystemContext(),
+    override?.systemContext ??
+      getSystemContext(parentSession.services.sandboxExecutionBroker),
   ])
 
   // Project instructions are resolved at Session.runTurn from the child's

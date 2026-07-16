@@ -2,7 +2,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
   access,
-  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -82,7 +81,7 @@ describe('XaiAcpClient', () => {
       expect(result.text).toBe('[grok-composer-2.5-fast] Hello world')
       expect(chunks.length).toBeGreaterThanOrEqual(3)
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
@@ -104,7 +103,7 @@ describe('XaiAcpClient', () => {
       expect(seen[0].options.map(o => o.kind)).toEqual(['allow_once', 'reject_once'])
       expect(result.text).toContain('perm=selected:allow')
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
@@ -117,7 +116,7 @@ describe('XaiAcpClient', () => {
       const result = await client.prompt({ sessionId: session.sessionId, text: 'hi' })
       expect(result.text).toContain('perm=selected:reject')
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
@@ -130,23 +129,21 @@ describe('XaiAcpClient', () => {
         rpcCode: -32000,
       })
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
-  test('missing binary fails with a helpful spawn error', async () => {
-    const client = new XaiAcpClient({
-      command: 'definitely-not-a-real-grok-binary',
-      cwd: process.cwd(),
-      sandboxExecutionBroker: explicitDangerBroker,
-    })
-    try {
-      await expect(client.initialize()).rejects.toMatchObject({
-        code: expect.stringMatching(/spawn_failed|closed/),
-      })
-    } finally {
-      client.dispose()
-    }
+  test('missing binary fails at the executable boundary', async () => {
+    expect(() =>
+      new XaiAcpClient({
+        command: 'definitely-not-a-real-grok-binary',
+        cwd: process.cwd(),
+        sandboxExecutionBroker: explicitDangerBroker,
+      }),
+    ).toThrowError(expect.objectContaining({
+      code: 'sandbox_transform_failed',
+      surface: 'provider',
+    }))
   })
 
   test('prompt timeout produces a typed timeout error', async () => {
@@ -162,20 +159,19 @@ describe('XaiAcpClient', () => {
         client.prompt({ sessionId: session.sessionId, text: 'hi' }),
       ).rejects.toMatchObject({ code: 'timeout' })
     } finally {
-      client.dispose()
+      await client.dispose()
     }
   })
 
   test('required sandbox failure prevents the ACP executable from starting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agenc-acp-boundary-'))
     const marker = join(root, 'spawned')
-    const executable = join(root, 'grok')
+    const executable = join(root, 'grok.mjs')
     await writeFile(
       executable,
-      `#!/bin/sh\nprintf spawned > "${marker}"\n`,
+      `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(marker)}, 'spawned')\n`,
       'utf8',
     )
-    await chmod(executable, 0o755)
     const broker = new SandboxExecutionBroker({
       mode: 'workspace_write',
       cwd: root,
@@ -192,7 +188,8 @@ describe('XaiAcpClient', () => {
     try {
       expect(() =>
         new XaiAcpClient({
-          command: executable,
+          command: process.execPath,
+          args: [executable],
           cwd: root,
           sandboxExecutionBroker: broker,
         }),
@@ -270,7 +267,7 @@ describe('XaiAcpClient', () => {
       expect(prepareSpawn).toHaveBeenCalledWith('provider', {
         program: 'untrusted-original-command',
         args: ['--must-not-run'],
-        cwd: join(root, 'original-cwd'),
+        cwd: root,
         env: {
           XAI_API_KEY: 'xai-preserved',
           ACP_PUBLIC_SETTING: 'public-preserved',
@@ -289,12 +286,109 @@ describe('XaiAcpClient', () => {
         referrer: 'agenc',
       })
     } finally {
-      client?.dispose()
+      await client?.dispose()
       prepareSpawn.mockRestore()
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test.skipIf(process.platform !== 'linux')(
+    'dispose is bounded and kills a TERM-resistant ACP process tree',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'agenc-acp-dispose-tree-'))
+      const pidPath = join(root, 'pids.json')
+      const agentPath = join(root, 'stubborn-agent.mjs')
+      await writeFile(
+        agentPath,
+        [
+          'import { spawn } from "node:child_process"',
+          'import { writeFileSync } from "node:fs"',
+          'const child = spawn(process.execPath, ["-e",',
+          '  "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"',
+          '], { stdio: "ignore" })',
+          `writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ agent: process.pid, child: child.pid }))`,
+          'process.on("SIGTERM", () => {})',
+          'setInterval(() => {}, 1000)',
+        ].join('\n'),
+        'utf8',
+      )
+      const broker = explicitDangerBroker.forkForCwd(root)
+      let client: XaiAcpClient | undefined
+      let pids: { agent: number; child: number } | undefined
+
+      try {
+        client = new XaiAcpClient({
+          command: process.execPath,
+          args: [agentPath],
+          cwd: root,
+          sandboxExecutionBroker: broker,
+          terminateGraceMs: 50,
+          settleBackstopMs: 500,
+        })
+        pids = JSON.parse(
+          await waitForFile(pidPath, 2_000),
+        ) as { agent: number; child: number }
+
+        const startedAt = Date.now()
+        await client.dispose()
+        expect(Date.now() - startedAt).toBeLessThan(1_500)
+        await expectProcessesStopped([pids.agent, pids.child], 2_000)
+      } finally {
+        await client?.dispose()
+        if (pids !== undefined) {
+          try {
+            process.kill(-pids.agent, 'SIGKILL')
+          } catch {
+            // The tested process group has already stopped.
+          }
+        }
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
 })
+
+async function waitForFile(path: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      return await readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`timed out waiting for ${path}`)
+}
+
+async function expectProcessesStopped(
+  pids: readonly number[],
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (
+      (
+        await Promise.all(pids.map(pid => isRunningNonZombie(pid)))
+      ).every(running => !running)
+    ) {
+      return
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`ACP process tree still running: ${pids.join(', ')}`)
+}
+
+async function isRunningNonZombie(pid: number): Promise<boolean> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+    const closingParen = stat.lastIndexOf(')')
+    return stat.slice(closingParen + 2, closingParen + 3) !== 'Z'
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
 
 describe('permission decision helpers', () => {
   const request: XaiAcpPermissionRequest = {

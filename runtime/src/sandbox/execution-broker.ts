@@ -11,14 +11,16 @@
 
 import { spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
-import path, { basename } from "node:path";
+import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  canWritePathWithCwd,
   SandboxManager,
   type AdditionalPermissionProfile,
   type SandboxType,
 } from "./engine/index.js";
+import { effectivePermissionProfile } from "./engine/policy-transforms.js";
 import { findSystemBubblewrapInPath } from "./linux-launcher/launcher.js";
 import { resolveRuntimePackageRootFromUrl } from "../app-server/daemon-runtime-info.js";
 import type { UnifiedExecRuntimeSandbox } from "../unified-exec/types.js";
@@ -79,6 +81,8 @@ export interface SandboxSpawnCommand {
   readonly argv0?: string;
   /** Narrow, surface-owned grants required by the child process. */
   readonly additionalPermissions?: AdditionalPermissionProfile;
+  /** Require the executable itself to be outside every sandbox-writable root. */
+  readonly trustedExecutable?: boolean;
 }
 
 export type SandboxExecutionManager = Pick<
@@ -90,6 +94,8 @@ export interface SandboxExecutionBrokerLike {
   readonly mode: SandboxMode;
   readonly required: boolean;
   readonly cwd: string;
+  /** Zero for a root session; increments for each isolated child authority. */
+  readonly forkDepth?: number;
   /** Re-root the same live boundary so captured registry/hook references update. */
   rebase(cwd: string): void;
   /** Fork an independent boundary for a child session or worktree. */
@@ -171,6 +177,8 @@ export interface SandboxExecutionBrokerOptions {
   readonly allowGpu?: boolean;
   readonly platform?: NodeJS.Platform;
   readonly sandboxManager?: SandboxExecutionManager;
+  /** Internal lineage marker propagated by forkForCwd. */
+  readonly forkDepth?: number;
   /** Injectable only for deterministic platform/fault tests. */
   readonly probe?: (options: {
     readonly mode: SandboxMode;
@@ -186,6 +194,7 @@ const defaultSandboxManager = new SandboxManager();
 export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly mode: SandboxMode;
   readonly required: boolean;
+  readonly forkDepth: number;
   #cwd: string;
   readonly #env: NodeJS.ProcessEnv;
   readonly #platform: NodeJS.Platform;
@@ -203,6 +212,9 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   constructor(options: SandboxExecutionBrokerOptions) {
     this.mode = options.mode;
     this.required = sandboxModeRequiresPlatformIsolation(options.mode);
+    this.forkDepth = Number.isFinite(options.forkDepth)
+      ? Math.max(0, Math.floor(options.forkDepth ?? 0))
+      : 0;
     this.#cwd = path.resolve(options.cwd);
     this.#env = { ...(options.env ?? process.env) };
     this.#platform = options.platform ?? process.platform;
@@ -242,6 +254,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       platform: this.#platform,
       sandboxManager: this.#sandboxManager,
       probe: this.#probe,
+      forkDepth: this.forkDepth + 1,
     });
   }
 
@@ -289,14 +302,48 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     surface: SandboxExecutionSurface,
     command: SandboxSpawnCommand,
   ): SandboxSpawnCommand {
-    const runtimeSandbox = this.runtimeSandbox(surface);
-    if (runtimeSandbox === undefined) {
-      return {
+    try {
+      // Establish the required boundary before examining or transforming the
+      // command. When the sandbox probe failed, that is the primary failure;
+      // no executable resolution or policy projection should mask it.
+      const runtimeSandbox = this.runtimeSandbox(surface);
+      const resolvedProgram = resolveSpawnExecutable({
+        program: command.program,
+        cwd: command.cwd,
+        env: command.env,
+        platform: this.#platform,
+      });
+      if (
+        (command.trustedExecutable === true ||
+          command.additionalPermissions !== undefined) &&
+        this.required
+      ) {
+        const baseProfile = permissionProfileForSandboxMode(this.mode, {
+          cwd: this.#cwd,
+        });
+        const effectiveProfile = effectivePermissionProfile(
+          baseProfile,
+          command.additionalPermissions,
+        );
+        if (
+          canWritePathWithCwd(
+            effectiveProfile.fileSystem,
+            resolvedProgram,
+            this.#cwd,
+          )
+        ) {
+          throw new UnifiedExecError(
+            "create_process",
+            `privileged executable is writable by its sandbox policy: ${resolvedProgram}`,
+          );
+        }
+      }
+      const resolvedCommand: SandboxSpawnCommand = {
         ...command,
+        program: resolvedProgram,
         argv0: command.argv0 ?? basename(command.program),
       };
-    }
-    try {
+      if (runtimeSandbox === undefined) return resolvedCommand;
       const sandboxWithSurfacePermissions =
         command.additionalPermissions === undefined
           ? runtimeSandbox
@@ -305,11 +352,12 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
               additionalPermissions: command.additionalPermissions,
             };
       return transformSandboxedCommand({
-        ...command,
+        ...resolvedCommand,
         runtimeSandbox: sandboxWithSurfacePermissions,
         sandboxManager: this.#sandboxManager,
       });
     } catch (error) {
+      if (error instanceof SandboxExecutionError) throw error;
       throw new SandboxExecutionError({
         code: "sandbox_transform_failed",
         surface,
@@ -320,6 +368,77 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         cause: error,
       });
     }
+  }
+}
+
+export function resolveSpawnExecutable(options: {
+  readonly program: string;
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly platform?: NodeJS.Platform;
+}): string {
+  const program = options.program.trim();
+  if (program.length === 0 || /[\0\r\n]/u.test(program)) {
+    throw new UnifiedExecError("create_process", "invalid executable name");
+  }
+  const platform = options.platform ?? process.platform;
+  const hasPathSyntax =
+    path.isAbsolute(program) || program.includes("/") || program.includes("\\");
+  const candidateNames = executableCandidateNames(program, platform, options.env);
+  const candidates = hasPathSyntax
+    ? candidateNames.map((candidate) =>
+        path.isAbsolute(candidate)
+          ? candidate
+          : path.resolve(options.cwd, candidate)
+      )
+    : executableSearchDirectories(options.env, options.cwd).flatMap((directory) =>
+        candidateNames.map((candidate) => path.join(directory, candidate))
+      );
+  for (const candidate of candidates) {
+    if (!isSpawnExecutable(candidate, platform)) continue;
+    try {
+      return realpathSync(candidate);
+    } catch {
+      return path.resolve(candidate);
+    }
+  }
+  throw new UnifiedExecError(
+    "create_process",
+    `executable not found or not executable: ${program}`,
+  );
+}
+
+function executableSearchDirectories(
+  env: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): string[] {
+  return (env.PATH ?? "")
+    .split(delimiter)
+    .map((entry) => entry.length === 0 ? cwd : path.resolve(cwd, entry));
+}
+
+function executableCandidateNames(
+  program: string,
+  platform: NodeJS.Platform,
+  env: Readonly<Record<string, string | undefined>>,
+): string[] {
+  if (platform !== "win32") return [program];
+  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter((entry) => entry.length > 0);
+  const lower = program.toLowerCase();
+  if (extensions.some((extension) => lower.endsWith(extension.toLowerCase()))) {
+    return [program];
+  }
+  return [program, ...extensions.map((extension) => `${program}${extension}`)];
+}
+
+function isSpawnExecutable(candidate: string, platform: NodeJS.Platform): boolean {
+  try {
+    const stat = statSync(candidate);
+    return stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0);
+  } catch {
+    return false;
   }
 }
 

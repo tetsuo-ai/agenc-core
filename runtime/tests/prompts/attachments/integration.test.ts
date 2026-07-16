@@ -650,7 +650,7 @@ describe("attachments orchestrator — live producer registry", () => {
           ],
         },
       ],
-    });
+    }, explicitDangerBroker);
 
     const out = await getAttachments(makeOpts());
     expect(out.some((attachment) => attachment.kind === "lsp_diagnostics")).toBe(
@@ -666,7 +666,7 @@ describe("attachments orchestrator — live producer registry", () => {
           message.content.includes("Line 1:3"),
       ),
     ).toBe(true);
-    expect(checkForLSPDiagnostics()).toEqual([]);
+    expect(checkForLSPDiagnostics(explicitDangerBroker)).toEqual([]);
   });
 
   test("aborted signal short-circuits without emitting attachments or throwing", async () => {

@@ -28,6 +28,7 @@ import {
   hardenGitWorktreeMutationArgs,
   worktreeMutationPermissions,
 } from "../../sandbox/worktree-permissions.js";
+import { gitChildEnvironment } from "../../sandbox/git-environment.js";
 
 function runGitToolCommand(
   toolArgs: Record<string, unknown>,
@@ -39,10 +40,12 @@ function runGitToolCommand(
   return runSandboxedToolCommand({
     toolArgs,
     program: "git",
-    args: commandArgs,
+    args: hardenGitWorktreeMutationArgs(commandArgs),
     cwd,
+    env: gitChildEnvironment(),
     ...(maxBuffer !== undefined ? { maxBuffer } : {}),
     ...(additionalPermissions !== undefined ? { additionalPermissions } : {}),
+    trustedExecutable: true,
   });
 }
 
@@ -177,7 +180,14 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
     async execute(args) {
       const repoRoot = await resolveRepoRoot({ config, args, pathArgKeys: ["path"] });
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
-      const command = ["-C", repoRoot, "diff", "--no-ext-diff", "--binary"];
+      const command = [
+        "-C",
+        repoRoot,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+      ];
       if (args.staged === true) command.push("--cached");
       const fromRef = toOptionalString(args.fromRef);
       const toRef = toOptionalString(args.toRef);
@@ -246,7 +256,15 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (typeof repoRoot !== "string") return errorResult(repoRoot.error);
       const result = await runGitToolCommand(
         args,
-        ["-C", repoRoot, "show", ...(args.noPatch === true ? ["--stat", "--summary"] : []), ref],
+        [
+          "-C",
+          repoRoot,
+          "show",
+          "--no-ext-diff",
+          "--no-textconv",
+          ...(args.noPatch === true ? ["--stat", "--summary"] : []),
+          ref,
+        ],
         repoRoot,
         MAX_DIFF_BYTES,
       );
@@ -420,7 +438,7 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       const result = await runGitToolCommand(
         args,
-        hardenGitWorktreeMutationArgs(command),
+        command,
         repoRoot,
         undefined,
         worktreeMutationPermissions(repoRoot, [
@@ -486,14 +504,14 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       const result = await runGitToolCommand(
         args,
-        hardenGitWorktreeMutationArgs([
+        [
           "-C",
           repoRoot,
           "worktree",
           "remove",
           ...(args.force === true ? ["--force"] : []),
           safeWorktreePath.resolved,
-        ]),
+        ],
         repoRoot,
         undefined,
         worktreeMutationPermissions(repoRoot, [safeWorktreePath.resolved]),

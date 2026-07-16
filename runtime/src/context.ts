@@ -11,10 +11,13 @@ import {
 } from './memory/index.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
-import { execFileNoThrow } from './utils/execFileNoThrow.js'
-import { getBranch, getDefaultBranch, getIsGit, gitExe } from './utils/git.js'
+import { gitExe } from './utils/git.js'
 import { shouldIncludeGitInstructions } from './utils/gitSettings.js'
 import { logError } from './utils/log.js'
+import type { SandboxExecutionBrokerLike } from './sandbox/execution-broker.js'
+import { gitChildEnvironment } from './sandbox/git-environment.js'
+import { runSupervisedProcess } from './utils/supervisedProcess.js'
+import { hardenGitWorktreeMutationArgs } from './sandbox/worktree-permissions.js'
 
 const MAX_STATUS_CHARS = 2000
 
@@ -25,7 +28,33 @@ function getSystemPromptInjection(): string | null {
   return systemPromptInjection
 }
 
-const getGitStatus = memoize(async (): Promise<string | null> => {
+async function runContextGit(
+  broker: SandboxExecutionBrokerLike,
+  args: readonly string[],
+): Promise<string | null> {
+  try {
+    const command = broker.prepareSpawn('tool', {
+      program: gitExe(),
+      args: hardenGitWorktreeMutationArgs(args),
+      cwd: broker.cwd,
+      env: gitChildEnvironment(process.env),
+      trustedExecutable: true,
+    })
+    const result = await runSupervisedProcess(command, {
+      timeoutMs: 5_000,
+      maxOutputBytes: 2 * 1024 * 1024,
+    })
+    return result.exitCode === 0 && result.stopReason === undefined
+      ? result.stdout.toString('utf8').trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+const getGitStatus = memoize(async (
+  broker?: SandboxExecutionBrokerLike,
+): Promise<string | null> => {
   if (process.env.NODE_ENV === 'test') {
     // Avoid cycles in tests
     return null
@@ -35,7 +64,8 @@ const getGitStatus = memoize(async (): Promise<string | null> => {
   logForDiagnosticsNoPII('info', 'git_status_started')
 
   const isGitStart = Date.now()
-  const isGit = await getIsGit()
+  const isGit = broker !== undefined &&
+    (await runContextGit(broker, ['rev-parse', '--is-inside-work-tree'])) === 'true'
   logForDiagnosticsNoPII('info', 'git_is_git_check_completed', {
     duration_ms: Date.now() - isGitStart,
     is_git: isGit,
@@ -50,23 +80,20 @@ const getGitStatus = memoize(async (): Promise<string | null> => {
 
   try {
     const gitCmdsStart = Date.now()
-    const [branch, mainBranch, status, log, userName] = await Promise.all([
-      getBranch(),
-      getDefaultBranch(),
-      execFileNoThrow(gitExe(), ['--no-optional-locks', 'status', '--short'], {
-        preserveOutputOnError: false,
-      }).then(({ stdout }) => stdout.trim()),
-      execFileNoThrow(
-        gitExe(),
-        ['--no-optional-locks', 'log', '--oneline', '-n', '5'],
-        {
-          preserveOutputOnError: false,
-        },
-      ).then(({ stdout }) => stdout.trim()),
-      execFileNoThrow(gitExe(), ['config', 'user.name'], {
-        preserveOutputOnError: false,
-      }).then(({ stdout }) => stdout.trim()),
+    const [branch, remoteHead, rawStatus, log, userName] = await Promise.all([
+      runContextGit(broker, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      runContextGit(broker, [
+        'symbolic-ref',
+        '--quiet',
+        '--short',
+        'refs/remotes/origin/HEAD',
+      ]),
+      runContextGit(broker, ['--no-optional-locks', 'status', '--short']),
+      runContextGit(broker, ['--no-optional-locks', 'log', '--oneline', '-n', '5']),
+      runContextGit(broker, ['config', 'user.name']),
     ])
+    const status = rawStatus ?? ''
+    const mainBranch = remoteHead?.replace(/^origin\//, '') ?? 'main'
 
     logForDiagnosticsNoPII('info', 'git_commands_completed', {
       duration_ms: Date.now() - gitCmdsStart,
@@ -87,11 +114,11 @@ const getGitStatus = memoize(async (): Promise<string | null> => {
 
     return [
       `This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.`,
-      `Current branch: ${branch}`,
+      `Current branch: ${branch ?? 'HEAD'}`,
       `Main branch (you will usually use this for PRs): ${mainBranch}`,
       ...(userName ? [`Git user: ${userName}`] : []),
       `Status:\n${truncatedStatus || '(clean)'}`,
-      `Recent commits:\n${log}`,
+      `Recent commits:\n${log ?? '(unavailable)'}`,
     ].join('\n\n')
   } catch (error) {
     logForDiagnosticsNoPII('error', 'git_status_failed', {
@@ -106,7 +133,7 @@ const getGitStatus = memoize(async (): Promise<string | null> => {
  * This context is prepended to each conversation, and cached for the duration of the conversation.
  */
 export const getSystemContext = memoize(
-  async (): Promise<{
+  async (sandboxExecutionBroker?: SandboxExecutionBrokerLike): Promise<{
     [k: string]: string
   }> => {
     const startTime = Date.now()
@@ -117,7 +144,7 @@ export const getSystemContext = memoize(
       isEnvTruthy(process.env.AGENC_REMOTE) ||
       !shouldIncludeGitInstructions()
         ? null
-        : await getGitStatus()
+        : await getGitStatus(sandboxExecutionBroker)
 
     // Include system prompt injection if set (for cache breaking, internal-only)
     const injection = feature('BREAK_CACHE_COMMAND')

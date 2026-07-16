@@ -39,7 +39,6 @@
  * @module
  */
 
-import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
@@ -75,6 +74,7 @@ import { asRecord } from "../../utils/record.js";
 import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -435,78 +435,20 @@ function execFileNoThrow(
     cwd,
     env: scrubEnvForChildProcess(process.env),
   });
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(spawnCommand.program, [...spawnCommand.args], {
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        ...(spawnCommand.argv0 !== undefined
-          ? { argv0: spawnCommand.argv0 }
-          : {}),
-      });
-    } catch {
-      resolve({ exitCode: 1, stdout: "", stderr: "" });
-      return;
-    }
-
-    const maxBufferBytes = 64 * 1024 * 1024;
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let overflowed = false;
-    let timedOut = false;
-    let settled = false;
-    const finish = (exitCode: number): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        exitCode,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: overflowed
-          ? "PDF helper output exceeded the 64 MiB limit"
-          : Buffer.concat(stderr).toString("utf8"),
-      });
-    };
-    const collect = (
-      chunks: Buffer[],
-      chunk: Buffer,
-      currentBytes: number,
-    ): number => {
-      const remaining = maxBufferBytes - currentBytes;
-      if (remaining <= 0) {
-        overflowed = true;
-        child.kill("SIGTERM");
-        return currentBytes;
-      }
-      if (chunk.byteLength > remaining) {
-        chunks.push(chunk.subarray(0, remaining));
-        overflowed = true;
-        child.kill("SIGTERM");
-        return maxBufferBytes;
-      }
-      chunks.push(chunk);
-      return currentBytes + chunk.byteLength;
-    };
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdoutBytes = collect(stdout, chunk, stdoutBytes);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBytes = collect(stderr, chunk, stderrBytes);
-    });
-    child.once("error", () => finish(1));
-    child.once("close", (code) => {
-      finish(timedOut || overflowed ? 1 : (code ?? 1));
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, timeoutMs);
-  });
+  const injectedSignal = toolArgs.__abortSignal;
+  return runSupervisedProcess(spawnCommand, {
+    timeoutMs,
+    maxOutputBytes: 64 * 1024 * 1024,
+    ...(injectedSignal instanceof AbortSignal
+      ? { signal: injectedSignal }
+      : {}),
+  }).then((result) => ({
+    exitCode: result.stopReason === undefined ? (result.exitCode ?? 1) : 1,
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stopReason === "output_limit"
+      ? "PDF helper output exceeded the 64 MiB limit"
+      : result.error?.message ?? result.stderr.toString("utf8"),
+  }));
 }
 
 function parsePDFPageRangeArg(

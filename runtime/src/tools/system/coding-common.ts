@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import {
   basename,
@@ -18,6 +17,7 @@ import {
 } from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
 import type { RunCommandResult } from "../../utils/process.js";
+import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
 import {
@@ -108,7 +108,7 @@ export const MANIFEST_NAMES = [
   "README.md",
 ] as const;
 
-const FORCE_KILL_GRACE_MS = 250;
+const DEFAULT_HELPER_TIMEOUT_MS = 120_000;
 
 export function runSandboxedToolCommand(params: {
   readonly toolArgs: Record<string, unknown>;
@@ -119,6 +119,7 @@ export function runSandboxedToolCommand(params: {
   readonly maxBuffer?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly additionalPermissions?: AdditionalPermissionProfile;
+  readonly trustedExecutable?: boolean;
 }): Promise<RunCommandResult> {
   const surface = readSandboxExecutionSurface(params.toolArgs) ?? "tool";
   const broker = readSandboxExecutionBroker(params.toolArgs);
@@ -134,106 +135,32 @@ export function runSandboxedToolCommand(params: {
     ...(params.additionalPermissions !== undefined
       ? { additionalPermissions: params.additionalPermissions }
       : {}),
+    ...(params.trustedExecutable === true ? { trustedExecutable: true } : {}),
   });
 
-  return new Promise((resolve) => {
-    const maxBuffer = params.maxBuffer ?? 10 * 1024 * 1024;
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let settled = false;
-    let timedOut = false;
-    let bufferExceeded = false;
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const child = spawn(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      argv0: command.argv0,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
-    const killTree = (signal: NodeJS.Signals): void => {
-      try {
-        if (process.platform === "win32" && child.pid !== undefined) {
-          const killer = spawn(
-            "taskkill",
-            ["/pid", String(child.pid), "/T", "/F"],
-            {
-              env: scrubEnvForChildProcess(process.env),
-              stdio: "ignore",
-              windowsHide: true,
-            },
-          );
-          killer.unref();
-          return;
-        }
-        if (child.pid !== undefined) {
-          process.kill(-child.pid, signal);
-          return;
-        }
-        child.kill(signal);
-      } catch {
-        try {
-          child.kill(signal);
-        } catch {
-          // The process tree already exited.
-        }
-      }
-    };
-    const terminate = (): void => {
-      killTree("SIGTERM");
-      if (forceKillTimer !== undefined) return;
-      forceKillTimer = setTimeout(() => {
-        forceKillTimer = undefined;
-        killTree("SIGKILL");
-      }, FORCE_KILL_GRACE_MS);
-      forceKillTimer.unref?.();
-    };
-    const timeout = params.timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          terminate();
-        }, params.timeoutMs);
-    timeout?.unref?.();
-    const append = (target: Buffer[], chunk: Buffer, bytes: number): number => {
-      const next = bytes + chunk.length;
-      if (next > maxBuffer) {
-        bufferExceeded = true;
-        terminate();
-        return bytes;
-      }
-      target.push(chunk);
-      return next;
-    };
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBytes = append(stdout, chunk, stdoutBytes);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderrBytes = append(stderr, chunk, stderrBytes);
-    });
-    child.once("error", (error: Error) => {
-      if (settled) return;
-      settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
-      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
-      resolve({ stdout: "", stderr: error.message, exitCode: 1 });
-    });
-    child.once("close", (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      if (timeout !== undefined) clearTimeout(timeout);
-      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
-      resolve({
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: bufferExceeded
-          ? `command output exceeded ${maxBuffer} bytes`
-          : Buffer.concat(stderr).toString("utf8"),
-        exitCode: timedOut ? 124 : bufferExceeded ? 1 : (code ?? 1),
-      });
-    });
-  });
+  const injectedSignal = params.toolArgs.__abortSignal;
+  const signal = injectedSignal instanceof AbortSignal
+    ? injectedSignal
+    : undefined;
+  const maxBuffer = params.maxBuffer ?? 10 * 1024 * 1024;
+  return runSupervisedProcess(command, {
+    timeoutMs: params.timeoutMs ?? DEFAULT_HELPER_TIMEOUT_MS,
+    maxOutputBytes: maxBuffer,
+    ...(signal !== undefined ? { signal } : {}),
+  }).then((result) => ({
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stopReason === "output_limit"
+      ? `command output exceeded ${maxBuffer} bytes`
+      : result.error?.message ?? result.stderr.toString("utf8"),
+    exitCode:
+      result.stopReason === "timeout"
+        ? 124
+        : result.stopReason === "aborted"
+          ? 130
+          : result.stopReason !== undefined
+            ? 1
+            : (result.exitCode ?? 1),
+  }));
 }
 
 export function errorResult(message: string): ToolResult {

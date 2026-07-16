@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
+import { peekAmbientRuntimeSession } from "../../../session/current-session.js";
 import type { DiagnosticEntry } from "../../../services/lsp/types.js";
 import { logError } from "../../../utils/log.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
@@ -49,7 +50,10 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     [activePath, snapshot.filePath, tasks],
   );
   const diagnostics = snapshot.absolutePath
-    ? peekLSPDiagnosticsForFile(snapshot.absolutePath)
+    ? peekLSPDiagnosticsForFile(
+        snapshot.absolutePath,
+        peekAmbientRuntimeSession()?.services.sandboxExecutionBroker,
+      )
     : [];
   const visibleLines = store.getVisibleLines();
   const highlightedLines = useBufferHighlightedLines(snapshot.filePath ?? activePath, visibleLines);

@@ -38,11 +38,11 @@ import {
   statSync,
   utimesSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
-import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { gitChildEnvironment } from "../sandbox/git-environment.js";
+import { runSupervisedProcess } from "../utils/supervisedProcess.js";
 import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
 import {
   hardenGitWorktreeMutationArgs,
@@ -78,43 +78,31 @@ function runGit(
   sandboxExecutionBroker: SandboxExecutionBrokerLike,
   additionalPermissions?: AdditionalPermissionProfile,
 ): Promise<GitResult> {
-  return new Promise<GitResult>((resolve) => {
-    const command = sandboxExecutionBroker.prepareSpawn("child_agent", {
+  const command = sandboxExecutionBroker.prepareSpawn("child_agent", {
       program: "git",
-      args,
+      args: hardenGitWorktreeMutationArgs(args),
       cwd,
-      env: scrubEnvForChildProcess(process.env),
+      env: gitChildEnvironment(),
       argv0: "git",
       ...(additionalPermissions !== undefined
         ? { additionalPermissions }
         : {}),
-    });
-    const child = spawn(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      argv0: command.argv0,
-      stdio: "pipe",
-    });
-    // I-78 Buffer accumulation — decode at flush.
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("close", (code) => {
-      resolve({
-        code: code ?? 1,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf8"),
-      });
-    });
-    child.on("error", (err) => {
-      resolve({
-        code: 127,
-        stdout: "",
-        stderr: err.message,
-      });
-    });
+      trustedExecutable: true,
   });
+  return runSupervisedProcess(command, {
+    timeoutMs: 30_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  }).then((result) => ({
+    code: result.stopReason === "spawn_error"
+      ? 127
+      : result.stopReason === "timeout"
+        ? 124
+        : result.stopReason !== undefined
+          ? 1
+          : (result.exitCode ?? 1),
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.error?.message ?? result.stderr.toString("utf8"),
+  }));
 }
 
 function runGitMutation(
@@ -125,7 +113,7 @@ function runGitMutation(
   writablePaths: readonly string[] = [],
 ): Promise<GitResult> {
   return runGit(
-    hardenGitWorktreeMutationArgs(args),
+    args,
     cwd,
     sandboxExecutionBroker,
     worktreeMutationPermissions(repoRoot, writablePaths),
@@ -305,15 +293,9 @@ export async function getOrCreateWorktree(
       );
     }
 
-    // Fetch base if it doesn't exist locally.
+    // Worktree setup is deliberately local-only. Repository-controlled remotes,
+    // credential helpers, and transport helpers are not an implicit capability.
     const base = opts.base ?? "HEAD";
-    const fetchResult = await runGitMutation(
-      ["fetch", "--depth=1", "origin", base],
-      opts.gitRoot,
-      opts.sandboxExecutionBroker,
-      opts.gitRoot,
-    );
-    void fetchResult; // best-effort
 
     // `git worktree add -B <branch> <path> <base>`.
     const addResult = await runGitMutation(

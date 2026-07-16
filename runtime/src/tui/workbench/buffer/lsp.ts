@@ -26,6 +26,10 @@ function currentLspManager() {
   );
 }
 
+function currentLspScope() {
+  return peekAmbientRuntimeSession()?.services.sandboxExecutionBroker;
+}
+
 export function notifyBufferLspOpened(filePath: string, content: string): void {
   bestEffort(async () => {
     await currentLspManager()?.openFile(filePath, content);
@@ -33,7 +37,7 @@ export function notifyBufferLspOpened(filePath: string, content: string): void {
 }
 
 export function notifyBufferLspChanged(filePath: string, content: string): void {
-  clearDeliveredDiagnosticsForFile(filePath);
+  clearDeliveredDiagnosticsForFile(filePath, currentLspScope());
   bestEffort(async () => {
     await currentLspManager()?.changeFile(filePath, content);
   });
