@@ -337,6 +337,22 @@ describe("evaluation pilot power analysis", () => {
     }))).toThrow(/assumed effect 0\.1 exceeds the pilot-supported maximum 0/u);
   });
 
+  test("rejects effects even slightly above the exact pilot-supported maximum", () => {
+    const outcomes = makePilotOutcomes().map((outcome) => ({
+      ...outcome,
+      primaryOutcome: Number(outcome.taskId.slice("task-".length)) < 6 ? 1 as const : 0 as const,
+      comparatorOutcome: 0 as const,
+    }));
+    const infeasibleEffect = 0.2000000000005;
+    expect(() => computePowerAnalysis(makeInput({
+      outcomes,
+      planningEffectSize: infeasibleEffect,
+      assumedEffectSizes: [0.1, infeasibleEffect],
+    }))).toThrow(
+      /assumed effect 0\.2000000000005 exceeds the pilot-supported maximum 0\.2/u,
+    );
+  });
+
   test("calibrates extreme heterogeneity beyond the former fixed offset bracket", () => {
     const document = computePowerAnalysis(makeInput({
       outcomes: makeExtremeHeterogeneityOutcomes(),

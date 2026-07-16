@@ -850,7 +850,12 @@ function createTargetComparatorProbabilities(
       return task.primaryMean - (targets.get(taskId) as number);
     }),
   )));
-  if (Math.abs(achievedEffect - assumedEffect) > 1e-12) {
+  const calibrationTolerance = Number.EPSILON * 16 * Math.max(
+    1,
+    Math.abs(achievedEffect),
+    Math.abs(assumedEffect),
+  );
+  if (Math.abs(achievedEffect - assumedEffect) > calibrationTolerance) {
     throw new PowerAnalysisValidationError([
       `effect calibration achieved ${round(achievedEffect)} instead of ${assumedEffect}`,
     ]);
@@ -866,7 +871,7 @@ function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot):
       (taskId) => (comparison.tasks.get(taskId) as AggregatedTask).primaryMean,
     ))),
   )));
-  const infeasibleEffect = effects.find((effect) => effect - maximumFeasibleEffect > 1e-12);
+  const infeasibleEffect = effects.find((effect) => effect > maximumFeasibleEffect);
   if (infeasibleEffect !== undefined) {
     throw new PowerAnalysisValidationError([
       `assumed effect ${infeasibleEffect} exceeds the pilot-supported maximum ${round(maximumFeasibleEffect)}`,
