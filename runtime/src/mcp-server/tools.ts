@@ -3,13 +3,13 @@
  * tools/call behavior onto AgenC's existing tool registry surface.
  *
  * MS-02 owns registration only. Transports and permission decisions stay
- * in later MS-* items; this adapter delegates execution to the already
- * configured AgenC `ToolRegistry`.
+ * in later MS-* items. This adapter binds each admitted call to the exact
+ * audited tool instance; name-based registry dispatch can rebuild or alias
+ * to a different implementation and is therefore unsafe at this boundary.
  */
 
-import type { LLMToolCall } from "../llm/types.js";
-import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
-import type { Tool } from "../tools/types.js";
+import type { ToolRegistry } from "../tool-registry.js";
+import { safeStringify, type Tool, type ToolResult } from "../tools/types.js";
 import {
   type McpCallToolResult,
   type McpToolCallContext,
@@ -26,13 +26,20 @@ export interface McpRegisteredTool {
   ): Promise<McpCallToolResult>;
 }
 
-function stringifyArguments(args: Readonly<Record<string, unknown>> | undefined): string {
-  if (args === undefined) return "{}";
-  try {
-    return JSON.stringify(args);
-  } catch {
-    return "{}";
-  }
+function isProvablyReadOnlyForInboundMcp(tool: Tool): boolean {
+  // Inbound MCP does not traverse runToolUse's native permission/sandbox path.
+  // Require the independent internal signals and no permission/UI hooks. Fail
+  // closed when a tool omits or contradicts any of them; metadata alone is
+  // never authorization.
+  return (
+    tool.isReadOnly === true &&
+    tool.metadata?.mutating === false &&
+    tool.recoveryCategory === "idempotent" &&
+    tool.requiresApproval === false &&
+    tool.defaultPermissionMode === undefined &&
+    tool.requiresUserInteraction === undefined &&
+    tool.checkPermissions === undefined
+  );
 }
 
 export function mcpDefinitionFromAgenCTool(tool: Tool): McpToolDefinition {
@@ -43,9 +50,7 @@ export function mcpDefinitionFromAgenCTool(tool: Tool): McpToolDefinition {
   };
 }
 
-function mcpResultFromToolDispatch(
-  result: ToolDispatchResult,
-): McpCallToolResult {
+function mcpResultFromToolExecution(result: ToolResult): McpCallToolResult {
   return {
     content: [{ type: "text", text: result.content }],
     ...(result.codeModeResult !== undefined
@@ -55,49 +60,55 @@ function mcpResultFromToolDispatch(
   };
 }
 
-function registeredToolFromAgenCTool(
-  tool: Tool,
-  dispatch: ToolRegistry["dispatch"],
-): McpRegisteredTool {
+function registeredToolFromAgenCTool(tool: Tool): McpRegisteredTool {
+  const execute = tool.execute.bind(tool);
   return {
     definition: mcpDefinitionFromAgenCTool(tool),
     async call(params, context) {
-      // Fail closed for mutating tools unless operator opts in (todo-118).
-      // Full session permission/sandbox pipeline remains a follow-up; this
-      // removes the previous always-execute path for write/shell tools.
-      const readOnly = tool.isReadOnly === true;
-      const allowMutations =
-        process.env.AGENC_MCP_ALLOW_MUTATIONS === "1" ||
-        process.env.AGENC_MCP_ALLOW_MUTATIONS === "true";
-      if (!readOnly && !allowMutations) {
+      const args = { ...(params.arguments ?? {}) };
+      Object.defineProperty(args, "__callId", {
+        value: String(context.requestId ?? `${tool.name}-mcp-call`),
+        enumerable: false,
+        configurable: true,
+      });
+      try {
+        return mcpResultFromToolExecution(await execute(args));
+      } catch (error) {
         return {
           content: [
             {
               type: "text",
-              text: `MCP tool '${tool.name}' is not read-only; set AGENC_MCP_ALLOW_MUTATIONS=1 to permit mutating tools over MCP serve (todo-118).`,
+              text: safeStringify({
+                error: error instanceof Error ? error.message : String(error),
+              }),
             },
           ],
           isError: true,
         };
       }
-      const toolCall: LLMToolCall = {
-        id: String(context.requestId ?? `${tool.name}-mcp-call`),
-        name: params.name,
-        arguments: stringifyArguments(params.arguments),
-      };
-      return mcpResultFromToolDispatch(await dispatch(toolCall));
     },
   };
 }
 
 export class McpToolRegistry implements McpToolProvider {
   private readonly tools = new Map<string, McpRegisteredTool>();
+  private readonly blockedToolNames = new Set<string>();
 
   registerTool(tool: McpRegisteredTool): void {
-    if (this.tools.has(tool.definition.name)) {
+    if (
+      this.tools.has(tool.definition.name) ||
+      this.blockedToolNames.has(tool.definition.name)
+    ) {
       throw new Error(`MCP tool already registered: ${tool.definition.name}`);
     }
     this.tools.set(tool.definition.name, tool);
+  }
+
+  blockTool(name: string): void {
+    if (this.tools.has(name) || this.blockedToolNames.has(name)) {
+      throw new Error(`MCP tool already registered: ${name}`);
+    }
+    this.blockedToolNames.add(name);
   }
 
   listTools(): readonly McpToolDefinition[] {
@@ -110,6 +121,21 @@ export class McpToolRegistry implements McpToolProvider {
   ): Promise<McpCallToolResult> {
     const tool = this.tools.get(params.name);
     if (tool === undefined) {
+      if (this.blockedToolNames.has(params.name)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `MCP tool '${params.name}' is unavailable: inbound MCP serves ` +
+                "only explicitly read-only, non-mutating, idempotent tools. " +
+                "Environment overrides are not authorization; use a daemon-native " +
+                "admitted session when mutation support is available.",
+            },
+          ],
+          isError: true,
+        };
+      }
       return {
         content: [{ type: "text", text: `Unknown tool '${params.name}'` }],
         isError: true,
@@ -120,13 +146,15 @@ export class McpToolRegistry implements McpToolProvider {
 }
 
 export function mcpToolRegistryFromAgenCTools(
-  registry: Pick<ToolRegistry, "tools" | "dispatch">,
+  registry: Pick<ToolRegistry, "tools">,
 ): McpToolRegistry {
   const mcpRegistry = new McpToolRegistry();
   for (const tool of registry.tools) {
-    mcpRegistry.registerTool(
-      registeredToolFromAgenCTool(tool, registry.dispatch.bind(registry)),
-    );
+    if (!isProvablyReadOnlyForInboundMcp(tool)) {
+      mcpRegistry.blockTool(tool.name);
+      continue;
+    }
+    mcpRegistry.registerTool(registeredToolFromAgenCTool(tool));
   }
   return mcpRegistry;
 }

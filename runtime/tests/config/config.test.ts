@@ -1118,12 +1118,14 @@ describe("schema: closed config block validators (CF-13)", () => {
         transport: "sse",
         host: "127.0.0.1",
         port: 8900,
+        workspace: process.cwd(),
       }),
     ).toEqual({
       enabled: true,
       transport: "sse",
       host: "127.0.0.1",
       port: 8900,
+      workspace: process.cwd(),
     });
     expect(
       validateMcpServerModeConfig({
@@ -1151,6 +1153,12 @@ describe("schema: closed config block validators (CF-13)", () => {
     );
     expect(() =>
       validateMcpServerModeConfig({ transport: "sse", port: 70_000 }),
+    ).toThrow(InvalidMcpServerModeConfigError);
+    expect(() =>
+      validateMcpServerModeConfig({
+        transport: "sse",
+        workspace: "relative/workspace",
+      }),
     ).toThrow(InvalidMcpServerModeConfigError);
   });
 
@@ -1726,6 +1734,7 @@ enabled = true
 transport = "sse"
 host = "localhost"
 port = 4444
+workspace = ${JSON.stringify(dir)}
       `,
     );
     const out = await loadConfig({ home: dir });
@@ -1735,6 +1744,7 @@ port = 4444
       transport: "sse",
       host: "localhost",
       port: 4444,
+      workspace: dir,
     });
     expect(out.config._unknown?.mcp).toBeUndefined();
   });

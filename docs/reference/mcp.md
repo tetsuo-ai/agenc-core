@@ -57,7 +57,10 @@ paths on the dispatcher) for session-scoped server mutations. The public SDK
 method registry includes `session.mcp.addServer`; see [`../sdk.md`](../sdk.md).
 
 AgenC can also expose itself as an MCP server via `[mcp.server]`
-(`enabled`, `transport` = `stdio` | `sse`, optional `host` / `port`).
+(`enabled`, `transport` = `stdio` | `sse`, optional `host` / `port`). Daemon
+SSE autostart also requires an absolute `workspace`; the path is canonicalized
+and must resolve to a directory before the endpoint starts. Foreground
+`agenc mcp serve` scopes tools to the command's working directory.
 
 ### Tool bridge
 
@@ -121,16 +124,60 @@ Two related layers:
 Prefer config `[mcp.server]` and the `agenc mcp` CLI rather than importing
 framework modules from embedders.
 
+The inbound server advertises and dispatches only tools whose native contract
+is consistently read-only: `isReadOnly === true`, explicit non-mutating
+metadata, an `idempotent` recovery category, and no approval, interaction, or
+permission hooks. Calls are bound to that audited tool instance rather than
+redispatched by name. All other tool names are omitted from
+`tools/list`; a direct call returns a stable denial without reaching the bare
+tool-registry dispatcher. Environment variables are never mutation
+authorization. Mutation support can return only after it is bound to a native
+daemon session/capability and traverses the common permission, sandbox,
+admission, redaction, and audit path.
+
+Code-intelligence and git-backed tools are excluded from this inbound registry:
+symbol indexing persists cache files, and git reads can refresh index state.
+They remain available through native sessions where the normal policy boundary
+applies.
+
+Prompts and resources are scoped to the same canonical workspace: project
+`.agenc/skills`, `.agenc/commands`, `.agenc/memory`, and `AGENC.md`. User-global
+skills, commands, memory, and instructions are never exposed by inbound serve.
+Every candidate is canonicalized, regular-file checked, and rejected if a
+symlink resolves outside the workspace. Resource listing remains metadata-only;
+the server revalidates and reads only the resource selected by `resources/read`.
+
 ## Security notes
 
 - Treat MCP tool results as **untrusted work data** (same framing discipline as
   channel payloads).
-- Mutating Solana-like MCP tools still hit the SLM transaction guard when
-  metadata marks them Solana + mutating — see
-  [`../security/slm-transaction-guard.md`](../security/slm-transaction-guard.md).
+- Inbound `mcp serve` is read-only. Mutating built-ins are neither advertised
+  nor dispatched, even if a legacy environment override is present or a tool
+  has contradictory read-only/mutating metadata.
+- SSE remains loopback-only, disabled by default, and has no peer authentication.
+  Prefer stdio when process-level peer isolation is required: any local process
+  or OS user able to reach loopback may otherwise read the configured workspace
+  with the AgenC owner's filesystem authority.
 - Prefer supply-chain pins for untrusted third-party servers.
 - Stdio servers run as your user with the configured env — only pass secrets you
   intend the child to see.
+
+### Design record (2026-07-16)
+
+The boundary follows the current MCP specification's principles that tool
+execution requires explicit user control and robust access controls, and that
+tool metadata is not itself an authorization decision:
+
+- [MCP 2025-11-25 security and trust principles](https://modelcontextprotocol.io/specification/2025-11-25)
+- [MCP tools security guidance](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+- [MCP security best practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices)
+
+Alternatives rejected: retaining an environment opt-in (no authenticated
+identity, consent, or audit binding), sending mutations to the bare registry
+dispatcher (bypasses native policy), and disabling the entire inbound server
+(unnecessary for workspace-scoped read-only integrations). The fail-closed
+subset preserves useful local reads while leaving one future re-enable point:
+the daemon-owned admission kernel.
 
 ## Related
 

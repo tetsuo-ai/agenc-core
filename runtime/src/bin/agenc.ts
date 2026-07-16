@@ -374,7 +374,7 @@ export function formatCliHelpText(): string {
     "  trajectories                            Curate exported trajectories into training JSONL",
     "  daemon                                  Manage the local AgenC daemon",
     "  agent                                   Start, attach, inspect, or stop background agents",
-    "  mcp                                     Manage MCP servers or serve AgenC tools over MCP",
+    "  mcp                                     Manage MCP servers or serve read-only AgenC tools over MCP",
     "  help [command]                          Show top-level or command help",
     "",
     "Options:",

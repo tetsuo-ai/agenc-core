@@ -62,7 +62,7 @@ export function formatAgenCMcpCliHelpText(): string {
     "Usage: agenc mcp <command> [options]",
     "",
     "Commands:",
-    "  serve                    Expose AgenC tools as an MCP server",
+    "  serve                    Expose workspace-scoped read-only tools over MCP",
     "  add                      Add an MCP server",
     "  list                     List configured MCP servers",
     "  get                      Show one MCP server",

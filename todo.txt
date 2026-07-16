@@ -327,7 +327,7 @@ boundary. They are higher leverage than new surface area.
       precise doctor/startup diagnostic; it must never become a warning-only
       host execution.
 
-[ ] Fail-close inbound MCP mutations immediately.
+[x] Fail-close inbound MCP mutations immediately.
     - Read-only operations may remain available under explicit workspace scope.
     - Disable mutations unless they already traverse the native daemon permission
       and sandbox boundary.

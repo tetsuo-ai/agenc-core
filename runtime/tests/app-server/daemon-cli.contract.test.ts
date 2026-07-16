@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createConnection, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -222,6 +222,61 @@ async function waitForPid(pidPath: string): Promise<number> {
     await delay(10);
   }
   throw new Error("timed out waiting for daemon pid");
+}
+
+async function availableLoopbackPort(): Promise<number> {
+  const server = createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("failed to allocate loopback test port");
+  }
+  const port = address.port;
+  server.close();
+  await once(server, "close");
+  return port;
+}
+
+function mcpHttpHeaders(sessionId?: string): Record<string, string> {
+  return {
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+    ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
+  };
+}
+
+async function initializeMcpHttpSession(url: string): Promise<string> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: mcpHttpHeaders(),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+  });
+  expect(response.status).toBe(200);
+  await response.json();
+  const sessionId = response.headers.get("mcp-session-id");
+  if (sessionId === null) throw new Error("missing MCP session id");
+  return sessionId;
+}
+
+async function callMcpListDir(
+  url: string,
+  sessionId: string,
+  path: string,
+  id = 2,
+): Promise<{ readonly status: number; readonly body: string }> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: mcpHttpHeaders(sessionId),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "system.listDir", arguments: { path } },
+    }),
+  });
+  return { status: response.status, body: await response.text() };
 }
 
 async function waitForCondition(
@@ -1257,6 +1312,7 @@ backend = "remote"
 enabled = true
 transport = "sse"
 port = 0
+workspace = ${JSON.stringify(process.cwd())}
 
 [agent.budget]
 token_cap = 123
@@ -1310,6 +1366,106 @@ token_cap = 123
     }
   });
 
+  it("reload reuses a fixed MCP listener, revokes old sessions, and applies the new workspace", async () => {
+    const agencHome = await tempAgencHome();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-mcp-reload-"));
+    const workspaceA = join(workspaceRoot, "workspace-a");
+    const workspaceB = join(workspaceRoot, "workspace-b");
+    await Promise.all([mkdir(workspaceA), mkdir(workspaceB)]);
+    await Promise.all([
+      writeFile(join(workspaceA, "only-a.txt"), "a"),
+      writeFile(join(workspaceB, "only-b.txt"), "b"),
+    ]);
+    const port = await availableLoopbackPort();
+    const url = `http://127.0.0.1:${port}/mcp`;
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "127.0.0.1"
+port = ${port}
+workspace = ${JSON.stringify(workspaceA)}
+      `,
+    );
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const oldSession = await initializeMcpHttpSession(url);
+      const initialRead = await callMcpListDir(url, oldSession, workspaceA);
+      expect(initialRead.status).toBe(200);
+      expect(initialRead.body).toContain("only-a.txt");
+
+      await writeFile(
+        join(agencHome, "config.toml"),
+        `
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "127.0.0.1"
+port = ${port}
+workspace = ${JSON.stringify(workspaceB)}
+        `,
+      );
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+
+      expect(
+        io.stderrText().match(/AgenC MCP server listening/g) ?? [],
+      ).toHaveLength(1);
+      expect(io.stderrText()).toContain(
+        "AgenC MCP server workspace reconfigured; revoked 1 session",
+      );
+      await expect(
+        callMcpListDir(url, oldSession, workspaceA, 3),
+      ).resolves.toEqual(expect.objectContaining({ status: 404 }));
+
+      const newSession = await initializeMcpHttpSession(url);
+      const workspaceBRead = await callMcpListDir(
+        url,
+        newSession,
+        workspaceB,
+        4,
+      );
+      expect(workspaceBRead.status).toBe(200);
+      expect(workspaceBRead.body).toContain("only-b.txt");
+      const workspaceARead = await callMcpListDir(
+        url,
+        newSession,
+        workspaceA,
+        5,
+      );
+      expect(workspaceARead.body).toContain(
+        "Path is outside allowed directories",
+      );
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await Promise.all([
+        rm(agencHome, { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   it("reload failure preserves active auth and mcp.server state", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -1333,6 +1489,7 @@ backend = "local"
 enabled = true
 transport = "sse"
 port = 0
+workspace = ${JSON.stringify(process.cwd())}
       `,
     );
 
@@ -1374,6 +1531,7 @@ enabled = true
 transport = "sse"
 host = "0.0.0.0"
 port = 0
+workspace = ${JSON.stringify(process.cwd())}
         `,
       );
 
@@ -2154,7 +2312,7 @@ backend = "local"
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("foreground daemon starts a configured mcp.server SSE endpoint", async () => {
+  it("does not autostart MCP without an explicit workspace scope", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -2167,6 +2325,40 @@ backend = "local"
 enabled = true
 transport = "sse"
 port = 0
+      `,
+    );
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    expect(io.stderrText()).toContain(
+      "daemon MCP autostart requires an explicit absolute mcp.server.workspace",
+    );
+    expect(io.stderrText()).not.toContain("AgenC MCP server listening");
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon starts a workspace-scoped mcp.server SSE endpoint", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+port = 0
+workspace = ${JSON.stringify(process.cwd())}
       `,
     );
 
