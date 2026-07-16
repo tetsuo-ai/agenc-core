@@ -203,6 +203,14 @@ function applyScenarioFilters(names, argv) {
 function createSlimCwd() {
   const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-slim-"));
   writeFileSync(path.join(slimCwd, "README.md"), "test cwd\n", "utf8");
+  // Anchor project-root discovery inside the scenario directory. Otherwise
+  // an unrelated marker in a shared ancestor such as /tmp/package.json can
+  // make the trust preflight target the entire temp root.
+  writeFileSync(
+    path.join(slimCwd, "package.json"),
+    '{"private":true}\n',
+    "utf8",
+  );
   return slimCwd;
 }
 
