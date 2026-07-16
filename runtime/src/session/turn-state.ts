@@ -266,6 +266,13 @@ export interface TurnState {
    *  compaction pipeline. AgenC query.ts:369. */
   messagesForQuery: LLMMessage[];
 
+  /**
+   * Fully resolved system/developer/workspace instruction envelope for this
+   * turn. Kept outside conversation history so providers receive it exactly
+   * once through their native system-prompt field on every retry/iteration.
+   */
+  modelInstructions: string;
+
   /** Auto-compact tracking (turn counter since last compact, consecutive
    *  failure count for circuit breaker). AgenC query.ts:371, 531.
    *  Reset on every successful compact so `turnsSincePreviousCompact`
@@ -447,6 +454,7 @@ export function buildInitialTurnState(
   userMessage: LLMMessage,
   opts?: {
     readonly priorMessages?: readonly LLMMessage[];
+    readonly modelInstructions?: string;
     readonly initialMaxOutputTokensOverride?: number;
     readonly initialSkipCacheWrite?: boolean;
   },
@@ -455,6 +463,7 @@ export function buildInitialTurnState(
     // Phase 1
     messages: [...(opts?.priorMessages ?? []), userMessage],
     messagesForQuery: [],
+    modelInstructions: opts?.modelInstructions ?? _ctx.baseInstructions ?? "",
     autoCompactTracking: undefined,
     taskBudgetRemaining: undefined,
     snipTokensFreed: 0,

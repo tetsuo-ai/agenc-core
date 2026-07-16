@@ -70,6 +70,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [design/budget-enforcement.md](design/budget-enforcement.md) | Why/how cost-bounded autonomy is enforced |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/workspace-scoped-agent-roles.md](design/workspace-scoped-agent-roles.md) | Immutable workspace identity for role lookup, spawn, resume, and worktrees |
+| [design/secure-project-instructions.md](design/secure-project-instructions.md) | Live instruction delivery, precedence, descriptor-bound reads, approvals, and threat model |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
 ---

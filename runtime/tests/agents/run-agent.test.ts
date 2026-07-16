@@ -4,6 +4,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -342,9 +343,14 @@ describe("runAgent", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     const [passedMessages, _onChunk, passedOptions] = (
       provider.chatStream as ReturnType<typeof vi.fn>
-    ).mock.calls[0]! as [LLMMessage[], StreamProgressCallback, { signal?: AbortSignal }];
-    expect(passedMessages).toHaveLength(2);
-    expect(passedMessages[0]!.role).toBe("system");
+    ).mock.calls[0]! as [
+      LLMMessage[],
+      StreamProgressCallback,
+      { signal?: AbortSignal; systemPrompt?: string },
+    ];
+    expect(passedMessages).toHaveLength(1);
+    expect(passedMessages[0]!.role).toBe("user");
+    expect(passedOptions?.systemPrompt).toContain("you are a subagent");
     expect(passedOptions?.signal).toBeDefined();
 
     expect(result.outcome).toBe("completed");
@@ -374,6 +380,50 @@ describe("runAgent", () => {
     });
     // Initial messages + assistant reply message.
     expect(events.filter((e) => e.kind === "message")).toHaveLength(3);
+  });
+
+  it("resolves project instructions from the child workspace exactly once", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-child-instructions-"));
+    try {
+      writeFileSync(join(workspace, "package.json"), "{}", "utf8");
+      writeFileSync(
+        join(workspace, "AGENC.md"),
+        "CHILD_WORKSPACE_SENTINEL_92ac",
+        "utf8",
+      );
+      const provider = makeProvider([{ content: "child done" }]);
+      const session = makeStubSession({
+        services: {
+          provider,
+          configStore: {
+            current: () => ({}),
+          } as SessionServices["configStore"],
+        },
+        roleWorkspace: createAgentRoleWorkspace(workspace),
+        config: { ...mkConfig(), cwd: workspace },
+        sessionConfiguration: mkSessionConfiguration({ cwd: workspace }),
+      });
+      const { live } = await spawnLive(session);
+      await collectRun(
+        runAgent({
+          live,
+          parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
+          initialMessages: [{ role: "user", content: "do it" }],
+          taskPrompt: "do it",
+        }),
+      );
+
+      const [_messages, _onChunk, options] = (
+        provider.chatStream as ReturnType<typeof vi.fn>
+      ).mock.calls[0]! as [
+        LLMMessage[],
+        StreamProgressCallback,
+        LLMChatOptions,
+      ];
+      expect(options.systemPrompt?.match(/CHILD_WORKSPACE_SENTINEL_92ac/g)).toHaveLength(1);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   // LIVE-USAGE backstop (D1/D2). The fan-out Agents rail + `/cost` BY-AGENT

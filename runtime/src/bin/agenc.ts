@@ -72,11 +72,6 @@ import {
 } from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
-  loadTieredInstructions,
-  assembleTieredInstructions,
-  formatTieredInstructionWarnings,
-} from "../prompts/agenc-md.js";
-import {
   expandFileMentions,
   extractMentionAllowedRoots,
   formatFileMentionRejection,
@@ -948,7 +943,6 @@ export interface RunSingleTurnOpts {
    */
   readonly loadTurnInputsFn?: () => Promise<PreparedTurnRuntimeInputs>;
   /** Compatibility direct inputs retained for focused unit tests. */
-  readonly projectInstructions?: string;
   readonly memoryPromptText?: string;
   readonly allMemories?: readonly [];
   /** Tool registry + MCP inputs that shape the system prompt. */
@@ -990,7 +984,6 @@ export async function* runSingleTurn(
   const turnInputs = opts.loadTurnInputsFn
     ? await opts.loadTurnInputsFn()
     : {
-        projectInstructions: opts.projectInstructions ?? "",
         memoryPromptText: opts.memoryPromptText ?? "",
         allMemories: opts.allMemories ?? [],
         enabledToolNames: opts.enabledToolNames ?? new Set<string>(),
@@ -1019,7 +1012,8 @@ export async function* runSingleTurn(
     buildAssembleSystemPromptOpts({
       session: opts.session,
       ctx: opts.ctx,
-      projectInstructions: turnInputs.projectInstructions,
+      // Session.runTurn is the sole owner of workspace instruction loading.
+      projectInstructions: "",
       memoryPrompt: turnInputs.memoryPromptText,
       mcpServers: turnInputs.mcpServers,
       enabledToolNames: turnInputs.enabledToolNames,
@@ -1034,6 +1028,7 @@ export async function* runSingleTurn(
 
   const iter = drive(opts.session, opts.ctx, opts.input, {
     systemPrompt: assembled.text,
+    systemPromptReplacesBase: true,
     displayUserMessage: opts.displayInput,
   });
   while (true) {
@@ -1044,7 +1039,6 @@ export async function* runSingleTurn(
 }
 
 export interface PreparedTurnRuntimeInputs {
-  readonly projectInstructions: string;
   readonly memoryPromptText: string;
   readonly allMemories: readonly [];
   readonly enabledToolNames: ReadonlySet<string>;
@@ -1061,33 +1055,8 @@ export async function prepareTurnRuntimeInputs(params: {
   readonly registry: { readonly tools: readonly { readonly name: string }[] };
 }): Promise<PreparedTurnRuntimeInputs> {
   const currentConfig = params.configStore.current();
-  const projectInstructionsResult = await loadTieredInstructions({
-    cwd: params.workspaceRoot,
-    ...(currentConfig.project_root_markers !== undefined
-      ? { projectRootMarkers: currentConfig.project_root_markers }
-      : {}),
-    ...(currentConfig.project_doc_max_bytes !== undefined
-      ? { projectDocMaxBytes: currentConfig.project_doc_max_bytes }
-      : {}),
-  });
-  const assembledProjectInstructions = assembleTieredInstructions(
-    projectInstructionsResult,
-  );
-  const projectMemoryWarnings = formatTieredInstructionWarnings(
-    projectInstructionsResult,
-  );
-  const warningSink = params.session as unknown as {
-    setProjectMemoryWarnings?: (warnings: readonly string[]) => void;
-    projectMemoryWarnings?: string[];
-  };
-  if (typeof warningSink.setProjectMemoryWarnings === "function") {
-    warningSink.setProjectMemoryWarnings(projectMemoryWarnings);
-  } else {
-    warningSink.projectMemoryWarnings = [...projectMemoryWarnings];
-  }
 
   return {
-    projectInstructions: assembledProjectInstructions,
     memoryPromptText: "",
     allMemories: [],
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),

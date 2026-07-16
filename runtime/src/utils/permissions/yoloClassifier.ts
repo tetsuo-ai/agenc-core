@@ -8,7 +8,6 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'path'
 import { z } from 'zod/v4'
 import {
-  getCachedAgenCMdContent,
   getLastClassifierRequests,
   getSessionId,
   setLastClassifierRequests,
@@ -569,39 +568,9 @@ export function buildTranscriptForClassifier(
     .join('')
 }
 
-/**
- * Build the AGENC.md prefix message for the classifier. Returns null when
- * AGENC.md is disabled or empty. The content is wrapped in a delimiter that
- * tells the classifier this is user-provided configuration — actions
- * described here reflect user intent. cache_control is set because the
- * content is static per-session, making the system + AGENC.md prefix a
- * stable cache prefix across classifier calls.
- *
- * Reads from bootstrap/state.ts cache (populated by context.ts) instead of
- * importing AgenC instruction loading directly would create a cycle through permissions/filesystem →
- * permissions → yoloClassifier is a cycle. context.ts already gates on
- * AGENC_DISABLE_AGENC_MDS and normalizes '' to null before caching.
- * If the cache is unpopulated (tests, or an entrypoint that never calls
- * getUserContext), the classifier proceeds without AGENC.md — same as
- * pre-PR behavior.
- */
-function buildAgenCMdMessage(): provider.MessageParam | null {
-  const agencMd = getCachedAgenCMdContent()
-  if (agencMd === null) return null
-  return {
-    role: 'user',
-    content: [
-      {
-        type: 'text',
-        text:
-          `The following is the user's AGENC.md configuration. These are ` +
-          `instructions the user provided to the agent and should be treated ` +
-          `as part of the user's intent when evaluating actions.\n\n` +
-          `<user_agenc_md>\n${agencMd}\n</user_agenc_md>`,
-        cache_control: getCacheControl({ querySource: 'auto_mode' }),
-      },
-    ],
-  }
+/** Request-contract seam: authorization classifiers receive no workspace prefix. */
+export function buildIsolatedClassifierPrefixMessages(): provider.MessageParam[] {
+  return []
 }
 
 /**
@@ -1139,10 +1108,11 @@ export async function classifyYoloAction(
     tools,
     transcriptBudget,
   )
-  const agencMdMessage = buildAgenCMdMessage()
-  const prefixMessages: provider.MessageParam[] = agencMdMessage
-    ? [agencMdMessage]
-    : []
+  // Permission classification is an isolated authority boundary. Workspace
+  // instructions (including managed/user tiers) are deliberately absent: the
+  // classifier may consider explicit conversation intent and permission policy,
+  // never repository-controlled guidance relabeled as authorization.
+  const prefixMessages = buildIsolatedClassifierPrefixMessages()
 
   const toolCallsLength =
     actionCompact.length + serializedTranscript.promptLengths.toolCalls
@@ -1189,7 +1159,7 @@ export async function classifyYoloAction(
   // Place cache_control on the action block. In the two-stage classifier,
   // stage 2 shares the same transcript+action prefix as stage 1 — the
   // breakpoint here gives stage 2 a guaranteed cache hit on the full prefix.
-  // Budget: system (1) + AGENC.md (0–1) + action (1) = 2–3, under the
+  // Budget: system (1) + action (1) = 2, under the
   // API limit of 4 cache_control blocks.
   userContentBlocks.push({
     type: 'text' as const,

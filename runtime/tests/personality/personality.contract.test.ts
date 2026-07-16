@@ -253,8 +253,10 @@ function mkRegistry(): ToolRegistry {
 function mkProviderRecorder(response?: Partial<LLMResponse>): {
   readonly provider: LLMProvider;
   readonly seenMessages: LLMMessage[][];
+  readonly seenSystemPrompts: Array<string | undefined>;
 } {
   const seenMessages: LLMMessage[][] = [];
+  const seenSystemPrompts: Array<string | undefined> = [];
   const finalResponse: LLMResponse = {
     content: "answer",
     toolCalls: [],
@@ -265,14 +267,17 @@ function mkProviderRecorder(response?: Partial<LLMResponse>): {
   };
   return {
     seenMessages,
+    seenSystemPrompts,
     provider: {
       name: "stub-provider",
       chat: async () => finalResponse,
       chatStream: async (
         messages: LLMMessage[],
         _onChunk: StreamProgressCallback,
+        options,
       ) => {
         seenMessages.push(messages.map((message) => ({ ...message })));
+        seenSystemPrompts.push(options?.systemPrompt);
         return finalResponse;
       },
       healthCheck: async () => true,
@@ -389,7 +394,7 @@ describe("personality contract", () => {
   });
 
   test("config_personality_some_sets_instructions_template", async () => {
-    const { provider, seenMessages } = mkProviderRecorder();
+    const { provider, seenMessages, seenSystemPrompts } = mkProviderRecorder();
     const { session } = mkSession(provider);
     const ctx = mkCtx({
       configPersonality: "friendly",
@@ -401,15 +406,17 @@ describe("personality contract", () => {
       systemPrompt: BASE_INSTRUCTIONS,
     }));
 
-    expect(seenMessages[0]?.[0]).toEqual({
-      role: "system",
-      content: `${LOCAL_FRIENDLY_TEMPLATE}\n\n${BASE_INSTRUCTIONS}`,
-    });
+    expect(seenSystemPrompts[0]).toBe(
+      `${LOCAL_FRIENDLY_TEMPLATE}\n\n${BASE_INSTRUCTIONS}`,
+    );
+    expect(seenMessages[0]?.some((message) => message.role === "system")).toBe(
+      false,
+    );
     expect(personalityDeveloperTexts(seenMessages[0] ?? [])).toEqual([]);
   });
 
   test("config_personality_none_sends_no_personality", async () => {
-    const { provider, seenMessages } = mkProviderRecorder();
+    const { provider, seenMessages, seenSystemPrompts } = mkProviderRecorder();
     const { session } = mkSession(provider);
     const ctx = mkCtx({
       configPersonality: "none",
@@ -421,7 +428,7 @@ describe("personality contract", () => {
       systemPrompt: BASE_INSTRUCTIONS,
     }));
 
-    const instructionsText = messageText(seenMessages[0]![0]!);
+    const instructionsText = seenSystemPrompts[0] ?? "";
     expect(instructionsText).toContain(BASE_INSTRUCTIONS);
     expect(instructionsText).not.toContain(LOCAL_FRIENDLY_TEMPLATE);
     expect(instructionsText).not.toContain(LOCAL_PRAGMATIC_TEMPLATE);
@@ -438,7 +445,7 @@ describe("personality contract", () => {
       env: { HOME: home },
     });
 
-    const { provider, seenMessages } = mkProviderRecorder();
+    const { provider, seenMessages, seenSystemPrompts } = mkProviderRecorder();
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockReturnValue(provider as never);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
@@ -463,7 +470,7 @@ describe("personality contract", () => {
         systemPrompt: BASE_INSTRUCTIONS,
       }));
 
-      expect(messageText(seenMessages[0]![0]!)).toContain(
+      expect(seenSystemPrompts[0]).toContain(
         LOCAL_PRAGMATIC_TEMPLATE,
       );
     } finally {

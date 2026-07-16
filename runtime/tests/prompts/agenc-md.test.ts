@@ -21,6 +21,10 @@ import {
   type TierEntry,
   type TieredInstructions,
 } from "./agenc-md.js";
+import {
+  ExternalInstructionApprovalStore,
+  readInstructionFileSnapshot,
+} from "./secure-instruction-file.js";
 
 const POSIX = platform() !== "win32";
 const posixTest = POSIX ? test : test.skip;
@@ -113,6 +117,7 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       content,
       rawContent: content,
       dropped: [],
+      dependencies: [path],
     });
     const tiers: TieredInstructions = {
       managed: mk("managed", "/etc/agenc/AGENC.md", "M"),
@@ -213,6 +218,22 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(res.dropped).toHaveLength(0);
   });
 
+  test("caps include references before repository-controlled filesystem work explodes", async () => {
+    const repo = join(tmp, "repo-reference-cap");
+    mkdirSync(repo);
+    const directives = Array.from(
+      { length: 700 },
+      (_, index) => `@include missing-${index}.md`,
+    ).join("\n");
+    const res = await resolveIncludes(directives, {
+      baseDir: repo,
+      projectRoot: repo,
+    });
+    expect(res.dropped).toHaveLength(512);
+    expect(res.text).toContain("reference_limit");
+    expect(res.probes).toHaveLength(512);
+  });
+
   test("I-75: @include escaping project root is rejected with warning", async () => {
     const repo = join(tmp, "repo");
     const outside = join(tmp, "outside");
@@ -225,11 +246,11 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     });
     expect(res.included).toHaveLength(0);
     expect(res.dropped).toHaveLength(1);
-    expect(res.dropped[0]!.reason).toBe("path_escape");
+    expect(res.dropped[0]!.reason).toBe("approval_required");
     expect(res.text).not.toContain("SECRET");
     // Rejection marker left so the drop is visible downstream.
     expect(res.text).toContain(
-      "<!-- @include ../outside/secret.md (rejected: path_escape) -->",
+      "<!-- @include ../outside/secret.md (rejected: approval_required) -->",
     );
   });
 
@@ -240,7 +261,58 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       baseDir: repo,
       projectRoot: repo,
     });
-    expect(res.dropped[0]!.reason).toBe("path_escape");
+    expect(res.dropped[0]!.reason).toBe("approval_required");
+  });
+
+  test("an exact trusted-operator grant resolves only its approved external include", async () => {
+    const repo = join(tmp, "repo");
+    const outside = join(tmp, "outside");
+    const parent = join(repo, "AGENC.md");
+    const target = join(outside, "approved.md");
+    mkdirSync(repo);
+    mkdirSync(outside);
+    writeFileSync(parent, "@include ../outside/approved.md");
+    writeFileSync(target, "APPROVED-CONTENT");
+    const parentRead = await readInstructionFileSnapshot({
+      requestedPath: parent,
+      boundaryRoot: repo,
+      workspaceRoot: repo,
+      sourceClass: "project",
+      maximumBytes: 1_000,
+    });
+    if (!parentRead.ok) throw new Error("parent setup failed");
+    const discovery = await readInstructionFileSnapshot({
+      requestedPath: target,
+      boundaryRoot: repo,
+      workspaceRoot: repo,
+      sourceClass: "include",
+      maximumBytes: 1_000,
+      includedBy: parentRead.snapshot.canonicalPath,
+      includedBySha256: parentRead.snapshot.sha256,
+    });
+    if (discovery.ok || discovery.identity === undefined || discovery.canonicalPath === undefined) {
+      throw new Error("external discovery setup failed");
+    }
+    const approvals = new ExternalInstructionApprovalStore();
+    approvals.grant({
+      workspaceRoot: repo,
+      includingSource: parentRead.snapshot.canonicalPath,
+      includingSourceSha256: parentRead.snapshot.sha256,
+      targetCanonicalPath: discovery.canonicalPath,
+      targetIdentity: discovery.identity,
+      principal: "operator:test",
+    });
+
+    const resolved = await resolveIncludes(parentRead.snapshot.text, {
+      baseDir: repo,
+      projectRoot: repo,
+      workspaceRoot: repo,
+      includingFile: parentRead.snapshot.canonicalPath,
+      includingFileSha256: parentRead.snapshot.sha256,
+      externalApprovals: approvals,
+    });
+    expect(resolved.dropped).toEqual([]);
+    expect(resolved.text).toContain("APPROVED-CONTENT");
   });
 
   test("@include circular A->B->A rejected", async () => {
@@ -353,10 +425,10 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       });
       expect(res.included).toHaveLength(0);
       expect(res.dropped).toHaveLength(1);
-      expect(res.dropped[0]!.reason).toBe("path_escape");
+      expect(res.dropped[0]!.reason).toBe("approval_required");
       expect(res.text).not.toContain("SECRET");
       expect(res.text).toContain(
-        "<!-- @include leak.md (rejected: path_escape) -->",
+        "<!-- @include leak.md (rejected: approval_required) -->",
       );
     },
   );
@@ -422,12 +494,12 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       expect(res.dropped).toHaveLength(1);
       // realpath resolves through the symlink; `/dev/null` is outside the
       // project boundary, so the boundary check fires first.
-      expect(res.dropped[0]!.reason).toBe("path_escape");
+      expect(res.dropped[0]!.reason).toBe("approval_required");
     },
   );
 
   posixTest(
-    "in-tree symlink to in-tree regular file still works (sanity)",
+    "in-tree symlink is rejected so the opened identity is never path-aliased",
     async () => {
       const repo = join(tmp, "repo");
       mkdirSync(repo);
@@ -437,8 +509,9 @@ describe("agenc-md (T10-B tiered + @include)", () => {
         baseDir: repo,
         projectRoot: repo,
       });
-      expect(res.dropped).toHaveLength(0);
-      expect(res.text).toContain("REAL");
+      expect(res.dropped).toHaveLength(1);
+      expect(res.dropped[0]!.reason).toBe("symlink");
+      expect(res.text).not.toContain("REAL");
     },
   );
 
@@ -541,7 +614,7 @@ describe("agenc-md (T10-B tiered + @include)", () => {
         // Fail-closed: realpath EACCES returns false from isPathWithinReal,
         // then pathExists also fails, so we report `not_found`. Either way
         // the file contents never leak.
-        expect(res.dropped[0]!.reason).toBe("not_found");
+        expect(res.dropped[0]!.reason).toBe("read_error");
         expect(res.text).not.toContain("HIDDEN");
       } finally {
         // Restore perms so rmSync cleanup in afterEach succeeds.
@@ -671,6 +744,39 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     }
   });
 
+  test("loads .agenc/AGENC.md and rules even when no root AGENC.md exists", async () => {
+    const repoRoot = join(tmp, "repo-dot-agenc");
+    mkdirSync(join(repoRoot, ".agenc", "rules"), { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, ".agenc", "AGENC.md"), "DOT-AGENC");
+    writeFileSync(join(repoRoot, ".agenc", "rules", "always.md"), "RULE-ONLY");
+
+    const tiers = await loadTieredInstructions({
+      cwd: repoRoot,
+      homeDir: join(tmp, "home"),
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.project?.content).toContain("DOT-AGENC");
+    expect(tiers.project?.content).toContain("RULE-ONLY");
+    expect(tiers.project?.content.indexOf("DOT-AGENC")).toBeLessThan(
+      tiers.project?.content.indexOf("RULE-ONLY") ?? -1,
+    );
+  });
+
+  test("loads a project rules-only tier", async () => {
+    const repoRoot = join(tmp, "repo-rules-only");
+    mkdirSync(join(repoRoot, ".agenc", "rules"), { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, ".agenc", "rules", "always.md"), "RULES-SENTINEL");
+
+    const tiers = await loadTieredInstructions({
+      cwd: repoRoot,
+      homeDir: join(tmp, "home"),
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.project?.content).toContain("RULES-SENTINEL");
+  });
+
   test("loadTieredInstructions finds local tier from project root without project instructions", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
@@ -709,6 +815,57 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     });
     expect(tiers.project?.content).toBe("PKG");
     expect(tiers.project?.path).toBe(join(pkgDir, "AGENC.md"));
+  });
+
+  test("shares the include byte cap across a root-to-cwd project chain", async () => {
+    const home = join(tmp, "home");
+    const repo = join(tmp, "repo-shared-ledger");
+    const nested = join(repo, "nested");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(repo, "package.json"), "{}");
+    writeFileSync(join(repo, "AGENC.md"), "@include first.md");
+    writeFileSync(join(repo, "first.md"), "A".repeat(60));
+    writeFileSync(join(nested, "AGENC.md"), "@include second.md");
+    writeFileSync(join(nested, "second.md"), "B".repeat(60));
+
+    const tiers = await loadTieredInstructions({
+      cwd: nested,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+      includeMaxBytes: 100,
+      projectDocMaxBytes: 1_000,
+    });
+
+    expect(tiers.project?.content).toContain("A".repeat(60));
+    expect(tiers.project?.content).not.toContain("B".repeat(60));
+  });
+
+  test("shares rule scan and file caps across ancestor directories", async () => {
+    const home = join(tmp, "home");
+    const repo = join(tmp, "repo-rule-ledger");
+    const nested = join(repo, "nested");
+    const rootRules = join(repo, ".agenc", "rules");
+    const nestedRules = join(nested, ".agenc", "rules");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(rootRules, { recursive: true });
+    mkdirSync(nestedRules, { recursive: true });
+    writeFileSync(join(repo, "package.json"), "{}");
+    for (let index = 0; index < 150; index += 1) {
+      writeFileSync(join(rootRules, `${String(index).padStart(3, "0")}.md`), `ROOT-${index}`);
+    }
+    for (let index = 0; index < 60; index += 1) {
+      writeFileSync(join(nestedRules, `${String(index).padStart(3, "0")}.md`), `NESTED-${index}`);
+    }
+
+    const tiers = await loadTieredInstructions({
+      cwd: nested,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+
+    expect(tiers.project?.content).toContain("ROOT-149");
+    expect(tiers.project?.content).not.toContain("NESTED-59");
   });
 
   describe("mtime-keyed cache (avoids re-reading AGENC.md every turn)", () => {
@@ -809,6 +966,123 @@ describe("agenc-md (T10-B tiered + @include)", () => {
 
       const b = await loadTieredInstructions(opts);
       expect(b.project).toBeNull();
+    });
+
+    test("invalidates when an included file or rules directory changes", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      const rulesDir = join(repo, ".agenc", "rules");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "@include child.md");
+      writeFileSync(join(repo, "child.md"), "CHILD-ONE");
+
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const first = await loadTieredInstructions(opts);
+      expect(first.project?.content).toContain("CHILD-ONE");
+
+      writeFileSync(join(repo, "child.md"), "CHILD-TWO");
+      const second = await loadTieredInstructions(opts);
+      expect(second).not.toBe(first);
+      expect(second.project?.content).toContain("CHILD-TWO");
+
+      writeFileSync(join(rulesDir, "new.md"), "RULE-NEW");
+      const third = await loadTieredInstructions(opts);
+      expect(third).not.toBe(second);
+      expect(third.project?.content).toContain("RULE-NEW");
+    });
+
+    test("invalidates when a previously missing include target appears", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo-missing-include");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "@include child.md");
+      const opts = { cwd: repo, homeDir: home, managedPath: join(tmp, "none") };
+
+      const first = await loadTieredInstructions(opts);
+      expect(first.project?.content).toContain("rejected: not_found");
+      writeFileSync(join(repo, "child.md"), "LATE-INCLUDE");
+      const second = await loadTieredInstructions(opts);
+
+      expect(second).not.toBe(first);
+      expect(second.project?.content).toContain("LATE-INCLUDE");
+    });
+
+    test("invalidates nested rule directories and filtered rule candidates", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo-nested-rules");
+      const nestedRules = join(repo, ".agenc", "rules", "nested");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(nestedRules, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, ".agenc", "rules", "root.md"), "ROOT-RULE");
+      writeFileSync(
+        join(repo, ".agenc", "rules", "conditional.md"),
+        "---\nglobs: ['src/**']\n---\nCONDITIONAL",
+      );
+      const opts = { cwd: repo, homeDir: home, managedPath: join(tmp, "none") };
+
+      const first = await loadTieredInstructions(opts);
+      expect(first.project?.content).toContain("ROOT-RULE");
+      expect(first.project?.content).not.toContain("CONDITIONAL");
+
+      writeFileSync(join(nestedRules, "late.md"), "LATE-NESTED-RULE");
+      const second = await loadTieredInstructions(opts);
+      expect(second).not.toBe(first);
+      expect(second.project?.content).toContain("LATE-NESTED-RULE");
+
+      writeFileSync(
+        join(repo, ".agenc", "rules", "conditional.md"),
+        "NOW-UNCONDITIONAL",
+      );
+      const third = await loadTieredInstructions(opts);
+      expect(third).not.toBe(second);
+      expect(third.project?.content).toContain("NOW-UNCONDITIONAL");
+    });
+
+    test("invalidates when a nearer project-root marker appears", async () => {
+      const home = join(tmp, "home");
+      const outer = join(tmp, "outer");
+      const nested = join(outer, "nested");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(outer, "package.json"), "{}");
+      writeFileSync(join(outer, "AGENC.md"), "OUTER-INSTRUCTIONS");
+      const opts = { cwd: nested, homeDir: home, managedPath: join(tmp, "none") };
+
+      const first = await loadTieredInstructions(opts);
+      expect(first.project?.content).toContain("OUTER-INSTRUCTIONS");
+      writeFileSync(join(nested, "package.json"), "{}");
+      const second = await loadTieredInstructions(opts);
+
+      expect(second).not.toBe(first);
+      expect(second.project).toBeNull();
+    });
+
+    test("invalidates when a higher-precedence override appears", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "PRIMARY");
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const first = await loadTieredInstructions(opts);
+      writeFileSync(join(repo, "AGENC.override.md"), "OVERRIDE");
+      const second = await loadTieredInstructions(opts);
+      expect(second).not.toBe(first);
+      expect(second.project?.content).toBe("OVERRIDE");
     });
 
     test("different cwds get independent cache entries", async () => {

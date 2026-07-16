@@ -42,7 +42,8 @@ canonical git root is found.
 
 ## Instruction cascade (`AGENC.md`)
 
-Loaded by `agencmd` in priority order (later = higher attention):
+Resolved for every coding-agent/review turn at the shared session boundary in
+priority order (later wins only within workspace guidance):
 
 1. **Managed** — e.g. system-wide managed `AGENC.md` / rules dirs
 2. **User** — `~/.agenc/AGENC.md` (+ user rules dir)
@@ -54,9 +55,19 @@ Also:
 - **Auto-memory entrypoints** (`MEMORY.md` global + project) when auto-memory is enabled — framed as **untrusted persisted state**, not as override instructions
 - **Persona** files (below) as Project-tier workspace identity
 
-`@include` in memory files: `@path`, `@./rel`, `@~/home`, `@/abs` on leaf text
-(not inside code fences). Circular includes skipped; missing files ignored;
-binary extensions blocked.
+Live instruction includes use `@include <path>` on their own line. Relative
+targets must stay inside the canonical tier/workspace boundary. Absolute and
+escaping targets are denied unless an embedding host supplies a revocable
+trusted-operator approval bound to the exact workspace, including source
+digest, and target identity. Symlinks, hard links, special files, broken links,
+unstable reads, and invalid UTF-8 fail closed. The legacy `@path` parser remains
+only for compatibility attachment discovery and cannot authorize external
+reads.
+
+The provider receives the resolved envelope exactly once through its native
+system-prompt field. See
+[secure project instructions](../design/secure-project-instructions.md) for
+request-surface exclusions, filesystem guarantees, and platform limits.
 
 Recommended soft cap: `MAX_MEMORY_CHARACTER_COUNT` (40_000). Entrypoint
 `MEMORY.md` also line/byte truncated for prompt injection

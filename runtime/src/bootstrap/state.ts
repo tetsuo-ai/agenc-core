@@ -100,7 +100,6 @@ type State = {
   lastClassifierRequests: unknown[] | null
   // AGENC.md content cached by context.ts for the auto-mode classifier.
   // Breaks the yoloClassifier → agencmd → filesystem → permissions cycle.
-  cachedAgenCMdContent: string | null
   // In-memory error log for recent errors
   inMemoryErrorLog: Array<{ error: string; timestamp: string }>
   // Session-only plugins from --plugin-dir flag
@@ -310,7 +309,6 @@ function getInitialState(): State {
     lastAPIRequestMessages: null,
     // Last auto-mode classifier request(s) for /share transcript
     lastClassifierRequests: null,
-    cachedAgenCMdContent: null,
     // In-memory error log for recent errors
     inMemoryErrorLog: [],
     // Session-only plugins from --plugin-dir flag
@@ -1065,14 +1063,6 @@ export function setLastClassifierRequests(requests: unknown[] | null): void {
 
 export function getLastClassifierRequests(): unknown[] | null {
   return STATE.lastClassifierRequests
-}
-
-export function setCachedAgenCMdContent(content: string | null): void {
-  STATE.cachedAgenCMdContent = content
-}
-
-export function getCachedAgenCMdContent(): string | null {
-  return STATE.cachedAgenCMdContent
 }
 
 export function addToInMemoryErrorLog(errorInfo: {

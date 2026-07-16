@@ -15,7 +15,8 @@
  * @module
  */
 
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -28,6 +29,11 @@ import {
 } from "node:path";
 
 import { normalizeExternalText } from "../_deps/file-read.js";
+import {
+  type InstructionFileIdentity,
+  instructionFileIdentityKey,
+  readInstructionFileSnapshot,
+} from "../secure-instruction-file.js";
 
 const RULES_DIRNAME = ".agenc";
 const RULES_SUBDIR = "rules";
@@ -35,6 +41,16 @@ export const DEFAULT_MANAGED_RULES_DIR = "/etc/agenc/rules";
 const MAX_RULE_FILES = 200;
 const MAX_RULE_DEPTH = 3;
 const MAX_RULE_BYTES = 512 * 1024;
+const MAX_RULE_SCAN_ENTRIES = 2_000;
+const MAX_RULE_SCAN_DIRECTORIES = 256;
+
+export interface RuleDiscoveryLedger {
+  scannedEntries: number;
+  scannedDirectories: number;
+  openedFiles: number;
+  bytesRead: number;
+  overflowed: boolean;
+}
 
 export type InstructionRuleType = "Managed" | "User" | "Project" | "Local";
 
@@ -54,6 +70,25 @@ export interface InstructionRule {
   readonly frontmatter: InstructionRuleFrontmatter;
   readonly conditional: boolean;
   readonly mtimeMs: number;
+  readonly identity: InstructionFileIdentity;
+  readonly sha256: string;
+}
+
+export interface RuleDirectorySnapshot {
+  readonly path: string;
+  readonly identity: InstructionFileIdentity;
+}
+
+export interface InstructionRuleDiscovery {
+  readonly rules: readonly InstructionRule[];
+  /** Every securely opened Markdown candidate, including filtered rules. */
+  readonly files: readonly {
+    readonly path: string;
+    readonly identity: InstructionFileIdentity;
+  }[];
+  readonly directories: readonly RuleDirectorySnapshot[];
+  /** An oversized tree is rejected in full and must never be cached. */
+  readonly overflowed: boolean;
 }
 
 export interface DiscoverRulesOptions {
@@ -73,6 +108,10 @@ export interface DiscoverRulesOptions {
   readonly includeUnconditional?: boolean;
   /** Include conditional rules matching `targetPath`. Default true. */
   readonly includeConditional?: boolean;
+  /** Internal compatibility mode: return conditional rules before target matching. */
+  readonly includeUnmatchedConditional?: boolean;
+  /** Shared envelope-wide resource ledger. */
+  readonly resourceLedger?: RuleDiscoveryLedger;
 }
 
 interface ParsedRuleFile {
@@ -190,21 +229,25 @@ export function parseRuleFile(raw: string): ParsedRuleFile {
 function isPathInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   if (rel === "") return true;
-  if (rel.startsWith("..")) return false;
+  if (rel === ".." || rel.startsWith(`..${sep}`)) return false;
   if (isAbsolute(rel)) return false;
   return true;
 }
 
-async function realpathInside(path: string, boundary: string): Promise<boolean> {
-  try {
-    const [realCandidate, realBoundary] = await Promise.all([
-      realpath(path),
-      realpath(boundary),
-    ]);
-    return isPathInside(realCandidate, realBoundary);
-  } catch {
-    return false;
+async function hasSymlinkComponentBelowBoundary(
+  boundary: string,
+  candidate: string,
+): Promise<boolean> {
+  const rel = relative(resolve(boundary), resolve(candidate));
+  if (rel === "") return false;
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return true;
+  let current = resolve(boundary);
+  for (const component of rel.split(sep).filter(Boolean)) {
+    current = join(current, component);
+    const stats = await lstat(current, { bigint: true });
+    if (stats.isSymbolicLink()) return true;
   }
+  return false;
 }
 
 function escapeRegex(input: string): string {
@@ -308,57 +351,244 @@ function isRuleConditional(frontmatter: InstructionRuleFrontmatter): boolean {
   return frontmatter.paths.length > 0 || frontmatter.globs.length > 0;
 }
 
+function directoryIdentity(stats: BigIntStats): InstructionFileIdentity {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    mode: stats.mode,
+    nlink: stats.nlink,
+    size: stats.size,
+    mtimeNs: stats.mtimeNs,
+    ctimeNs: stats.ctimeNs,
+  };
+}
+
+/**
+ * Bounded, fail-closed rule-tree enumeration.
+ *
+ * Node's recursive readdir materializes the entire repository-controlled tree
+ * before a caller can enforce limits. This walker consumes directory entries
+ * incrementally, rejects symlinks, caps all entries (not only Markdown files),
+ * and verifies every visited directory remained the same object for the whole
+ * scan. Trees over the cap are rejected instead of returning a filesystem-order
+ * dependent prefix.
+ */
+export async function scanInstructionRulePaths(opts: {
+  readonly rulesDir: string;
+  readonly boundaryDir?: string;
+  readonly resourceLedger?: RuleDiscoveryLedger;
+}): Promise<{
+  readonly paths: readonly string[];
+  readonly files: readonly RuleDirectorySnapshot[];
+  readonly directories: readonly RuleDirectorySnapshot[];
+  readonly overflowed: boolean;
+}> {
+  const rulesRoot = resolve(opts.rulesDir);
+  const boundary = resolve(opts.boundaryDir ?? opts.rulesDir);
+  const ledger = opts.resourceLedger ?? {
+    scannedEntries: 0,
+    scannedDirectories: 0,
+    openedFiles: 0,
+    bytesRead: 0,
+    overflowed: false,
+  };
+  if (ledger.overflowed) {
+    return { paths: [], files: [], directories: [], overflowed: true };
+  }
+  let canonicalBoundary: string;
+  try {
+    canonicalBoundary = await realpath(boundary);
+    if (
+      !isPathInside(rulesRoot, boundary) ||
+      await hasSymlinkComponentBelowBoundary(boundary, rulesRoot)
+    ) {
+      return { paths: [], files: [], directories: [], overflowed: false };
+    }
+  } catch {
+    return { paths: [], files: [], directories: [], overflowed: false };
+  }
+
+  try {
+    const rootStats = await lstat(rulesRoot, { bigint: true });
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+      return { paths: [], files: [], directories: [], overflowed: false };
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return { paths: [], files: [], directories: [], overflowed: false };
+    }
+    ledger.overflowed = true;
+    return { paths: [], files: [], directories: [], overflowed: true };
+  }
+
+  const queue: Array<{ path: string; depth: number }> = [{ path: rulesRoot, depth: 0 }];
+  const directories: RuleDirectorySnapshot[] = [];
+  const paths: string[] = [];
+  const files: RuleDirectorySnapshot[] = [];
+  let scannedEntries = 0;
+
+  try {
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      ledger.scannedDirectories += 1;
+      if (ledger.scannedDirectories > MAX_RULE_SCAN_DIRECTORIES) {
+        ledger.overflowed = true;
+        return { paths: [], files: [], directories: [], overflowed: true };
+      }
+      const before = await lstat(current.path, { bigint: true });
+      if (before.isSymbolicLink() || !before.isDirectory()) {
+        if (current.depth === 0) {
+          return { paths: [], files: [], directories: [], overflowed: false };
+        }
+        continue;
+      }
+      const canonicalDirectory = await realpath(current.path);
+      if (!isPathInside(canonicalDirectory, canonicalBoundary)) {
+        if (current.depth === 0) {
+          return { paths: [], files: [], directories: [], overflowed: false };
+        }
+        continue;
+      }
+
+      const entries: Array<{ name: string; path: string }> = [];
+      const handle = await opendir(current.path, { bufferSize: 32 });
+      for await (const entry of handle) {
+        scannedEntries += 1;
+        ledger.scannedEntries += 1;
+        if (
+          scannedEntries > MAX_RULE_SCAN_ENTRIES ||
+          ledger.scannedEntries > MAX_RULE_SCAN_ENTRIES
+        ) {
+          ledger.overflowed = true;
+          return { paths: [], files: [], directories: [], overflowed: true };
+        }
+        entries.push({ name: entry.name, path: join(current.path, entry.name) });
+      }
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      directories.push({ path: current.path, identity: directoryIdentity(before) });
+
+      for (const entry of entries) {
+        const stats = await lstat(entry.path, { bigint: true });
+        if (stats.isSymbolicLink()) continue;
+        if (stats.isDirectory()) {
+          if (current.depth + 1 < MAX_RULE_DEPTH) {
+            queue.push({ path: entry.path, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (stats.isFile() && entry.name.endsWith(".md")) {
+          paths.push(entry.path);
+          files.push({ path: entry.path, identity: directoryIdentity(stats) });
+        }
+      }
+    }
+
+    // Detect directory replacement or mutation at any point during traversal.
+    for (const directory of directories) {
+      const after = await lstat(directory.path, { bigint: true });
+      if (
+        after.isSymbolicLink() ||
+        !after.isDirectory() ||
+        instructionFileIdentityKey(directoryIdentity(after)) !==
+          instructionFileIdentityKey(directory.identity)
+      ) {
+        ledger.overflowed = true;
+        return { paths: [], files: [], directories: [], overflowed: true };
+      }
+    }
+  } catch {
+    ledger.overflowed = true;
+    return { paths: [], files: [], directories: [], overflowed: true };
+  }
+
+  if (files.length > MAX_RULE_FILES) {
+    ledger.overflowed = true;
+    return { paths: [], files, directories, overflowed: true };
+  }
+
+  return {
+    paths: paths.sort((left, right) => left.localeCompare(right)),
+    files,
+    directories,
+    overflowed: false,
+  };
+}
+
 export async function discoverInstructionRules(
   opts: DiscoverRulesOptions,
 ): Promise<readonly InstructionRule[]> {
+  return (await discoverInstructionRulesDetailed(opts)).rules;
+}
+
+export async function discoverInstructionRulesDetailed(
+  opts: DiscoverRulesOptions,
+): Promise<InstructionRuleDiscovery> {
   const includeUnconditional = opts.includeUnconditional ?? true;
   const includeConditional = opts.includeConditional ?? true;
   const boundary = opts.boundaryDir ?? opts.rulesDir;
-  let entries: string[];
-  try {
-    entries = await readdir(opts.rulesDir, { recursive: true });
-  } catch {
-    return [];
+  const scan = await scanInstructionRulePaths({
+    rulesDir: opts.rulesDir,
+    ...(opts.boundaryDir !== undefined ? { boundaryDir: opts.boundaryDir } : {}),
+    ...(opts.resourceLedger !== undefined
+      ? { resourceLedger: opts.resourceLedger }
+      : {}),
+  });
+  if (scan.overflowed) {
+    return { rules: [], files: scan.files, directories: scan.directories, overflowed: true };
   }
 
-  const mdFiles = entries
-    .filter((rel) => {
-      if (!rel.endsWith(".md")) return false;
-      const depth = rel.split(sep).length - 1;
-      if (depth >= MAX_RULE_DEPTH) return false;
-      return true;
-    })
-    .slice(0, MAX_RULE_FILES);
-
   const out: InstructionRule[] = [];
-  let bytesRead = 0;
-  for (const rel of mdFiles) {
-    const filePath = join(opts.rulesDir, rel);
-    if (!(await realpathInside(filePath, boundary))) continue;
-    let raw: string;
-    let st;
-    try {
-      st = await stat(filePath);
-      if (!st.isFile()) continue;
-      raw = await readFile(filePath, "utf8");
-    } catch {
-      continue;
+  const fileEvidence = new Map(
+    scan.files.map((file) => [file.path, file] as const),
+  );
+  const ledger = opts.resourceLedger ?? {
+    scannedEntries: 0,
+    scannedDirectories: 0,
+    openedFiles: 0,
+    bytesRead: 0,
+    overflowed: false,
+  };
+  for (const filePath of scan.paths) {
+    if (ledger.openedFiles >= MAX_RULE_FILES || ledger.bytesRead >= MAX_RULE_BYTES) {
+      ledger.overflowed = true;
+      break;
     }
-    bytesRead += Buffer.byteLength(raw, "utf8");
-    if (bytesRead > MAX_RULE_BYTES) break;
+    ledger.openedFiles += 1;
+    const read = await readInstructionFileSnapshot({
+      requestedPath: filePath,
+      boundaryRoot: boundary,
+      workspaceRoot: boundary,
+      sourceClass: "rule",
+      maximumBytes: MAX_RULE_BYTES - ledger.bytesRead,
+    });
+    if (!read.ok) continue;
+    fileEvidence.delete(filePath);
+    fileEvidence.set(read.snapshot.canonicalPath, {
+      path: read.snapshot.canonicalPath,
+      identity: read.snapshot.identity,
+    });
+    const raw = read.snapshot.text;
+    ledger.bytesRead += Buffer.byteLength(raw, "utf8");
 
     const parsed = parseRuleFile(raw);
     if (parsed.body.length === 0) continue;
-    const conditional = isRuleConditional(parsed.frontmatter);
-    const unconditional = parsed.frontmatter.alwaysApply || !conditional;
+    const hasConditions = isRuleConditional(parsed.frontmatter);
+    const conditional = hasConditions && !parsed.frontmatter.alwaysApply;
+    const unconditional = !conditional;
     const matches =
-      conditional &&
+      hasConditions &&
       opts.targetPath !== undefined &&
+      (opts.type !== "Project" ||
+        isPathInside(resolve(opts.targetPath), resolve(boundary))) &&
       ruleMatchesTarget(filePath, parsed.frontmatter, opts.targetPath);
 
-    if (!includeUnconditional && unconditional) continue;
-    if (!includeConditional && conditional) continue;
-    if (!unconditional && !matches) continue;
+    if (unconditional) {
+      if (!includeUnconditional) continue;
+    } else {
+      if (!includeConditional) continue;
+      if (!matches && !opts.includeUnmatchedConditional) continue;
+    }
 
     out.push({
       path: filePath,
@@ -367,12 +597,27 @@ export async function discoverInstructionRules(
       rawContent: raw,
       frontmatter: parsed.frontmatter,
       conditional,
-      mtimeMs: st.mtimeMs,
+      mtimeMs: Number(read.snapshot.identity.mtimeNs) / 1_000_000,
+      identity: read.snapshot.identity,
+      sha256: read.snapshot.sha256,
     });
   }
 
+  if (ledger.overflowed) {
+    return {
+      rules: [],
+      files: [...fileEvidence.values()],
+      directories: scan.directories,
+      overflowed: true,
+    };
+  }
   out.sort((a, b) => a.path.localeCompare(b.path));
-  return out;
+  return {
+    rules: out,
+    files: [...fileEvidence.values()],
+    directories: scan.directories,
+    overflowed: false,
+  };
 }
 
 export function projectRulesDir(dir: string): string {

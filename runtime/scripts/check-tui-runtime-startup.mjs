@@ -23,7 +23,11 @@ const IMPORT_PROTOCOL = "agenc-tui-import-proof-v1";
 const IMPORT_TIMEOUT_MS = 15_000;
 const MAX_IMPORT_OUTPUT_BYTES = 64 * 1024;
 const MAX_PTY_OUTPUT_BYTES = 1024 * 1024;
-const FIRST_PAINT_MS = 1_500;
+// A freshly rebuilt 10+ MiB runtime can take longer than 1.5s to produce its
+// first PTY byte on a cold filesystem/module cache. Keep this below the import
+// timeout, but leave enough headroom that the pre-commit build immediately
+// followed by this smoke does not fail a healthy first viewport.
+const FIRST_PAINT_MS = 3_000;
 const POST_REPLY_MS = 1_500;
 const SIGTERM_GRACE_MS = 1_000;
 const FORCE_KILL_GRACE_MS = 1_000;

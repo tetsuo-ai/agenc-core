@@ -459,19 +459,13 @@ export async function* runAgent({
     override?.systemContext ?? getSystemContext(),
   ])
 
-  // Read-only agents (Explore, Plan) don't act on commit/PR/lint rules from
-  // AGENC.md — the main agent has full context and interprets their output.
-  // Dropping full project memory here saves ~5-15 Gtok/week across 34M+ Explore spawns.
-  // Explicit override.userContext from callers is preserved untouched.
-  // Kill-switch defaults true; flip tengu_slim_subagent_agencmd=false to revert.
-  const shouldOmitAgenCMd =
-    agentDefinition.omitAgenCMd &&
-    !override?.userContext &&
-    true
+  // Project instructions are resolved at Session.runTurn from the child's
+  // effective cwd. Never carry the legacy rendered copy in user context: that
+  // would duplicate it and would leak a parent-workspace rendering into a
+  // worktree child. Explicit overrides may add other user context, but cannot
+  // bypass the single live-request resolver.
   const { agencMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext // branding-scan: allow upstream user-context field name pending context absorb
-  const resolvedUserContext = shouldOmitAgenCMd
-    ? userContextNoAgenCMd
-    : baseUserContext
+  const resolvedUserContext = userContextNoAgenCMd
 
   // scanner (Explore) / Plan are read-only search agents — the
   // parent-session-start gitStatus (up to 40KB, explicitly labeled stale) is

@@ -159,6 +159,7 @@ import {
   type Personality,
   type TurnContext,
 } from "./turn-context.js";
+import type { ExternalInstructionApprovalStore } from "../prompts/secure-instruction-file.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
@@ -839,6 +840,8 @@ export interface SessionServices {
    * a ConfigStore, and commands already prefer `ctx.configStore` when set.
    */
   readonly configStore?: ConfigStore;
+  /** Trusted embedding-host channel for exact external instruction grants. */
+  readonly externalInstructionApprovals?: ExternalInstructionApprovalStore;
   readonly costSidecar?: CostSidecar;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
   readonly policyLimits?: PolicyLimitsService;
@@ -2013,7 +2016,21 @@ export class Session {
   }
 
   setProjectMemoryWarnings(warnings: readonly string[]): void {
+    const previous = new Set(this.projectMemoryWarnings);
     this.projectMemoryWarnings = [...warnings];
+    for (const warning of warnings) {
+      if (previous.has(warning)) continue;
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "project_instruction_rejected",
+            message: warning,
+          },
+        },
+      });
+    }
   }
 
   /**

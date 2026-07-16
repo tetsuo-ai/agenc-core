@@ -1,5 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -102,6 +108,25 @@ globs: ["src/**/*.ts"]
     expect(rules[0]?.content).toBe("# Src");
   });
 
+  test("treats alwaysApply rules with globs as unconditional", async () => {
+    const rulesDir = projectRulesDir(dir);
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(join(rulesDir, "always.md"), `---
+globs: ["src/**"]
+alwaysApply: true
+---
+# Always despite glob
+`);
+    const rules = await discoverInstructionRules({
+      rulesDir,
+      type: "Project",
+      boundaryDir: dir,
+      includeUnconditional: true,
+      includeConditional: false,
+    });
+    expect(rules.map((rule) => rule.content)).toEqual(["# Always despite glob"]);
+  });
+
   test("returns matching conditional rules from nested rule directories", async () => {
     const rulesDir = projectRulesDir(dir);
     const nestedRulesDir = join(rulesDir, "frontend");
@@ -122,4 +147,47 @@ globs: ["src/**/*.ts"]
     expect(rules).toHaveLength(1);
     expect(rules[0]?.content).toBe("# Nested Src");
   });
+
+  test("does not apply a project conditional rule to a target outside its boundary", async () => {
+    const rulesDir = projectRulesDir(dir);
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(join(rulesDir, "all.md"), `---
+globs: ["**/*"]
+---
+# Project only
+`);
+    const rules = await discoverInstructionRules({
+      rulesDir,
+      type: "Project",
+      boundaryDir: dir,
+      targetPath: join(tmpdir(), "outside.ts"),
+      includeUnconditional: false,
+      includeConditional: true,
+    });
+    expect(rules).toEqual([]);
+  });
+
+  test.runIf(process.platform !== "win32")(
+    "rejects rule-file and rule-directory symlink escapes",
+    async () => {
+      const rulesDir = projectRulesDir(dir);
+      const outside = mkdtempSync(join(tmpdir(), "agenc-rules-outside-"));
+      try {
+        mkdirSync(rulesDir, { recursive: true });
+        writeFileSync(join(outside, "secret.md"), "# SECRET");
+        symlinkSync(join(outside, "secret.md"), join(rulesDir, "file.md"));
+        symlinkSync(outside, join(rulesDir, "nested"));
+        const rules = await discoverInstructionRules({
+          rulesDir,
+          type: "Project",
+          boundaryDir: dir,
+          includeUnconditional: true,
+          includeConditional: false,
+        });
+        expect(rules).toEqual([]);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildTranscriptForClassifier } from '../../../src/utils/permissions/yoloClassifier.ts'
+import {
+  buildIsolatedClassifierPrefixMessages,
+  buildTranscriptForClassifier,
+} from '../../../src/utils/permissions/yoloClassifier.ts'
 
 const tools = [
   {
@@ -13,6 +16,12 @@ const tools = [
 ] as any
 
 describe('buildTranscriptForClassifier', () => {
+  test('has no workspace-prefix channel for repository instructions', () => {
+    const prefix = buildIsolatedClassifierPrefixMessages()
+    expect(prefix).toEqual([])
+    expect(JSON.stringify(prefix)).not.toContain('REPO_MUST_APPROVE_MUTATION_SENTINEL')
+  })
+
   test('keeps the most recent transcript entries within budget', () => {
     const messages = [
       {

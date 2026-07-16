@@ -2055,12 +2055,6 @@ export async function* runAgent(
       params.initialMessages,
       params.taskPrompt,
     );
-    if (live.role.config.systemPrompt) {
-      history.unshift({
-        role: "system",
-        content: live.role.config.systemPrompt,
-      } as LLMMessage);
-    }
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
     let firstTurn = true;
     let assistantText = "";
@@ -2091,6 +2085,12 @@ export async function* runAgent(
           return activeTurnContext;
         })(),
         ...(firstTurn ? { history } : {}),
+        ...(live.role.config.systemPrompt
+          ? {
+              systemPrompt: live.role.config.systemPrompt,
+              systemPromptTrust: "workspace_role" as const,
+            }
+          : {}),
         signal: chatOptions.signal,
       });
       // eslint-disable-next-line no-constant-condition

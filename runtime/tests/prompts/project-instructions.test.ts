@@ -197,6 +197,21 @@ describe("project-instructions (T10-B)", () => {
     },
   );
 
+  test.runIf(process.platform !== "win32")(
+    "rejects an instruction entrypoint symlink that escapes the workspace",
+    async () => {
+      const repoRoot = join(root, "proj");
+      const outside = join(root, "outside.md");
+      mkdirSync(repoRoot, { recursive: true });
+      writeFileSync(join(repoRoot, "package.json"), "{}");
+      writeFileSync(outside, "EXTERNAL_SECRET");
+      symlinkSync(outside, join(repoRoot, "AGENC.md"));
+
+      const result = await loadProjectInstructions({ cwd: repoRoot });
+      expect(result).toBeNull();
+    },
+  );
+
   test("loadProjectInstructions prefers AGENC.override.md", async () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
@@ -281,6 +296,18 @@ describe("project-instructions (T10-B)", () => {
     });
     expect(res).toBeNull();
   });
+
+  test.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 5 * 1024 * 1024 + 1])(
+    "loadProjectInstructions rejects unsafe byte budget %s",
+    async (projectDocMaxBytes) => {
+      await expect(
+        loadProjectInstructions({ cwd: root, projectDocMaxBytes }),
+      ).rejects.toThrow(RangeError);
+      await expect(
+        loadProjectInstructionChain({ cwd: root, projectDocMaxBytes }),
+      ).rejects.toThrow(RangeError);
+    },
+  );
 
   test("loadProjectInstructions uses default budget when unspecified", async () => {
     const repoRoot = join(root, "proj");
