@@ -23,6 +23,7 @@ import type {
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
+import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
@@ -95,9 +96,27 @@ const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
 
-class MCPReconnectCleanupError extends AggregateError {
-  constructor(serverName: string, errors: unknown[]) {
-    super(errors, `MCP server "${serverName}" reconnect cleanup failed`);
+export interface MCPReconnectCleanupFailure {
+  /** Exact resource whose cleanup could not be proven. */
+  readonly owner: unknown;
+  /** Retry the same owner's cleanup; success is the only proof of release. */
+  readonly dispose: () => Promise<void>;
+  readonly error: unknown;
+}
+
+export class MCPReconnectCleanupError extends AggregateError {
+  constructor(
+    serverName: string,
+    readonly failures: readonly MCPReconnectCleanupFailure[],
+    readonly unownedErrors: readonly unknown[] = [],
+  ) {
+    super(
+      [
+        ...failures.map((failure) => failure.error),
+        ...unownedErrors,
+      ],
+      `MCP server "${serverName}" reconnect cleanup failed`,
+    );
     this.name = "MCPReconnectCleanupError";
   }
 }
@@ -124,6 +143,11 @@ interface ResilientMCPBridgeOptions {
    * tool reconnect.
    */
   readonly onReconnect?: (client: unknown) => void | Promise<void>;
+  /**
+   * Notifies the manager before a poisoned reconnect task settles. The outer
+   * bridge retains the exact nested owners and remains their retry boundary.
+   */
+  readonly onCleanupFailure?: (error: MCPReconnectCleanupError) => void;
   /**
    * gaphunt3 #14: session-provided elicitation handlers, threaded into the
    * fresh client spawned on reconnect. The initial connect registers these
@@ -166,6 +190,12 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private reconnectTask: Promise<void> | undefined;
   private reconnectEpoch = 0;
   private backoffMs = 0;
+  private cleanupPoisoned = false;
+  private readonly retainedCleanup = new Map<
+    unknown,
+    MCPReconnectCleanupFailure
+  >();
+  private readonly unownedCleanupErrors: unknown[] = [];
   private disposed = false;
   private disposal: Promise<void> | undefined;
   private innerDisposal:
@@ -203,11 +233,12 @@ export class ResilientMCPBridge implements MCPToolBridge {
     const reconnectTask = this.reconnectTask;
     const task = Promise.allSettled([
       this.disposeInnerBridge(inner),
+      this.retryRetainedCleanup(),
       ...(reconnectTask !== undefined ? [reconnectTask] : []),
     ]).then((results) => {
       const errors = results.flatMap((result, index) => {
         if (result.status !== "rejected") return [];
-        if (index === 0 || result.reason instanceof MCPReconnectCleanupError) {
+        if (index < 2 || result.reason instanceof MCPReconnectCleanupError) {
           return [result.reason];
         }
         return [];
@@ -240,6 +271,13 @@ export class ResilientMCPBridge implements MCPToolBridge {
           return { content: `MCP server "${this.serverName}" has been disposed`, isError: true };
         }
 
+        if (this.cleanupPoisoned) {
+          return {
+            content: `MCP server "${this.serverName}" cleanup remains unproven`,
+            isError: true,
+          };
+        }
+
         if (this.reconnecting) {
           return { content: `MCP server "${this.serverName}" is reconnecting...`, isError: true };
         }
@@ -270,7 +308,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
   }
 
   private scheduleReconnect(): void {
-    if (this.disposed || this.reconnecting) return;
+    if (this.disposed || this.reconnecting || this.cleanupPoisoned) return;
 
     this.reconnecting = true;
     const epoch = ++this.reconnectEpoch;
@@ -307,7 +345,18 @@ export class ResilientMCPBridge implements MCPToolBridge {
       // Do not spawn a replacement until the old connection has actually
       // closed. A failed close is a fail-closed reconnect, not a reason to run
       // two server process trees concurrently.
-      await this.disposeInnerBridge(this.inner);
+      const previousBridge = this.inner;
+      try {
+        await this.disposeInnerBridge(previousBridge);
+      } catch (error) {
+        throw new MCPReconnectCleanupError(this.serverName, [
+          reconnectCleanupFailure(
+            previousBridge,
+            () => this.disposeInnerBridge(previousBridge),
+            error,
+          ),
+        ]);
+      }
       if (!this.isReconnectCurrent(epoch)) {
         this.reconnecting = false;
         return;
@@ -390,29 +439,56 @@ export class ResilientMCPBridge implements MCPToolBridge {
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {
       if (error instanceof MCPReconnectCleanupError) {
-        this.reconnecting = false;
+        this.recordCleanupFailure(error);
         throw error;
       }
-      const cleanupErrors: unknown[] = [];
+      if (error instanceof MCPTransportCleanupError) {
+        const cleanupError = new MCPReconnectCleanupError(
+          this.serverName,
+          [],
+          [error],
+        );
+        this.recordCleanupFailure(cleanupError);
+        throw cleanupError;
+      }
+      const cleanupFailures: MCPReconnectCleanupFailure[] = [];
       if (newBridge !== undefined && this.inner !== newBridge) {
+        const failedBridge = newBridge;
         const result = await Promise.allSettled([
-          invokeBridgeDisposal(newBridge),
+          invokeBridgeDisposal(failedBridge),
         ]);
         if (result[0]?.status === "rejected") {
-          cleanupErrors.push(result[0].reason);
+          cleanupFailures.push(
+            reconnectCleanupFailure(
+              failedBridge,
+              () => invokeBridgeDisposal(failedBridge),
+              result[0].reason,
+            ),
+          );
         }
         client = undefined;
       } else if (client !== undefined && this.inner !== newBridge) {
+        const failedClient = client;
         const result = await Promise.allSettled([
-          invokeClientClose(client),
+          invokeClientClose(failedClient),
         ]);
         if (result[0]?.status === "rejected") {
-          cleanupErrors.push(result[0].reason);
+          cleanupFailures.push(
+            reconnectCleanupFailure(
+              failedClient,
+              () => invokeClientClose(failedClient),
+              result[0].reason,
+            ),
+          );
         }
       }
-      if (cleanupErrors.length > 0) {
-        this.reconnecting = false;
-        throw new MCPReconnectCleanupError(this.serverName, cleanupErrors);
+      if (cleanupFailures.length > 0) {
+        const cleanupError = new MCPReconnectCleanupError(
+          this.serverName,
+          cleanupFailures,
+        );
+        this.recordCleanupFailure(cleanupError);
+        throw cleanupError;
       }
       this.logger.warn?.(
         `MCP server "${this.serverName}" reconnection failed: ${(error as Error).message}`,
@@ -426,6 +502,54 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
   private isReconnectCurrent(epoch: number): boolean {
     return !this.disposed && this.reconnectEpoch === epoch;
+  }
+
+  private recordCleanupFailure(error: MCPReconnectCleanupError): void {
+    this.cleanupPoisoned = true;
+    this.reconnecting = false;
+    this.reconnectEpoch++;
+    for (const failure of error.failures) {
+      this.retainedCleanup.set(failure.owner, failure);
+    }
+    this.unownedCleanupErrors.push(...error.unownedErrors);
+    try {
+      this.options.onCleanupFailure?.(error);
+    } catch (callbackError) {
+      this.logger.error?.(
+        `MCP server "${this.serverName}" cleanup failure callback failed:`,
+        callbackError,
+      );
+    }
+  }
+
+  private async retryRetainedCleanup(): Promise<void> {
+    const failures = Array.from(this.retainedCleanup.values());
+    const results = await Promise.allSettled(
+      failures.map((failure) => failure.dispose()),
+    );
+    for (let index = 0; index < results.length; index += 1) {
+      const failure = failures[index]!;
+      if (this.retainedCleanup.get(failure.owner) !== failure) continue;
+      const result = results[index]!;
+      if (result.status === "fulfilled") {
+        this.retainedCleanup.delete(failure.owner);
+      } else {
+        this.retainedCleanup.set(failure.owner, {
+          ...failure,
+          error: result.reason,
+        });
+      }
+    }
+    if (
+      this.retainedCleanup.size > 0 ||
+      this.unownedCleanupErrors.length > 0
+    ) {
+      throw new MCPReconnectCleanupError(
+        this.serverName,
+        Array.from(this.retainedCleanup.values()),
+        this.unownedCleanupErrors,
+      );
+    }
   }
 
   private disposeInnerBridge(bridge: MCPToolBridge): Promise<void> {
@@ -465,7 +589,13 @@ async function closeClientForAbandonedReconnect(
   try {
     await invokeClientClose(client);
   } catch (error) {
-    throw new MCPReconnectCleanupError(serverName, [error]);
+    throw new MCPReconnectCleanupError(serverName, [
+      reconnectCleanupFailure(
+        client,
+        () => invokeClientClose(client),
+        error,
+      ),
+    ]);
   }
 }
 
@@ -476,8 +606,22 @@ async function disposeAbandonedReconnectBridge(
   try {
     await invokeBridgeDisposal(bridge);
   } catch (error) {
-    throw new MCPReconnectCleanupError(serverName, [error]);
+    throw new MCPReconnectCleanupError(serverName, [
+      reconnectCleanupFailure(
+        bridge,
+        () => invokeBridgeDisposal(bridge),
+        error,
+      ),
+    ]);
   }
+}
+
+function reconnectCleanupFailure(
+  owner: unknown,
+  dispose: () => Promise<void>,
+  error: unknown,
+): MCPReconnectCleanupFailure {
+  return { owner, dispose, error };
 }
 
 /** Check if an error message indicates a dead connection. */

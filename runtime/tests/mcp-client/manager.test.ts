@@ -1387,6 +1387,118 @@ describe("MCPManager", () => {
     }
   });
 
+  it("retains failed automatic reconnect cleanup and blocks replacement", async () => {
+    vi.useFakeTimers();
+    const oldCwd = resolve("automatic-reconnect-cleanup-old");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    const oldResource = makeMockResourceBridge("srv1", [
+      { uri: "file:///stale" },
+    ]);
+    const oldPrompt = makeMockPromptBridge("srv1", [{ name: "stale" }]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const cleanupError = new Error("fresh process tree survived close");
+    const freshClient = {
+      close: vi.fn().mockRejectedValue(cleanupError),
+    };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce(freshClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockRejectedValueOnce(new Error("fresh catalog rejected"));
+    mockCreateResourceBridge.mockResolvedValueOnce(oldResource);
+    mockCreatePromptBridge.mockResolvedValueOnce(oldPrompt);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    try {
+      await manager.start();
+      expect(await manager.getResources()).toHaveLength(1);
+      expect(await manager.listPrompts()).toHaveLength(1);
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(freshClient.close).toHaveBeenCalledOnce();
+      expect(manager.getConnectionState("srv1")).toEqual({
+        type: "failed",
+        error: expect.stringContaining("cleanup remains unproven"),
+      });
+      expect(manager.getTools()).toEqual([]);
+      expect(await manager.getResources()).toEqual([]);
+      expect(await manager.listPrompts()).toEqual([]);
+      expect(oldResource.dispose).toHaveBeenCalledOnce();
+      expect(oldPrompt.dispose).toHaveBeenCalledOnce();
+
+      await expect(
+        transitionSandboxExecutionBroker(
+          broker,
+          resolve("automatic-reconnect-cleanup-new"),
+        ),
+      ).rejects.toThrow(/quiesce failed; old authority restored/);
+      expect(broker.cwd).toBe(oldCwd);
+      expect(freshClient.close).toHaveBeenCalledTimes(2);
+
+      await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("connection cleanup failed"),
+      });
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      expect(freshClient.close).toHaveBeenCalledTimes(3);
+    } finally {
+      await manager.stop();
+      manager.setSandboxExecutionBroker(undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminally poisons automatic reconnect after typed transport cleanup failure", async () => {
+    vi.useFakeTimers();
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const transportCleanupError = new MCPTransportCleanupError(
+      new Error("initialize failed"),
+      new Error("transport close failed"),
+      'MCP stdio server "srv1"',
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockRejectedValueOnce(transportCleanupError);
+    mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+      const staleTool = manager.getTools()[0]!;
+      await staleTool.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(manager.getTools()).toEqual([]);
+      expect(manager.getConnectionState("srv1")).toEqual({
+        type: "failed",
+        error: expect.stringContaining("cleanup remains unproven"),
+      });
+      await expect(staleTool.execute({})).resolves.toEqual({
+        content: 'MCP server "srv1" cleanup remains unproven',
+        isError: true,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("getResources flattens descriptors across all connected servers", async () => {
     const bridge1 = makeMockBridge("srv1", ["t1"]);
     const bridge2 = makeMockBridge("srv2", ["t2"]);

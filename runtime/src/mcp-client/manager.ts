@@ -1159,6 +1159,9 @@ export class MCPManager {
         ...(this.sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker: this.sandboxExecutionBroker }
           : {}),
+        onCleanupFailure: (error) => {
+          this.failClosedAutomaticReconnect(config.name, bridge, error);
+        },
         // On automatic reconnect the resilient bridge rebuilds only the
         // tool surface and spawns a fresh client. Rebuild the resource +
         // prompt bridges against that new client too — otherwise they keep
@@ -1365,6 +1368,54 @@ export class MCPManager {
         `MCP server "${serverName}" tools shadow already-registered tool names (I-73): ${collisions.join(", ")}`,
       );
     }
+  }
+
+  private failClosedAutomaticReconnect(
+    serverName: string,
+    bridge: ResilientMCPBridge | undefined,
+    error: unknown,
+  ): void {
+    if (bridge === undefined) {
+      this.retainUnownedCleanupFailure(serverName, error);
+      return;
+    }
+    this.retainCleanupFailures(serverName, [
+      {
+        owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
+        error,
+      },
+    ]);
+    if (this.bridges.get(serverName) !== bridge) return;
+
+    // This callback executes inside the reconnect task. Retain the outer
+    // owner and unpublish synchronously, but never await bridge.dispose()
+    // here: it waits that same reconnect task and would self-deadlock.
+    this.invalidateServerAuthority(serverName);
+    this.bridges.delete(serverName);
+    const resourceBridge = this.resourceBridges.get(serverName);
+    const promptBridge = this.promptBridges.get(serverName);
+    this.resourceBridges.delete(serverName);
+    this.promptBridges.delete(serverName);
+    this.connectedConnections.delete(serverName);
+    this.serverInstructions.delete(serverName);
+    this.connectionStates.set(serverName, {
+      type: "failed",
+      error: `MCP server "${serverName}" cleanup remains unproven`,
+    });
+    const companionDisposals = [resourceBridge, promptBridge].flatMap(
+      (companion) =>
+        companion === undefined ? [] : [invokeDisposal(companion)],
+    );
+    void Promise.allSettled(companionDisposals).then((results) => {
+      for (const result of results) {
+        if (result.status === "rejected") {
+          this.logger.warn?.(
+            `Error disposing poisoned MCP server "${serverName}" companion:`,
+            result.reason,
+          );
+        }
+      }
+    });
   }
 
   private retainCleanupFailures(
