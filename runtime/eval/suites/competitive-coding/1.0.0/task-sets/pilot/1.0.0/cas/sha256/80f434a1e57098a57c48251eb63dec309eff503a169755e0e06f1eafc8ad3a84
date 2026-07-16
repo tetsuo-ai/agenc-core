@@ -1,0 +1,13 @@
+diff --git a/adm-zip.js b/adm-zip.js
+index 31dddf2..4bac5c8 100644
+--- a/adm-zip.js
++++ b/adm-zip.js
+@@ -86,7 +86,7 @@ module.exports = function (/**String*/ input, /** object */ options) {
+     function fixPath(zipPath) {
+         const { join, normalize, sep } = pth.posix;
+         // convert windows file separators and normalize
+-        return join(".", normalize(sep + zipPath.split("\\").join(sep) + sep));
++        return join(pth.isAbsolute(zipPath) ? "/": '.',  normalize(sep + zipPath.split("\\").join(sep) + sep));
+     }
+ 
+     function filenameFilter(filterfn) {

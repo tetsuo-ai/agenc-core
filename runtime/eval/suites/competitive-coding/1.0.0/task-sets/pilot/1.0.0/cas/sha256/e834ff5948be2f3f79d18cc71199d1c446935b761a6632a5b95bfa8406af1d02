@@ -1,0 +1,24 @@
+diff --git a/.changeset/popular-planets-whisper.md b/.changeset/popular-planets-whisper.md
+new file mode 100644
+index 00000000000..85dd9fa3918
+--- /dev/null
++++ b/.changeset/popular-planets-whisper.md
+@@ -0,0 +1,5 @@
++---
++'@astrojs/starlight': patch
++---
++
++Fixes an issue preventing to override the slug of a page with the [`slug` frontmatter property](https://starlight.astro.build/reference/frontmatter/#slug) using the `/` value.
+diff --git a/packages/starlight/utils/slugs.ts b/packages/starlight/utils/slugs.ts
+index c54e095d50e..996a624ac03 100644
+--- a/packages/starlight/utils/slugs.ts
++++ b/packages/starlight/utils/slugs.ts
+@@ -40,7 +40,7 @@ function localeToDir(locale: string | undefined): 'ltr' | 'rtl' {
+ }
+ 
+ export function slugToParam(slug: string): string | undefined {
+-	return slug === 'index' || slug === ''
++	return slug === 'index' || slug === '' || slug === '/'
+ 		? undefined
+ 		: slug.endsWith('/index')
+ 			? slug.slice(0, -6)

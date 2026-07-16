@@ -1,0 +1,113 @@
+diff --git a/src/Spectre.Console/Internal/Cell.cs b/src/Spectre.Console/Internal/Cell.cs
+index d2f46fc75..6d49f5fe4 100644
+--- a/src/Spectre.Console/Internal/Cell.cs
++++ b/src/Spectre.Console/Internal/Cell.cs
+@@ -23,10 +23,11 @@ static Cell()
+ #endif
+     }
+ 
+-    public static int GetCellLength(string text) => GetCellLength(text.AsSpan());
+-
+-    public static int GetCellLength(ReadOnlySpan<char> text)
++    public static int GetCellLength(string text)
+     {
++#if !NETSTANDARD2_0
++        return UnicodeCalculator.GetWidth(text);
++#else
+         var sum = 0;
+         foreach (var rune in text)
+         {
+@@ -34,8 +35,12 @@ public static int GetCellLength(ReadOnlySpan<char> text)
+         }
+ 
+         return sum;
++#endif
+     }
+ 
++    public static int GetCellLength(ReadOnlySpan<char> text)
++        => GetCellLength(text.ToString());
++
+     public static int GetCellLength(char rune)
+     {
+         // TODO: We need to figure out why Segment.SplitLines fails
+diff --git a/src/Spectre.Console/Rendering/Segment.cs b/src/Spectre.Console/Rendering/Segment.cs
+index 6f30e9970..63b87754b 100644
+--- a/src/Spectre.Console/Rendering/Segment.cs
++++ b/src/Spectre.Console/Rendering/Segment.cs
+@@ -109,6 +109,11 @@ public int CellCount()
+             return 0;
+         }
+ 
++        if (Text == "\n") 
++        {
++            return 1;
++        }
++
+         return Cell.GetCellLength(Text);
+     }
+ 
+@@ -160,10 +165,12 @@ public Segment StripLineEndings()
+         if (offset > 0)
+         {
+             var accumulated = 0;
+-            foreach (var character in Text)
++            var enumerator = StringInfo.GetTextElementEnumerator(Text);
++            while (enumerator.MoveNext())
+             {
+-                index++;
+-                accumulated += Cell.GetCellLength(character);
++                var cluster = enumerator.GetTextElement();
++                accumulated += Cell.GetCellLength(cluster);
++                index += cluster.Length;
+                 if (accumulated >= offset)
+                 {
+                     break;
+@@ -429,16 +436,18 @@ public static List<Segment> Truncate(IEnumerable<Segment> segments, int maxWidth
+ 
+         var builder = new StringBuilder();
+         var accumulatedCellWidth = 0;
+-        foreach (var character in segment.Text)
++        var truncateEnumerator = StringInfo.GetTextElementEnumerator(segment.Text);
++        while (truncateEnumerator.MoveNext())
+         {
+-            var characterWidth = UnicodeCalculator.GetWidth(character);
+-            if (accumulatedCellWidth + characterWidth > maxWidth)
++            var cluster = truncateEnumerator.GetTextElement();
++            var clusterWidth = Cell.GetCellLength(cluster);
++            if (accumulatedCellWidth + clusterWidth > maxWidth)
+             {
+                 break;
+             }
+ 
+-            builder.Append(character);
+-            accumulatedCellWidth += characterWidth;
++            builder.Append(cluster);
++            accumulatedCellWidth += clusterWidth;
+         }
+ 
+         if (builder.Length == 0)
+@@ -571,17 +580,20 @@ internal static List<string> SplitSegment(string text, int maxCellLength)
+ 
+         var length = 0;
+         var sb = new StringBuilder();
+-        foreach (var ch in text)
++        var splitEnumerator = StringInfo.GetTextElementEnumerator(text);
++        while (splitEnumerator.MoveNext())
+         {
+-            if (length + UnicodeCalculator.GetWidth(ch) > maxCellLength)
++            var cluster = splitEnumerator.GetTextElement();
++            var clusterWidth = Cell.GetCellLength(cluster);
++            if (length + clusterWidth > maxCellLength)
+             {
+                 list.Add(sb.ToString());
+                 sb.Clear();
+                 length = 0;
+             }
+ 
+-            length += UnicodeCalculator.GetWidth(ch);
+-            sb.Append(ch);
++            length += clusterWidth;
++            sb.Append(cluster);
+         }
+ 
+         list.Add(sb.ToString());
