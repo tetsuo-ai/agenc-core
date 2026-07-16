@@ -14,6 +14,27 @@ export interface MCPConnectOptions {
   readonly timeoutMs: number;
 }
 
+/**
+ * A connection failed and the transport could not prove that it closed.
+ *
+ * Callers can use this type to retain the failed lifecycle boundary instead
+ * of relying on error-message text to distinguish an ordinary connect error.
+ */
+export class MCPTransportCleanupError extends AggregateError {
+  constructor(
+    readonly connectionError: unknown,
+    readonly cleanupError: unknown,
+    description: string,
+  ) {
+    super(
+      [connectionError, cleanupError],
+      `${description} failed and transport cleanup also failed`,
+      { cause: connectionError },
+    );
+    this.name = "MCPTransportCleanupError";
+  }
+}
+
 interface ObservedCloseLifecycle {
   connectionSucceeded(): void;
 }
@@ -105,10 +126,10 @@ export async function connectMCPClientWithCleanup<TTransport>(
     try {
       await client.close();
     } catch (cleanupError) {
-      throw new AggregateError(
-        [connectError, cleanupError],
-        `${options.description} failed and transport cleanup also failed`,
-        { cause: connectError },
+      throw new MCPTransportCleanupError(
+        connectError,
+        cleanupError,
+        options.description,
       );
     }
     throw connectError;

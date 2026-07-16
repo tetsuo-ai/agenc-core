@@ -3,7 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
-import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import {
+  connectMCPClientWithCleanup,
+  MCPTransportCleanupError,
+} from "./connect-with-cleanup.js";
 
 describe("connectMCPClientWithCleanup", () => {
   it("preserves the connection error after awaiting successful cleanup", async () => {
@@ -67,7 +70,7 @@ describe("connectMCPClientWithCleanup", () => {
     });
     const error: unknown = await result.catch((failure: unknown) => failure);
 
-    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toBeInstanceOf(MCPTransportCleanupError);
     expect((error as AggregateError).message).toMatch(/cleanup also failed/i);
     expect((error as AggregateError).errors).toEqual([
       connectError,

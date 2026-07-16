@@ -6,6 +6,7 @@ import type { MCPServerConfig } from "./types.js";
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 
 // Mock the connection and tools modules
 vi.mock("./connection.js", () => ({
@@ -310,7 +311,10 @@ describe("MCPManager", () => {
 
     expect(broker.cwd).toBe(oldCwd);
     expect(failingBridge.dispose).toHaveBeenCalledOnce();
-    expect(manager.getConnectionState("srv1")).toEqual({ type: "pending" });
+    expect(manager.getConnectionState("srv1")).toEqual({
+      type: "failed",
+      error: expect.stringContaining("cleanup remains unproven"),
+    });
     expect(manager.getConnectedServers()).toEqual([]);
 
     await manager.stop();
@@ -834,9 +838,10 @@ describe("MCPManager", () => {
       mode: "danger_full_access",
       cwd: oldCwd,
     });
-    const transportCleanupError = new AggregateError(
-      [new Error("initialize failed"), new Error("transport close failed")],
-      'MCP stdio server "srv1" failed and transport cleanup also failed',
+    const transportCleanupError = new MCPTransportCleanupError(
+      new Error("initialize failed"),
+      new Error("transport close failed"),
+      'MCP stdio server "srv1"',
     );
     mockCreateMCPConnection.mockRejectedValueOnce(transportCleanupError);
 

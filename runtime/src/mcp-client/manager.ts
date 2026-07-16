@@ -46,6 +46,7 @@ import {
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/execution-lifecycle.js";
+import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -330,7 +331,15 @@ export class MCPManager {
     const config = this.getServerConfig(name);
     if (config?.enabled === false) return { type: "disabled" };
     if (this.bridges.has(name)) return { type: "connected" };
-    return this.connectionStates.get(name);
+    const state = this.connectionStates.get(name);
+    if (state?.type === "failed") return state;
+    if (this.retainedCleanup.has(name)) {
+      return {
+        type: "failed",
+        error: `MCP server "${name}" cleanup remains unproven`,
+      };
+    }
+    return state;
   }
 
   private resetConnectionStates(): void {
@@ -1520,17 +1529,10 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Transport factories currently expose failed pre-client cleanup as an
- * AggregateError rather than a typed error. Keep the structural check in one
- * place so it can become an instanceof check when the transport contract
- * exports that type.
- */
-function isMCPTransportCleanupFailure(error: unknown): error is AggregateError {
-  return (
-    error instanceof AggregateError &&
-    error.message.includes("transport cleanup also failed")
-  );
+function isMCPTransportCleanupFailure(
+  error: unknown,
+): error is MCPTransportCleanupError {
+  return error instanceof MCPTransportCleanupError;
 }
 
 function reconnectFailure(

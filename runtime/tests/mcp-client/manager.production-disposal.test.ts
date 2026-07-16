@@ -20,13 +20,7 @@ describe("MCPManager production disposal chain", () => {
       listTools: vi.fn().mockResolvedValue({ tools: [] }),
       close: vi.fn().mockRejectedValue(closeError),
     };
-    const recoveredClient = {
-      listTools: vi.fn().mockResolvedValue({ tools: [] }),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
-    mockCreateMCPConnection
-      .mockResolvedValueOnce(oldClient)
-      .mockResolvedValueOnce(recoveredClient);
+    mockCreateMCPConnection.mockResolvedValueOnce(oldClient);
 
     const oldCwd = resolve("mcp-production-old");
     const broker = new SandboxExecutionBroker({
@@ -48,7 +42,12 @@ describe("MCPManager production disposal chain", () => {
 
     expect(oldClient.close).toHaveBeenCalledOnce();
     expect(broker.cwd).toBe(oldCwd);
-    expect(manager.isConnected("strict-close")).toBe(true);
+    expect(manager.isConnected("strict-close")).toBe(false);
+    expect(manager.getConnectionState("strict-close")).toEqual({
+      type: "failed",
+      error: expect.stringContaining("cleanup remains unproven"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
 
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
