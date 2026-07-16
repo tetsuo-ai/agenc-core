@@ -6,7 +6,14 @@ import {
   EVAL_POWER_ALPHA,
   EVAL_POWER_ANALYSIS_VERSION,
   EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS,
+  EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS,
+  EVAL_POWER_MAXIMUM_COMPARISONS,
+  EVAL_POWER_MAXIMUM_PILOT_ROWS,
+  EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN,
+  EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS,
+  EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES,
   EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS,
+  EVAL_POWER_MAXIMUM_VALIDATION_ISSUES,
   EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES,
   EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS,
   EVAL_POWER_MINIMUM_EFFECT,
@@ -60,8 +67,156 @@ export class PowerAnalysisDocumentValidationError extends Error {
   }
 }
 
+class BoundedIssues extends Array<string> {
+  override push(...items: string[]): number {
+    const remaining = EVAL_POWER_MAXIMUM_VALIDATION_ISSUES - this.length;
+    return remaining > 0 ? super.push(...items.slice(0, remaining)) : this.length;
+  }
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalOwnEnumerableDataProperty(
+  value: object,
+  key: string,
+  label: string,
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return undefined;
+  if (!("value" in descriptor) || !descriptor.enumerable) {
+    throw new PowerAnalysisDocumentValidationError([
+      `${label} must be an own enumerable data property`,
+    ]);
+  }
+  return descriptor.value;
+}
+
+function assertArrayBound(
+  value: unknown,
+  maximum: number,
+  label: string,
+): asserts value is readonly unknown[] {
+  if (Array.isArray(value) && value.length > maximum) {
+    throw new PowerAnalysisDocumentValidationError([
+      `${label} cannot exceed ${maximum} entries`,
+    ]);
+  }
+}
+
+function assertDocumentCollectionBounds(value: Record<string, unknown>): void {
+  const pilot = optionalOwnEnumerableDataProperty(value, "pilot", "document.pilot");
+  if (record(pilot)) {
+    assertArrayBound(
+      optionalOwnEnumerableDataProperty(
+        pilot,
+        "repositoryTaskCounts",
+        "pilot.repositoryTaskCounts",
+      ),
+      EVAL_POWER_MAXIMUM_PILOT_ROWS,
+      "pilot.repositoryTaskCounts",
+    );
+    assertArrayBound(
+      optionalOwnEnumerableDataProperty(pilot, "comparisons", "pilot.comparisons"),
+      EVAL_POWER_MAXIMUM_COMPARISONS,
+      "pilot.comparisons",
+    );
+  }
+  const design = optionalOwnEnumerableDataProperty(value, "design", "document.design");
+  if (record(design)) {
+    assertArrayBound(
+      optionalOwnEnumerableDataProperty(
+        design,
+        "assumedEffectSizes",
+        "design.assumedEffectSizes",
+      ),
+      EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES,
+      "design.assumedEffectSizes",
+    );
+    assertArrayBound(
+      optionalOwnEnumerableDataProperty(
+        design,
+        "heterogeneityMultipliers",
+        "design.heterogeneityMultipliers",
+      ),
+      EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES,
+      "design.heterogeneityMultipliers",
+    );
+    const candidateAllocations = optionalOwnEnumerableDataProperty(
+      design,
+      "candidateRepositoryTaskAllocations",
+      "design.candidateRepositoryTaskAllocations",
+    );
+    assertArrayBound(
+      candidateAllocations,
+      EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS,
+      "design.candidateRepositoryTaskAllocations",
+    );
+    if (Array.isArray(candidateAllocations)) {
+      for (let index = 0; index < candidateAllocations.length; index += 1) {
+        const allocation = optionalOwnEnumerableDataProperty(
+          candidateAllocations,
+          String(index),
+          `design.candidateRepositoryTaskAllocations[${index}]`,
+        );
+        assertArrayBound(
+          allocation,
+          EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN,
+          `design.candidateRepositoryTaskAllocations[${index}]`,
+        );
+      }
+    }
+  }
+  const sensitivityGrid = optionalOwnEnumerableDataProperty(
+    value,
+    "sensitivityGrid",
+    "document.sensitivityGrid",
+  );
+  assertArrayBound(
+    sensitivityGrid,
+    EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS,
+    "sensitivityGrid",
+  );
+  if (Array.isArray(sensitivityGrid)) {
+    for (let index = 0; index < sensitivityGrid.length; index += 1) {
+      const cell = optionalOwnEnumerableDataProperty(
+        sensitivityGrid,
+        String(index),
+        `sensitivityGrid[${index}]`,
+      );
+      if (record(cell)) {
+        assertArrayBound(
+          optionalOwnEnumerableDataProperty(
+            cell,
+            "comparisonPower",
+            `sensitivityGrid[${index}].comparisonPower`,
+          ),
+          EVAL_POWER_MAXIMUM_COMPARISONS,
+          `sensitivityGrid[${index}].comparisonPower`,
+        );
+      }
+    }
+  }
+  const decision = optionalOwnEnumerableDataProperty(value, "decision", "document.decision");
+  const confirmatoryPlan = record(decision)
+    ? optionalOwnEnumerableDataProperty(
+      decision,
+      "confirmatoryPlan",
+      "decision.confirmatoryPlan",
+    )
+    : undefined;
+  if (record(confirmatoryPlan)) {
+    assertArrayBound(
+      optionalOwnEnumerableDataProperty(
+        confirmatoryPlan,
+        "repositoryTaskCounts",
+        "decision.confirmatoryPlan.repositoryTaskCounts",
+      ),
+      EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN,
+      "decision.confirmatoryPlan.repositoryTaskCounts",
+    );
+  }
 }
 
 function exactKeys(
@@ -159,7 +314,14 @@ function validateFixedPlan(value: unknown, issues: string[]): value is FixedConf
 
 /** Strictly validates the digest, closed shape, constants, grid, and selected plan. */
 export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocument {
-  const issues: string[] = [];
+  const issues: string[] = new BoundedIssues();
+  if (!exactKeys(value, [
+    "kind", "analysisVersion", "documentDigest", "analysisId", "pilotId", "createdAt",
+    "primarySystemId", "pilot", "design", "simulation", "sensitivityGrid", "decision",
+  ], "document", issues) || issues.length > 0) {
+    throw new PowerAnalysisDocumentValidationError(issues);
+  }
+  assertDocumentCollectionBounds(value);
   try {
     canonicalizeJson(value);
   } catch (error) {
@@ -167,10 +329,6 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
       `document must be plain I-JSON: ${error instanceof Error ? error.message : String(error)}`,
     ]);
   }
-  if (!exactKeys(value, [
-    "kind", "analysisVersion", "documentDigest", "analysisId", "pilotId", "createdAt",
-    "primarySystemId", "pilot", "design", "simulation", "sensitivityGrid", "decision",
-  ], "document", issues)) throw new PowerAnalysisDocumentValidationError(issues);
   if (value.kind !== "agenc.eval.power-analysis" || value.analysisVersion !== EVAL_POWER_ANALYSIS_VERSION) {
     issues.push("document kind or analysis version is unsupported");
   }
@@ -332,7 +490,7 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
     }
     if (!Array.isArray(value.design.candidateRepositoryTaskAllocations)
       || value.design.candidateRepositoryTaskAllocations.length === 0
-      || value.design.candidateRepositoryTaskAllocations.length > 8
+      || value.design.candidateRepositoryTaskAllocations.length > EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS
       || value.design.candidateRepositoryTaskAllocations.some((allocation) =>
         !Array.isArray(allocation) || allocation.some((count) => !positiveInteger(count)))) {
       issues.push("design candidate repository allocations are invalid");
@@ -494,7 +652,9 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
     const expectedCells = allocations.length
       * assumedEffectSizes.length
       * heterogeneityMultipliers.length;
-    if (expectedCells > 32) issues.push("power-analysis sensitivity grid exceeds the synchronous work ceiling");
+    if (expectedCells > EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS) {
+      issues.push("power-analysis sensitivity grid exceeds the synchronous work ceiling");
+    }
     const cellKeys = sensitivityGrid.filter(record).map((cell) => {
       const matchingAllocation = allocations.find((allocation) =>
         Array.isArray(allocation)

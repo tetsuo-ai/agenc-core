@@ -17,7 +17,14 @@ import {
   EVAL_POWER_MINIMUM_PILOT_TASKS,
   EVAL_POWER_MINIMUM_REPETITIONS,
   EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS,
+  EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS,
+  EVAL_POWER_MAXIMUM_COMPARISONS,
+  EVAL_POWER_MAXIMUM_PILOT_ROWS,
+  EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN,
+  EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS,
+  EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES,
   EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS,
+  EVAL_POWER_MAXIMUM_VALIDATION_ISSUES,
   EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
   type FixedConfirmatoryPlan,
@@ -37,8 +44,6 @@ const MINIMUM_SIMULATION_REPLICATIONS = 100;
 const MAXIMUM_SIMULATION_REPLICATIONS = 10_000;
 const MINIMUM_CONFIRMATORY_INFERENCE_RESAMPLES = 10_000;
 const MAXIMUM_CONFIRMATORY_INFERENCE_RESAMPLES = 1_000_000;
-const MAXIMUM_SENSITIVITY_GRID_CELLS = 32;
-const MAXIMUM_CANDIDATE_DESIGNS = 8;
 const EPSILON = 1e-12;
 const NORMAL_975 = 1.959963984540054;
 
@@ -98,6 +103,122 @@ export class PowerAnalysisValidationError extends Error {
     super(`invalid evaluation power analysis input:\n- ${issues.join("\n- ")}`);
     this.name = "PowerAnalysisValidationError";
     this.issues = [...issues];
+  }
+}
+
+class BoundedIssues extends Array<string> {
+  override push(...items: string[]): number {
+    const remaining = EVAL_POWER_MAXIMUM_VALIDATION_ISSUES - this.length;
+    return remaining > 0 ? super.push(...items.slice(0, remaining)) : this.length;
+  }
+}
+
+function requireOwnEnumerableDataProperty(
+  value: object,
+  key: string,
+  label: string,
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+    throw new PowerAnalysisValidationError([
+      `${label} must be an own enumerable data property`,
+    ]);
+  }
+  return descriptor.value;
+}
+
+function optionalOwnEnumerableDataProperty(
+  value: object,
+  key: string,
+  label: string,
+): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return undefined;
+  if (!("value" in descriptor) || !descriptor.enumerable) {
+    throw new PowerAnalysisValidationError([
+      `${label} must be an own enumerable data property`,
+    ]);
+  }
+  return descriptor.value;
+}
+
+function assertInputCollectionBounds(input: PowerAnalysisInput): void {
+  const outcomes = requireOwnEnumerableDataProperty(input, "outcomes", "input.outcomes");
+  const assumedEffectSizes = requireOwnEnumerableDataProperty(
+    input,
+    "assumedEffectSizes",
+    "input.assumedEffectSizes",
+  );
+  const heterogeneityMultipliers = requireOwnEnumerableDataProperty(
+    input,
+    "heterogeneityMultipliers",
+    "input.heterogeneityMultipliers",
+  );
+  const candidateAllocations = requireOwnEnumerableDataProperty(
+    input,
+    "candidateRepositoryTaskAllocations",
+    "input.candidateRepositoryTaskAllocations",
+  );
+  if (Array.isArray(outcomes) && outcomes.length > EVAL_POWER_MAXIMUM_PILOT_ROWS) {
+    throw new PowerAnalysisValidationError([
+      `outcomes cannot exceed ${EVAL_POWER_MAXIMUM_PILOT_ROWS} paired rows`,
+    ]);
+  }
+  if (Array.isArray(outcomes)) {
+    const comparisonIds = new Set<string>();
+    for (let index = 0; index < outcomes.length; index += 1) {
+      const outcome = requireOwnEnumerableDataProperty(
+        outcomes,
+        String(index),
+        `outcomes[${index}]`,
+      );
+      if (outcome && typeof outcome === "object" && !Array.isArray(outcome)) {
+        const comparisonId = optionalOwnEnumerableDataProperty(
+          outcome,
+          "comparisonId",
+          `outcomes[${index}].comparisonId`,
+        );
+        if (typeof comparisonId !== "string") continue;
+        comparisonIds.add(comparisonId);
+        if (comparisonIds.size > EVAL_POWER_MAXIMUM_COMPARISONS) {
+          throw new PowerAnalysisValidationError([
+            `pilot outcomes cannot exceed ${EVAL_POWER_MAXIMUM_COMPARISONS} comparisons`,
+          ]);
+        }
+      }
+    }
+  }
+  if (Array.isArray(assumedEffectSizes)
+    && assumedEffectSizes.length > EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES) {
+    throw new PowerAnalysisValidationError([
+      `assumedEffectSizes cannot exceed ${EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES} values`,
+    ]);
+  }
+  if (Array.isArray(heterogeneityMultipliers)
+    && heterogeneityMultipliers.length > EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES) {
+    throw new PowerAnalysisValidationError([
+      `heterogeneityMultipliers cannot exceed ${EVAL_POWER_MAXIMUM_SENSITIVITY_VALUES} values`,
+    ]);
+  }
+  if (Array.isArray(candidateAllocations)) {
+    if (candidateAllocations.length > EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS) {
+      throw new PowerAnalysisValidationError([
+        `candidateRepositoryTaskAllocations cannot exceed ${EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS} designs`,
+      ]);
+    }
+    for (let index = 0; index < candidateAllocations.length; index += 1) {
+      const allocation = requireOwnEnumerableDataProperty(
+        candidateAllocations,
+        String(index),
+        `candidateRepositoryTaskAllocations[${index}]`,
+      );
+      if (Array.isArray(allocation)
+        && allocation.length > EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN) {
+        throw new PowerAnalysisValidationError([
+          `candidateRepositoryTaskAllocations[${index}] cannot exceed ${EVAL_POWER_MAXIMUM_REPOSITORIES_PER_DESIGN} repositories`,
+        ]);
+      }
+    }
   }
 }
 
@@ -179,16 +300,9 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
-  const issues: string[] = [];
+  const issues: string[] = new BoundedIssues();
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new PowerAnalysisValidationError(["input must be a plain I-JSON object"]);
-  }
-  try {
-    canonicalizeJson(input);
-  } catch (error) {
-    throw new PowerAnalysisValidationError([
-      `input must be plain I-JSON: ${error instanceof Error ? error.message : String(error)}`,
-    ]);
   }
   assertExactKeys(input, [
     "analysisId",
@@ -209,6 +323,15 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     "simulationReplications",
     "randomSeed",
   ], "input", issues);
+  if (issues.length > 0) throw new PowerAnalysisValidationError(issues);
+  assertInputCollectionBounds(input);
+  try {
+    canonicalizeJson(input);
+  } catch (error) {
+    throw new PowerAnalysisValidationError([
+      `input must be plain I-JSON: ${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  }
   assertIdentifier(input.analysisId, "analysisId", issues);
   assertIdentifier(input.pilotId, "pilotId", issues);
   assertIdentifier(input.primarySystemId, "primarySystemId", issues);
@@ -257,9 +380,9 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
   if (
     !Array.isArray(input.candidateRepositoryTaskAllocations)
     || input.candidateRepositoryTaskAllocations.length === 0
-    || input.candidateRepositoryTaskAllocations.length > MAXIMUM_CANDIDATE_DESIGNS
+    || input.candidateRepositoryTaskAllocations.length > EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS
   ) {
-    issues.push(`candidateRepositoryTaskAllocations must contain 1 through ${MAXIMUM_CANDIDATE_DESIGNS} exact designs`);
+    issues.push(`candidateRepositoryTaskAllocations must contain 1 through ${EVAL_POWER_MAXIMUM_CANDIDATE_DESIGNS} exact designs`);
   } else {
     const seen = new Set<string>();
     let previousTaskCount = 0;
@@ -306,7 +429,7 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
       if (seen.has(effect)) issues.push(`assumedEffectSizes contains duplicate ${effect}`);
       seen.add(effect);
     }
-    if (!input.assumedEffectSizes.some((effect) => Math.abs(effect - EVAL_POWER_MINIMUM_EFFECT) < EPSILON)) {
+    if (!input.assumedEffectSizes.includes(EVAL_POWER_MINIMUM_EFFECT)) {
       issues.push("assumedEffectSizes must include the minimum effect 0.10");
     }
   }
@@ -318,7 +441,7 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     issues.push("planningEffectSize must be greater than 0.10 and at most 0.50");
   } else if (
     !Array.isArray(input.assumedEffectSizes)
-    || !input.assumedEffectSizes.some((effect) => Math.abs(effect - input.planningEffectSize) < EPSILON)
+    || !input.assumedEffectSizes.includes(input.planningEffectSize)
   ) {
     issues.push("planningEffectSize must be present in assumedEffectSizes");
   }
@@ -336,7 +459,7 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
       }
       seen.add(multiplier);
     }
-    if (!input.heterogeneityMultipliers.some((multiplier) => Math.abs(multiplier - 1) < EPSILON)) {
+    if (!input.heterogeneityMultipliers.includes(1)) {
       issues.push("heterogeneityMultipliers must include the unscaled value 1.0");
     }
   }
@@ -349,14 +472,14 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     ? input.heterogeneityMultipliers.length
     : 0;
   const gridCells = candidateCount * effectCount * heterogeneityCount;
-  if (gridCells > MAXIMUM_SENSITIVITY_GRID_CELLS) {
-    issues.push(`sensitivity grid cannot exceed ${MAXIMUM_SENSITIVITY_GRID_CELLS} cells`);
+  if (gridCells > EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS) {
+    issues.push(`sensitivity grid cannot exceed ${EVAL_POWER_MAXIMUM_SENSITIVITY_GRID_CELLS} cells`);
   }
 
   if (!Array.isArray(input.outcomes) || input.outcomes.length === 0) {
     issues.push("outcomes must be a non-empty array");
-  } else if (input.outcomes.length > 100_000) {
-    issues.push("outcomes cannot exceed 100000 paired rows");
+  } else if (input.outcomes.length > EVAL_POWER_MAXIMUM_PILOT_ROWS) {
+    issues.push(`outcomes cannot exceed ${EVAL_POWER_MAXIMUM_PILOT_ROWS} paired rows`);
   }
 
   const validOutcomes: PairedPilotBinaryOutcome[] = [];
@@ -420,6 +543,11 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     }
     if (outcome.comparatorSystemId === input.primarySystemId) {
       issues.push(`comparison ${outcome.comparisonId} cannot compare the primary system to itself`);
+    }
+    if (comparisonSystems.size > EVAL_POWER_MAXIMUM_COMPARISONS) {
+      throw new PowerAnalysisValidationError([
+        `pilot outcomes cannot exceed ${EVAL_POWER_MAXIMUM_COMPARISONS} comparisons`,
+      ]);
     }
 
     const knownRepository = taskRepositories.get(outcome.taskId);
@@ -705,6 +833,17 @@ function createTargetComparatorProbabilities(
 function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot): readonly ScenarioModel[] {
   const effects = [...input.assumedEffectSizes].sort((left, right) => left - right);
   const multipliers = [...input.heterogeneityMultipliers].sort((left, right) => left - right);
+  const maximumFeasibleEffect = Math.min(...pilot.comparisons.map((comparison) => average(
+    [...pilot.taskIdsByRepository.values()].map((taskIds) => average(taskIds.map(
+      (taskId) => (comparison.tasks.get(taskId) as AggregatedTask).primaryMean,
+    ))),
+  )));
+  const infeasibleEffect = effects.find((effect) => effect > maximumFeasibleEffect);
+  if (infeasibleEffect !== undefined) {
+    throw new PowerAnalysisValidationError([
+      `assumed effect ${infeasibleEffect} exceeds the pilot-supported maximum ${round(maximumFeasibleEffect)}`,
+    ]);
+  }
   return effects.flatMap((assumedEffect) => multipliers.map((heterogeneityMultiplier) => ({
     assumedEffect,
     heterogeneityMultiplier,

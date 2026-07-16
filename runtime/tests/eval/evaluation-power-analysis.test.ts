@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { computeDocumentDigest } from "../../src/eval-contract/index.js";
 import {
+  PowerAnalysisDocumentValidationError,
   PowerAnalysisValidationError,
   computeInterceptOnlyCr2Inference,
   computePowerAnalysis,
+  validatePowerAnalysisDocument,
   type PairedPilotBinaryOutcome,
   type PowerAnalysisInput,
 } from "../../src/eval-power/index.js";
@@ -99,7 +101,7 @@ describe("evaluation pilot power analysis", () => {
     expect(permuted).toEqual(document);
     expect(document.documentDigest).toBe(computeDocumentDigest(document));
     expect(document.documentDigest).toBe(
-      "sha256:0a8958e2dd7fb4bbe23f490e97d675dcc242d13bf9151e594d894c40a8d27075",
+      "sha256:d1d2867e4461676c5867b25894e0377e45f34bec9fa711875143f65746f9b196",
     );
     expect(document.pilot).toMatchObject({
       taskCount: 30,
@@ -292,6 +294,24 @@ describe("evaluation pilot power analysis", () => {
     });
   });
 
+  test("rejects effects that the pilot primary outcomes cannot attain", () => {
+    expect(() => computePowerAnalysis(makeInput({
+      outcomes: makePilotOutcomes().map((outcome) => ({
+        ...outcome,
+        primaryOutcome: 0,
+        comparatorOutcome: 0,
+      })),
+    }))).toThrow(/assumed effect 0\.1 exceeds the pilot-supported maximum 0/u);
+  });
+
+  test("requires exact planning-effect membership before simulation", () => {
+    const startedAt = performance.now();
+    expect(() => computePowerAnalysis(makeInput({
+      planningEffectSize: 0.2 + 5e-13,
+    }))).toThrow(/planningEffectSize must be present in assumedEffectSizes/u);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+  });
+
   test("fails closed on incomplete pairing, duplicate trials, and insufficient pilot coverage", () => {
     const outcomes = makePilotOutcomes();
     expect(() => computePowerAnalysis(makeInput({
@@ -383,4 +403,81 @@ describe("evaluation pilot power analysis", () => {
     }))).toThrow(/aggregate synthetic attempt work cannot exceed/u);
     expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
+
+  test("rejects oversized input and document collections with bounded diagnostics", () => {
+    const row = makePilotOutcomes()[0];
+    let startedAt = performance.now();
+    expect(() => computePowerAnalysis(makeInput({
+      outcomes: new Array(100_001).fill(row),
+    }))).toThrow(/outcomes cannot exceed 100000 paired rows/u);
+    expect(() => computePowerAnalysis(makeInput({
+      assumedEffectSizes: new Array(33).fill(0.1),
+    }))).toThrow(/assumedEffectSizes cannot exceed 32 values/u);
+    expect(() => computePowerAnalysis(makeInput({
+      outcomes: Array.from({ length: 129 }, (_, index) => ({
+        ...row,
+        comparisonId: `comparison-${index}`,
+        comparatorSystemId: `comparator-${index}`,
+      })),
+    }))).toThrow(/cannot exceed 128 comparisons/u);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+
+    const document = computePowerAnalysis(makeInput());
+    startedAt = performance.now();
+    expect(() => validatePowerAnalysisDocument({
+      ...document,
+      sensitivityGrid: new Array(33).fill(document.sensitivityGrid[0]),
+    })).toThrow(/sensitivityGrid cannot exceed 32 entries/u);
+    expect(() => validatePowerAnalysisDocument({
+      ...document,
+      pilot: {
+        ...document.pilot,
+        comparisons: new Array(129).fill(document.pilot.comparisons[0]),
+      },
+    })).toThrow(/pilot\.comparisons cannot exceed 128 entries/u);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+
+    let error: unknown;
+    try {
+      validatePowerAnalysisDocument({
+        ...document,
+        pilot: {
+          ...document.pilot,
+          comparisons: Array.from({ length: 128 }, () => ({})),
+        },
+      });
+    } catch (candidate) {
+      error = candidate;
+    }
+    expect(error).toBeInstanceOf(PowerAnalysisDocumentValidationError);
+    expect((error as PowerAnalysisDocumentValidationError).issues.length).toBeLessThanOrEqual(100);
+  }, 20_000);
+
+  test("rejects accessors without invoking them during fail-fast preflight", () => {
+    let getterCalls = 0;
+    const inputWithAccessor = {
+      ...makeInput(),
+      get outcomes(): readonly PairedPilotBinaryOutcome[] {
+        getterCalls += 1;
+        return makePilotOutcomes();
+      },
+    };
+    expect(() => computePowerAnalysis(inputWithAccessor)).toThrow(
+      /input\.outcomes must be an own enumerable data property/u,
+    );
+    expect(getterCalls).toBe(0);
+
+    const document = computePowerAnalysis(makeInput());
+    const documentWithAccessor = {
+      ...document,
+      get sensitivityGrid(): typeof document.sensitivityGrid {
+        getterCalls += 1;
+        return document.sensitivityGrid;
+      },
+    };
+    expect(() => validatePowerAnalysisDocument(documentWithAccessor)).toThrow(
+      /document\.sensitivityGrid must be an own enumerable data property/u,
+    );
+    expect(getterCalls).toBe(0);
+  }, 20_000);
 });
