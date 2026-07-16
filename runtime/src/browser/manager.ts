@@ -23,7 +23,10 @@ import { BrowserProxy } from "./proxy.js";
 import { resolveBrowserExecutable } from "./executable.js";
 import type { BrowserPolicy } from "./config.js";
 import type { HostLookup } from "./ssrf.js";
-import { signalProcessTree } from "../utils/supervisedProcess.js";
+import {
+  signalProcessTree,
+  terminateProcessTreeAndWait,
+} from "../utils/supervisedProcess.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -70,6 +73,11 @@ export class BrowserManager {
   #nextTabId = 1;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
   #launching: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
+  #processCleanup: Promise<void> | undefined;
+  #cleanupFailure: Error | undefined;
+  #shutdownGeneration = 0;
+  #launchAuthorityCwd: string | undefined;
   #tempProfileDir: string | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
@@ -118,23 +126,46 @@ export class BrowserManager {
   }
 
   async #ensureLaunched(): Promise<void> {
-    if (this.running) {
-      this.#touchIdle();
-      return;
-    }
-    if (this.#launching !== undefined) {
-      await this.#launching;
-      return;
-    }
-    this.#launching = this.#launch();
-    try {
-      await this.#launching;
-    } finally {
-      this.#launching = undefined;
+    const requestGeneration = this.#shutdownGeneration;
+    while (true) {
+      if (requestGeneration !== this.#shutdownGeneration) {
+        throw new BrowserActionError("browser launch was interrupted by shutdown");
+      }
+      if (this.#closing !== undefined) {
+        await this.#closing;
+        continue;
+      }
+      await this.#awaitProcessCleanup();
+      const brokerCwd = this.#options.sandboxExecutionBroker?.cwd;
+      if (
+        this.running &&
+        brokerCwd !== undefined &&
+        this.#launchAuthorityCwd !== brokerCwd
+      ) {
+        await this.closeAll();
+        continue;
+      }
+      if (this.running) {
+        this.#touchIdle();
+        return;
+      }
+      if (this.#launching !== undefined) {
+        await this.#launching;
+        continue;
+      }
+      const generation = this.#shutdownGeneration;
+      const launching = this.#launch(generation);
+      this.#launching = launching;
+      try {
+        await launching;
+      } finally {
+        if (this.#launching === launching) this.#launching = undefined;
+      }
     }
   }
 
-  async #launch(): Promise<void> {
+  async #launch(generation: number): Promise<void> {
+    const authorityCwd = this.#options.sandboxExecutionBroker?.cwd;
     const proxy = new BrowserProxy({
       policy: { allowPrivateNetwork: this.#options.policy.allowPrivateNetwork },
       ...(this.#options.lookup !== undefined
@@ -163,19 +194,50 @@ export class BrowserManager {
           : {}),
       });
     } catch (err) {
-      await proxy.stop();
-      throw err;
+      const errors: unknown[] = [err];
+      try {
+        await proxy.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        this.#cleanupTempProfile();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw err;
+      throw new AggregateError(errors, "browser launch cleanup failed");
+    }
+
+    if (
+      generation !== this.#shutdownGeneration ||
+      authorityCwd !== this.#options.sandboxExecutionBroker?.cwd
+    ) {
+      launched.connection.close();
+      await this.#cleanupBrowserBoundary(
+        launched.child,
+        proxy,
+        "stale browser launch",
+      );
+      return;
     }
 
     this.#proxy = proxy;
     this.#child = launched.child;
     this.#connection = launched.connection;
+    this.#launchAuthorityCwd = authorityCwd;
     this.#tabs = [];
     this.#activeTabId = 0;
     launched.child.once("exit", () => {
       if (this.#child === launched.child) {
         const stoppedProxy = this.#teardownState();
-        void stoppedProxy?.stop();
+        this.#trackUnexpectedCleanup(
+          this.#cleanupBrowserBoundary(
+            launched.child,
+            stoppedProxy,
+            "browser after unexpected exit",
+          ),
+        );
       }
     });
     process.once("exit", this.#exitListener);
@@ -329,6 +391,7 @@ export class BrowserManager {
     this.#connection?.close();
     this.#connection = undefined;
     this.#child = undefined;
+    this.#launchAuthorityCwd = undefined;
     const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);
@@ -340,7 +403,7 @@ export class BrowserManager {
     const child = this.#child;
     const proxy = this.#teardownState();
     void proxy?.stop();
-    if (child !== undefined && child.exitCode === null) {
+    if (child !== undefined) {
       signalProcessTree(child, "SIGKILL");
     }
     if (this.#tempProfileDir !== undefined) {
@@ -349,27 +412,100 @@ export class BrowserManager {
     }
   }
 
-  /** Graceful shutdown: SIGTERM, then SIGKILL after 500ms (repo discipline). */
-  async closeAll(): Promise<void> {
+  /** Graceful, bounded shutdown that proves the whole process tree exited. */
+  closeAll(): Promise<void> {
+    if (this.#closing !== undefined) return this.#closing;
+    this.#shutdownGeneration += 1;
+    let closing!: Promise<void>;
+    closing = this.#closeAllOnce().finally(() => {
+      if (this.#closing === closing) this.#closing = undefined;
+    });
+    this.#closing = closing;
+    return closing;
+  }
+
+  async #closeAllOnce(): Promise<void> {
+    const errors: unknown[] = [];
     // A launch racing shutdown assigns #child only when it finishes; without
     // awaiting it here, a browser started mid-shutdown would survive cleanup
     // (and re-arm its idle timer) after closeAll already returned.
     const launching = this.#launching;
-    if (launching !== undefined) await launching.catch(() => {});
+    if (launching !== undefined) {
+      try {
+        await launching;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      await this.#awaitProcessCleanup();
+    } catch (error) {
+      errors.push(error);
+    }
     const child = this.#child;
     const proxy = this.#teardownState();
-    if (child === undefined || child.exitCode !== null) {
+    try {
+      await this.#cleanupBrowserBoundary(child, proxy, "browser");
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "browser shutdown failed");
+    }
+  }
+
+  async #awaitProcessCleanup(): Promise<void> {
+    if (this.#processCleanup !== undefined) await this.#processCleanup;
+    if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure;
+  }
+
+  #trackUnexpectedCleanup(operation: Promise<void>): void {
+    // Keep daemon shutdown aware of this manager until its orphan-resistant
+    // cleanup has settled, even though the CDP state is already torn down.
+    activeManagers.add(this);
+    let tracked!: Promise<void>;
+    tracked = operation
+      .catch((error) => {
+        this.#cleanupFailure =
+          error instanceof Error ? error : new Error(String(error));
+      })
+      .finally(() => {
+        if (this.#processCleanup === tracked) this.#processCleanup = undefined;
+        if (this.#cleanupFailure === undefined && this.#child === undefined) {
+          activeManagers.delete(this);
+        }
+      });
+    this.#processCleanup = tracked;
+  }
+
+  async #cleanupBrowserBoundary(
+    child: ChildProcess | undefined,
+    proxy: BrowserProxy | undefined,
+    label: string,
+  ): Promise<void> {
+    const errors: unknown[] = [];
+    if (child !== undefined) {
+      try {
+        await terminateProcessTreeAndWait(child, { label });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
       await proxy?.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       this.#cleanupTempProfile();
-      return;
+    } catch (error) {
+      errors.push(error);
     }
-    signalProcessTree(child, "SIGTERM");
-    if (!(await waitForExit(child, 500))) {
-      signalProcessTree(child, "SIGKILL");
-      await waitForExit(child, 1_000);
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, `${label} cleanup failed`);
     }
-    await proxy?.stop();
-    this.#cleanupTempProfile();
   }
 
   #cleanupTempProfile(): void {
@@ -378,21 +514,4 @@ export class BrowserManager {
       this.#tempProfileDir = undefined;
     }
   }
-}
-
-function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    const done = (exited: boolean): void => {
-      clearTimeout(timer);
-      child.off("exit", onExit);
-      resolve(exited);
-    };
-    const onExit = (): void => done(true);
-    const timer = setTimeout(() => done(false), timeoutMs);
-    timer.unref?.();
-    child.once("exit", onExit);
-  });
 }

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +55,80 @@ process.stdin.on("data", chunk => {
 });
 `;
 
+function termResistantLspTree(marker: string): string {
+  const descendant = `
+const fs = require("node:fs");
+process.on("SIGTERM", () => {});
+fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  leader: process.ppid,
+  descendant: process.pid,
+}));
+setInterval(() => {}, 1000);
+`;
+  return `
+const { spawn } = require("node:child_process");
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+  stdio: "ignore",
+});
+${JSON_RPC_SERVER}
+`;
+}
+
+function termResistantCrashingTree(marker: string): string {
+  const descendant = `
+const fs = require("node:fs");
+process.on("SIGTERM", () => {});
+fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  leader: process.ppid,
+  descendant: process.pid,
+}));
+setInterval(() => {}, 1000);
+`;
+  return `
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+  stdio: "ignore",
+});
+function crashWhenReady() {
+  if (!fs.existsSync(${JSON.stringify(marker)})) {
+    setTimeout(crashWhenReady, 5);
+    return;
+  }
+  process.exit(31);
+}
+crashWhenReady();
+`;
+}
+
+function isLivePid(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const closeParen = stat.lastIndexOf(")");
+      const state = stat.slice(closeParen + 2).trim().split(/\s+/)[0];
+      return state !== "Z" && state !== "X";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function forceKillPid(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -64,6 +138,79 @@ async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void>
 }
 
 describe("createLSPClient", () => {
+  const testPosix = process.platform === "win32" ? test.skip : test;
+
+  testPosix(
+    "stop kills a TERM-resistant descendant before it returns",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-tree-"));
+      const marker = join(dir, "tree.json");
+      const client = createLSPClient("process-tree", {
+        sandboxExecutionBroker: explicitDangerBroker,
+      });
+      let descendant: number | undefined;
+      try {
+        await client.start(process.execPath, [
+          "-e",
+          termResistantLspTree(marker),
+        ]);
+        await waitFor(() => existsSync(marker), 2_000);
+        expect(existsSync(marker)).toBe(true);
+        const tree = JSON.parse(await readFile(marker, "utf8")) as {
+          descendant: number;
+        };
+        descendant = tree.descendant;
+        expect(isLivePid(descendant)).toBe(true);
+
+        await client.stop();
+        await waitFor(() => !isLivePid(descendant!), 2_000);
+
+        expect(isLivePid(descendant)).toBe(false);
+      } finally {
+        await client.stop().catch(() => {});
+        forceKillPid(descendant);
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+
+  testPosix(
+    "cleans a crashed server tree before reporting it restartable",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-crash-tree-"));
+      const marker = join(dir, "tree.json");
+      let reported = false;
+      let descendant: number | undefined;
+      const client = createLSPClient("crash-tree", {
+        sandboxExecutionBroker: explicitDangerBroker,
+        onCrash: () => {
+          reported = true;
+        },
+      });
+      try {
+        await client.start(process.execPath, [
+          "-e",
+          termResistantCrashingTree(marker),
+        ]);
+        await waitFor(() => existsSync(marker), 2_000);
+        expect(existsSync(marker)).toBe(true);
+        descendant = (
+          JSON.parse(await readFile(marker, "utf8")) as { descendant: number }
+        ).descendant;
+        await waitFor(() => reported, 2_000);
+
+        expect(reported).toBe(true);
+        expect(isLivePid(descendant)).toBe(false);
+      } finally {
+        await client.stop().catch(() => {});
+        forceKillPid(descendant);
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    10_000,
+  );
+
   test("clears closed process state so a crashed server can be started again", async () => {
     let crashCount = 0;
     const client = createLSPClient("crashy", {

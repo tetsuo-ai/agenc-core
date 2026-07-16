@@ -15,8 +15,16 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,12 +66,14 @@ afterEach(async () => {
 interface FakeChild extends EventEmitter {
   kill(signal?: string): boolean;
   exitCode: number | null;
+  signalCode: string | null;
   killed: boolean;
 }
 
 function makeFakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.exitCode = null;
+  child.signalCode = null;
   child.killed = false;
   child.kill = (_signal?: string): boolean => {
     child.killed = true;
@@ -95,6 +105,101 @@ function listTempProfiles(): string[] {
 const tick = (ms = 50): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await tick(10);
+  }
+}
+
+interface SpawnedTree {
+  readonly child: ChildProcess;
+  readonly dir: string;
+  readonly marker: string;
+}
+
+function spawnTermResistantTree(exitLeaderWhenReady = false): SpawnedTree {
+  const dir = mkdtempSync(join(tmpdir(), "agenc-browser-tree-"));
+  const marker = join(dir, "tree.json");
+  const descendant = `
+const fs = require("node:fs");
+process.on("SIGTERM", () => {});
+fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  leader: process.ppid,
+  descendant: process.pid,
+}));
+setInterval(() => {}, 1000);
+`;
+  const leader = `
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+  stdio: "ignore",
+});
+function ready() {
+  if (!fs.existsSync(${JSON.stringify(marker)})) {
+    setTimeout(ready, 5);
+    return;
+  }
+  ${exitLeaderWhenReady ? "process.exit(23);" : "setInterval(() => {}, 1000);"}
+}
+ready();
+`;
+  return {
+    child: spawn(process.execPath, ["-e", leader], {
+      stdio: "ignore",
+      detached: true,
+    }),
+    dir,
+    marker,
+  };
+}
+
+function readDescendant(marker: string): number {
+  return (JSON.parse(readFileSync(marker, "utf8")) as { descendant: number })
+    .descendant;
+}
+
+function isLivePid(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const closeParen = stat.lastIndexOf(")");
+      const state = stat.slice(closeParen + 2).trim().split(/\s+/)[0];
+      return state !== "Z" && state !== "X";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupTree(tree: SpawnedTree): void {
+  if (tree.child.pid !== undefined) {
+    try {
+      process.kill(-tree.child.pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+  if (existsSync(tree.marker)) {
+    try {
+      process.kill(readDescendant(tree.marker), "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+  rmSync(tree.dir, { recursive: true, force: true });
+}
+
 describe("BrowserManager launch failure", () => {
   test("stops the proxy when profile-dir creation fails", async () => {
     const stopSpy = vi.spyOn(BrowserProxy.prototype, "stop");
@@ -112,6 +217,8 @@ describe("BrowserManager launch failure", () => {
 });
 
 describe("BrowserManager shutdown/launch race", () => {
+  const testPosix = process.platform === "win32" ? test.skip : test;
+
   test("closeAll tears down a browser that finished launching mid-shutdown", async () => {
     const child = makeFakeChild();
     let resolveLaunch!: (value: { child: FakeChild; connection: unknown }) => void;
@@ -136,6 +243,72 @@ describe("BrowserManager shutdown/launch race", () => {
     expect(child.killed).toBe(true);
     expect(mgr.running).toBe(false);
   });
+
+  testPosix(
+    "closeAll kills a TERM-resistant descendant before returning",
+    async () => {
+      const tree = spawnTermResistantTree();
+      const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
+      try {
+        launchBrowserMock.mockResolvedValue({
+          child: tree.child,
+          connection: makeFakeConnection(),
+        });
+        await mgr.page().catch(() => {});
+        await waitFor(() => existsSync(tree.marker));
+        expect(existsSync(tree.marker)).toBe(true);
+        const descendant = readDescendant(tree.marker);
+        expect(isLivePid(descendant)).toBe(true);
+
+        await mgr.closeAll();
+        await waitFor(() => !isLivePid(descendant));
+
+        expect(isLivePid(descendant)).toBe(false);
+      } finally {
+        await mgr.closeAll().catch(() => {});
+        cleanupTree(tree);
+      }
+    },
+    10_000,
+  );
+
+  testPosix(
+    "waits for unexpected-exit tree cleanup before relaunching",
+    async () => {
+      const tree = spawnTermResistantTree(true);
+      const replacement = makeFakeChild();
+      const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
+      let aliveAtRelaunch: boolean | undefined;
+      try {
+        launchBrowserMock
+          .mockResolvedValueOnce({
+            child: tree.child,
+            connection: makeFakeConnection(),
+          })
+          .mockImplementationOnce(async () => {
+            aliveAtRelaunch = isLivePid(readDescendant(tree.marker));
+            return {
+              child: replacement,
+              connection: makeFakeConnection(),
+            };
+          });
+
+        await mgr.page().catch(() => {});
+        await waitFor(() => existsSync(tree.marker));
+        expect(existsSync(tree.marker)).toBe(true);
+        await waitFor(() => tree.child.exitCode !== null);
+        expect(tree.child.exitCode).not.toBeNull();
+
+        await mgr.page().catch(() => {});
+
+        expect(aliveAtRelaunch).toBe(false);
+      } finally {
+        await mgr.closeAll().catch(() => {});
+        cleanupTree(tree);
+      }
+    },
+    10_000,
+  );
 });
 
 describe("BrowserManager fallback temp profile", () => {

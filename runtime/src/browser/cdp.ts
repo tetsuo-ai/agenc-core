@@ -21,6 +21,7 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
 import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import { terminateProcessTreeAndWait } from "../utils/supervisedProcess.js";
 
 const NUL = "\0";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
@@ -411,8 +412,19 @@ export async function launchBrowser(
   const writePipe = child.stdio[3] as Writable | null;
   const readPipe = child.stdio[4] as Readable | null;
   if (writePipe === null || readPipe === null) {
-    child.kill("SIGKILL");
-    throw new CdpError("browser did not expose the CDP pipe file descriptors");
+    let cleanupDetail = "";
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      cleanupDetail = `; cleanup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+    throw new CdpError(
+      `browser did not expose the CDP pipe file descriptors${cleanupDetail}`,
+    );
   }
 
   const spawnError = new Promise<never>((_, reject) => {
@@ -440,10 +452,19 @@ export async function launchBrowser(
     ]);
   } catch (err) {
     connection.close();
-    child.kill("SIGKILL");
     const detail = err instanceof Error ? err.message : String(err);
+    let cleanupDetail = "";
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      cleanupDetail = ` Cleanup also failed: ${
+        error instanceof Error ? error.message : String(error)
+      }.`;
+    }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}.${cleanupDetail} If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
     );
   }
   return { child, connection };
