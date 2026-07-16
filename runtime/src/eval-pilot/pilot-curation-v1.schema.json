@@ -1,0 +1,260 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:eval:development-pilot-curation:1.0.0",
+  "title": "AgenC Development Pilot Curation Protocol v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "pilotProtocolVersion",
+    "documentDigest",
+    "createdAt",
+    "suite",
+    "cas",
+    "sourceDataset",
+    "coverage",
+    "tasks"
+  ],
+  "properties": {
+    "kind": { "const": "agenc.eval.development-pilot-curation" },
+    "pilotProtocolVersion": { "const": "1.0.0" },
+    "documentDigest": { "$ref": "#/definitions/digest" },
+    "createdAt": { "$ref": "#/definitions/timestamp" },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suiteId", "suiteVersion", "manifestDigest", "split", "taskCount"],
+      "properties": {
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "manifestDigest": { "$ref": "#/definitions/digest" },
+        "split": { "const": "development" },
+        "taskCount": { "const": 30 }
+      }
+    },
+    "cas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layout",
+        "digestAlgorithm",
+        "requiredArtifactSetDigest",
+        "maximumArtifactBytes",
+        "maximumTotalArtifactBytes"
+      ],
+      "properties": {
+        "layout": { "const": "cas/sha256/<hex>" },
+        "digestAlgorithm": { "const": "sha256" },
+        "requiredArtifactSetDigest": { "$ref": "#/definitions/digest" },
+        "maximumArtifactBytes": { "const": 16777216 },
+        "maximumTotalArtifactBytes": { "const": 268435456 }
+      }
+    },
+    "sourceDataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "revision", "revisionDigest", "license", "selection"],
+      "properties": {
+        "datasetId": { "$ref": "#/definitions/id" },
+        "revision": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "revisionDigest": { "$ref": "#/definitions/digest" },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["spdxIdentifier", "evidence"],
+          "properties": {
+            "spdxIdentifier": { "$ref": "#/definitions/spdx" },
+            "evidence": { "$ref": "#/definitions/jsonArtifact" }
+          }
+        },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithm",
+            "algorithmVersion",
+            "implementation",
+            "seedDigest",
+            "eligiblePopulationDigest",
+            "selectedRowsDigest",
+            "taskOrdering",
+            "outcomeDataUsed"
+          ],
+          "properties": {
+            "algorithm": { "const": "sha256_ranked_stratified_v1" },
+            "algorithmVersion": { "const": "1.0.0" },
+            "implementation": { "$ref": "#/definitions/javascriptArtifact" },
+            "seedDigest": { "$ref": "#/definitions/digest" },
+            "eligiblePopulationDigest": { "$ref": "#/definitions/digest" },
+            "selectedRowsDigest": { "$ref": "#/definitions/digest" },
+            "taskOrdering": { "const": "ascending_selection_key_digest" },
+            "outcomeDataUsed": { "const": false }
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categories",
+        "stressors",
+        "minimumRepositoryFamilies",
+        "maximumTasksPerRepositoryFamily"
+      ],
+      "properties": {
+        "categories": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/category" }
+        },
+        "stressors": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/stressor" }
+        },
+        "minimumRepositoryFamilies": { "const": 15 },
+        "maximumTasksPerRepositoryFamily": { "const": 2 }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 30,
+      "maxItems": 30,
+      "items": { "$ref": "#/definitions/task" }
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "spdx": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*(?: WITH [A-Za-z0-9][A-Za-z0-9.+-]*)?$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "sizeBytes", "mediaType", "uri"],
+      "properties": {
+        "digest": { "$ref": "#/definitions/digest" },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 16777216 },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uri": {
+          "type": "string",
+          "pattern": "^cas://sha256/[0-9a-f]{64}$"
+        }
+      }
+    },
+    "jsonArtifact": {
+      "allOf": [
+        { "$ref": "#/definitions/artifact" },
+        {
+          "type": "object",
+          "properties": { "mediaType": { "const": "application/json" } }
+        }
+      ]
+    },
+    "javascriptArtifact": {
+      "allOf": [
+        { "$ref": "#/definitions/artifact" },
+        {
+          "type": "object",
+          "properties": { "mediaType": { "const": "application/javascript" } }
+        }
+      ]
+    },
+    "category": {
+      "enum": [
+        "multi_file_fix",
+        "failing_test_diagnosis",
+        "regression_repair",
+        "compatibility_refactor",
+        "missing_tests",
+        "long_context_navigation",
+        "ambiguous_issue"
+      ]
+    },
+    "stressor": {
+      "enum": [
+        "tool_timeout",
+        "partial_output",
+        "repository_prompt_injection",
+        "collaboration_beneficial"
+      ]
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "operatorTaskDigest",
+        "repositoryFamily",
+        "eligibility",
+        "category",
+        "stressors",
+        "selectionKeyDigest",
+        "source",
+        "qa"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/definitions/id" },
+        "operatorTaskDigest": { "$ref": "#/definitions/digest" },
+        "repositoryFamily": { "$ref": "#/definitions/id" },
+        "eligibility": { "const": "development_public_issue_eligible" },
+        "category": { "$ref": "#/definitions/category" },
+        "stressors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/stressor" }
+        },
+        "selectionKeyDigest": { "$ref": "#/definitions/digest" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rowId", "rowDigest", "row"],
+          "properties": {
+            "rowId": { "$ref": "#/definitions/id" },
+            "rowDigest": { "$ref": "#/definitions/digest" },
+            "row": { "$ref": "#/definitions/jsonArtifact" }
+          }
+        },
+        "qa": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "upstreamTriplePreflight",
+            "independentSolveReview",
+            "negativePatchReview"
+          ],
+          "properties": {
+            "upstreamTriplePreflight": { "$ref": "#/definitions/jsonArtifact" },
+            "independentSolveReview": { "$ref": "#/definitions/jsonArtifact" },
+            "negativePatchReview": { "$ref": "#/definitions/jsonArtifact" }
+          }
+        }
+      }
+    }
+  }
+}
