@@ -2983,8 +2983,9 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           });
         }
 
-        await waitForInitialization();
-        const status = getInitializationStatus();
+        const lspScope = opts.getSession()?.services.sandboxExecutionBroker;
+        await waitForInitialization(lspScope);
+        const status = getInitializationStatus(lspScope);
         const pendingDiagnostics = peekLSPDiagnosticsForFile(resolved);
         if (status.status === "failed") {
           return json({
@@ -3000,7 +3001,7 @@ function createLspTool(opts: ModelFacingToolOptions): Tool {
           });
         }
 
-        const manager = getLspServerManager();
+        const manager = getLspServerManager(lspScope);
         if (!manager) {
           return json({
             file_path: resolved,

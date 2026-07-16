@@ -6,7 +6,7 @@
  * Env switches:
  *   FAKE_ACP_REQUEST_PERMISSION=1  ask session/request_permission during
  *                                  prompt and echo the decision in a chunk
- *   FAKE_ACP_FAIL_AUTH=1           reject authenticate with -32000
+ *   FAKE_ACP_FAIL_LOGIN=1          reject authenticate with -32000
  *   FAKE_ACP_STALL_PROMPT=1        never answer session/prompt
  */
 
@@ -83,7 +83,7 @@ reader.on('line', line => {
       })
       return
     case 'authenticate':
-      if (process.env.FAKE_ACP_FAIL_AUTH === '1') {
+      if (process.env.FAKE_ACP_FAIL_LOGIN === '1') {
         respondError(id, -32000, 'authentication failed: no cached login')
         return
       }

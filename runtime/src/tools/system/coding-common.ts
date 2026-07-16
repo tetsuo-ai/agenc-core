@@ -18,6 +18,8 @@ import {
 } from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
 import type { RunCommandResult } from "../../utils/process.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
 import {
   missingSandboxExecutionBoundary,
   readSandboxExecutionBroker,
@@ -106,13 +108,7 @@ export const MANIFEST_NAMES = [
   "README.md",
 ] as const;
 
-function stringEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-}
+const FORCE_KILL_GRACE_MS = 250;
 
 export function runSandboxedToolCommand(params: {
   readonly toolArgs: Record<string, unknown>;
@@ -122,6 +118,7 @@ export function runSandboxedToolCommand(params: {
   readonly timeoutMs?: number;
   readonly maxBuffer?: number;
   readonly env?: NodeJS.ProcessEnv;
+  readonly additionalPermissions?: AdditionalPermissionProfile;
 }): Promise<RunCommandResult> {
   const surface = readSandboxExecutionSurface(params.toolArgs) ?? "tool";
   const broker = readSandboxExecutionBroker(params.toolArgs);
@@ -132,8 +129,11 @@ export function runSandboxedToolCommand(params: {
     program: params.program,
     args: params.args,
     cwd: params.cwd,
-    env: stringEnvironment(params.env ?? process.env),
+    env: scrubEnvForChildProcess(params.env ?? process.env),
     argv0: basename(params.program),
+    ...(params.additionalPermissions !== undefined
+      ? { additionalPermissions: params.additionalPermissions }
+      : {}),
   });
 
   return new Promise((resolve) => {
@@ -145,24 +145,63 @@ export function runSandboxedToolCommand(params: {
     let settled = false;
     let timedOut = false;
     let bufferExceeded = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(command.program, [...command.args], {
       cwd: command.cwd,
       env: command.env,
       argv0: command.argv0,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
+    const killTree = (signal: NodeJS.Signals): void => {
+      try {
+        if (process.platform === "win32" && child.pid !== undefined) {
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/T", "/F"],
+            {
+              env: scrubEnvForChildProcess(process.env),
+              stdio: "ignore",
+              windowsHide: true,
+            },
+          );
+          killer.unref();
+          return;
+        }
+        if (child.pid !== undefined) {
+          process.kill(-child.pid, signal);
+          return;
+        }
+        child.kill(signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+          // The process tree already exited.
+        }
+      }
+    };
+    const terminate = (): void => {
+      killTree("SIGTERM");
+      if (forceKillTimer !== undefined) return;
+      forceKillTimer = setTimeout(() => {
+        forceKillTimer = undefined;
+        killTree("SIGKILL");
+      }, FORCE_KILL_GRACE_MS);
+      forceKillTimer.unref?.();
+    };
     const timeout = params.timeoutMs === undefined
       ? undefined
       : setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
+          terminate();
         }, params.timeoutMs);
     timeout?.unref?.();
     const append = (target: Buffer[], chunk: Buffer, bytes: number): number => {
       const next = bytes + chunk.length;
       if (next > maxBuffer) {
         bufferExceeded = true;
-        child.kill("SIGTERM");
+        terminate();
         return bytes;
       }
       target.push(chunk);
@@ -178,12 +217,14 @@ export function runSandboxedToolCommand(params: {
       if (settled) return;
       settled = true;
       if (timeout !== undefined) clearTimeout(timeout);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
       resolve({ stdout: "", stderr: error.message, exitCode: 1 });
     });
     child.once("close", (code: number | null) => {
       if (settled) return;
       settled = true;
       if (timeout !== undefined) clearTimeout(timeout);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
       resolve({
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: bufferExceeded

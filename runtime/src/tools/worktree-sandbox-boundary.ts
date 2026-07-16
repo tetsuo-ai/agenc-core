@@ -7,6 +7,7 @@ import {
 } from "../sandbox/execution-broker.js";
 import type { ToolUseContext } from "./Tool.js";
 import { execFileNoThrowWithCwd } from "../utils/execFileNoThrow.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 
 export function requireWorktreeSandboxBrokers(
   context: ToolUseContext,
@@ -53,11 +54,7 @@ export function runWorktreeSandboxedProcess(
     program,
     args,
     cwd,
-    env: Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    ),
+    env: scrubEnvForChildProcess(process.env),
     argv0: basename(program),
   });
   return execFileNoThrowWithCwd(command.program, [...command.args], {

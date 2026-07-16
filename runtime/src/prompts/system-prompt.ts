@@ -43,6 +43,7 @@ import { platform as osPlatform, type as osType, release as osRelease } from "no
 import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 import {
   AUTONOMOUS_TICK_TAG,
   isAutonomousModeEnabled,
@@ -393,11 +394,7 @@ function readGitBranch(
     program: "git",
     args: ["rev-parse", "--abbrev-ref", "HEAD"],
     cwd,
-    env: Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    ),
+    env: scrubEnvForChildProcess(process.env),
     argv0: "git",
   });
   try {

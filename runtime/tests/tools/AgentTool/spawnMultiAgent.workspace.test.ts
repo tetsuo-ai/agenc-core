@@ -32,6 +32,11 @@ import {
   clearCliTeammateModeOverride,
   setCliTeammateModeOverride,
 } from '../../../src/utils/swarm/backends/teammateModeSnapshot.js'
+import {
+  isInProcessEnabled,
+  resetBackendDetection,
+} from '../../../src/utils/swarm/backends/registry.js'
+import { resetDetectionCache } from '../../../src/utils/swarm/backends/detection.js'
 
 const roots: string[] = []
 
@@ -40,6 +45,10 @@ afterEach(() => {
   __setPluginAgentsLoaderForTesting(undefined)
   clearAgentDefinitionsCache()
   clearCliTeammateModeOverride('auto')
+  setIsInteractive(false)
+  vi.unstubAllEnvs()
+  resetBackendDetection()
+  resetDetectionCache()
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
   }
@@ -325,6 +334,42 @@ Do not execute without exact role provenance.
     } finally {
       setIsInteractive(false)
     }
+  })
+
+  it('selects the sandboxable in-process backend for restricted auto mode', async () => {
+    const workspace = tempWorkspace('teammate-auto-sandbox')
+    setCliTeammateModeOverride('auto')
+    captureTeammateModeSnapshot()
+    setIsInteractive(true)
+    vi.stubEnv('TERM_PROGRAM', 'iTerm.app')
+    resetBackendDetection()
+    resetDetectionCache()
+    expect(isInProcessEnabled()).toBe(false)
+
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: workspace,
+      platform: process.platform,
+      probe: ({ mode, platform }) => ({
+        kind: 'ready',
+        mode,
+        platform,
+      }),
+    })
+    const backend = vi.fn(successfulBackend(() => {
+      expect(isInProcessEnabled()).toBe(true)
+    }))
+    __setSpawnTeammateBackendForTesting(backend)
+    const { agent_type: _agentType, ...config } = configFor(
+      workspace,
+      'general-purpose',
+    )
+
+    await runWithCurrentRuntimeSession(sessionFor(workspace, broker), () =>
+      spawnTeammate(config, contextFor(workspace)),
+    )
+
+    expect(backend).toHaveBeenCalledOnce()
   })
 
   it.each([

@@ -56,6 +56,10 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { runSandboxedToolCommand } from "./coding-common.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeMutationPermissions,
+} from "../../sandbox/worktree-permissions.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-level worktree state — module singleton keyed by AgenC
@@ -211,12 +215,26 @@ async function runWorktreeGit(
   toolArgs: Record<string, unknown>,
   commandArgs: readonly string[],
   cwd: string,
+  mutation?: {
+    readonly repoRoot: string;
+    readonly writablePaths?: readonly string[];
+  },
 ) {
   return runSandboxedToolCommand({
     toolArgs,
     program: "git",
-    args: commandArgs,
+    args: mutation === undefined
+      ? commandArgs
+      : hardenGitWorktreeMutationArgs(commandArgs),
     cwd,
+    ...(mutation !== undefined
+      ? {
+          additionalPermissions: worktreeMutationPermissions(
+            mutation.repoRoot,
+            mutation.writablePaths,
+          ),
+        }
+      : {}),
   });
 }
 
@@ -432,6 +450,10 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
           worktreePath,
         ],
         mainRepoRoot,
+        {
+          repoRoot: mainRepoRoot,
+          writablePaths: [resolve(mainRepoRoot, ".agenc")],
+        },
       );
       if (create.exitCode !== 0) {
         const errText =
@@ -604,6 +626,10 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
           session.worktreePath,
         ],
         session.mainRepoRoot,
+        {
+          repoRoot: session.mainRepoRoot,
+          writablePaths: [session.worktreePath],
+        },
       );
       if (remove.exitCode !== 0) {
         const errText =
@@ -626,6 +652,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
             session.worktreeBranch,
           ],
           session.mainRepoRoot,
+          { repoRoot: session.mainRepoRoot },
         ).catch(() => {
           /* best-effort branch cleanup */
         });

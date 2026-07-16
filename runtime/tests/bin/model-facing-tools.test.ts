@@ -28,8 +28,10 @@ import {
   _resetLspManagerForTesting,
   initializeLspServerManager,
   shutdownLspServerManager,
+  waitForInitialization,
 } from "../services/lsp/manager.js";
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -834,6 +836,98 @@ describe("model-facing tools", () => {
         note: "No language server is configured for this file.",
       });
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("selects the current session's scoped LSP manager for diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-session-scope-"));
+    const restrictedBroker = {
+      mode: "workspace_write",
+      cwd: root,
+    } as SandboxExecutionBrokerLike;
+    const dangerBroker = {
+      mode: "danger_full_access",
+      cwd: root,
+    } as SandboxExecutionBrokerLike;
+    try {
+      const file = join(root, "a.ts");
+      await writeFile(file, "const a = 1;\n", "utf8");
+      const config = normalizeLspServerConfig("ts", {
+        command: "typescript-language-server",
+        extensionToLanguage: { ".ts": "typescript" },
+      });
+      const defaultStart = vi.fn(async () => {});
+      const restrictedStart = vi.fn(async () => {});
+      const dangerStart = vi.fn(async () => {});
+      const makeServer = (
+        name: string,
+        start: () => Promise<void>,
+      ): LSPServerInstance =>
+        ({
+          name,
+          config,
+          state: "stopped",
+          start,
+          stop: async () => {},
+          restart: async () => {},
+          isHealthy: () => true,
+          sendRequest: async () => ({}),
+          sendNotification: async () => {},
+          onNotification: () => {},
+          onRequest: () => {},
+        }) as unknown as LSPServerInstance;
+
+      initializeLspServerManager({
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => makeServer("default", defaultStart),
+      });
+      initializeLspServerManager({
+        sandboxExecutionBroker: restrictedBroker,
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => makeServer("restricted", restrictedStart),
+      });
+      initializeLspServerManager({
+        sandboxExecutionBroker: dangerBroker,
+        configSource: () => ({ ts: config }),
+        instanceFactory: () => makeServer("danger", dangerStart),
+      });
+      await Promise.all([
+        waitForInitialization(),
+        waitForInitialization(restrictedBroker),
+        waitForInitialization(dangerBroker),
+      ]);
+
+      const session = fakeSession(root);
+      Object.assign(session.services, {
+        sandboxExecutionBroker: restrictedBroker,
+      });
+      const tools = createModelFacingTools({
+        workspaceRoot: root,
+        getSession: () => session,
+      });
+      const lsp = tools.find((tool) => tool.name === "LSP")!;
+      const result = await lsp.execute({
+        operation: "diagnostics",
+        file_path: "a.ts",
+      });
+      const payload = JSON.parse(result.content);
+
+      expect(result.isError).not.toBe(true);
+      expect(payload).toMatchObject({
+        file_path: file,
+        server: "restricted",
+        lsp_status: "success",
+      });
+      expect(restrictedStart).toHaveBeenCalledTimes(1);
+      expect(defaultStart).not.toHaveBeenCalled();
+      expect(dangerStart).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([
+        shutdownLspServerManager(),
+        shutdownLspServerManager(restrictedBroker),
+        shutdownLspServerManager(dangerBroker),
+      ]);
       await rm(root, { recursive: true, force: true });
     }
   });

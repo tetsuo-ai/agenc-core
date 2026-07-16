@@ -225,6 +225,7 @@ import {
   pinCacheEdits,
 } from '../compact/microCompact.js'
 import { getInitializationStatus } from '../lsp/manager.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getproviderClient } from './client.js'
@@ -975,7 +976,9 @@ function shouldDeferLspTool(tool: Tool): boolean {
   if (!('isLsp' in tool) || !tool.isLsp) {
     return false
   }
-  const status = getInitializationStatus()
+  const status = getInitializationStatus(
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker,
+  )
   // Defer when pending or not started
   return status.status === 'pending' || status.status === 'not-started'
 }

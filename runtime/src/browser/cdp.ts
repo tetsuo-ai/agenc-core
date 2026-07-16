@@ -20,6 +20,7 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 
 const NUL = "\0";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
@@ -375,11 +376,7 @@ export async function launchBrowser(
   if (sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("browser");
   }
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] =>
-      typeof entry[1] === "string"
-    ),
-  );
+  const env = scrubEnvForChildProcess(process.env);
   const spawnCommand = sandboxExecutionBroker.prepareSpawn("browser", {
     program: options.executablePath,
     args: buildChromiumArgs(options),

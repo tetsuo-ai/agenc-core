@@ -25,6 +25,7 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from '../../sandbox/execution-broker.js'
+import { scrubEnvForChildProcess } from '../../unified-exec/scrub-env.js'
 import { asRecord } from '../../utils/record.js'
 
 export const GROK_ACP_REFERRER_ENV = 'GROK_OAUTH2_REFERRER'
@@ -169,19 +170,22 @@ export class XaiAcpClient {
     if (sandboxExecutionBroker === undefined) {
       throw missingSandboxExecutionBoundary('provider')
     }
-    const env = Object.fromEntries(
-      Object.entries({
-        ...(options.env ?? process.env),
-        [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
-      }).filter((entry): entry is [string, string] =>
-        typeof entry[1] === 'string'
-      ),
-    )
+    const sourceEnv = options.env ?? process.env
+    const env = {
+      ...scrubEnvForChildProcess(sourceEnv),
+      // ACP is the one child that legitimately consumes this provider secret.
+      // Re-introduce only its documented credential after the general scrub.
+      ...(typeof sourceEnv.XAI_API_KEY === 'string'
+        ? { XAI_API_KEY: sourceEnv.XAI_API_KEY }
+        : {}),
+      [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
+    }
     const spawnCommand = sandboxExecutionBroker.prepareSpawn('provider', {
       program: command,
       args,
       cwd: options.cwd,
       env,
+      additionalPermissions: { network: { enabled: true } },
     })
     try {
       this.child = spawn(spawnCommand.program, [...spawnCommand.args], {

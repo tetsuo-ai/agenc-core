@@ -518,10 +518,12 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
           },
         },
       });
-      await waitForInitialization();
+      await waitForInitialization(sandboxExecutionBroker);
 
-      expect(getInitializationStatus().status).toBe("success");
-      const manager = getLspServerManager();
+      expect(getInitializationStatus(sandboxExecutionBroker).status).toBe(
+        "success",
+      );
+      const manager = getLspServerManager(sandboxExecutionBroker);
       expect(manager?.getAllServers().has("ts")).toBe(true);
       if (manager === undefined) throw new Error("LSP manager was not initialized");
       await expect(
@@ -533,7 +535,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       expect(existsSync(marker)).toBe(false);
     } finally {
       await handle.shutdown();
-      await shutdownLspServerManager();
+      await shutdownLspServerManager(sandboxExecutionBroker);
       _resetLspManagerForTesting();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });

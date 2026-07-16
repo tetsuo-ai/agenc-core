@@ -3,6 +3,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { getCachedPowerShellPath } from '../shell/powershellDetection.js'
 import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
+import { scrubEnvForChildProcess } from '../../unified-exec/scrub-env.js'
 import { jsonParse } from '../slowOperations.js'
 
 // ---------------------------------------------------------------------------
@@ -1183,11 +1184,7 @@ async function parsePowerShellCommandImpl(
     '-EncodedCommand',
     encodedScript,
   ]
-  const processEnv = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] =>
-      typeof entry[1] === 'string'
-    ),
-  )
+  const processEnv = scrubEnvForChildProcess(process.env)
   const spawnCommand = sandbox === undefined
     ? {
         program: pwshPath,

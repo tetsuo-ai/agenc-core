@@ -6,6 +6,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -15,14 +16,17 @@ import {
   SandboxExecutionBroker,
   attachSandboxExecutionBroker,
 } from "../../src/sandbox/execution-broker.js";
+import type { SandboxTransformRequest } from "../../src/sandbox/engine/index.js";
 import { assembleSystemPrompt } from "../../src/prompts/system-prompt.js";
 import { clearSystemPromptSections } from "../../src/prompts/sections.js";
 import { getOrCreateWorktree as getOrCreateAgentWorktree } from "../../src/agents/worktree.js";
 import { CodeIntelManager } from "../../src/tools/system/code-intel.js";
+import { runSandboxedToolCommand } from "../../src/tools/system/coding-common.js";
 import { createGitAndRepoTools } from "../../src/tools/system/git-tools.js";
 import {
   __resetWorktreeSessionsForTesting,
   createEnterWorktreeTool,
+  createExitWorktreeTool,
 } from "../../src/tools/system/worktree.js";
 import { EnterWorktreeTool } from "../../src/tools/EnterWorktreeTool/EnterWorktreeTool.js";
 import { ExitWorktreeTool } from "../../src/tools/ExitWorktreeTool/ExitWorktreeTool.js";
@@ -48,6 +52,49 @@ function unavailableBroker(cwd: string): SandboxExecutionBroker {
       reason: "probe: injected git boundary failure",
       remediation: "repair sandbox support",
     }),
+  });
+}
+
+function recordingRestrictedBroker(
+  cwd: string,
+  requests: SandboxTransformRequest[],
+): SandboxExecutionBroker {
+  return new SandboxExecutionBroker({
+    mode: "workspace_write",
+    cwd,
+    probe: () => ({
+      kind: "ready",
+      mode: "workspace_write",
+      platform: process.platform,
+    }),
+    sandboxManager: {
+      selectInitial: () => "linux_seccomp",
+      transform: (request: SandboxTransformRequest) => {
+        requests.push(request);
+        return {
+          command: [request.command.program, ...request.command.args],
+          cwd: request.command.cwd,
+          env: request.command.env,
+        } as never;
+      },
+    },
+  });
+}
+
+function initGitRepo(root: string): void {
+  execFileSync("git", ["init", "--initial-branch=main"], {
+    cwd: root,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["config", "user.email", "tests@example.com"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "Tests"], { cwd: root });
+  writeFileSync(join(root, "README.md"), "root\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["commit", "-m", "init"], {
+    cwd: root,
+    stdio: "ignore",
   });
 }
 
@@ -83,6 +130,208 @@ afterEach(() => {
 });
 
 describe.sequential("git process sandbox boundaries", () => {
+  it("grants only operation-scoped metadata paths for restricted worktree add and remove", async () => {
+    const root = tempRoot("agenc-restricted-worktree-boundary-");
+    initGitRepo(root);
+    const requests: SandboxTransformRequest[] = [];
+    const broker = recordingRestrictedBroker(root, requests);
+    const sessionId = "restricted-worktree-boundary";
+    const slug = "restricted-boundary";
+    const worktreePath = join(root, ".agenc", "worktrees", slug);
+    const hardening = [
+      "-c",
+      `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+      "-c",
+      "core.fsmonitor=false",
+    ];
+    const addArgs: Record<string, unknown> = {
+      name: slug,
+      __agencSessionId: sessionId,
+    };
+    attachSandboxExecutionBroker(addArgs, broker, "tool");
+
+    const entered = await createEnterWorktreeTool({ cwd: root }).execute(
+      addArgs,
+    );
+
+    expect(entered.isError).toBeUndefined();
+    expect(existsSync(worktreePath)).toBe(true);
+    const addRequest = requests.find((request) =>
+      request.command.args.includes("add") &&
+      request.command.args.includes(worktreePath)
+    );
+    expect(addRequest?.command.args).toEqual([
+      ...hardening,
+      "-C",
+      root,
+      "worktree",
+      "add",
+      "-b",
+      slug,
+      worktreePath,
+    ]);
+    expect(addRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: join(root, ".git") },
+            access: "write",
+          },
+          {
+            path: { kind: "path", path: join(root, ".agenc") },
+            access: "write",
+          },
+        ],
+      },
+    });
+
+    const removeArgs: Record<string, unknown> = {
+      action: "remove",
+      discard_changes: true,
+      __agencSessionId: sessionId,
+    };
+    attachSandboxExecutionBroker(removeArgs, broker, "tool");
+    const exited = await createExitWorktreeTool({ cwd: root }).execute(
+      removeArgs,
+    );
+
+    expect(exited.isError).toBeUndefined();
+    expect(existsSync(worktreePath)).toBe(false);
+    const removeRequest = requests.find((request) =>
+      request.command.args.includes("remove") &&
+      request.command.args.includes(worktreePath)
+    );
+    expect(removeRequest?.command.args).toEqual([
+      ...hardening,
+      "-C",
+      root,
+      "worktree",
+      "remove",
+      "--force",
+      worktreePath,
+    ]);
+    expect(removeRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: join(root, ".git") },
+            access: "write",
+          },
+          {
+            path: { kind: "path", path: worktreePath },
+            access: "write",
+          },
+        ],
+      },
+    });
+    const branchDeleteRequest = requests.find((request) =>
+      request.command.args.includes("branch") &&
+      request.command.args.includes("-D")
+    );
+    expect(branchDeleteRequest?.command.args).toEqual([
+      ...hardening,
+      "-C",
+      root,
+      "branch",
+      "-D",
+      slug,
+    ]);
+    expect(branchDeleteRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: join(root, ".git") },
+            access: "write",
+          },
+        ],
+      },
+    });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "escalates a TERM-resistant sandboxed tool command to SIGKILL promptly",
+    async () => {
+      const root = tempRoot("agenc-sandbox-force-kill-");
+      const termMarker = join(root, "term-observed");
+      const args: Record<string, unknown> = {};
+      attachSandboxExecutionBroker(
+        args,
+        new SandboxExecutionBroker({ mode: "danger_full_access", cwd: root }),
+        "tool",
+      );
+      const script = [
+        `const { spawn } = require("node:child_process");`,
+        `const grandchildScript = ${JSON.stringify(
+          `const fs = require("node:fs");` +
+            `process.on("SIGTERM", () => fs.writeFileSync(${JSON.stringify(termMarker)}, "term"));` +
+            `setTimeout(() => process.exit(88), 2500);`,
+        )};`,
+        `spawn(process.execPath, ["-e", grandchildScript], { stdio: ["ignore", "inherit", "inherit"] });`,
+        `setTimeout(() => process.stdout.write("ready"), 100);`,
+        `setTimeout(() => process.exit(88), 2500);`,
+      ].join("");
+      const startedAt = Date.now();
+
+      const result = await runSandboxedToolCommand({
+        toolArgs: args,
+        program: process.execPath,
+        args: ["-e", script],
+        cwd: root,
+        maxBuffer: 1,
+      });
+
+      expect(existsSync(termMarker)).toBe(true);
+      expect(result).toMatchObject({
+        exitCode: 1,
+        stderr: "command output exceeded 1 bytes",
+      });
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+    },
+    5_000,
+  );
+
+  it("omits representative secrets from the captured and spawned child environment", async () => {
+    const root = tempRoot("agenc-sandbox-scrubbed-env-");
+    const requests: SandboxTransformRequest[] = [];
+    const args: Record<string, unknown> = {};
+    attachSandboxExecutionBroker(
+      args,
+      recordingRestrictedBroker(root, requests),
+      "tool",
+    );
+    const result = await runSandboxedToolCommand({
+      toolArgs: args,
+      program: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(JSON.stringify(process.env))",
+      ],
+      cwd: root,
+      env: {
+        PATH: process.env.PATH,
+        AGENC_SAFE_TEST_VALUE: "preserved",
+        XAI_API_KEY: "xai-secret",
+        GITHUB_TOKEN: "github-secret",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+        CUSTOM_SERVICE_PASSWORD: "password-secret",
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const capturedEnv = requests.at(-1)?.command.env;
+    expect(capturedEnv).toMatchObject({ AGENC_SAFE_TEST_VALUE: "preserved" });
+    expect(capturedEnv).not.toHaveProperty("XAI_API_KEY");
+    expect(capturedEnv).not.toHaveProperty("GITHUB_TOKEN");
+    expect(capturedEnv).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
+    expect(capturedEnv).not.toHaveProperty("CUSTOM_SERVICE_PASSWORD");
+    const spawnedEnv = JSON.parse(result.stdout) as Record<string, string>;
+    expect(spawnedEnv).toMatchObject({ AGENC_SAFE_TEST_VALUE: "preserved" });
+    expect(spawnedEnv).not.toHaveProperty("XAI_API_KEY");
+    expect(spawnedEnv).not.toHaveProperty("GITHUB_TOKEN");
+    expect(spawnedEnv).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
+    expect(spawnedEnv).not.toHaveProperty("CUSTOM_SERVICE_PASSWORD");
+  });
+
   it("blocks deferred repo tools before a PATH-resolved git process starts", async () => {
     const root = tempRoot("agenc-git-tool-boundary-");
     const marker = join(root, "git-tool-escaped");

@@ -72,10 +72,7 @@ import type {
 } from "../llm/hooks/types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
-import {
-  configureLspServerSource,
-  parseLspServersConfig,
-} from "../services/lsp/config.js";
+import { parseLspServersConfig } from "../services/lsp/config.js";
 import {
   getInitializationStatus as getLspInitializationStatus,
   initializeLspServerManager,
@@ -488,12 +485,16 @@ export async function loadBootstrapLspServers(
     ...(opts.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
       : {}),
+    configSource: parsed.success
+      ? () => parsed.servers
+      : () => {
+        throw new Error(`Invalid LSP server config: ${parsed.reason}`);
+      },
   };
   if (!parsed.success) {
-    configureLspServerSource(() => {
-      throw new Error(`Invalid LSP server config: ${parsed.reason}`);
-    });
-    const status = getLspInitializationStatus().status;
+    const status = getLspInitializationStatus(
+      opts.sandboxExecutionBroker,
+    ).status;
     if (status === "not-started" || status === "failed") {
       initializeLspServerManager(managerOptions);
       return;
@@ -502,12 +503,12 @@ export async function loadBootstrapLspServers(
     return;
   }
   if (Object.keys(parsed.servers).length === 0) {
-    configureLspServerSource(() => ({}));
-    await shutdownLspServerManager();
+    await shutdownLspServerManager(opts.sandboxExecutionBroker);
     return;
   }
-  configureLspServerSource(() => parsed.servers);
-  const status = getLspInitializationStatus().status;
+  const status = getLspInitializationStatus(
+    opts.sandboxExecutionBroker,
+  ).status;
   if (status === "not-started" || status === "failed") {
     initializeLspServerManager(managerOptions);
     return;
@@ -529,9 +530,11 @@ export function loadBootstrapLspServersInBackground(
   });
 }
 
-export async function shutdownBootstrapLspServers(): Promise<void> {
+export async function shutdownBootstrapLspServers(
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): Promise<void> {
   try {
-    await shutdownLspServerManager();
+    await shutdownLspServerManager(sandboxExecutionBroker);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn("[lsp] bootstrap shutdown failed:", lspErrorMessage(error));
@@ -861,7 +864,7 @@ export function buildBootstrapSessionServices(
     shutdown: async () => {
       unsubscribeHooksConfig();
       await skillsServices.skillsWatcher.stop?.();
-      await shutdownBootstrapLspServers();
+      await shutdownBootstrapLspServers(opts.sandboxExecutionBroker);
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();

@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { relative, resolve as resolvePath } from "node:path";
+import { dirname, relative, resolve as resolvePath } from "node:path";
 
 import type { Tool } from "../types.js";
 import { collectWorkspaceLanguages } from "./code-intel.js";
@@ -23,12 +23,18 @@ import {
   resolveToolAllowedPaths,
   safePath,
 } from "./filesystem.js";
+import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeMutationPermissions,
+} from "../../sandbox/worktree-permissions.js";
 
 function runGitToolCommand(
   toolArgs: Record<string, unknown>,
   commandArgs: readonly string[],
   cwd: string,
   maxBuffer?: number,
+  additionalPermissions?: AdditionalPermissionProfile,
 ) {
   return runSandboxedToolCommand({
     toolArgs,
@@ -36,6 +42,7 @@ function runGitToolCommand(
     args: commandArgs,
     cwd,
     ...(maxBuffer !== undefined ? { maxBuffer } : {}),
+    ...(additionalPermissions !== undefined ? { additionalPermissions } : {}),
   });
 }
 
@@ -411,7 +418,15 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       if (ref) {
         command.push(ref);
       }
-      const result = await runGitToolCommand(args, command, repoRoot);
+      const result = await runGitToolCommand(
+        args,
+        hardenGitWorktreeMutationArgs(command),
+        repoRoot,
+        undefined,
+        worktreeMutationPermissions(repoRoot, [
+          dirname(safeWorktreePath.resolved),
+        ]),
+      );
       if (result.exitCode !== 0) {
         return errorResult(
           result.stderr.trim() || result.stdout.trim() || "git worktree add failed",
@@ -471,15 +486,17 @@ export function createGitAndRepoTools(config: CodingToolConfig): readonly Tool[]
       }
       const result = await runGitToolCommand(
         args,
-        [
+        hardenGitWorktreeMutationArgs([
           "-C",
           repoRoot,
           "worktree",
           "remove",
           ...(args.force === true ? ["--force"] : []),
           safeWorktreePath.resolved,
-        ],
+        ]),
         repoRoot,
+        undefined,
+        worktreeMutationPermissions(repoRoot, [safeWorktreePath.resolved]),
       );
       if (result.exitCode !== 0) {
         return errorResult(

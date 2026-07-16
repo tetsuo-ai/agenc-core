@@ -129,6 +129,7 @@ export type ProviderRuntimeExtra = Partial<
   readonly emitWarning?: LLMProviderConfig["emitWarning"];
   readonly emitDiagnostic?: LLMProviderConfig["emitDiagnostic"];
   readonly onCapabilityDrift?: LLMProviderConfig["onCapabilityDrift"];
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 };
 
 const PROVIDER_RUNTIME_EXTRA_KEYS = [
@@ -174,6 +175,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "emitWarning",
   "emitDiagnostic",
   "onCapabilityDrift",
+  "sandboxExecutionBroker",
 ] as const satisfies readonly (keyof ProviderRuntimeExtra)[];
 
 export function isFactoryProvider(provider: LLMProvider): boolean {
@@ -1364,6 +1366,7 @@ export function createProvider(
         const sandboxExecutionBroker = readSandboxExecutionBrokerExtra(
           opts.extra,
         );
+        const storedExtra = readProviderRuntimeExtra(opts.extra);
         const acpProvider = new GrokAcpProvider({
           model: grokRequestedModel as string,
           ...(sandboxExecutionBroker !== undefined
@@ -1379,6 +1382,7 @@ export function createProvider(
           options: {
             model: grokRequestedModel as string,
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+            ...(storedExtra !== undefined ? { extra: storedExtra } : {}),
           },
         });
       }

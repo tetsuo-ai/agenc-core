@@ -1,9 +1,17 @@
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
-import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import {
   allowPermissionDecision,
@@ -114,7 +122,7 @@ describe('XaiAcpClient', () => {
   })
 
   test('agent auth errors surface as typed agent_error', async () => {
-    const client = makeClient({ env: { FAKE_ACP_FAIL_AUTH: '1' } })
+    const client = makeClient({ env: { FAKE_ACP_FAIL_LOGIN: '1' } })
     try {
       await client.initialize()
       await expect(client.authenticate('cached_token')).rejects.toMatchObject({
@@ -194,6 +202,95 @@ describe('XaiAcpClient', () => {
       }))
       await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('restricted ACP grants network, scrubs unrelated secrets, and honors the transformed spawn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-transform-'))
+    const transformedCwd = join(root, 'transformed-cwd')
+    const capturePath = join(root, 'spawn.json')
+    const wrapperPath = join(root, 'transformed-agent.mjs')
+    await mkdir(transformedCwd)
+    await writeFile(
+      wrapperPath,
+      [
+        'import { writeFileSync } from "node:fs"',
+        `writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({`,
+        '  cwd: process.cwd(),',
+        '  argv0: process.argv0,',
+        '  xaiApiKey: process.env.XAI_API_KEY ?? null,',
+        '  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,',
+        '  githubToken: process.env.GITHUB_TOKEN ?? null,',
+        '  publicSetting: process.env.ACP_PUBLIC_SETTING ?? null,',
+        '  transformed: process.env.ACP_TRANSFORMED ?? null,',
+        '  referrer: process.env.GROK_OAUTH2_REFERRER ?? null,',
+        '}))',
+        `await import(${JSON.stringify(pathToFileURL(FIXTURE).href)})`,
+      ].join('\n'),
+      'utf8',
+    )
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: root,
+      platform: 'linux',
+      probe: () => ({
+        kind: 'ready',
+        mode: 'workspace_write',
+        platform: 'linux',
+      }),
+    })
+    const prepareSpawn = vi.spyOn(broker, 'prepareSpawn').mockImplementation(
+      (_surface, command) => ({
+        program: process.execPath,
+        args: [wrapperPath],
+        cwd: transformedCwd,
+        env: { ...command.env, ACP_TRANSFORMED: 'present' },
+        argv0: 'agenc-acp-sandboxed',
+      }),
+    )
+    let client: XaiAcpClient | undefined
+
+    try {
+      client = new XaiAcpClient({
+        command: 'untrusted-original-command',
+        args: ['--must-not-run'],
+        cwd: join(root, 'original-cwd'),
+        env: {
+          XAI_API_KEY: 'xai-preserved',
+          ANTHROPIC_API_KEY: 'anthropic-must-be-scrubbed',
+          GITHUB_TOKEN: 'github-must-be-scrubbed',
+          ACP_PUBLIC_SETTING: 'public-preserved',
+        },
+        sandboxExecutionBroker: broker,
+      })
+      await client.initialize()
+
+      expect(prepareSpawn).toHaveBeenCalledOnce()
+      expect(prepareSpawn).toHaveBeenCalledWith('provider', {
+        program: 'untrusted-original-command',
+        args: ['--must-not-run'],
+        cwd: join(root, 'original-cwd'),
+        env: {
+          XAI_API_KEY: 'xai-preserved',
+          ACP_PUBLIC_SETTING: 'public-preserved',
+          GROK_OAUTH2_REFERRER: 'agenc',
+        },
+        additionalPermissions: { network: { enabled: true } },
+      })
+      expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
+        cwd: transformedCwd,
+        argv0: 'agenc-acp-sandboxed',
+        xaiApiKey: 'xai-preserved',
+        anthropicApiKey: null,
+        githubToken: null,
+        publicSetting: 'public-preserved',
+        transformed: 'present',
+        referrer: 'agenc',
+      })
+    } finally {
+      client?.dispose()
+      prepareSpawn.mockRestore()
       await rm(root, { recursive: true, force: true })
     }
   })

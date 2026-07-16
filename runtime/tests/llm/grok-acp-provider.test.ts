@@ -8,7 +8,10 @@ import {
   GrokAcpProvider,
   isGrokComposerModel,
 } from '../../src/llm/providers/grok/acp-adapter.ts'
-import { createProvider } from '../../src/llm/provider.ts'
+import {
+  createProvider,
+  readProviderFactoryOptions,
+} from '../../src/llm/provider.ts'
 import type { LLMMessage } from '../../src/llm/types.ts'
 import { explicitDangerBroker } from '../helpers/explicit-danger-boundary.ts'
 
@@ -38,6 +41,29 @@ describe('factory routing', () => {
     })
     expect(provider.name).toBe('grok')
     expect(provider).toBeInstanceOf(GrokAcpProvider)
+  })
+
+  test('composer factory options preserve the exact sandbox broker across recreation', () => {
+    const broker = explicitDangerBroker.forkForCwd(process.cwd())
+    const provider = createProvider('grok', {
+      model: 'grok-composer-2.5-fast',
+      extra: { sandboxExecutionBroker: broker },
+    })
+    let recreated: ReturnType<typeof createProvider> | undefined
+
+    try {
+      const factoryOptions = readProviderFactoryOptions(provider)
+      expect(factoryOptions.extra?.sandboxExecutionBroker).toBe(broker)
+
+      recreated = createProvider('grok', factoryOptions)
+      expect(recreated).toBeInstanceOf(GrokAcpProvider)
+      expect(
+        readProviderFactoryOptions(recreated).extra?.sandboxExecutionBroker,
+      ).toBe(broker)
+    } finally {
+      provider.dispose?.()
+      recreated?.dispose?.()
+    }
   })
 
   test('non-composer models keep the direct-inference path', () => {

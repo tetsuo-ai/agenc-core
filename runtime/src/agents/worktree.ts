@@ -42,6 +42,12 @@ import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
+import type { AdditionalPermissionProfile } from "../sandbox/engine/index.js";
+import {
+  hardenGitWorktreeMutationArgs,
+  worktreeMutationPermissions,
+} from "../sandbox/worktree-permissions.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Global git-mutation lock
@@ -70,18 +76,18 @@ function runGit(
   args: ReadonlyArray<string>,
   cwd: string,
   sandboxExecutionBroker: SandboxExecutionBrokerLike,
+  additionalPermissions?: AdditionalPermissionProfile,
 ): Promise<GitResult> {
   return new Promise<GitResult>((resolve) => {
     const command = sandboxExecutionBroker.prepareSpawn("child_agent", {
       program: "git",
       args,
       cwd,
-      env: Object.fromEntries(
-        Object.entries(process.env).filter(
-          (entry): entry is [string, string] => typeof entry[1] === "string",
-        ),
-      ),
+      env: scrubEnvForChildProcess(process.env),
       argv0: "git",
+      ...(additionalPermissions !== undefined
+        ? { additionalPermissions }
+        : {}),
     });
     const child = spawn(command.program, [...command.args], {
       cwd: command.cwd,
@@ -109,6 +115,21 @@ function runGit(
       });
     });
   });
+}
+
+function runGitMutation(
+  args: ReadonlyArray<string>,
+  cwd: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike,
+  repoRoot: string,
+  writablePaths: readonly string[] = [],
+): Promise<GitResult> {
+  return runGit(
+    hardenGitWorktreeMutationArgs(args),
+    cwd,
+    sandboxExecutionBroker,
+    worktreeMutationPermissions(repoRoot, writablePaths),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -286,18 +307,21 @@ export async function getOrCreateWorktree(
 
     // Fetch base if it doesn't exist locally.
     const base = opts.base ?? "HEAD";
-    const fetchResult = await runGit(
+    const fetchResult = await runGitMutation(
       ["fetch", "--depth=1", "origin", base],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
+      opts.gitRoot,
     );
     void fetchResult; // best-effort
 
     // `git worktree add -B <branch> <path> <base>`.
-    const addResult = await runGit(
+    const addResult = await runGitMutation(
       ["worktree", "add", "-B", branch, path, base],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
+      opts.gitRoot,
+      [workspaceRoot],
     );
     if (addResult.code !== 0) {
       throw new Error(
@@ -307,10 +331,12 @@ export async function getOrCreateWorktree(
 
     // Optional sparse-checkout.
     if (opts.enableSparseCheckout && opts.sparsePatterns?.length) {
-      const init = await runGit(
+      const init = await runGitMutation(
         ["-C", path, "sparse-checkout", "init", "--cone"],
         opts.gitRoot,
         opts.sandboxExecutionBroker,
+        opts.gitRoot,
+        [path],
       );
       if (init.code !== 0) {
         // I-35 teardown verify — failing to init still leaves the
@@ -320,10 +346,12 @@ export async function getOrCreateWorktree(
           `sparse-checkout init failed: ${init.stderr.trim()}`,
         );
       }
-      const set = await runGit(
+      const set = await runGitMutation(
         ["-C", path, "sparse-checkout", "set", ...opts.sparsePatterns],
         opts.gitRoot,
         opts.sandboxExecutionBroker,
+        opts.gitRoot,
+        [path],
       );
       if (set.code !== 0) {
         throw new Error(`sparse-checkout set failed: ${set.stderr.trim()}`);
@@ -421,10 +449,12 @@ export async function removeAgentWorktree(
       try {
         const contents = readFileSync(sparseFile, "utf8").trim();
         if (contents.length > 0) {
-          const disable = await runGit(
+          const disable = await runGitMutation(
             ["-C", opts.path, "sparse-checkout", "disable"],
             opts.gitRoot,
             opts.sandboxExecutionBroker,
+            opts.gitRoot,
+            [opts.path],
           );
           if (disable.code !== 0) {
             opts.onSparseCheckoutOrphaned?.(
@@ -441,10 +471,12 @@ export async function removeAgentWorktree(
 
     // Force-remove. Fail closed on git errors so callers never report a
     // removed worktree when git rejected the remove.
-    const remove = await runGit(
+    const remove = await runGitMutation(
       ["worktree", "remove", "--force", opts.path],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
+      opts.gitRoot,
+      [opts.path],
     );
     if (remove.code !== 0) {
       throw new Error(
@@ -454,17 +486,19 @@ export async function removeAgentWorktree(
 
     // Branch delete — best-effort (may fail if branch is the current
     // one in another worktree).
-    await runGit(
+    await runGitMutation(
       ["branch", "-D", opts.branch],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
+      opts.gitRoot,
     );
 
     // I-34: prune — cleans up stale `.git/worktrees/<slug>/` dirs.
-    const prune = await runGit(
+    const prune = await runGitMutation(
       ["worktree", "prune", "--force"],
       opts.gitRoot,
       opts.sandboxExecutionBroker,
+      opts.gitRoot,
     );
     if (prune.code !== 0) {
       opts.onPruneFailed?.(

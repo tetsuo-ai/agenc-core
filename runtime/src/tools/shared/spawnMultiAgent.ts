@@ -1084,12 +1084,23 @@ export async function spawnTeammate(
   let effectiveContext = context
   let effectiveConfig = config
   const parentSession = requireCurrentRuntimeSession('teammate spawn')
-  const inProcess = isInProcessEnabled()
+  let inProcess = isInProcessEnabled()
   const sandboxExecutionBroker = parentSession.services.sandboxExecutionBroker
   if (sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary(
       inProcess ? 'child_agent' : 'pane_agent',
     )
+  }
+  if (
+    sandboxExecutionBroker.required &&
+    !inProcess &&
+    getTeammateModeFromSnapshot() === 'auto'
+  ) {
+    // Restricted auto mode has a safe backend available. Select it before
+    // workspace/provenance validation rather than rejecting a pane backend
+    // that the operator never explicitly requested.
+    markInProcessFallback()
+    inProcess = true
   }
   const readiness = sandboxExecutionBroker.assertReady(
     inProcess ? 'child_agent' : 'pane_agent',

@@ -2,6 +2,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { clearDeliveredDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { getLspServerManager } from "../../../services/lsp/manager.js";
+import { peekAmbientRuntimeSession } from "../../../session/current-session.js";
 import { logError } from "../../../utils/log.js";
 
 export type BufferLspPosition = {
@@ -19,28 +20,34 @@ function bestEffort(run: () => Promise<void>): void {
   void run().catch(logError);
 }
 
+function currentLspManager() {
+  return getLspServerManager(
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker,
+  );
+}
+
 export function notifyBufferLspOpened(filePath: string, content: string): void {
   bestEffort(async () => {
-    await getLspServerManager()?.openFile(filePath, content);
+    await currentLspManager()?.openFile(filePath, content);
   });
 }
 
 export function notifyBufferLspChanged(filePath: string, content: string): void {
   clearDeliveredDiagnosticsForFile(filePath);
   bestEffort(async () => {
-    await getLspServerManager()?.changeFile(filePath, content);
+    await currentLspManager()?.changeFile(filePath, content);
   });
 }
 
 export function notifyBufferLspSaved(filePath: string): void {
   bestEffort(async () => {
-    await getLspServerManager()?.saveFile(filePath);
+    await currentLspManager()?.saveFile(filePath);
   });
 }
 
 export function notifyBufferLspClosed(filePath: string): void {
   bestEffort(async () => {
-    await getLspServerManager()?.closeFile(filePath);
+    await currentLspManager()?.closeFile(filePath);
   });
 }
 
@@ -48,7 +55,7 @@ export async function requestBufferHover(
   filePath: string,
   position: BufferLspPosition,
 ): Promise<string | null> {
-  const result = await getLspServerManager()?.sendRequest<{
+  const result = await currentLspManager()?.sendRequest<{
     readonly contents?: unknown;
   }>(filePath, "textDocument/hover", {
     textDocument: { uri: pathToFileURL(filePath).href },
@@ -61,7 +68,7 @@ export async function requestBufferDefinition(
   filePath: string,
   position: BufferLspPosition,
 ): Promise<BufferDefinitionTarget | null> {
-  const result = await getLspServerManager()?.sendRequest<unknown>(
+  const result = await currentLspManager()?.sendRequest<unknown>(
     filePath,
     "textDocument/definition",
     {

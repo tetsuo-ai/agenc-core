@@ -14,6 +14,7 @@ import {
 } from "./manager.js";
 import type { LSPServerInstance } from "./LSPServerInstance.js";
 import { notifyLspFileChanged } from "./fileNotifications.js";
+import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 
 describe("LSP singleton manager", () => {
   beforeEach(() => {
@@ -65,6 +66,78 @@ describe("LSP singleton manager", () => {
 
     await shutdownLspServerManager();
     expect(getInitializationStatus().status).toBe("not-started");
+  });
+
+  test("keeps simultaneous broker scopes isolated from manager substitution", async () => {
+    const restrictedBroker = {
+      mode: "workspace_write",
+      cwd: "/workspace/restricted",
+    } as SandboxExecutionBrokerLike;
+    const dangerBroker = {
+      mode: "danger_full_access",
+      cwd: "/workspace/danger",
+    } as SandboxExecutionBrokerLike;
+    const restrictedConfig = normalizeLspServerConfig("restricted", {
+      command: "restricted-language-server",
+      extensionToLanguage: { ".ts": "typescript" },
+    });
+    const dangerConfig = normalizeLspServerConfig("danger", {
+      command: "danger-language-server",
+      extensionToLanguage: { ".js": "javascript" },
+    });
+    const restrictedConfigSource = vi.fn(() => ({ restricted: restrictedConfig }));
+    const dangerConfigSource = vi.fn(() => ({ danger: dangerConfig }));
+    const makeServer = (
+      name: string,
+      config: typeof restrictedConfig,
+    ): LSPServerInstance =>
+      ({
+        name,
+        config,
+        state: "stopped",
+        start: async () => {},
+        stop: async () => {},
+        restart: async () => {},
+        isHealthy: () => true,
+        sendRequest: async () => ({}),
+        sendNotification: async () => {},
+        onNotification: () => {},
+        onRequest: () => {},
+      }) as unknown as LSPServerInstance;
+
+    try {
+      initializeLspServerManager({
+        sandboxExecutionBroker: restrictedBroker,
+        configSource: restrictedConfigSource,
+        instanceFactory: (name, config) => makeServer(name, config),
+      });
+      initializeLspServerManager({
+        sandboxExecutionBroker: dangerBroker,
+        configSource: dangerConfigSource,
+        instanceFactory: (name, config) => makeServer(name, config),
+      });
+
+      await Promise.all([
+        waitForInitialization(restrictedBroker),
+        waitForInitialization(dangerBroker),
+      ]);
+
+      const restrictedManager = getLspServerManager(restrictedBroker);
+      const dangerManager = getLspServerManager(dangerBroker);
+      expect(restrictedManager).toBeDefined();
+      expect(dangerManager).toBeDefined();
+      expect(restrictedManager).not.toBe(dangerManager);
+      expect([...restrictedManager!.getAllServers().keys()]).toEqual(["restricted"]);
+      expect([...dangerManager!.getAllServers().keys()]).toEqual(["danger"]);
+      expect(restrictedConfigSource).toHaveBeenCalledTimes(1);
+      expect(dangerConfigSource).toHaveBeenCalledTimes(1);
+      expect(getLspServerManager()).toBeUndefined();
+    } finally {
+      await Promise.all([
+        shutdownLspServerManager(restrictedBroker),
+        shutdownLspServerManager(dangerBroker),
+      ]);
+    }
   });
 
   test("reinitialize waits for old servers to stop before succeeding", async () => {
