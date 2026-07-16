@@ -313,6 +313,13 @@ describe("docker runner hermetic guards", () => {
     );
   });
 
+  test("refuses a bare local image ID unless explicitly allowed", async () => {
+    const runner = new DockerContainerRunner();
+    await expect(runner.createTaskContainer(`sha256:${"a".repeat(64)}`)).rejects.toThrow(
+      /pinned by @sha256 digest/u,
+    );
+  });
+
   test("refuses container paths that escape simple quoting", async () => {
     const runner = new DockerContainerRunner();
     const handle: ContainerHandle = { id: "x", imageDigest: "sha256:0", workdir: "/testbed" };
