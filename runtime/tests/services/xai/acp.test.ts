@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
+import type { ChildProcess } from 'node:child_process'
 import {
   access,
   mkdir,
@@ -11,6 +12,32 @@ import {
 import { tmpdir } from 'node:os'
 
 import { describe, expect, test, vi } from 'vitest'
+
+const { terminationSeam } = vi.hoisted(() => ({
+  terminationSeam: {
+    failuresRemaining: 0,
+    calls: [] as ChildProcess[],
+  },
+}))
+
+vi.mock('../../../src/utils/supervisedProcess.js', async importOriginal => {
+  const actual = await importOriginal<
+    typeof import('../../../src/utils/supervisedProcess.js')
+  >()
+  return {
+    ...actual,
+    terminateProcessTreeAndWait: async (
+      ...args: Parameters<typeof actual.terminateProcessTreeAndWait>
+    ): Promise<void> => {
+      terminationSeam.calls.push(args[0])
+      if (terminationSeam.failuresRemaining > 0) {
+        terminationSeam.failuresRemaining -= 1
+        throw new Error('injected ACP cleanup failure')
+      }
+      await actual.terminateProcessTreeAndWait(...args)
+    },
+  }
+})
 
 import {
   allowPermissionDecision,
@@ -187,6 +214,27 @@ describe('XaiAcpClient', () => {
     } finally {
       await client.dispose()
     }
+  })
+
+  test('failed concurrent disposal retries the identical ACP child', async () => {
+    const client = makeClient()
+    terminationSeam.calls = []
+    terminationSeam.failuresRemaining = 1
+
+    const first = client.dispose()
+    const concurrent = client.dispose()
+    expect(concurrent).toBe(first)
+    const outcomes = await Promise.allSettled([first, concurrent])
+    expect(outcomes.map(outcome => outcome.status)).toEqual([
+      'rejected',
+      'rejected',
+    ])
+    expect(terminationSeam.calls).toHaveLength(1)
+
+    const retainedChild = terminationSeam.calls[0]
+    await client.dispose()
+    expect(terminationSeam.calls).toHaveLength(2)
+    expect(terminationSeam.calls[1]).toBe(retainedChild)
   })
 
   test('required sandbox failure prevents the ACP executable from starting', async () => {

@@ -382,7 +382,7 @@ export class XaiAcpClient {
       // The output stream may already have closed after an early spawn error.
     }
     this.child.stdin.destroy()
-    this.closePromise = terminateProcessTreeAndWait(this.child, {
+    const closing = terminateProcessTreeAndWait(this.child, {
       terminateGraceMs: positiveLifecycleBound(
         this.options.terminateGraceMs,
         DEFAULT_TERMINATE_GRACE_MS,
@@ -401,11 +401,23 @@ export class XaiAcpClient {
               error instanceof Error ? error.message : String(error),
             )
       })
-      .finally(() => {
+    let tracked: Promise<void>
+    tracked = closing.then(
+      () => {
         this.child.stdout.destroy()
         this.child.stderr.destroy()
-      })
-    return this.closePromise
+      },
+      error => {
+        this.child.stdout.destroy()
+        this.child.stderr.destroy()
+        // Retain the exact ChildProcess, but clear the rejected in-flight
+        // operation so a later dispose can retry terminating that owner.
+        if (this.closePromise === tracked) this.closePromise = null
+        throw error
+      },
+    )
+    this.closePromise = tracked
+    return tracked
   }
 
   private request(

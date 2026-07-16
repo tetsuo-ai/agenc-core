@@ -214,8 +214,15 @@ export class GrokAcpProvider implements LLMProvider {
     this.suspended = true;
     this.unregisterLifecycle?.();
     this.unregisterLifecycle = null;
-    this.disposal = this.closeClient();
-    return this.disposal;
+    const closing = this.closeClient();
+    let tracked: Promise<void>;
+    tracked = closing.catch((error) => {
+      // A failed cleanup retains its exact client and must remain retryable.
+      if (this.disposal === tracked) this.disposal = null;
+      throw error;
+    });
+    this.disposal = tracked;
+    return tracked;
   }
 
   private env(): NodeJS.ProcessEnv {
@@ -292,11 +299,7 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   private async startClient(): Promise<XaiAcpClient> {
-    const staleClient = this.client;
-    if (staleClient !== null) {
-      this.client = null;
-      await this.trackClientClose(staleClient);
-    }
+    if (this.client !== null) await this.closeClient();
     if (this.disposed || this.suspended) {
       throw new LLMProviderError(
         this.name,
@@ -325,12 +328,11 @@ export class GrokAcpProvider implements LLMProvider {
         : {}),
     });
     this.client = client;
+    let startupError: unknown;
     try {
       await client.initialize();
       await client.authenticate(resolveAuthMethodId(env));
       if (this.disposed || this.suspended || this.client !== client) {
-        await client.dispose();
-        if (this.client === client) this.client = null;
         throw new LLMProviderError(
           this.name,
           this.disposed
@@ -340,56 +342,53 @@ export class GrokAcpProvider implements LLMProvider {
       }
       return client;
     } catch (error) {
+      startupError = error;
+    }
+    try {
       await client.dispose();
       if (this.client === client) this.client = null;
-      throw error;
+    } catch (cleanupError) {
+      // Do not drop the process owner when startup cleanup fails.
+      if (this.client === null) this.client = client;
+      throw new AggregateError(
+        [startupError, cleanupError],
+        "ACP client startup failed and cleanup failed",
+      );
     }
+    throw startupError;
   }
 
-  private async closeClient(): Promise<void> {
+  private closeClient(): Promise<void> {
     this.ready = null;
-    // A close can overlap a previous close and a startup that has already
-    // constructed its replacement client. Drain every client observed during
-    // the close rather than returning an unrelated in-flight disposal.
-    for (;;) {
-      const client = this.client;
-      this.client = null;
-      await this.trackClientClose(client);
-      if (this.client === null) return;
-    }
-  }
-
-  private trackClientClose(client: XaiAcpClient | null): Promise<void> {
-    const previous = this.clientClose;
-    const closing = (async () => {
-      let previousError: unknown;
-      if (previous !== null) {
-        try {
-          await previous;
-        } catch (error) {
-          previousError = error;
-        }
-      }
-      let clientError: unknown;
-      try {
-        await client?.dispose();
-      } catch (error) {
-        clientError = error;
-      }
-      if (previousError !== undefined && clientError !== undefined) {
-        throw new AggregateError(
-          [previousError, clientError],
-          "multiple ACP clients failed to close",
-        );
-      }
-      if (clientError !== undefined) throw clientError;
-      if (previousError !== undefined) throw previousError;
-    })();
-    const tracked = closing.finally(() => {
-      if (this.clientClose === tracked) this.clientClose = null;
-    });
+    if (this.clientClose !== null) return this.clientClose;
+    let tracked: Promise<void>;
+    tracked = this.drainClients().then(
+      () => {
+        if (this.clientClose === tracked) this.clientClose = null;
+      },
+      (error) => {
+        if (this.clientClose === tracked) this.clientClose = null;
+        throw error;
+      },
+    );
     this.clientClose = tracked;
     return tracked;
+  }
+
+  private async drainClients(): Promise<void> {
+    for (;;) {
+      const client = this.client;
+      if (client === null) return;
+      try {
+        await client.dispose();
+      } catch (error) {
+        // The exact owner stays published until its process tree is confirmed
+        // stopped; callers can retry after this single-flight rejects.
+        if (this.client === null) this.client = client;
+        throw error;
+      }
+      if (this.client === client) this.client = null;
+    }
   }
 
   private resolveBinary(): string | undefined {

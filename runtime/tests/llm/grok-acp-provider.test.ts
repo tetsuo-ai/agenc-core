@@ -1,9 +1,36 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import type { ChildProcess } from 'node:child_process'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
 import { describe, expect, test, vi } from 'vitest'
+
+const { terminationSeam } = vi.hoisted(() => ({
+  terminationSeam: {
+    failuresRemaining: 0,
+    calls: [] as ChildProcess[],
+  },
+}))
+
+vi.mock('../../src/utils/supervisedProcess.js', async importOriginal => {
+  const actual = await importOriginal<
+    typeof import('../../src/utils/supervisedProcess.js')
+  >()
+  return {
+    ...actual,
+    terminateProcessTreeAndWait: async (
+      ...args: Parameters<typeof actual.terminateProcessTreeAndWait>
+    ): Promise<void> => {
+      terminationSeam.calls.push(args[0])
+      if (terminationSeam.failuresRemaining > 0) {
+        terminationSeam.failuresRemaining -= 1
+        throw new Error('injected provider cleanup failure')
+      }
+      await actual.terminateProcessTreeAndWait(...args)
+    },
+  }
+})
 
 import {
   flattenMessagesForAcp,
@@ -249,6 +276,45 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       expect(prepareSpawn).toHaveBeenCalledTimes(2)
       expect(prepareSpawn.mock.calls[1]?.[1].cwd).toBe(rebasedCwd)
     } finally {
+      await provider.dispose()
+      prepareSpawn.mockRestore()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('failed transition retries the retained client before any replacement spawn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-provider-retry-'))
+    const initialCwd = join(root, 'initial')
+    const rebasedCwd = join(root, 'rebased')
+    await Promise.all([mkdir(initialCwd), mkdir(rebasedCwd)])
+    const broker = explicitDangerBroker.forkForCwd(initialCwd)
+    const prepareSpawn = vi.spyOn(broker, 'prepareSpawn')
+    const provider = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      sandboxExecutionBroker: broker,
+    })
+
+    try {
+      await provider.chat([{ role: 'user', content: 'before failure' }])
+      terminationSeam.calls = []
+      terminationSeam.failuresRemaining = 1
+
+      await expect(
+        transitionSandboxExecutionBroker(broker, rebasedCwd),
+      ).rejects.toThrow('quiesce failed; old authority restored')
+      expect(broker.cwd).toBe(initialCwd)
+      expect(prepareSpawn).toHaveBeenCalledTimes(1)
+      expect(terminationSeam.calls).toHaveLength(1)
+      const retainedChild = terminationSeam.calls[0]
+
+      await provider.chat([{ role: 'user', content: 'retry cleanup' }])
+      expect(terminationSeam.calls).toHaveLength(2)
+      expect(terminationSeam.calls[1]).toBe(retainedChild)
+      expect(prepareSpawn).toHaveBeenCalledTimes(2)
+      expect(prepareSpawn.mock.calls[1]?.[1].cwd).toBe(initialCwd)
+    } finally {
+      terminationSeam.failuresRemaining = 0
       await provider.dispose()
       prepareSpawn.mockRestore()
       await rm(root, { recursive: true, force: true })
