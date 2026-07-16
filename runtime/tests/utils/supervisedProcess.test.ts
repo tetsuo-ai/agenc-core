@@ -1,8 +1,12 @@
+import { spawn } from "node:child_process";
 import { accessSync, constants, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { runSupervisedProcess } from "../../src/utils/supervisedProcess.js";
+import {
+  runSupervisedProcess,
+  terminateProcessTreeAndWait,
+} from "../../src/utils/supervisedProcess.js";
 
 function nodeCommand(source: string) {
   return {
@@ -130,6 +134,36 @@ describe("runSupervisedProcess", () => {
           }
         }
       }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "proves a session-long TERM-resistant process tree is gone",
+    async () => {
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          "process.on('SIGTERM', () => {});" +
+            "require('node:child_process').spawn(process.execPath," +
+            "['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"]," +
+            "{ stdio: 'ignore' });" +
+            "setInterval(() => {}, 1000)",
+        ],
+        { detached: true, stdio: "ignore" },
+      );
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+
+      await terminateProcessTreeAndWait(child, {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "test process",
+      });
+
+      expect(processIsRunning(child.pid!)).toBe(false);
     },
   );
 });

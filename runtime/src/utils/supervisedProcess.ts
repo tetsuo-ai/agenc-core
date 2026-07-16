@@ -1,5 +1,6 @@
 import {
   spawn,
+  type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -54,6 +55,18 @@ export interface SupervisedProcessResult {
 
 const DEFAULT_TERMINATE_GRACE_MS = 500;
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000;
+const PROCESS_TREE_POLL_INTERVAL_MS = 20;
+
+type ProcessTreeChild = Pick<
+  ChildProcess,
+  "pid" | "kill" | "exitCode" | "signalCode"
+>;
+
+export interface TerminateProcessTreeOptions {
+  readonly terminateGraceMs?: number;
+  readonly killGraceMs?: number;
+  readonly label?: string;
+}
 
 /** Run a finite native helper with bounded output and process-tree cleanup. */
 export function runSupervisedProcess(
@@ -228,10 +241,7 @@ function validateLimits(options: SupervisedProcessOptions): void {
 }
 
 export function isProcessTreeAlive(
-  child: Pick<
-    ChildProcessWithoutNullStreams,
-    "pid" | "exitCode" | "signalCode"
-  >,
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
 ): boolean {
   if (child.pid === undefined || process.platform === "win32") {
     return child.exitCode === null && child.signalCode === null;
@@ -246,6 +256,58 @@ export function isProcessTreeAlive(
   } catch {
     return false;
   }
+}
+
+/**
+ * Stop a session-long process boundary and prove that its whole tree is gone.
+ * Unlike waiting for the leader's `exit` event, this keeps checking the POSIX
+ * process group so detached descendants cannot survive a workspace rebase.
+ */
+export async function terminateProcessTreeAndWait(
+  child: ProcessTreeChild,
+  options: TerminateProcessTreeOptions = {},
+): Promise<void> {
+  if (!isProcessTreeAlive(child)) return;
+  signalProcessTree(child, "SIGTERM");
+  if (
+    await waitForProcessTreeExit(
+      child,
+      options.terminateGraceMs ?? DEFAULT_TERMINATE_GRACE_MS,
+    )
+  ) {
+    return;
+  }
+  signalProcessTree(child, "SIGKILL");
+  if (
+    await waitForProcessTreeExit(
+      child,
+      options.killGraceMs ?? DEFAULT_SETTLE_BACKSTOP_MS,
+    )
+  ) {
+    return;
+  }
+  throw new Error(
+    `${options.label ?? "process"} tree survived forced shutdown` +
+      (child.pid === undefined ? "" : ` (pid ${child.pid})`),
+  );
+}
+
+export async function waitForProcessTreeExit(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new Error("process tree wait timeoutMs must be finite and non-negative");
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessTreeAlive(child)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, Math.min(PROCESS_TREE_POLL_INTERVAL_MS, remaining));
+    });
+  }
+  return true;
 }
 
 /** `kill(-pgid, 0)` counts zombies; they cannot execute and need no signal. */
@@ -273,7 +335,7 @@ function linuxProcessGroupHasLiveMember(pgid: number): boolean | undefined {
 }
 
 export function signalProcessTree(
-  child: Pick<ChildProcessWithoutNullStreams, "pid" | "kill">,
+  child: Pick<ChildProcess, "pid" | "kill">,
   signal: "SIGTERM" | "SIGKILL",
 ): void {
   if (child.pid === undefined) {
