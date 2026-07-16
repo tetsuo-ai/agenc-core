@@ -126,6 +126,8 @@ export const HERMETIC_RUNTIME_AUTH_ENV_VARS = Object.freeze([
   // MCP OAuth / XAA
   'MCP_CLIENT_SECRET',
   'MCP_XAA_IDP_CLIENT_SECRET',
+  // local daemon transport authentication
+  'AGENC_DAEMON_COOKIE',
   // mTLS and cloud-client identity
   'AGENC_CLIENT_CERT',
   'AGENC_CLIENT_KEY',
