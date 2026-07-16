@@ -1084,6 +1084,7 @@ export function validateEvaluationPilotEvidenceDocuments(
   const issues: string[] = [];
   const licenseEvidence = validateLicenseEvidence(evidence.licenseEvidence, document, issues);
   const taskEvidence = new Map<string, EvaluationPilotTaskEvidence>();
+  const claimedQualificationDigestRoles = new Map<string, string>();
 
   requireCondition(
     evidence.taskEvidence.size === document.tasks.length &&
@@ -1099,7 +1100,6 @@ export function validateEvaluationPilotEvidenceDocuments(
       curated.qa.supportingArtifacts.map((artifact) => artifact.digest),
     );
     const referencedDigests = new Set<string>();
-    const claimedDigestRoles = new Map<string, string>();
     const sourceRow = validateSourceRow(joined.sourceRow, document, curated, task, issues);
     const upstreamTriplePreflight = validatePreflight(
       joined.upstreamTriplePreflight,
@@ -1107,7 +1107,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
-      claimedDigestRoles,
+      claimedQualificationDigestRoles,
       issues,
     );
     const independentSolveReview = validateIndependentSolve(
@@ -1116,7 +1116,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
-      claimedDigestRoles,
+      claimedQualificationDigestRoles,
       issues,
     );
     const negativePatchReview = validateNegativePatches(
@@ -1125,7 +1125,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
-      claimedDigestRoles,
+      claimedQualificationDigestRoles,
       issues,
     );
     const stressorEvidence = validateStressorEvidence(
@@ -1134,7 +1134,7 @@ export function validateEvaluationPilotEvidenceDocuments(
       task,
       supportingDigests,
       referencedDigests,
-      claimedDigestRoles,
+      claimedQualificationDigestRoles,
       issues,
     );
     requireCondition(

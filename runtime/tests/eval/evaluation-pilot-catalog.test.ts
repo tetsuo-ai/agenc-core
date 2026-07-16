@@ -966,6 +966,46 @@ describe("evaluation development pilot curation protocol", () => {
       aliasedNegativeEvidence,
     )).toThrow(/incompatible qualification role negative_patch/u);
 
+    const sourceTask = fixture.document.tasks[0];
+    const targetTask = fixture.document.tasks[1];
+    const sourceJoined = fixture.evidence.taskEvidence.get(sourceTask.taskId);
+    const targetJoined = fixture.evidence.taskEvidence.get(targetTask.taskId);
+    if (!sourceJoined || !targetJoined) throw new Error("missing cross-task evidence fixture");
+    const sourceIndependent = sourceJoined.independentSolveReview as unknown as Record<string, unknown>;
+    const targetIndependent = targetJoined.independentSolveReview as unknown as Record<string, unknown>;
+    const sourcePatchDigest = sourceIndependent.solutionPatchDigest as string;
+    const targetReviewDigest = targetIndependent.reviewEvidenceDigest as string;
+    const sourcePatchArtifact = sourceTask.qa.supportingArtifacts.find(
+      (artifact) => artifact.digest === sourcePatchDigest,
+    );
+    if (!sourcePatchArtifact) throw new Error("missing cross-task source patch artifact");
+    const crossTaskDraft = jsonClone(fixture.document) as unknown as Record<string, unknown>;
+    const crossTaskTarget = (crossTaskDraft.tasks as Array<Record<string, unknown>>).find(
+      (task) => task.taskId === targetTask.taskId,
+    );
+    if (!crossTaskTarget) throw new Error("missing cross-task target curation");
+    const crossTaskQa = crossTaskTarget.qa as Record<string, unknown>;
+    crossTaskQa.supportingArtifacts = (crossTaskQa.supportingArtifacts as ContentArtifact[]).map(
+      (artifact) => artifact.digest === targetReviewDigest ? sourcePatchArtifact : artifact,
+    );
+    const crossTaskDocument = finalizePilotDocument(
+      crossTaskDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
+    );
+    const crossTaskEvidence = mutateEvidence(
+      fixture,
+      targetTask.taskId,
+      "independentSolveReview",
+      (draft) => {
+        draft.reviewEvidenceDigest = sourcePatchDigest;
+      },
+    );
+    expect(() => validateEvaluationPilotEvidenceDocuments(
+      crossTaskDocument,
+      fixture.suite,
+      crossTaskEvidence,
+    )).toThrow(/incompatible qualification role independent_solution_patch/u);
+
     const excessNegatives = mutateEvidence(fixture, taskId, "negativePatchReview", (draft) => {
       const patches = draft.negativePatches as Array<Record<string, unknown>>;
       draft.negativePatches = Array.from({ length: 9 }, (_, index) => ({
