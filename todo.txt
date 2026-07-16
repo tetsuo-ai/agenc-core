@@ -312,7 +312,7 @@ boundary. They are higher leverage than new surface area.
     - Reject cross-workspace role resolution even when role names collide.
     - Add a two-workspace regression test that fails against the old call site.
 
-[ ] Keep repository-controlled content non-authoritative.
+[x] Keep repository-controlled content non-authoritative.
     - Files, issue text, tool output, and project instructions may guide coding
       but cannot grant capabilities, approve mutations, weaken sandboxing, or
       change budgets/policy.
