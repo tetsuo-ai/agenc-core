@@ -892,9 +892,10 @@ export async function createToolBridge(
     `MCP server "${serverName}" exposes ${providerSafeMcpTools.length} tools`,
   );
 
-  // Track disposal to prevent use-after-close. Cache the close operation so
-  // concurrent lifecycle owners observe the same terminal result instead of
-  // racing duplicate client.close() calls.
+  // Track disposal to prevent use-after-close. Cache an in-flight or
+  // successful close so concurrent lifecycle owners cannot race. A rejected
+  // close is cleared after settlement: the bridge remains unusable, but its
+  // exact client owner stays available for a later verified-cleanup retry.
   let disposed = false;
   let disposal: Promise<void> | undefined;
 
@@ -1030,7 +1031,7 @@ export async function createToolBridge(
     dispose(): Promise<void> {
       if (disposal !== undefined) return disposal;
       disposed = true;
-      disposal = Promise.resolve()
+      const task = Promise.resolve()
         .then(() => client.close())
         .then(
           () => {
@@ -1044,7 +1045,11 @@ export async function createToolBridge(
             throw error;
           },
         );
-      return disposal;
+      disposal = task;
+      void task.then(undefined, () => {
+        if (disposal === task) disposal = undefined;
+      });
+      return task;
     },
   };
 }

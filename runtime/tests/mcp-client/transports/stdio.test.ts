@@ -1,8 +1,35 @@
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ChildProcess } from "node:child_process";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { terminationSeam } = vi.hoisted(() => ({
+  terminationSeam: {
+    failuresRemaining: 0,
+    calls: [] as ChildProcess[],
+  },
+}));
+
+vi.mock("../../../src/utils/supervisedProcess.js", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../../src/utils/supervisedProcess.js")
+  >();
+  return {
+    ...actual,
+    terminateProcessTreeAndWait: async (
+      ...args: Parameters<typeof actual.terminateProcessTreeAndWait>
+    ): Promise<void> => {
+      terminationSeam.calls.push(args[0]);
+      if (terminationSeam.failuresRemaining > 0) {
+        terminationSeam.failuresRemaining -= 1;
+        throw new Error("injected MCP stdio cleanup failure");
+      }
+      await actual.terminateProcessTreeAndWait(...args);
+    },
+  };
+});
 
 import type { Logger } from "../../_deps/logger.js";
 import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
@@ -21,6 +48,8 @@ const explicitDangerBroker = new SandboxExecutionBroker({
 });
 
 afterEach(async () => {
+  terminationSeam.failuresRemaining = 0;
+  terminationSeam.calls = [];
   await Promise.all(
     Array.from(tempDirs).map(async (dir) => {
       await rm(dir, { recursive: true, force: true });
@@ -228,6 +257,71 @@ describe("AgenCStdioClientTransport", () => {
 
     await transport.close();
   });
+
+  it.skipIf(process.platform === "win32")(
+    "retains the exact child and retries process-tree termination after failure",
+    async () => {
+      const transport = new AgenCStdioClientTransport(
+        {
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+          env: createStdioMCPEnvironment(undefined, undefined),
+        },
+        undefined,
+        explicitDangerBroker,
+      );
+      const internal = transport as unknown as {
+        child: ChildProcess | undefined;
+      };
+      let closeNotifications = 0;
+      transport.onclose = () => {
+        closeNotifications += 1;
+      };
+      await transport.start();
+      const owner = internal.child;
+      const pid = owner?.pid;
+      if (owner === undefined || pid === undefined) {
+        throw new Error("expected spawned MCP stdio child");
+      }
+      terminationSeam.failuresRemaining = 1;
+
+      try {
+        const firstClose = transport.close();
+        const concurrentClose = transport.close();
+        const firstResults = await Promise.allSettled([
+          firstClose,
+          concurrentClose,
+        ]);
+        expect(firstResults).toEqual([
+          expect.objectContaining({
+            status: "rejected",
+            reason: expect.objectContaining({
+              message: "injected MCP stdio cleanup failure",
+            }),
+          }),
+          expect.objectContaining({
+            status: "rejected",
+            reason: expect.objectContaining({
+              message: "injected MCP stdio cleanup failure",
+            }),
+          }),
+        ]);
+        expect(internal.child).toBe(owner);
+        expect(terminationSeam.calls).toEqual([owner]);
+        expect(closeNotifications).toBe(0);
+        expect(isPidAlive(pid)).toBe(true);
+
+        await expect(transport.close()).resolves.toBeUndefined();
+        expect(terminationSeam.calls).toEqual([owner, owner]);
+        expect(internal.child).toBeUndefined();
+        expect(closeNotifications).toBe(1);
+        await waitFor(() => !isPidAlive(pid), `retried MCP process ${pid} exit`);
+      } finally {
+        terminationSeam.failuresRemaining = 0;
+        await transport.close().catch(() => {});
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "does not settle a connection timeout until the stdio process is reaped",

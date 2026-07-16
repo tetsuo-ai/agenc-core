@@ -201,7 +201,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
     }
     const inner = this.inner;
     const reconnectTask = this.reconnectTask;
-    this.disposal = Promise.allSettled([
+    const task = Promise.allSettled([
       this.disposeInnerBridge(inner),
       ...(reconnectTask !== undefined ? [reconnectTask] : []),
     ]).then((results) => {
@@ -219,7 +219,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
         );
       }
     });
-    return this.disposal;
+    this.disposal = task;
+    void task.then(undefined, () => {
+      if (this.disposal === task) this.disposal = undefined;
+    });
+    return task;
   }
 
   // --------------------------------------------------------------------------
@@ -430,6 +434,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
     }
     const promise = invokeBridgeDisposal(bridge);
     this.innerDisposal = { bridge, promise };
+    void promise.then(undefined, () => {
+      if (this.innerDisposal?.promise === promise) {
+        this.innerDisposal = undefined;
+      }
+    });
     return promise;
   }
 }

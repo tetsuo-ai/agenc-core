@@ -414,25 +414,35 @@ export class AgenCStdioClientTransport implements Transport {
 
   private async performChildTermination(child: ChildProcess): Promise<void> {
     try {
-      try {
-        child.stdin?.end();
-      } catch {
-        // The leader may already have closed its stdio handles.
-      }
+      child.stdin?.end();
+    } catch {
+      // The leader may already have closed its stdio handles.
+    }
+    try {
       await terminateProcessTreeAndWait(child, {
         terminateGraceMs: PROCESS_GROUP_TERM_GRACE_MS,
         killGraceMs: PROCESS_GROUP_TERM_GRACE_MS,
         label: "MCP stdio process",
       });
-    } finally {
-      if (this.child === child) this.child = undefined;
-      child.stdin?.destroy();
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      this.flushStderr();
-      this.resetStdoutFrame();
-      this.notifyClosed();
+    } catch (error) {
+      // Keep the exact ChildProcess (and therefore its POSIX group identity)
+      // reachable. Do not notify the SDK that the transport closed: it must
+      // retain this transport so a later client.close() can retry teardown.
+      this.releaseChildStreams(child);
+      throw error;
     }
+
+    if (this.child === child) this.child = undefined;
+    this.releaseChildStreams(child);
+    this.notifyClosed();
+  }
+
+  private releaseChildStreams(child: ChildProcess): void {
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    this.flushStderr();
+    this.resetStdoutFrame();
   }
 
   private resetStdoutFrame(): void {

@@ -106,8 +106,12 @@ describe("connectMCPClientWithCleanup", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("keeps close reusable after a successful connection", async () => {
-    const close = vi.fn(async () => {});
+  it("keeps close retryable after a successful connection", async () => {
+    const closeError = new Error("first close did not prove shutdown");
+    const close = vi
+      .fn()
+      .mockRejectedValueOnce(closeError)
+      .mockResolvedValue(undefined);
     const client = {
       connect: vi.fn(async () => {}),
       close,
@@ -118,8 +122,8 @@ describe("connectMCPClientWithCleanup", () => {
       timeoutMs: 10_000,
     });
 
-    await client.close();
-    await client.close();
+    await expect(client.close()).rejects.toBe(closeError);
+    await expect(client.close()).resolves.toBeUndefined();
     expect(close).toHaveBeenCalledTimes(2);
   });
 
