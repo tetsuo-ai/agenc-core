@@ -7,6 +7,7 @@ const scriptPath = resolve(runtimeRootPath, "scripts", "refresh-eval-pilot-sourc
 
 type RefreshModule = {
   readonly DATASET_REVISION: string;
+  assertFrozenSourceRowDigest(instanceId: string, digest: string): void;
   fetchJson(url: string, options?: Record<string, unknown>): Promise<unknown>;
   loadFrozenSplits(options?: Record<string, unknown>): Promise<Map<string, Map<string, unknown>>>;
   loadSplit(split: string, options?: Record<string, unknown>): Promise<Map<string, unknown>>;
@@ -73,6 +74,14 @@ describe("evaluation pilot source refresh trust boundary", () => {
     );
     expect(urls).toHaveLength(3);
     expect(urls[1]).toContain("datasets-server.huggingface.co/rows?");
+  });
+
+  test("rejects stale viewer row bytes even while the canonical head is frozen", async () => {
+    const refresh = await loadRefreshModule();
+    expect(() => refresh.assertFrozenSourceRowDigest(
+      "DynamoRIO__dynamorio-7561",
+      `sha256:${"0".repeat(64)}`,
+    )).toThrow(/row bytes do not match the frozen revision/i);
   });
 
   test("bounds streamed JSON bodies even without Content-Length", async () => {

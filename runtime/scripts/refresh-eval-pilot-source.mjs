@@ -59,6 +59,42 @@ const selection = [
   task("cs", "spectreconsole__spectre.console-2082", ["multi_file_fix", "missing_tests", "compatibility_refactor"], ["collaboration_beneficial"]),
 ];
 
+// The Dataset Viewer response has no revision field. These byte commitments,
+// frozen from DATASET_REVISION, prevent a stale viewer cache from being
+// misattributed even while the canonical repository head still matches.
+const EXPECTED_SOURCE_ROW_DIGESTS = Object.freeze({
+  "DynamoRIO__dynamorio-7561": "sha256:870fd5b9d9afa8560e1e0c963ac1468aedcb910b481b32303fd1930d3c7865af",
+  "redis__redis-14243": "sha256:949717ec9929e2e91dcf901179e2ad7aba504091ce1768e7906e2d35a4a035fd",
+  "valkey-io__valkey-2277": "sha256:8a536b2dfd6cff8b7d0ee8a358bb5006b9b45e1c5e3722c22af0ac60ba4e9990",
+  "fluent__fluent-bit-11677": "sha256:c667185128ab804c789ede0eec4652f793385086875d18bd32dfc5ece41b4e33",
+  "shader-slang__slang-10738": "sha256:c196a3393a285efe990b129970e43c840154f135ad7515612478f6be7e8b655a",
+  "WasmEdge__WasmEdge-4764": "sha256:76791f547752e20119190643a37980a611f0e7ad578f078ad2d39c2041f7d863",
+  "NVIDIA__stdexec-2002": "sha256:fb9b60014398781799ef3de477989da0c798e38192f3656ce52640fffc295191",
+  "harfbuzz__harfbuzz-5947": "sha256:06f94f00115f8866af70ae056775c9665fa72d50dca0c8608949f3fd04ac5d3d",
+  "open-telemetry__opentelemetry-ebpf-profiler-734": "sha256:7f4b82672aaf25196532d7d807734eb41d53707ed9825a7fa4cd841e34c6cc4a",
+  "influxdata__telegraf-18686": "sha256:6eff06990b15df6df36566f5c78aca082c7717eb3e7c6f978bd0eb611d6d4d8d",
+  "libp2p__go-libp2p-3306": "sha256:f929eb1a9997454f6b544d72e1698b7202c74909876034ef4fca042fcbb5e4ab",
+  "ollama__ollama-11509": "sha256:621f036a4597a0970034b476166be70c44358306966738bf41581a7db9f80dbd",
+  "sveltejs__svelte-16666": "sha256:f176653c12ec6c19e0d3c8d57b4cde32d345ccf16378b107231458b76b4cf5e7",
+  "grommet__grommet-7718": "sha256:e34e771c90d544b2ca74b868cdb61fa8b5dc2e156c521f0d239e6fe44b2d28ca",
+  "gsd-build__get-shit-done-2186": "sha256:fe9f40b5b110f96fdba78d538b7640464927fa063c6ae9ca95f93f43262225f4",
+  "cthackers__adm-zip-559": "sha256:7ed1412b6175618bd3e7dbcd4808912454abdc0294792dbd53106a4a0b3705e8",
+  "gleam-lang__gleam-5493": "sha256:92f7ce3e8e9fc49a743fb2252bac0cbbb6b0a4c06b99b46358c54f85b7f13ca6",
+  "apache__datafusion-21121": "sha256:323ee81f9dd2701a85afc64fa8a6f788859d470b16f844d3bb0f62a1e737bddc",
+  "DioxusLabs__dioxus-5384": "sha256:672211711172f55989d707190693589e53de1ed21b6c0c4a08777ef391f24ef1",
+  "gfx-rs__wgpu-9298": "sha256:20d34521f333eb58b2744e2b1e1849590d529bac6d1f00d45b829a254a998a79",
+  "mc1arke__sonarqube-community-branch-plugin-1221": "sha256:0cb32c5e54671505b6e0ca4454b83cfd99e1e12bcc3ffdfbfdbe1b6b2be33931",
+  "apple__pkl-1187": "sha256:276779fe838fdf704cc5092b140f304d4cafb26c9d4053fd24b2591ed823efb7",
+  "apache__pinot-16421": "sha256:ce82f70f7c78a15d1b6b40d59669df847e87e86dd4308ed293a1a383dc0e0d4c",
+  "magefree__mage-14628": "sha256:19caef8bb020460287d2604942675a3877afe40e5621093a13633e40b27db1e6",
+  "honojs__hono-4269": "sha256:382cbb786226847b5316f8064b72ede5e885c4982d2fc99c6300782c1638a90b",
+  "withastro__starlight-3293": "sha256:950993088f9c0ada49c2b37f80588922dd13a92c4f79e5cc4f59dffbea88f1f3",
+  "tailwindlabs__tailwindcss-18718": "sha256:fe7cf34c834d89684c3694e93e6796270be413c69a84ff5418e6cd51b0d1201a",
+  "MudBlazor__MudBlazor-12915": "sha256:042af6f6fffe71501f8949f77e5b264ef48cbc2f7263ff775e7c5ddcb4e3c4a5",
+  "quartznet__quartznet-2932": "sha256:ddab959b9b0e714eb45de30f86cda29463d7cbf62c1a83f4fa96fe10c691604a",
+  "spectreconsole__spectre.console-2082": "sha256:deac9d1aa7ab584a8c721bc5481db201bee468fd63ba575b57c291e037384c4b",
+});
+
 function task(language, instanceId, categories, stressors) {
   return { language, instanceId, categories, stressors };
 }
@@ -331,6 +367,13 @@ function sourceRow(row) {
   return Object.fromEntries(fields.map((field) => [field, row[field]]));
 }
 
+export function assertFrozenSourceRowDigest(instanceId, digest) {
+  const expected = EXPECTED_SOURCE_ROW_DIGESTS[instanceId];
+  if (expected === undefined || digest !== expected) {
+    throw new Error(`${instanceId}: Dataset Viewer row bytes do not match the frozen revision`);
+  }
+}
+
 function validateSelectedSourceRow(row, selected) {
   const requiredStrings = [
     "repo", "instance_id", "base_commit", "patch", "test_patch", "problem_statement",
@@ -417,9 +460,11 @@ async function main() {
     if (!row) throw new Error(`${selected.language}/${selected.instanceId}: source row missing`);
     validateSelectedSourceRow(row, selected);
     const source = sourceRow(row);
+    const sourceRowDigest = sha256(canonicalize(source));
+    assertFrozenSourceRowDigest(selected.instanceId, sourceRowDigest);
     return {
       ...selected,
-      sourceRowDigest: sha256(canonicalize(source)),
+      sourceRowDigest,
       source,
     };
   });
