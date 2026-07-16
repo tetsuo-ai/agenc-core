@@ -54,7 +54,11 @@ export interface EvaluationPilotRequiredArtifact {
     | "source_row"
     | "upstream_triple_preflight"
     | "independent_solve_review"
-    | "negative_patch_review";
+    | "negative_patch_review"
+    | "operator_setup_patch"
+    | "operator_hidden_verifier_bundle"
+    | "operator_reference_solution_patch"
+    | "operator_reference_validation_evidence";
   readonly taskId: string | null;
   readonly artifact: ContentArtifact;
 }
@@ -158,6 +162,7 @@ function assertArtifact(artifact: ContentArtifact, label: string, issues: string
 
 export function getEvaluationPilotRequiredArtifacts(
   document: EvaluationPilotCurationDocument,
+  suite: SuiteManifestDocument,
 ): readonly EvaluationPilotRequiredArtifact[] {
   const artifacts: EvaluationPilotRequiredArtifact[] = [
     {
@@ -191,13 +196,38 @@ export function getEvaluationPilotRequiredArtifacts(
       },
     );
   }
+  for (const task of suite.tasks) {
+    artifacts.push(
+      {
+        role: "operator_setup_patch",
+        taskId: task.taskId,
+        artifact: task.setupPatch,
+      },
+      {
+        role: "operator_hidden_verifier_bundle",
+        taskId: task.taskId,
+        artifact: task.hiddenVerifier.bundle,
+      },
+      {
+        role: "operator_reference_solution_patch",
+        taskId: task.taskId,
+        artifact: task.referenceSolution.patch,
+      },
+      {
+        role: "operator_reference_validation_evidence",
+        taskId: task.taskId,
+        artifact: task.referenceSolution.validationEvidence,
+      },
+    );
+  }
   return artifacts;
 }
 
 export function computeEvaluationPilotArtifactSetDigest(
   document: EvaluationPilotCurationDocument,
+  suite: SuiteManifestDocument,
 ): Sha256Digest {
-  const inventory = getEvaluationPilotRequiredArtifacts(document)
+  const inventory = getEvaluationPilotRequiredArtifacts(document, suite)
     .map(({ role, taskId, artifact }) => ({ role, taskId, artifact }))
     .sort((left, right) => {
       const leftKey = `${left.role}\u0000${left.taskId ?? ""}\u0000${left.artifact.digest}`;
@@ -394,16 +424,53 @@ export function validateEvaluationPilotCurationDocument(
   );
   assertPilotTaskSet(document, suite, issues);
 
-  const artifacts = getEvaluationPilotRequiredArtifacts(document);
+  const artifacts = getEvaluationPilotRequiredArtifacts(document, suite);
   for (const { role, taskId, artifact } of artifacts) {
-    assertArtifact(artifact, `${taskId ?? "dataset"}.${role}`, issues);
+    const label = `${taskId ?? "dataset"}.${role}`;
+    if (role.startsWith("operator_")) {
+      requireCondition(
+        DIGEST_PATTERN.test(artifact.digest) && artifact.uri === artifactUri(artifact),
+        `${label} must use the canonical CAS URI for its SHA-256 digest`,
+        issues,
+      );
+      requireCondition(
+        Number.isSafeInteger(artifact.sizeBytes) &&
+          artifact.sizeBytes >= 0 &&
+          artifact.sizeBytes <= EVALUATION_PILOT_MAXIMUM_ARTIFACT_BYTES,
+        `${label}.sizeBytes is outside the pilot artifact limit`,
+        issues,
+      );
+    } else {
+      assertArtifact(artifact, label, issues);
+    }
   }
+  const curationArtifacts = artifacts.filter(({ role }) => !role.startsWith("operator_"));
   requireCondition(
-    new Set(artifacts.map(({ artifact }) => artifact.digest)).size === artifacts.length,
+    new Set(curationArtifacts.map(({ artifact }) => artifact.digest)).size ===
+      curationArtifacts.length,
     "every required pilot artifact join must use a distinct content digest",
     issues,
   );
-  const totalArtifactBytes = artifacts.reduce((total, { artifact }) => total + artifact.sizeBytes, 0);
+  const protectedOperatorArtifacts = artifacts.filter(
+    ({ role }) => role !== "operator_setup_patch" && role.startsWith("operator_"),
+  );
+  requireCondition(
+    new Set(protectedOperatorArtifacts.map(({ artifact }) => artifact.digest)).size ===
+      protectedOperatorArtifacts.length,
+    "hidden verifier and reference-solution artifact digests must be unique per task",
+    issues,
+  );
+  const sizeByDigest = new Map<string, number>();
+  for (const { artifact } of artifacts) {
+    const priorSize = sizeByDigest.get(artifact.digest);
+    requireCondition(
+      priorSize === undefined || priorSize === artifact.sizeBytes,
+      `${artifact.digest}: repeated CAS content digest has inconsistent sizes`,
+      issues,
+    );
+    sizeByDigest.set(artifact.digest, artifact.sizeBytes);
+  }
+  const totalArtifactBytes = [...sizeByDigest.values()].reduce((total, size) => total + size, 0);
   requireCondition(
     Number.isSafeInteger(totalArtifactBytes) &&
       totalArtifactBytes <= EVALUATION_PILOT_MAXIMUM_TOTAL_ARTIFACT_BYTES,
@@ -411,7 +478,8 @@ export function validateEvaluationPilotCurationDocument(
     issues,
   );
   requireCondition(
-    document.cas.requiredArtifactSetDigest === computeEvaluationPilotArtifactSetDigest(document),
+    document.cas.requiredArtifactSetDigest ===
+      computeEvaluationPilotArtifactSetDigest(document, suite),
     "CAS requiredArtifactSetDigest does not match the declared artifact joins",
     issues,
   );

@@ -293,8 +293,19 @@ export async function loadAndValidateEvaluationPilotCatalog(
   }
 
   const parsedArtifacts = new Map<string, unknown>();
-  for (const { role, taskId, artifact } of getEvaluationPilotRequiredArtifacts(document)) {
-    const bytes = await loadArtifact(shaDirectory.canonicalPath, artifact);
+  const loadedArtifacts = new Map<string, Uint8Array>();
+  for (const { role, taskId, artifact } of getEvaluationPilotRequiredArtifacts(
+    document,
+    options.suiteManifest,
+  )) {
+    const bytes = loadedArtifacts.get(artifact.digest) ??
+      await loadArtifact(shaDirectory.canonicalPath, artifact);
+    if (bytes.byteLength !== artifact.sizeBytes) {
+      throw new EvaluationPilotValidationError([
+        `${artifact.digest} has ${bytes.byteLength} bytes; expected ${artifact.sizeBytes}`,
+      ]);
+    }
+    loadedArtifacts.set(artifact.digest, bytes);
     if (artifact.mediaType === "application/json") {
       parsedArtifacts.set(
         artifact.digest,

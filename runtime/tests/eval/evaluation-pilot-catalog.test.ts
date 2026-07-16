@@ -19,6 +19,7 @@ import {
   EvaluationPilotValidationError,
   computeEvaluationPilotArtifactSetDigest,
   computeEvaluationPilotSelectedRowsDigest,
+  getEvaluationPilotRequiredArtifacts,
   loadAndValidateEvaluationPilotCatalog,
   projectEvaluationPilotTaskForAgent,
   validateEvaluationPilotCurationDocument,
@@ -85,12 +86,39 @@ function jsonArtifact(
   return artifactForBytes(blobs, Buffer.from(JSON.stringify(value), "utf8"), "application/json");
 }
 
-function buildSuite(repositoryFamilyCount = 15, publicIssue = true): SuiteManifestDocument {
+function buildSuite(
+  blobs: Map<string, Uint8Array>,
+  repositoryFamilyCount = 15,
+  publicIssue = true,
+  sharedZeroByteSetup = false,
+): SuiteManifestDocument {
   const tasks = Array.from({ length: 30 }, (_, index) => {
     const base = makeOperatorTask(index, "development");
     return resignContract(base, (draft) => {
       const repository = draft.repository as Record<string, unknown>;
       repository.cluster = `family-${Math.floor(index * repositoryFamilyCount / 30)}`;
+      draft.setupPatch = artifactForBytes(
+        blobs,
+        Buffer.from(sharedZeroByteSetup ? "" : `setup patch ${index}\n`, "utf8"),
+        "text/x-diff",
+      );
+      const hiddenVerifier = draft.hiddenVerifier as Record<string, unknown>;
+      hiddenVerifier.bundle = artifactForBytes(
+        blobs,
+        Buffer.from(`hidden verifier bundle ${index}\n`, "utf8"),
+        "application/octet-stream",
+      );
+      const referenceSolution = draft.referenceSolution as Record<string, unknown>;
+      referenceSolution.patch = artifactForBytes(
+        blobs,
+        Buffer.from(`reference solution patch ${index}\n`, "utf8"),
+        "text/x-diff",
+      );
+      referenceSolution.validationEvidence = artifactForBytes(
+        blobs,
+        Buffer.from(JSON.stringify({ task: index, validated: true }), "utf8"),
+        "application/json",
+      );
       if (!publicIssue) {
         const provenance = draft.provenance as Record<string, unknown>;
         provenance.sourceType = "synthetic_diagnostic";
@@ -121,6 +149,7 @@ function buildSuite(repositoryFamilyCount = 15, publicIssue = true): SuiteManife
 
 function finalizePilotDocument(
   value: EvaluationPilotCurationDocument,
+  suite: SuiteManifestDocument,
 ): EvaluationPilotCurationDocument {
   const draft = jsonClone(value) as unknown as Record<string, unknown>;
   delete draft.documentDigest;
@@ -133,15 +162,24 @@ function finalizePilotDocument(
     documentDigest: `sha256:${"0".repeat(64)}`,
   } as unknown as EvaluationPilotCurationDocument;
   const cas = draft.cas as Record<string, unknown>;
-  cas.requiredArtifactSetDigest = computeEvaluationPilotArtifactSetDigest(placeholder);
+  cas.requiredArtifactSetDigest = computeEvaluationPilotArtifactSetDigest(placeholder, suite);
   return withDocumentDigest<EvaluationPilotCurationDocument>(
     draft as unknown as Omit<EvaluationPilotCurationDocument, "documentDigest">,
   );
 }
 
-function buildPilotFixture(options: { repositoryFamilyCount?: number; publicIssue?: boolean } = {}): PilotFixture {
-  const suite = buildSuite(options.repositoryFamilyCount ?? 15, options.publicIssue ?? true);
+function buildPilotFixture(options: {
+  repositoryFamilyCount?: number;
+  publicIssue?: boolean;
+  sharedZeroByteSetup?: boolean;
+} = {}): PilotFixture {
   const blobs = new Map<string, Uint8Array>();
+  const suite = buildSuite(
+    blobs,
+    options.repositoryFamilyCount ?? 15,
+    options.publicIssue ?? true,
+    options.sharedZeroByteSetup ?? false,
+  );
   const datasetId = "swe-live-public-development";
   const revision = "2026-07-15-release";
   const revisionDigest = digestDomainSeparated("agenc.eval.pilot-dataset-revision.v1", revision);
@@ -322,7 +360,7 @@ function buildPilotFixture(options: { repositoryFamilyCount?: number; publicIssu
     ...withSelection,
     cas: {
       ...withSelection.cas,
-      requiredArtifactSetDigest: computeEvaluationPilotArtifactSetDigest(withSelection),
+      requiredArtifactSetDigest: computeEvaluationPilotArtifactSetDigest(withSelection, suite),
     },
   };
   const { documentDigest: _placeholderDigest, ...documentWithoutDigest } = withArtifactSet;
@@ -378,8 +416,38 @@ function rebindLicenseArtifact(
   const sourceDataset = draft.sourceDataset as Record<string, unknown>;
   const license = sourceDataset.license as Record<string, unknown>;
   license.evidence = artifact;
-  mutable.document = finalizePilotDocument(draft as unknown as EvaluationPilotCurationDocument);
+  mutable.document = finalizePilotDocument(
+    draft as unknown as EvaluationPilotCurationDocument,
+    mutable.suite,
+  );
   return mutable;
+}
+
+function replaceOperatorTask(
+  fixture: PilotFixture,
+  taskIndex: number,
+  mutate: (draft: Record<string, unknown>) => void,
+): PilotFixture {
+  const operatorTask = resignContract(fixture.suite.tasks[taskIndex], mutate);
+  const suite = resignContract(fixture.suite, (draft) => {
+    const tasks = draft.tasks as unknown[];
+    tasks[taskIndex] = operatorTask;
+  });
+  const documentDraft = jsonClone(fixture.document) as unknown as Record<string, unknown>;
+  const suiteBinding = documentDraft.suite as Record<string, unknown>;
+  suiteBinding.manifestDigest = suite.documentDigest;
+  const curated = (documentDraft.tasks as Array<Record<string, unknown>>)
+    .find((task) => task.taskId === operatorTask.taskId);
+  if (!curated) throw new Error(`missing curated task ${operatorTask.taskId}`);
+  curated.operatorTaskDigest = operatorTask.documentDigest;
+  return {
+    ...fixture,
+    suite,
+    document: finalizePilotDocument(
+      documentDraft as unknown as EvaluationPilotCurationDocument,
+      suite,
+    ),
+  };
 }
 
 describe("evaluation development pilot curation protocol", () => {
@@ -429,6 +497,15 @@ describe("evaluation development pilot curation protocol", () => {
       "verifierCommitment",
     ]);
     const projectedBytes = JSON.stringify(projection);
+    const operatorTask = loaded.operatorTasks.get(taskId)!;
+    for (const protectedArtifact of [
+      operatorTask.hiddenVerifier.bundle,
+      operatorTask.referenceSolution.patch,
+      operatorTask.referenceSolution.validationEvidence,
+    ]) {
+      expect(projectedBytes).not.toContain(protectedArtifact.digest);
+      expect(projectedBytes).not.toContain(protectedArtifact.uri);
+    }
     for (const forbidden of [
       "hiddenVerifier",
       "referenceSolution",
@@ -443,6 +520,126 @@ describe("evaluation development pilot curation protocol", () => {
     }
     expect(() => projectEvaluationPilotTaskForAgent(loaded, "not-curated")).toThrow(
       /not present in the validated pilot/u,
+    );
+  });
+
+  it("commits and verifies every bound operator artifact while allowing shared empty setup patches", async () => {
+    const fixture = buildPilotFixture({ sharedZeroByteSetup: true });
+    const inventory = getEvaluationPilotRequiredArtifacts(fixture.document, fixture.suite);
+    expect(inventory).toHaveLength(242);
+    for (const role of [
+      "operator_setup_patch",
+      "operator_hidden_verifier_bundle",
+      "operator_reference_solution_patch",
+      "operator_reference_validation_evidence",
+    ]) {
+      expect(inventory.filter((entry) => entry.role === role)).toHaveLength(30);
+    }
+    const setupArtifacts = fixture.suite.tasks.map((task) => task.setupPatch);
+    expect(new Set(setupArtifacts.map((artifact) => artifact.digest)).size).toBe(1);
+    expect(setupArtifacts.every((artifact) => artifact.sizeBytes === 0)).toBe(true);
+
+    const { root, catalog } = await materializeFixture(fixture);
+    const loaded = await loadAndValidateEvaluationPilotCatalog(catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: root,
+    });
+    expect(loaded.agentTasks).toHaveLength(30);
+  });
+
+  it("rejects missing, size-mismatched, digest-mismatched, and symlinked operator artifacts", async () => {
+    const fixture = buildPilotFixture();
+    const operator = fixture.suite.tasks[0];
+
+    const missing = await materializeFixture(fixture);
+    await rm(path.join(
+      missing.root,
+      "cas",
+      "sha256",
+      operator.hiddenVerifier.bundle.digest.slice("sha256:".length),
+    ));
+    await expect(loadAndValidateEvaluationPilotCatalog(missing.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: missing.root,
+    })).rejects.toThrow(/ENOENT|no such file/u);
+
+    const wrongSize = await materializeFixture(fixture);
+    const patchPath = path.join(
+      wrongSize.root,
+      "cas",
+      "sha256",
+      operator.referenceSolution.patch.digest.slice("sha256:".length),
+    );
+    await writeFile(patchPath, Buffer.concat([await readFile(patchPath), Buffer.from("x")]));
+    await expect(loadAndValidateEvaluationPilotCatalog(wrongSize.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: wrongSize.root,
+    })).rejects.toThrow(/exceeds|expected/u);
+
+    const wrongDigest = await materializeFixture(fixture);
+    const evidencePath = path.join(
+      wrongDigest.root,
+      "cas",
+      "sha256",
+      operator.referenceSolution.validationEvidence.digest.slice("sha256:".length),
+    );
+    await writeFile(
+      evidencePath,
+      Buffer.alloc(operator.referenceSolution.validationEvidence.sizeBytes, 0x78),
+    );
+    await expect(loadAndValidateEvaluationPilotCatalog(wrongDigest.catalog, {
+      suiteManifest: fixture.suite,
+      casRoot: wrongDigest.root,
+    })).rejects.toThrow(/content digest mismatch/u);
+
+    if (process.platform !== "win32") {
+      const symlinked = await materializeFixture(fixture);
+      const setupPath = path.join(
+        symlinked.root,
+        "cas",
+        "sha256",
+        operator.setupPatch.digest.slice("sha256:".length),
+      );
+      const external = await mkdtemp(path.join(os.tmpdir(), "agenc-pilot-operator-"));
+      temporaryRoots.push(external);
+      const externalSetup = path.join(external, "setup.patch");
+      await writeFile(externalSetup, await readFile(setupPath));
+      await rm(setupPath);
+      await symlink(externalSetup, setupPath);
+      await expect(loadAndValidateEvaluationPilotCatalog(symlinked.catalog, {
+        suiteManifest: fixture.suite,
+        casRoot: symlinked.root,
+      })).rejects.toThrow(/regular non-symlink/u);
+    }
+  });
+
+  it("requires protected operator artifacts to be unique and included in the aggregate commitment", () => {
+    const fixture = buildPilotFixture();
+    const reusedVerifier = fixture.suite.tasks[0].hiddenVerifier.bundle;
+    const duplicate = replaceOperatorTask(fixture, 1, (draft) => {
+      const hiddenVerifier = draft.hiddenVerifier as Record<string, unknown>;
+      hiddenVerifier.bundle = reusedVerifier;
+    });
+    expect(() => validateEvaluationPilotCurationDocument(duplicate.document, duplicate.suite)).toThrow(
+      /artifact digests must be unique per task/u,
+    );
+
+    const changed = replaceOperatorTask(fixture, 0, (draft) => {
+      const hiddenVerifier = draft.hiddenVerifier as Record<string, unknown>;
+      hiddenVerifier.bundle = {
+        ...(hiddenVerifier.bundle as Record<string, unknown>),
+        mediaType: "application/vnd.agenc.verifier",
+      };
+    });
+    const staleCommitmentDraft = jsonClone(changed.document) as unknown as Record<string, unknown>;
+    const cas = staleCommitmentDraft.cas as Record<string, unknown>;
+    cas.requiredArtifactSetDigest = fixture.document.cas.requiredArtifactSetDigest;
+    delete staleCommitmentDraft.documentDigest;
+    const staleCommitment = withDocumentDigest<EvaluationPilotCurationDocument>(
+      staleCommitmentDraft as unknown as Omit<EvaluationPilotCurationDocument, "documentDigest">,
+    );
+    expect(() => validateEvaluationPilotCurationDocument(staleCommitment, changed.suite)).toThrow(
+      /requiredArtifactSetDigest/u,
     );
   });
 
@@ -486,6 +683,7 @@ describe("evaluation development pilot curation protocol", () => {
     }
     const missingCategory = finalizePilotDocument(
       missingCategoryDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
     );
     expect(() => validateEvaluationPilotCurationDocument(missingCategory, fixture.suite)).toThrow(
       /task category coverage/u,
@@ -500,6 +698,7 @@ describe("evaluation development pilot curation protocol", () => {
     }
     const missingStressor = finalizePilotDocument(
       missingStressorDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
     );
     expect(() => validateEvaluationPilotCurationDocument(missingStressor, fixture.suite)).toThrow(
       /task stressor coverage/u,
@@ -511,7 +710,10 @@ describe("evaluation development pilot curation protocol", () => {
     const reorderedDraft = jsonClone(fixture.document) as unknown as Record<string, unknown>;
     const tasks = reorderedDraft.tasks as unknown[];
     [tasks[0], tasks[1]] = [tasks[1], tasks[0]];
-    const reordered = finalizePilotDocument(reorderedDraft as unknown as EvaluationPilotCurationDocument);
+    const reordered = finalizePilotDocument(
+      reorderedDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
+    );
     expect(() => validateEvaluationPilotCurationDocument(reordered, fixture.suite)).toThrow(
       /ordered by ascending selectionKeyDigest/u,
     );
@@ -522,6 +724,7 @@ describe("evaluation development pilot curation protocol", () => {
     source.rowDigest = digest("substituted-row");
     const rowSubstitution = finalizePilotDocument(
       rowSubstitutionDraft as unknown as EvaluationPilotCurationDocument,
+      fixture.suite,
     );
     expect(() => validateEvaluationPilotCurationDocument(rowSubstitution, fixture.suite)).toThrow(
       /source row digest must equal/u,
@@ -700,7 +903,7 @@ describe("evaluation development pilot curation protocol", () => {
     const fixture = buildPilotFixture();
     expect(fixture.document.documentDigest).toBe(computeDocumentDigest(fixture.document));
     expect(fixture.document.cas.requiredArtifactSetDigest).toBe(
-      computeEvaluationPilotArtifactSetDigest(fixture.document),
+      computeEvaluationPilotArtifactSetDigest(fixture.document, fixture.suite),
     );
     expect(fixture.document.sourceDataset.selection.selectedRowsDigest).toBe(
       computeEvaluationPilotSelectedRowsDigest(fixture.document.tasks),
