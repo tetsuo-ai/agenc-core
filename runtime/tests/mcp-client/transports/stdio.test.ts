@@ -10,6 +10,7 @@ import {
   AGENC_MCP_STDIO_MAX_FRAME_BYTES,
   AgenCStdioClientTransport,
   DEFAULT_STDIO_ENV_VARS,
+  createStdioMCPConnection,
   createStdioMCPEnvironment,
 } from "./stdio.js";
 
@@ -227,6 +228,53 @@ describe("AgenCStdioClientTransport", () => {
 
     await transport.close();
   });
+
+  it.skipIf(process.platform === "win32")(
+    "does not settle a connection timeout until the stdio process is reaped",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-timeout-"));
+      tempDirs.add(dir);
+      const pidFile = join(dir, "server.pid");
+      const cleanupFile = join(dir, "cleanup-complete");
+      const script = [
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.env.PID_FILE, String(process.pid));",
+        "let closing = false;",
+        "process.on('SIGTERM', () => {",
+        "  if (closing) return;",
+        "  closing = true;",
+        "  setTimeout(() => {",
+        "    fs.writeFileSync(process.env.CLEANUP_FILE, 'closed');",
+        "    process.exit(0);",
+        "  }, 100);",
+        "});",
+        "process.stdin.resume();",
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
+
+      await expect(
+        createStdioMCPConnection(
+          {
+            name: "timeout-cleanup",
+            command: process.execPath,
+            args: ["-e", script],
+            env: { PID_FILE: pidFile, CLEANUP_FILE: cleanupFile },
+            timeout: 400,
+          },
+          undefined,
+          undefined,
+          undefined,
+          explicitDangerBroker,
+        ),
+      ).rejects.toThrow(
+        'MCP stdio connect to "timeout-cleanup" timed out after 400ms',
+      );
+
+      const pid = Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
+      expect(await readFile(cleanupFile, "utf8")).toBe("closed");
+      expect(isPidAlive(pid)).toBe(false);
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "terminates a spawned process group on close",

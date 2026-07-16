@@ -38,6 +38,7 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
+import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -500,28 +501,10 @@ export async function createStdioMCPConnection(
     ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
   });
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const connectPromise = client.connect(transport);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      try {
-        client.close();
-      } catch {
-        // best-effort
-      }
-      reject(
-        new Error(
-          `MCP stdio connect to "${config.name}" timed out after ${timeout}ms`,
-        ),
-      );
-    }, timeout);
+  await connectMCPClientWithCleanup(client, transport, {
+    description: `MCP stdio connect to "${config.name}"`,
+    timeoutMs: timeout,
   });
-
-  try {
-    await Promise.race([connectPromise, timeoutPromise]);
-  } finally {
-    clearTimeout(timer);
-  }
 
   logger.info(`Connected to MCP stdio server "${config.name}"`);
   return client;

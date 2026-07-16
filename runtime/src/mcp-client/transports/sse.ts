@@ -27,6 +27,7 @@ import {
   configureMcpHostRequestHandlers,
   type McpSamplingHandlers,
 } from "../../services/mcp/hostCapabilities.js";
+import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 
 export interface MCPServerSseConfig {
   readonly name: string;
@@ -90,28 +91,10 @@ export async function createSseMCPConnection(
     endpoint: config.endpoint,
   });
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const connectPromise = client.connect(transport);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      try {
-        client.close();
-      } catch {
-        // best-effort
-      }
-      reject(
-        new Error(
-          `MCP SSE connect to "${config.name}" timed out after ${timeout}ms`,
-        ),
-      );
-    }, timeout);
+  await connectMCPClientWithCleanup(client, transport, {
+    description: `MCP SSE connect to "${config.name}"`,
+    timeoutMs: timeout,
   });
-
-  try {
-    await Promise.race([connectPromise, timeoutPromise]);
-  } finally {
-    clearTimeout(timer);
-  }
 
   logger.info(`Connected to MCP SSE server "${config.name}"`);
   return client;
