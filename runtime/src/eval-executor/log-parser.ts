@@ -64,7 +64,17 @@ export function extractParserResults(stdout: string): Readonly<Record<string, st
   return results;
 }
 
-/** Upstream SWE-bench parsers report "PASSED" for a passing test. */
+/**
+ * The 30 pilot bundles' parsers emit a heterogeneous status vocabulary:
+ * `pass`/`passed`/`passes`/`PASS`/`PASSED`/`ok` on the passing side and
+ * fail/error/skip variants otherwise (surveyed 2026-07-16 across the frozen
+ * source lock). Match passing statuses case-insensitively and anchored;
+ * anything unknown counts as NOT passed, so vocabulary drift disqualifies a
+ * candidate loudly instead of silently qualifying one.
+ */
+const PASSED_STATUS_PATTERN = /^(?:pass(?:ed|es)?|ok)$/iu;
+
 export function testPassed(results: Readonly<Record<string, string>>, testName: string): boolean {
-  return results[testName] === "PASSED";
+  const status = results[testName];
+  return status !== undefined && PASSED_STATUS_PATTERN.test(status.trim());
 }

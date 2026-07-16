@@ -6,6 +6,7 @@ import {
   mintUpstreamPreflightEvidence,
   PARSE_RESULT_SENTINEL,
   runTriplePreflight,
+  testPassed,
   type ContainerEnvironment,
   type ContainerExecRequest,
   type ContainerExecResult,
@@ -317,6 +318,38 @@ describe("eval executor parser-result extraction", () => {
     ).toEqual({ a: "PASSED" });
     expect(() => extractParserResults("no sentinel")).toThrow(/sentinel/u);
     expect(() => extractParserResults(`${PARSE_RESULT_SENTINEL}[1]`)).toThrow(/JSON object/u);
+  });
+
+  test("accepts the full pilot passing vocabulary and nothing looser", () => {
+    for (const status of ["PASSED", "passed", "pass", "PASS", "passes", "ok", "OK", " pass "]) {
+      expect(testPassed({ t: status }, "t"), status).toBe(true);
+    }
+    for (
+      const status of [
+        "fail", "FAILED", "failure", "error", "errored", "skip", "skipped", "SKIPPED",
+        "xpass", "not passed", "",
+      ]
+    ) {
+      expect(testPassed({ t: status }, "t"), status).toBe(false);
+    }
+    expect(testPassed({}, "t")).toBe(false);
+  });
+
+  test("a lowercase pass/fail vocabulary qualifies a healthy candidate", async () => {
+    // Regression for the first real pilot run: cthackers__adm-zip-559 emits
+    // lowercase "pass"/"fail" and was wrongly disqualified as
+    // regression_check_failed when only the uppercase vocabulary counted.
+    const runner = new FakeContainerRunner([
+      { parserResults: { "target-1": "fail", "target-2": "fail", "regression-1": "pass" } },
+      { parserResults: { "target-1": "pass", "target-2": "pass", "regression-1": "pass" } },
+      { parserResults: { "target-1": "fail", "target-2": "fail", "regression-1": "pass" } },
+      { parserResults: { "target-1": "pass", "target-2": "pass", "regression-1": "pass" } },
+      { parserResults: { "target-1": "fail", "target-2": "fail", "regression-1": "pass" } },
+      { parserResults: { "target-1": "pass", "target-2": "pass", "regression-1": "pass" } },
+    ]);
+    const result = await runTriplePreflight(runner, INPUTS);
+    expect(result.runs[0]!.failure).toBeNull();
+    expect(result.qualified).toBe(true);
   });
 });
 
