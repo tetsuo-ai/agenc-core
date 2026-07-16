@@ -26,6 +26,7 @@ import {
   type FixedConfirmatoryPlan,
   type PowerAnalysisDocument,
 } from "./types.js";
+import { assertBoundedIJsonGraph } from "./ijson-preflight.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
@@ -324,6 +325,7 @@ export function validatePowerAnalysisDocument(value: unknown): PowerAnalysisDocu
   }
   assertDocumentCollectionBounds(value);
   try {
+    assertBoundedIJsonGraph(value, "$document");
     canonicalizeJson(value);
   } catch (error) {
     throw new PowerAnalysisDocumentValidationError([

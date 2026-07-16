@@ -38,6 +38,7 @@ import {
   type SensitivityCell,
 } from "./types.js";
 import { validatePowerAnalysisDocument } from "./validation.js";
+import { assertBoundedIJsonGraph } from "./ijson-preflight.js";
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const MAX_SAFE_SEED = 0xffff_ffff;
@@ -327,6 +328,7 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
   if (issues.length > 0) throw new PowerAnalysisValidationError(issues);
   assertInputCollectionBounds(input);
   try {
+    assertBoundedIJsonGraph(input, "$input");
     canonicalizeJson(input);
   } catch (error) {
     throw new PowerAnalysisValidationError([
@@ -1209,8 +1211,8 @@ function simulateGrid(
     }
     for (const [scenarioIndex, scenario] of scenarios.entries()) {
       cells.push({
-        assumedPairedDifference: round(scenario.assumedEffect),
-        heterogeneityMultiplier: round(scenario.heterogeneityMultiplier),
+        assumedPairedDifference: scenario.assumedEffect,
+        heterogeneityMultiplier: scenario.heterogeneityMultiplier,
         taskCount,
         repositoryCount: repositoryTaskCounts.length,
         comparisonPower: pilot.comparisons.map((comparison) => ({
@@ -1243,7 +1245,7 @@ function selectFixedPlan(
     const taskCount = normalizedAllocation.reduce((sum, count) => sum + count, 0);
     const cells = sensitivityGrid.filter((cell) =>
       cell.taskCount === taskCount
-      && Math.abs(cell.assumedPairedDifference - input.planningEffectSize) < EPSILON);
+      && cell.assumedPairedDifference === input.planningEffectSize);
     if (cells.length > 0 && cells.every((cell) => cell.intersectionPower.wilsonLower95 >= target)) {
       return {
         suiteId: input.confirmatorySuiteId,

@@ -12,6 +12,17 @@ import {
 
 const CREATED_AT = "2026-07-16T08:00:00.000Z";
 
+function makeDeepUnknownObject(depth = 128): Record<string, unknown> {
+  const root: Record<string, unknown> = {};
+  let cursor = root;
+  for (let index = 0; index < depth; index += 1) {
+    const next: Record<string, unknown> = {};
+    cursor[`level-${index}`] = next;
+    cursor = next;
+  }
+  return root;
+}
+
 function makePilotOutcomes(): PairedPilotBinaryOutcome[] {
   const outcomes: PairedPilotBinaryOutcome[] = [];
   const comparisons = [
@@ -347,6 +358,23 @@ describe("evaluation pilot power analysis", () => {
     expect(performance.now() - startedAt).toBeLessThan(500);
   });
 
+  test("preserves high-precision sensitivity dimensions through revalidation", () => {
+    const planningEffect = 0.2000000000001;
+    const heterogeneity = 1.5000000000001;
+    const document = computePowerAnalysis(makeInput({
+      planningEffectSize: planningEffect,
+      assumedEffectSizes: [0.1, planningEffect],
+      heterogeneityMultipliers: [1, heterogeneity],
+    }));
+    expect(document.design.planningEffectSize).toBe(planningEffect);
+    expect(document.design.assumedEffectSizes).toContain(planningEffect);
+    expect(document.design.heterogeneityMultipliers).toContain(heterogeneity);
+    expect(document.sensitivityGrid.filter((cell) =>
+      cell.assumedPairedDifference === planningEffect
+      && cell.heterogeneityMultiplier === heterogeneity)).toHaveLength(2);
+    expect(validatePowerAnalysisDocument(document)).toEqual(document);
+  }, 20_000);
+
   test("fails closed on incomplete pairing, duplicate trials, and insufficient pilot coverage", () => {
     const outcomes = makePilotOutcomes();
     expect(() => computePowerAnalysis(makeInput({
@@ -527,6 +555,60 @@ describe("evaluation pilot power analysis", () => {
     expect(() => validatePowerAnalysisDocument(documentWithAccessor)).toThrow(
       /document\.sensitivityGrid must be an own enumerable data property/u,
     );
+    expect(getterCalls).toBe(0);
+  }, 20_000);
+
+  test("bounds nested unknown I-JSON before canonicalization without invoking accessors", () => {
+    const outcomes = makePilotOutcomes();
+    outcomes[0] = {
+      ...outcomes[0],
+      unknownPayload: makeDeepUnknownObject(),
+    } as PairedPilotBinaryOutcome;
+    let startedAt = performance.now();
+    expect(() => computePowerAnalysis(makeInput({ outcomes }))).toThrow(
+      /maximum I-JSON depth 64/u,
+    );
+    expect(performance.now() - startedAt).toBeLessThan(500);
+
+    let getterCalls = 0;
+    const accessorOutcomes = makePilotOutcomes();
+    accessorOutcomes[0] = {
+      ...accessorOutcomes[0],
+      get unknownPayload(): unknown {
+        getterCalls += 1;
+        return makeDeepUnknownObject();
+      },
+    } as PairedPilotBinaryOutcome;
+    expect(() => computePowerAnalysis(makeInput({ outcomes: accessorOutcomes }))).toThrow(
+      /must be an own enumerable data property/u,
+    );
+    expect(getterCalls).toBe(0);
+
+    const document = computePowerAnalysis(makeInput());
+    const comparisons = [...document.pilot.comparisons];
+    comparisons[0] = {
+      ...comparisons[0],
+      unknownPayload: makeDeepUnknownObject(),
+    } as typeof comparisons[number];
+    startedAt = performance.now();
+    expect(() => validatePowerAnalysisDocument({
+      ...document,
+      pilot: { ...document.pilot, comparisons },
+    })).toThrow(/maximum I-JSON depth 64/u);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+
+    const accessorComparisons = [...document.pilot.comparisons];
+    accessorComparisons[0] = {
+      ...accessorComparisons[0],
+      get unknownPayload(): unknown {
+        getterCalls += 1;
+        return makeDeepUnknownObject();
+      },
+    } as typeof accessorComparisons[number];
+    expect(() => validatePowerAnalysisDocument({
+      ...document,
+      pilot: { ...document.pilot, comparisons: accessorComparisons },
+    })).toThrow(/must be an own enumerable data property/u);
     expect(getterCalls).toBe(0);
   }, 20_000);
 });

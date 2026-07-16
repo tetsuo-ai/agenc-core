@@ -142,6 +142,11 @@ worst-case work exceeds 500 million task additions. Operators must narrow an
 oversized grid or split exploratory diagnostics; they cannot bypass the bound
 inside a confirmatory power document.
 
+Power inputs and documents pass a descriptor-only I-JSON graph preflight before
+canonicalization. It never invokes accessors and caps depth at 64, arrays at
+100,000 entries, objects at 256 properties, the graph at 1.2 million nodes and
+properties, individual strings at 1 MB, and aggregate string data at 200 MB.
+
 The private one-use task manifest, prompts, repository identities, verifiers,
 reference patches, and custody logs stay outside this checkout under a separate
 principal. This repository may contain only the public holdout descriptor,
