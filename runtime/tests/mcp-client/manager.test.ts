@@ -190,6 +190,54 @@ describe("MCPManager", () => {
     expect(manager.getTools()).toHaveLength(0);
   });
 
+  it("rejects a second start after startup completes", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const manager = new MCPManager([makeConfig("srv1")]);
+
+    await manager.start();
+    await expect(manager.start()).rejects.toThrow(/lifecycle is active/);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    expect(mockCreateToolBridge).toHaveBeenCalledOnce();
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+    expect(manager.getTools()).toHaveLength(1);
+    await manager.stop();
+  });
+
+  it("rejects a concurrent start without spawning a replacement connection", async () => {
+    let resolveClient:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const client = { close: vi.fn().mockResolvedValue(undefined) };
+    mockCreateMCPConnection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClient = resolve;
+        }),
+    );
+    mockCreateToolBridge.mockResolvedValueOnce(
+      makeMockBridge("srv1", ["toolA"]),
+    );
+    const manager = new MCPManager([makeConfig("srv1")]);
+
+    const firstStart = manager.start();
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    });
+    await expect(manager.start()).rejects.toThrow(/lifecycle is active/);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    resolveClient?.(client);
+    await firstStart;
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+    expect(manager.getTools()).toHaveLength(1);
+    await manager.stop();
+  });
+
   it("restarts a running manager under the rebased sandbox authority", async () => {
     const oldCwd = resolve("old-workspace");
     const newCwd = resolve("new-workspace");
@@ -637,6 +685,105 @@ describe("MCPManager", () => {
     expect(broker.cwd).toBe(newCwd);
     expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
 
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("does not connect after stop wins a reconnect disconnect race", async () => {
+    const oldCwd = resolve("reconnect-disconnect-old");
+    const newCwd = resolve("reconnect-disconnect-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let releaseDisconnect: (() => void) | undefined;
+    const initialBridge = makeMockBridge("srv1", ["initial"]);
+    initialBridge.dispose.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDisconnect = resolve;
+        }),
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["recovered"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const reconnecting = manager.reconnectServer("srv1");
+    await vi.waitFor(() => {
+      expect(initialBridge.dispose).toHaveBeenCalledOnce();
+    });
+
+    let transitioned = false;
+    const transition = transitionSandboxExecutionBroker(broker, newCwd).then(
+      () => {
+        transitioned = true;
+      },
+    );
+    await Promise.resolve();
+    expect(transitioned).toBe(false);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    releaseDisconnect?.();
+    await expect(reconnecting).resolves.toMatchObject({ success: false });
+    await transition;
+
+    expect(broker.cwd).toBe(newCwd);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("propagates reconnect disconnect cleanup failure into strict quiesce", async () => {
+    const oldCwd = resolve("reconnect-cleanup-old");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let rejectDisconnect: ((error: Error) => void) | undefined;
+    const initialBridge = makeMockBridge("srv1", ["initial"]);
+    initialBridge.dispose.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDisconnect = reject;
+        }),
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["recovered"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const reconnecting = manager.reconnectServer("srv1");
+    await vi.waitFor(() => {
+      expect(initialBridge.dispose).toHaveBeenCalledOnce();
+    });
+    const transition = transitionSandboxExecutionBroker(
+      broker,
+      resolve("reconnect-cleanup-new"),
+    );
+
+    rejectDisconnect?.(new Error("old process tree survived"));
+    await expect(reconnecting).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    await expect(transition).rejects.toThrow(/old authority restored/);
+
+    expect(broker.cwd).toBe(oldCwd);
+    expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
   });

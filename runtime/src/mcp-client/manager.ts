@@ -83,6 +83,11 @@ interface ManagedConnectionAttempt {
   isCurrent(): boolean;
 }
 
+interface ManagedReconnectOperation {
+  readonly serverName: string;
+  readonly promise: Promise<MCPReconnectResult>;
+}
+
 class MCPConnectionCleanupError extends AggregateError {
   readonly originalError: unknown;
 
@@ -237,6 +242,8 @@ export class MCPManager {
   private readonly connectionAttempts = new Set<ManagedConnectionAttempt>();
   private readonly serverEpochs = new Map<string, number>();
   private readonly companionEpochs = new Map<string, number>();
+  private readonly reconnectOperations = new Set<ManagedReconnectOperation>();
+  private readonly reconnectTails = new Map<string, Promise<void>>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
@@ -286,6 +293,7 @@ export class MCPManager {
               this.running ||
               this.bridges.size > 0 ||
               this.connectionAttempts.size > 0 ||
+              this.reconnectOperations.size > 0 ||
               this.shutdownTask !== undefined
             ) {
               await this.stopInternal(true);
@@ -328,8 +336,16 @@ export class MCPManager {
    * waits for that cleanup before rebasing sandbox authority.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
-    if (this.shutdownTask !== undefined) {
-      throw new Error("MCP manager cannot start while shutdown is in progress");
+    if (
+      this.running ||
+      this.shutdownTask !== undefined ||
+      this.connectionAttempts.size > 0 ||
+      this.reconnectOperations.size > 0 ||
+      this.bridges.size > 0
+    ) {
+      throw new Error(
+        "MCP manager cannot start while another connection lifecycle is active; stop it before starting again",
+      );
     }
     this.lastStartOpts = {
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
@@ -345,9 +361,6 @@ export class MCPManager {
       throw new Error(
         `MCP startup cancelled before first connect (${signal.reason ?? "unspecified"})`,
       );
-    }
-    for (const gate of this.startupGates) {
-      gate.cancel("superseded by a newer MCP start");
     }
     const generation = ++this.lifecycleGeneration;
     this.running = true;
@@ -381,8 +394,8 @@ export class MCPManager {
       }),
     );
 
-    // A concurrent stop (or newer start) owns the current state. Late results
-    // are cleaned up by connectServer's gate and must not republish status.
+    // A concurrent stop owns the current state. Late results are cleaned up by
+    // connectServer's gate and must not republish status.
     if (!this.running || this.lifecycleGeneration !== generation) return;
 
     let successCount = 0;
@@ -464,6 +477,7 @@ export class MCPManager {
     const resourceBridges = Array.from(this.resourceBridges.values());
     const promptBridges = Array.from(this.promptBridges.values());
     const attempts = Array.from(this.connectionAttempts);
+    const reconnectOperations = Array.from(this.reconnectOperations);
     // Remove every published surface before awaiting teardown. An in-flight
     // caller can no longer discover a bridge once stop begins.
     this.bridges.clear();
@@ -480,6 +494,7 @@ export class MCPManager {
       ...resourceBridges.map(invokeDisposal),
       ...promptBridges.map(invokeDisposal),
       ...attempts.map((attempt) => attempt.promise),
+      ...reconnectOperations.map((operation) => operation.promise),
     ]).then((results): ReadonlyArray<unknown> => {
       const errors: unknown[] = [];
       for (let index = 0; index < results.length; index += 1) {
@@ -638,34 +653,106 @@ export class MCPManager {
       };
     }
 
-    this.connectionStates.set(name, { type: "pending" });
-    await this.disconnectServer(name, "before reconnect");
+    return this.enqueueReconnect(config);
+  }
+
+  private enqueueReconnect(
+    config: MCPServerConfig,
+  ): Promise<MCPReconnectResult> {
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const running = this.running;
+    const previous = this.reconnectTails.get(config.name) ?? Promise.resolve();
+    const promise = previous.then(() =>
+      this.performReconnect(config, lifecycleGeneration, running),
+    );
+    const operation: ManagedReconnectOperation = {
+      serverName: config.name,
+      promise,
+    };
+    this.reconnectOperations.add(operation);
+    const tail = promise.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reconnectTails.set(config.name, tail);
+    const remove = (): void => {
+      this.reconnectOperations.delete(operation);
+      if (this.reconnectTails.get(config.name) === tail) {
+        this.reconnectTails.delete(config.name);
+      }
+    };
+    void tail.then(remove);
+
+    return promise.catch((error: unknown) => {
+      if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
+        this.connectionStates.set(config.name, {
+          type: "failed",
+          error: errMessage(error),
+        });
+      }
+      return reconnectFailure(config.name, error);
+    });
+  }
+
+  private async performReconnect(
+    config: MCPServerConfig,
+    lifecycleGeneration: number,
+    running: boolean,
+  ): Promise<MCPReconnectResult> {
+    if (!this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
+      return reconnectFailure(
+        config.name,
+        new Error(`MCP server "${config.name}" reconnect lifecycle expired`),
+      );
+    }
+    this.connectionStates.set(config.name, { type: "pending" });
+    await this.disconnectServer(config.name, "before reconnect", true);
+
+    if (!this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
+      return reconnectFailure(
+        config.name,
+        new Error(`MCP server "${config.name}" reconnect cancelled by shutdown`),
+      );
+    }
 
     try {
       const attempt = this.beginConnection(config);
       const bridge = await attempt.promise;
-      if (attempt.isCurrent()) {
-        this.connectionStates.set(name, { type: "connected" });
+      if (
+        !attempt.isCurrent() ||
+        !this.isReconnectLifecycleCurrent(lifecycleGeneration, running)
+      ) {
+        return reconnectFailure(
+          config.name,
+          new Error(`MCP server "${config.name}" reconnect cancelled by shutdown`),
+        );
       }
+      this.connectionStates.set(config.name, { type: "connected" });
       return {
-        serverName: name,
+        serverName: config.name,
         success: true,
         toolCount: bridge.tools.length,
       };
     } catch (error) {
-      if (this.shutdownTask === undefined) {
-        this.connectionStates.set(name, {
+      if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
+        this.connectionStates.set(config.name, {
           type: "failed",
-          error: error instanceof Error ? error.message : String(error),
+          error: errMessage(error),
         });
       }
-      return {
-        serverName: name,
-        success: false,
-        toolCount: 0,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      return reconnectFailure(config.name, error);
     }
+  }
+
+  private isReconnectLifecycleCurrent(
+    lifecycleGeneration: number,
+    running: boolean,
+  ): boolean {
+    return (
+      this.shutdownTask === undefined &&
+      this.lifecycleGeneration === lifecycleGeneration &&
+      this.running === running
+    );
   }
 
   async enableServer(name: string): Promise<MCPServerMutationResult> {
@@ -1178,6 +1265,10 @@ export class MCPManager {
       ...this.resourceBridges.keys(),
       ...this.promptBridges.keys(),
       ...Array.from(this.connectionAttempts, (attempt) => attempt.serverName),
+      ...Array.from(
+        this.reconnectOperations,
+        (operation) => operation.serverName,
+      ),
     ]);
   }
 
@@ -1200,7 +1291,11 @@ export class MCPManager {
     }
   }
 
-  private async disconnectServer(name: string, reason: string): Promise<void> {
+  private async disconnectServer(
+    name: string,
+    reason: string,
+    strictCleanup = false,
+  ): Promise<void> {
     this.invalidateServerAuthority(name);
     const attempts = Array.from(this.connectionAttempts).filter(
       (attempt) => attempt.serverName === name,
@@ -1229,6 +1324,7 @@ export class MCPManager {
       ...(existingPrompt !== undefined ? [invokeDisposal(existingPrompt)] : []),
       ...attempts.map((attempt) => attempt.promise),
     ]);
+    const cleanupErrors: unknown[] = [];
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index];
       if (result?.status !== "rejected") continue;
@@ -1236,11 +1332,15 @@ export class MCPManager {
         index < disposalCount ||
         result.reason instanceof MCPConnectionCleanupError
       ) {
+        cleanupErrors.push(result.reason);
         this.logger.warn?.(
           `Error disposing MCP server "${name}" ${reason}:`,
           result.reason,
         );
       }
+    }
+    if (strictCleanup && cleanupErrors.length > 0) {
+      throw new MCPConnectionCleanupError(name, reason, cleanupErrors);
     }
   }
 }
@@ -1251,6 +1351,18 @@ export class MCPManager {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function reconnectFailure(
+  serverName: string,
+  error: unknown,
+): MCPReconnectResult {
+  return {
+    serverName,
+    success: false,
+    toolCount: 0,
+    error: errMessage(error),
+  };
 }
 
 function isValidMcpServerName(name: string): boolean {
