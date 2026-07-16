@@ -88,6 +88,22 @@ interface ManagedReconnectOperation {
   readonly promise: Promise<MCPReconnectResult>;
 }
 
+interface RetainedCleanupOwner {
+  readonly identity: unknown;
+  readonly dispose: () => Promise<void>;
+  error: unknown;
+}
+
+interface ServerCleanupOwner extends RetainedCleanupOwner {
+  readonly serverName: string;
+}
+
+interface RetainedServerCleanup {
+  readonly owners: Map<unknown, RetainedCleanupOwner>;
+  readonly unownedErrors: unknown[];
+  retryTask?: Promise<void>;
+}
+
 class MCPConnectionCleanupError extends AggregateError {
   readonly originalError: unknown;
 
@@ -244,6 +260,7 @@ export class MCPManager {
   private readonly companionEpochs = new Map<string, number>();
   private readonly reconnectOperations = new Set<ManagedReconnectOperation>();
   private readonly reconnectTails = new Map<string, Promise<void>>();
+  private readonly retainedCleanup = new Map<string, RetainedServerCleanup>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
@@ -294,6 +311,7 @@ export class MCPManager {
               this.bridges.size > 0 ||
               this.connectionAttempts.size > 0 ||
               this.reconnectOperations.size > 0 ||
+              this.retainedCleanup.size > 0 ||
               this.shutdownTask !== undefined
             ) {
               await this.stopInternal(true);
@@ -341,6 +359,7 @@ export class MCPManager {
       this.shutdownTask !== undefined ||
       this.connectionAttempts.size > 0 ||
       this.reconnectOperations.size > 0 ||
+      this.retainedCleanup.size > 0 ||
       this.bridges.size > 0
     ) {
       throw new Error(
@@ -478,6 +497,20 @@ export class MCPManager {
     const promptBridges = Array.from(this.promptBridges.values());
     const attempts = Array.from(this.connectionAttempts);
     const reconnectOperations = Array.from(this.reconnectOperations);
+    const publishedOwners: ServerCleanupOwner[] = [
+      ...bridges.map((bridge) =>
+        cleanupOwner(bridge.serverName, bridge, () => invokeDisposal(bridge)),
+      ),
+      ...resourceBridges.map((bridge) =>
+        cleanupOwner(bridge.serverName, bridge, () => invokeDisposal(bridge)),
+      ),
+      ...promptBridges.map((bridge) =>
+        cleanupOwner(bridge.serverName, bridge, () => invokeDisposal(bridge)),
+      ),
+    ];
+    const retainedRetries = Array.from(this.retainedCleanup.keys(), (name) =>
+      this.retryRetainedCleanup(name, "during shutdown"),
+    );
     // Remove every published surface before awaiting teardown. An in-flight
     // caller can no longer discover a bridge once stop begins.
     this.bridges.clear();
@@ -487,12 +520,10 @@ export class MCPManager {
     this.serverInstructions.clear();
     this.resetConnectionStates();
 
-    const disposalCount =
-      bridges.length + resourceBridges.length + promptBridges.length;
+    const disposalCount = publishedOwners.length + retainedRetries.length;
     const task = Promise.allSettled([
-      ...bridges.map(invokeDisposal),
-      ...resourceBridges.map(invokeDisposal),
-      ...promptBridges.map(invokeDisposal),
+      ...publishedOwners.map((owner) => owner.dispose()),
+      ...retainedRetries,
       ...attempts.map((attempt) => attempt.promise),
       ...reconnectOperations.map((operation) => operation.promise),
     ]).then((results): ReadonlyArray<unknown> => {
@@ -500,6 +531,12 @@ export class MCPManager {
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index];
         if (result?.status !== "rejected") continue;
+        const publishedOwner = publishedOwners[index];
+        if (publishedOwner !== undefined) {
+          this.retainCleanupFailures(publishedOwner.serverName, [
+            { owner: publishedOwner, error: result.reason },
+          ]);
+        }
         if (
           index < disposalCount ||
           result.reason instanceof MCPConnectionCleanupError
@@ -1043,13 +1080,22 @@ export class MCPManager {
     startupGate: StartupGate,
     isCurrent: () => boolean,
   ): Promise<MCPToolBridge> {
-    const client = await createMCPConnection(
-      config,
-      this.logger,
-      this.elicitationHandlers,
-      this.samplingHandlers,
-      this.sandboxExecutionBroker,
-    );
+    let client: Awaited<ReturnType<typeof createMCPConnection>>;
+    try {
+      client = await createMCPConnection(
+        config,
+        this.logger,
+        this.elicitationHandlers,
+        this.samplingHandlers,
+        this.sandboxExecutionBroker,
+      );
+    } catch (error) {
+      if (isMCPTransportCleanupFailure(error)) {
+        this.retainUnownedCleanupFailure(config.name, error);
+        throw new MCPConnectionCleanupError(config.name, error, [error]);
+      }
+      throw error;
+    }
     let bridge: ResilientMCPBridge | undefined;
     let companions: RefreshedCompanionBridges | undefined;
     try {
@@ -1180,19 +1226,34 @@ export class MCPManager {
       ) {
         this.promptBridges.delete(config.name);
       }
-      const cleanupResults = await Promise.allSettled([
-        ...(bridge !== undefined ? [invokeDisposal(bridge)] : []),
+      const cleanupOwners: ServerCleanupOwner[] = [
+        ...(bridge !== undefined
+          ? [disposableCleanupOwner(config.name, bridge)]
+          : []),
         ...(companions?.resourceBridge !== undefined
-          ? [invokeDisposal(companions.resourceBridge)]
+          ? [disposableCleanupOwner(config.name, companions.resourceBridge)]
           : []),
         ...(companions?.promptBridge !== undefined
-          ? [invokeDisposal(companions.promptBridge)]
+          ? [disposableCleanupOwner(config.name, companions.promptBridge)]
           : []),
-        ...(bridge === undefined ? [invokeClientClose(client)] : []),
-      ]);
-      const cleanupErrors = cleanupResults.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
+        ...(bridge === undefined
+          ? [
+              cleanupOwner(config.name, client, () =>
+                invokeClientClose(client),
+              ),
+            ]
+          : []),
+      ];
+      const cleanupResults = await Promise.allSettled(
+        cleanupOwners.map((owner) => owner.dispose()),
       );
+      const cleanupFailures = cleanupResults.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [{ owner: cleanupOwners[index]!, error: result.reason }]
+          : [],
+      );
+      this.retainCleanupFailures(config.name, cleanupFailures);
+      const cleanupErrors = cleanupFailures.map((failure) => failure.error);
       if (cleanupErrors.length > 0) {
         throw new MCPConnectionCleanupError(
           config.name,
@@ -1208,6 +1269,11 @@ export class MCPManager {
     if (this.shutdownTask !== undefined) {
       throw new Error(
         `MCP server "${config.name}" cannot connect while shutdown is in progress`,
+      );
+    }
+    if (this.retainedCleanup.has(config.name)) {
+      throw new Error(
+        `MCP server "${config.name}" cannot connect while prior cleanup remains unproven`,
       );
     }
     const gate = createStartupGate();
@@ -1269,6 +1335,7 @@ export class MCPManager {
         this.reconnectOperations,
         (operation) => operation.serverName,
       ),
+      ...this.retainedCleanup.keys(),
     ]);
   }
 
@@ -1289,6 +1356,84 @@ export class MCPManager {
         `MCP server "${serverName}" tools shadow already-registered tool names (I-73): ${collisions.join(", ")}`,
       );
     }
+  }
+
+  private retainCleanupFailures(
+    serverName: string,
+    failures: ReadonlyArray<{
+      readonly owner: RetainedCleanupOwner;
+      readonly error: unknown;
+    }>,
+  ): void {
+    if (failures.length === 0) return;
+    let retained = this.retainedCleanup.get(serverName);
+    if (retained === undefined) {
+      retained = { owners: new Map(), unownedErrors: [] };
+      this.retainedCleanup.set(serverName, retained);
+    }
+    for (const { owner, error } of failures) {
+      retained.owners.set(owner.identity, { ...owner, error });
+    }
+  }
+
+  private retainUnownedCleanupFailure(
+    serverName: string,
+    error: unknown,
+  ): void {
+    let retained = this.retainedCleanup.get(serverName);
+    if (retained === undefined) {
+      retained = { owners: new Map(), unownedErrors: [] };
+      this.retainedCleanup.set(serverName, retained);
+    }
+    retained.unownedErrors.push(error);
+  }
+
+  private retryRetainedCleanup(
+    serverName: string,
+    reason: string,
+  ): Promise<void> {
+    const retained = this.retainedCleanup.get(serverName);
+    if (retained === undefined) return Promise.resolve();
+    if (retained.retryTask !== undefined) return retained.retryTask;
+
+    const owners = Array.from(retained.owners.values());
+    const task = Promise.allSettled(
+      owners.map((owner) => Promise.resolve().then(owner.dispose)),
+    ).then((results) => {
+      for (let index = 0; index < results.length; index += 1) {
+        const owner = owners[index]!;
+        if (retained.owners.get(owner.identity) !== owner) continue;
+        const result = results[index]!;
+        if (result.status === "fulfilled") {
+          retained.owners.delete(owner.identity);
+        } else {
+          owner.error = result.reason;
+        }
+      }
+      if (
+        retained.owners.size === 0 &&
+        retained.unownedErrors.length === 0
+      ) {
+        if (this.retainedCleanup.get(serverName) === retained) {
+          this.retainedCleanup.delete(serverName);
+        }
+        return;
+      }
+      throw new MCPConnectionCleanupError(
+        serverName,
+        reason,
+        [
+          ...retained.unownedErrors,
+          ...Array.from(retained.owners.values(), (owner) => owner.error),
+        ],
+      );
+    });
+    retained.retryTask = task;
+    const clearRetryTask = (): void => {
+      if (retained.retryTask === task) delete retained.retryTask;
+    };
+    void task.then(clearRetryTask, clearRetryTask);
+    return task;
   }
 
   private async disconnectServer(
@@ -1312,22 +1457,44 @@ export class MCPManager {
     this.promptBridges.delete(name);
     this.serverInstructions.delete(name);
 
-    const disposalCount =
-      (existing === undefined ? 0 : 1) +
-      (existingResource === undefined ? 0 : 1) +
-      (existingPrompt === undefined ? 0 : 1);
-    const results = await Promise.allSettled([
-      ...(existing !== undefined ? [invokeDisposal(existing)] : []),
-      ...(existingResource !== undefined
-        ? [invokeDisposal(existingResource)]
+    const owners: ServerCleanupOwner[] = [
+      ...(existing !== undefined
+        ? [cleanupOwner(name, existing, () => invokeDisposal(existing))]
         : []),
-      ...(existingPrompt !== undefined ? [invokeDisposal(existingPrompt)] : []),
+      ...(existingResource !== undefined
+        ? [
+            cleanupOwner(name, existingResource, () =>
+              invokeDisposal(existingResource),
+            ),
+          ]
+        : []),
+      ...(existingPrompt !== undefined
+        ? [
+            cleanupOwner(name, existingPrompt, () =>
+              invokeDisposal(existingPrompt),
+            ),
+          ]
+        : []),
+    ];
+    const retainedRetry = this.retainedCleanup.has(name)
+      ? this.retryRetainedCleanup(name, `${reason} retained cleanup retry`)
+      : undefined;
+    const disposalCount = owners.length + (retainedRetry === undefined ? 0 : 1);
+    const results = await Promise.allSettled([
+      ...owners.map((owner) => owner.dispose()),
+      ...(retainedRetry !== undefined ? [retainedRetry] : []),
       ...attempts.map((attempt) => attempt.promise),
     ]);
     const cleanupErrors: unknown[] = [];
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index];
       if (result?.status !== "rejected") continue;
+      const owner = owners[index];
+      if (owner !== undefined) {
+        this.retainCleanupFailures(name, [
+          { owner, error: result.reason },
+        ]);
+      }
       if (
         index < disposalCount ||
         result.reason instanceof MCPConnectionCleanupError
@@ -1351,6 +1518,19 @@ export class MCPManager {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Transport factories currently expose failed pre-client cleanup as an
+ * AggregateError rather than a typed error. Keep the structural check in one
+ * place so it can become an instanceof check when the transport contract
+ * exports that type.
+ */
+function isMCPTransportCleanupFailure(error: unknown): error is AggregateError {
+  return (
+    error instanceof AggregateError &&
+    error.message.includes("transport cleanup also failed")
+  );
 }
 
 function reconnectFailure(
@@ -1492,6 +1672,21 @@ function assertRefreshOpen(
   assertStartupGateOpen(serverName, startupGate);
   if (isCurrent()) return;
   throw new Error(`MCP server "${serverName}" bridge refresh abandoned`);
+}
+
+function cleanupOwner(
+  serverName: string,
+  identity: unknown,
+  dispose: () => Promise<void>,
+): ServerCleanupOwner {
+  return { serverName, identity, dispose, error: undefined };
+}
+
+function disposableCleanupOwner(
+  serverName: string,
+  disposable: { dispose(): Promise<void> },
+): ServerCleanupOwner {
+  return cleanupOwner(serverName, disposable, () => invokeDisposal(disposable));
 }
 
 function invokeDisposal(disposable: {

@@ -97,7 +97,7 @@ function makeMockBridge(serverName: string, toolNames: string[]) {
 
 describe("MCPManager", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     // By default, resource + prompt bridges succeed with empty lists so
     // existing tool-focused tests don't need to know about them.
     mockCreateResourceBridge.mockImplementation((_client, serverName) =>
@@ -294,14 +294,11 @@ describe("MCPManager", () => {
     failingBridge.dispose.mockRejectedValueOnce(
       new Error("process tree survived"),
     );
-    const recoveredBridge = makeMockBridge("srv1", ["toolA"]);
 
-    mockCreateMCPConnection
-      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
-      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
-    mockCreateToolBridge
-      .mockResolvedValueOnce(failingBridge)
-      .mockResolvedValueOnce(recoveredBridge);
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(failingBridge);
 
     const manager = new MCPManager([makeConfig("srv1")]);
     manager.setSandboxExecutionBroker(broker);
@@ -313,7 +310,8 @@ describe("MCPManager", () => {
 
     expect(broker.cwd).toBe(oldCwd);
     expect(failingBridge.dispose).toHaveBeenCalledOnce();
-    expect(manager.getConnectionState("srv1")).toEqual({ type: "connected" });
+    expect(manager.getConnectionState("srv1")).toEqual({ type: "pending" });
+    expect(manager.getConnectedServers()).toEqual([]);
 
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
@@ -756,12 +754,10 @@ describe("MCPManager", () => {
           rejectDisconnect = reject;
         }),
     );
-    mockCreateMCPConnection
-      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
-      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
-    mockCreateToolBridge
-      .mockResolvedValueOnce(initialBridge)
-      .mockResolvedValueOnce(makeMockBridge("srv1", ["recovered"]));
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
 
     const manager = new MCPManager([makeConfig("srv1")]);
     manager.setSandboxExecutionBroker(broker);
@@ -783,7 +779,132 @@ describe("MCPManager", () => {
     await expect(transition).rejects.toThrow(/old authority restored/);
 
     expect(broker.cwd).toBe(oldCwd);
+    expect(manager.getTools()).toEqual([]);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("retains settled reconnect cleanup failure and blocks every replacement", async () => {
+    const oldCwd = resolve("settled-reconnect-cleanup-old");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const initialBridge = makeMockBridge("srv1", ["initial"]);
+    initialBridge.dispose.mockRejectedValue(
+      new Error("old process tree still owns authority"),
+    );
+    mockCreateMCPConnection.mockResolvedValueOnce({
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    await expect(
+      transitionSandboxExecutionBroker(
+        broker,
+        resolve("settled-reconnect-cleanup-new"),
+      ),
+    ).rejects.toThrow(/quiesce failed; old authority restored/);
+    expect(broker.cwd).toBe(oldCwd);
+
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("poisons replacement after pre-client transport cleanup fails", async () => {
+    const oldCwd = resolve("pre-client-cleanup-old");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const transportCleanupError = new AggregateError(
+      [new Error("initialize failed"), new Error("transport close failed")],
+      'MCP stdio server "srv1" failed and transport cleanup also failed',
+    );
+    mockCreateMCPConnection.mockRejectedValueOnce(transportCleanupError);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    expect(manager.getConnectionState("srv1")).toEqual({
+      type: "failed",
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    await expect(
+      transitionSandboxExecutionBroker(
+        broker,
+        resolve("pre-client-cleanup-new"),
+      ),
+    ).rejects.toThrow(/quiesce failed; old authority restored/);
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    expect(broker.cwd).toBe(oldCwd);
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("clears retained cleanup only after a retry proves disposal", async () => {
+    const oldCwd = resolve("retryable-reconnect-cleanup-old");
+    const newCwd = resolve("retryable-reconnect-cleanup-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const initialBridge = makeMockBridge("srv1", ["initial"]);
+    const retryableResourceBridge = makeMockResourceBridge("srv1");
+    retryableResourceBridge.dispose
+      .mockRejectedValueOnce(new Error("resource cleanup raced"))
+      .mockResolvedValue(undefined);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["recovered"]));
+    mockCreateResourceBridge.mockResolvedValueOnce(retryableResourceBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("connection cleanup failed"),
+    });
+    expect(retryableResourceBridge.dispose).toHaveBeenCalledOnce();
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    await expect(
+      transitionSandboxExecutionBroker(broker, newCwd),
+    ).resolves.toBeUndefined();
+
+    expect(retryableResourceBridge.dispose).toHaveBeenCalledTimes(2);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
     expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
+    expect(broker.cwd).toBe(newCwd);
+
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
   });
