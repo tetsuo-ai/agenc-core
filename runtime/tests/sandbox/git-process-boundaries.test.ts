@@ -3,12 +3,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -58,6 +60,7 @@ function unavailableBroker(cwd: string): SandboxExecutionBroker {
 function recordingRestrictedBroker(
   cwd: string,
   requests: SandboxTransformRequest[],
+  failureForRequest?: (request: SandboxTransformRequest) => string | undefined,
 ): SandboxExecutionBroker {
   return new SandboxExecutionBroker({
     mode: "workspace_write",
@@ -71,6 +74,18 @@ function recordingRestrictedBroker(
       selectInitial: () => "linux_seccomp",
       transform: (request: SandboxTransformRequest) => {
         requests.push(request);
+        const failure = failureForRequest?.(request);
+        if (failure !== undefined) {
+          return {
+            command: [
+              process.execPath,
+              "-e",
+              `process.stderr.write(${JSON.stringify(failure)}); process.exit(1)`,
+            ],
+            cwd: request.command.cwd,
+            env: request.command.env,
+          } as never;
+        }
         return {
           command: [request.command.program, ...request.command.args],
           cwd: request.command.cwd,
@@ -130,7 +145,7 @@ afterEach(() => {
 });
 
 describe.sequential("git process sandbox boundaries", () => {
-  it("grants only operation-scoped metadata paths for restricted worktree add and remove", async () => {
+  it("separates restricted worktree metadata mutation from checkout materialization", async () => {
     const root = tempRoot("agenc-restricted-worktree-boundary-");
     initGitRepo(root);
     const requests: SandboxTransformRequest[] = [];
@@ -172,6 +187,7 @@ describe.sequential("git process sandbox boundaries", () => {
       root,
       "worktree",
       "add",
+      "--no-checkout",
       "-b",
       slug,
       worktreePath,
@@ -190,6 +206,39 @@ describe.sequential("git process sandbox boundaries", () => {
         ],
       },
     });
+    const checkoutRequest = requests.find((request) =>
+      request.command.args.includes("checkout") &&
+      request.command.args.includes(worktreePath)
+    );
+    expect(checkoutRequest?.command.args).toEqual([
+      ...hardening,
+      "-C",
+      worktreePath,
+      "checkout",
+      "HEAD",
+    ]);
+    const gitdirPointer = readFileSync(join(worktreePath, ".git"), "utf8")
+      .trim()
+      .slice("gitdir:".length)
+      .trim();
+    const worktreeAdminDir = realpathSync(resolve(worktreePath, gitdirPointer));
+    expect(checkoutRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: worktreeAdminDir },
+            access: "write",
+          },
+          {
+            path: { kind: "path", path: worktreePath },
+            access: "write",
+          },
+        ],
+      },
+    });
+    expect(requests.indexOf(addRequest!)).toBeLessThan(
+      requests.indexOf(checkoutRequest!),
+    );
 
     const removeArgs: Record<string, unknown> = {
       action: "remove",
@@ -252,6 +301,133 @@ describe.sequential("git process sandbox boundaries", () => {
         ],
       },
     });
+  });
+
+  it("rolls back metadata and the new branch when restricted checkout fails", async () => {
+    const root = tempRoot("agenc-restricted-worktree-checkout-failure-");
+    initGitRepo(root);
+    const requests: SandboxTransformRequest[] = [];
+    let failedWorktreeAdminDir: string | undefined;
+    const broker = recordingRestrictedBroker(
+      root,
+      requests,
+      (request) => {
+        if (!request.command.args.includes("checkout")) return undefined;
+        const worktreePathArg = request.command.args.at(-3);
+        if (worktreePathArg === undefined) return undefined;
+        const pointer = readFileSync(join(worktreePathArg, ".git"), "utf8")
+          .trim()
+          .slice("gitdir:".length)
+          .trim();
+        failedWorktreeAdminDir = realpathSync(
+          resolve(worktreePathArg, pointer),
+        );
+        return "injected checkout failure";
+      },
+    );
+    const slug = "checkout-failure";
+    const worktreePath = join(root, ".agenc", "worktrees", slug);
+    const args: Record<string, unknown> = {
+      name: slug,
+      __agencSessionId: "restricted-worktree-checkout-failure",
+    };
+    attachSandboxExecutionBroker(args, broker, "tool");
+
+    const entered = await createEnterWorktreeTool({ cwd: root }).execute(args);
+
+    expect(entered.isError).toBe(true);
+    expect(String(entered.content)).toContain("injected checkout failure");
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(
+      execFileSync("git", ["branch", "--list", slug], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("");
+    expect(
+      execFileSync("git", ["worktree", "list", "--porcelain"], {
+        cwd: root,
+        encoding: "utf8",
+      }),
+    ).not.toContain(worktreePath);
+
+    const addRequest = requests.find((request) =>
+      request.command.args.includes("add") &&
+      request.command.args.includes(worktreePath)
+    );
+    const checkoutRequest = requests.find((request) =>
+      request.command.args.includes("checkout") &&
+      request.command.args.includes(worktreePath)
+    );
+    const removeRequest = requests.find((request) =>
+      request.command.args.includes("remove") &&
+      request.command.args.includes(worktreePath)
+    );
+    const branchDeleteRequest = requests.find((request) =>
+      request.command.args.includes("branch") &&
+      request.command.args.includes("-D") &&
+      request.command.args.includes(slug)
+    );
+    expect(addRequest).toBeDefined();
+    expect(checkoutRequest).toBeDefined();
+    expect(removeRequest).toBeDefined();
+    expect(branchDeleteRequest).toBeDefined();
+    expect(failedWorktreeAdminDir).toBeDefined();
+    expect(addRequest?.command.args).toContain("--no-checkout");
+    expect(checkoutRequest?.command.args.slice(-4)).toEqual([
+      "-C",
+      worktreePath,
+      "checkout",
+      "HEAD",
+    ]);
+    expect(checkoutRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: {
+              kind: "path",
+              path: failedWorktreeAdminDir,
+            },
+            access: "write",
+          },
+          {
+            path: { kind: "path", path: worktreePath },
+            access: "write",
+          },
+        ],
+      },
+    });
+    expect(removeRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: join(root, ".git") },
+            access: "write",
+          },
+          {
+            path: { kind: "path", path: worktreePath },
+            access: "write",
+          },
+        ],
+      },
+    });
+    expect(branchDeleteRequest?.command.additionalPermissions).toEqual({
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: join(root, ".git") },
+            access: "write",
+          },
+        ],
+      },
+    });
+    const addIndex = requests.indexOf(addRequest!);
+    const checkoutIndex = requests.indexOf(checkoutRequest!);
+    const removeIndex = requests.indexOf(removeRequest!);
+    const branchDeleteIndex = requests.indexOf(branchDeleteRequest!);
+    expect(addIndex).toBeLessThan(checkoutIndex);
+    expect(checkoutIndex).toBeLessThan(removeIndex);
+    expect(removeIndex).toBeLessThan(branchDeleteIndex);
   });
 
   it.skipIf(process.platform === "win32")(

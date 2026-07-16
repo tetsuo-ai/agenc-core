@@ -58,6 +58,7 @@ import { plainTextErrorToolResult as errorResult } from "../results.js";
 import { runSandboxedToolCommand } from "./coding-common.js";
 import {
   hardenGitWorktreeMutationArgs,
+  worktreeCheckoutPermissions,
   worktreeMutationPermissions,
 } from "../../sandbox/worktree-permissions.js";
 
@@ -215,24 +216,36 @@ async function runWorktreeGit(
   toolArgs: Record<string, unknown>,
   commandArgs: readonly string[],
   cwd: string,
-  mutation?: {
-    readonly repoRoot: string;
-    readonly writablePaths?: readonly string[];
-  },
+  authority?:
+    | {
+        readonly kind: "mutation";
+        readonly repoRoot: string;
+        readonly writablePaths?: readonly string[];
+      }
+    | {
+        readonly kind: "checkout";
+        readonly repoRoot: string;
+        readonly worktreePath: string;
+      },
 ) {
   return runSandboxedToolCommand({
     toolArgs,
     program: "git",
-    args: mutation === undefined
+    args: authority === undefined
       ? commandArgs
       : hardenGitWorktreeMutationArgs(commandArgs),
     cwd,
-    ...(mutation !== undefined
+    ...(authority !== undefined
       ? {
-          additionalPermissions: worktreeMutationPermissions(
-            mutation.repoRoot,
-            mutation.writablePaths,
-          ),
+          additionalPermissions: authority.kind === "mutation"
+            ? worktreeMutationPermissions(
+                authority.repoRoot,
+                authority.writablePaths,
+              )
+            : worktreeCheckoutPermissions(
+                authority.repoRoot,
+                authority.worktreePath,
+              ),
         }
       : {}),
   });
@@ -445,12 +458,14 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
           mainRepoRoot,
           "worktree",
           "add",
+          "--no-checkout",
           "-b",
           branch,
           worktreePath,
         ],
         mainRepoRoot,
         {
+          kind: "mutation",
           repoRoot: mainRepoRoot,
           writablePaths: [resolve(mainRepoRoot, ".agenc")],
         },
@@ -461,6 +476,103 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
           create.stdout.trim() ||
           "git worktree add failed";
         return errorResult(`Failed to create worktree: ${errText}`);
+      }
+
+      // Materialize repository content only after Git has registered the
+      // linked worktree. This phase deliberately omits write access to the
+      // common .git directory: repository-configured checkout filters inherit
+      // the child process boundary, so carrying the metadata grant into this
+      // phase would let one mutate common repository state.
+      let checkoutError: string | undefined;
+      try {
+        const checkout = await runWorktreeGit(
+          rawArgs,
+          ["-C", worktreePath, "checkout", "HEAD"],
+          worktreePath,
+          {
+            kind: "checkout",
+            repoRoot: mainRepoRoot,
+            worktreePath,
+          },
+        );
+        if (checkout.exitCode !== 0) {
+          checkoutError =
+            checkout.stderr.trim() ||
+            checkout.stdout.trim() ||
+            "git checkout failed";
+        }
+      } catch (error) {
+        checkoutError = error instanceof Error ? error.message : String(error);
+      }
+
+      if (checkoutError !== undefined) {
+        const cleanupErrors: string[] = [];
+        let removed = false;
+        try {
+          const remove = await runWorktreeGit(
+            rawArgs,
+            [
+              "-C",
+              mainRepoRoot,
+              "worktree",
+              "remove",
+              "--force",
+              worktreePath,
+            ],
+            mainRepoRoot,
+            {
+              kind: "mutation",
+              repoRoot: mainRepoRoot,
+              writablePaths: [worktreePath],
+            },
+          );
+          if (remove.exitCode === 0) {
+            removed = true;
+          } else {
+            cleanupErrors.push(
+              remove.stderr.trim() ||
+                remove.stdout.trim() ||
+                "git worktree remove failed",
+            );
+          }
+        } catch (error) {
+          cleanupErrors.push(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+
+        // A removed linked worktree leaves its newly-created branch behind.
+        // Delete it as part of the rollback so retrying the same slug remains
+        // possible. If worktree removal failed the branch is still checked
+        // out and must not be deleted independently.
+        if (removed) {
+          try {
+            const deleteBranch = await runWorktreeGit(
+              rawArgs,
+              ["-C", mainRepoRoot, "branch", "-D", branch],
+              mainRepoRoot,
+              { kind: "mutation", repoRoot: mainRepoRoot },
+            );
+            if (deleteBranch.exitCode !== 0) {
+              cleanupErrors.push(
+                deleteBranch.stderr.trim() ||
+                  deleteBranch.stdout.trim() ||
+                  "git branch cleanup failed",
+              );
+            }
+          } catch (error) {
+            cleanupErrors.push(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+
+        const cleanupNote = cleanupErrors.length === 0
+          ? ""
+          : ` Cleanup was incomplete: ${cleanupErrors.join("; ")}`;
+        return errorResult(
+          `Failed to checkout worktree: ${checkoutError}.${cleanupNote}`,
+        );
       }
 
       const session: WorktreeSession = {
@@ -627,6 +739,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         ],
         session.mainRepoRoot,
         {
+          kind: "mutation",
           repoRoot: session.mainRepoRoot,
           writablePaths: [session.worktreePath],
         },
@@ -652,7 +765,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
             session.worktreeBranch,
           ],
           session.mainRepoRoot,
-          { repoRoot: session.mainRepoRoot },
+          { kind: "mutation", repoRoot: session.mainRepoRoot },
         ).catch(() => {
           /* best-effort branch cleanup */
         });
