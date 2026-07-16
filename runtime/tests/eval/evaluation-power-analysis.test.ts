@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { computeDocumentDigest } from "../../src/eval-contract/index.js";
 import {
   PowerAnalysisValidationError,
+  computeInterceptOnlyCr2Inference,
   computePowerAnalysis,
   type PairedPilotBinaryOutcome,
   type PowerAnalysisInput,
@@ -33,7 +34,7 @@ function makePilotOutcomes(): PairedPilotBinaryOutcome[] {
           comparisonId: comparison.comparisonId,
           comparatorSystemId: comparison.comparatorSystemId,
           taskId: `task-${String(taskIndex).padStart(2, "0")}`,
-          repositoryId: `repo-${String(Math.floor(taskIndex / 3)).padStart(2, "0")}`,
+          repositoryId: `repo-${String(Math.floor(taskIndex / 2)).padStart(2, "0")}`,
           trialId: `seed-${trialIndex}`,
           primaryOutcome,
           comparatorOutcome,
@@ -90,14 +91,17 @@ describe("evaluation pilot power analysis", () => {
     expect(permuted).toEqual(document);
     expect(document.documentDigest).toBe(computeDocumentDigest(document));
     expect(document.documentDigest).toBe(
-      "sha256:ed753df1c69a1a0c8d32db0c711185ee74a61accffb4efb21a6b507c24cdef86",
+      "sha256:26d36ac4828e8be4e96afb04ecacb8b29ceec4fc9fd909cb6039a09299b513c2",
     );
     expect(document.pilot).toMatchObject({
       taskCount: 30,
-      repositoryCount: 10,
+      repositoryCount: 15,
       comparisonCount: 2,
       minimumRepetitionsPerTaskComparison: 3,
       maximumRepetitionsPerTaskComparison: 9,
+      contractMinimumRepetitionsPerTaskComparison: 3,
+      recommendedRepetitionsPerTaskComparison: 5,
+      repetitionRecommendation: "accepted_contract_minimum_below_recommended",
       aggregation: "mean_within_task_then_equal_task_weight",
     });
     expect(document.design).toMatchObject({
@@ -108,7 +112,15 @@ describe("evaluation pilot power analysis", () => {
       confirmatoryRepositoryCount: 20,
       confirmatoryRepetitionsPerSystemTask: 3,
       multipleComparators: "intersection_union",
+      inference: "bias_reduced_linearization_cr2",
+      degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only",
       optionalStopping: false,
+    });
+    expect(document.simulation).toMatchObject({
+      method: "hierarchical_repository_task_joint_attempt_bootstrap",
+      attemptModel: "empirical_joint_multinomial_with_minimal_marginal_transport",
+      outcomeDependence: "shared_primary_and_joint_comparator_attempt_resampling",
+      repetitionAggregation: "mean_within_task_before_repository_inference",
     });
     expect(document.sensitivityGrid).toHaveLength(8);
     expect(document.decision.status).toBe("adequately_powered");
@@ -149,7 +161,7 @@ describe("evaluation pilot power analysis", () => {
     expect(comparison?.pairedDifferenceTaskWeighted).not.toBeCloseTo(incorrectlyTrialWeighted, 5);
   });
 
-  test("increases power under a larger assumed effect with common random numbers", () => {
+  test("increases power under larger effects, samples, and repeat counts", () => {
     const document = computePowerAnalysis(makeInput());
     for (const taskCount of [50, 100]) {
       for (const heterogeneityMultiplier of [1, 1.5]) {
@@ -183,6 +195,77 @@ describe("evaluation pilot power analysis", () => {
         );
       }
     }
+
+    const fiveRepeatDocument = computePowerAnalysis(makeInput({
+      confirmatoryRepetitionsPerSystemTask: 5,
+    }));
+    expect(fiveRepeatDocument.documentDigest).not.toBe(document.documentDigest);
+    let strictRepeatPowerImprovements = 0;
+    for (const taskCount of [50, 100]) {
+      for (const heterogeneityMultiplier of [1, 1.5]) {
+        const threeRepeatCell = document.sensitivityGrid.find((cell) =>
+          cell.taskCount === taskCount
+          && cell.heterogeneityMultiplier === heterogeneityMultiplier
+          && cell.assumedPairedDifference === 0.2);
+        const fiveRepeatCell = fiveRepeatDocument.sensitivityGrid.find((cell) =>
+          cell.taskCount === taskCount
+          && cell.heterogeneityMultiplier === heterogeneityMultiplier
+          && cell.assumedPairedDifference === 0.2);
+        expect(fiveRepeatCell?.intersectionPower.estimate).toBeGreaterThanOrEqual(
+          threeRepeatCell?.intersectionPower.estimate ?? 1,
+        );
+        if (
+          (fiveRepeatCell?.intersectionPower.estimate ?? 0)
+            > (threeRepeatCell?.intersectionPower.estimate ?? 1)
+        ) {
+          strictRepeatPowerImprovements += 1;
+        }
+      }
+    }
+    expect(strictRepeatPowerImprovements).toBeGreaterThan(0);
+  });
+
+  test("matches the intercept-only CR2 and Satterthwaite closed forms", () => {
+    const clusters = Array.from({ length: 20 }, (_, repositoryIndex) =>
+      Array.from({ length: repositoryIndex < 10 ? 3 : 2 }, (_, taskIndex) =>
+        ((repositoryIndex * 3 + taskIndex) % 7 - 3) / 3));
+    const inference = computeInterceptOnlyCr2Inference(clusters);
+    const taskCount = clusters.flat().length;
+    const estimate = clusters.flat().reduce((sum, value) => sum + value, 0) / taskCount;
+    const sizes = clusters.map((cluster) => cluster.length);
+    const scores = clusters.map((cluster) =>
+      cluster.reduce((sum, value) => sum + value - estimate, 0));
+    const expectedVariance = scores.reduce((sum, score, index) =>
+      sum + score ** 2 / (1 - sizes[index] / taskCount), 0) / taskCount ** 2;
+    const dfDenominator = taskCount ** 2 * sizes.reduce(
+      (sum, size) => sum + size ** 2 / (taskCount - size) ** 2,
+      0,
+    ) - 2 * taskCount * sizes.reduce(
+      (sum, size) => sum + size ** 3 / (taskCount - size) ** 2,
+      0,
+    ) + sizes.reduce(
+      (sum, size) => sum + size ** 2 / (taskCount - size),
+      0,
+    ) ** 2;
+    const expectedDf = taskCount ** 2 / dfDenominator;
+
+    expect(inference.estimate).toBeCloseTo(estimate, 14);
+    expect(inference.standardError ** 2).toBeCloseTo(expectedVariance, 14);
+    expect(inference.degreesOfFreedom).toBeCloseTo(expectedDf, 14);
+    expect(inference.standardError).toBeCloseTo(0.1084061402917523, 14);
+    expect(inference.degreesOfFreedom).toBeCloseTo(18.232654114005673, 14);
+    expect(inference.lower95).toBeCloseTo(-0.25421133880089813, 12);
+    expect(inference.upper95).toBeCloseTo(0.2008780054675648, 12);
+    expect(inference.degreesOfFreedom).toBeLessThan(19);
+    expect(inference.lower95).toBeLessThan(inference.estimate);
+    expect(inference.upper95).toBeGreaterThan(inference.estimate);
+
+    const equalClusters = Array.from({ length: 20 }, (_, repositoryIndex) => [
+      (repositoryIndex % 5) / 5,
+      ((repositoryIndex + 1) % 5) / 5,
+      ((repositoryIndex + 2) % 5) / 5,
+    ]);
+    expect(computeInterceptOnlyCr2Inference(equalClusters).degreesOfFreedom).toBeCloseTo(19, 13);
   });
 
   test("withholds a confirmatory plan when conservative power is below 80%", () => {
@@ -201,6 +284,13 @@ describe("evaluation pilot power analysis", () => {
     expect(() => computePowerAnalysis(makeInput({
       outcomes: outcomes.filter((outcome) => outcome.taskId !== "task-29"),
     }))).toThrow(/at least 30 distinct tasks/u);
+
+    expect(() => computePowerAnalysis(makeInput({
+      outcomes: outcomes.map((outcome) => ({
+        ...outcome,
+        repositoryId: `repo-${Math.floor(Number(outcome.taskId.slice(-2)) / 3)}`,
+      })),
+    }))).toThrow(/at least 15 repositories/u);
 
     expect(() => computePowerAnalysis(makeInput({
       outcomes: outcomes.filter((outcome) => !(

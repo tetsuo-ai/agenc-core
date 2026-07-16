@@ -1,5 +1,6 @@
 export {
   PowerAnalysisValidationError,
+  computeInterceptOnlyCr2Inference,
   computePowerAnalysis,
 } from "./analysis.js";
 export {
@@ -11,9 +12,11 @@ export {
   EVAL_POWER_MINIMUM_PILOT_REPOSITORIES,
   EVAL_POWER_MINIMUM_PILOT_TASKS,
   EVAL_POWER_MINIMUM_REPETITIONS,
+  EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
   type BinaryOutcome,
   type FixedConfirmatoryPlan,
+  type InterceptOnlyCr2Inference,
   type PairedPilotBinaryOutcome,
   type PilotComparisonSummary,
   type PowerAnalysisDocument,

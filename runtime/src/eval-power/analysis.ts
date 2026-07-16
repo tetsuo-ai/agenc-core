@@ -13,8 +13,10 @@ import {
   EVAL_POWER_MINIMUM_PILOT_REPOSITORIES,
   EVAL_POWER_MINIMUM_PILOT_TASKS,
   EVAL_POWER_MINIMUM_REPETITIONS,
+  EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
   type FixedConfirmatoryPlan,
+  type InterceptOnlyCr2Inference,
   type PairedPilotBinaryOutcome,
   type PilotComparisonSummary,
   type PowerAnalysisDocument,
@@ -52,12 +54,31 @@ interface ValidatedPilot {
   readonly minimumRepetitions: number;
   readonly maximumRepetitions: number;
   readonly normalizedOutcomes: readonly PairedPilotBinaryOutcome[];
+  readonly jointAttemptsByTask: ReadonlyMap<string, readonly JointPilotAttempt[]>;
 }
 
 interface ScenarioModel {
   readonly assumedEffect: number;
   readonly heterogeneityMultiplier: number;
-  readonly taskEffectsByComparison: ReadonlyMap<string, ReadonlyMap<string, number>>;
+  readonly targetComparatorProbabilitiesByComparison: ReadonlyMap<
+    string,
+    ReadonlyMap<string, number>
+  >;
+}
+
+interface JointPilotAttempt {
+  readonly primaryOutcome: 0 | 1;
+  readonly comparatorOutcomes: ReadonlyMap<string, 0 | 1>;
+}
+
+interface SyntheticAttemptDraw {
+  readonly jointAttemptIndex: number;
+  readonly adjustmentUniforms: readonly number[];
+}
+
+interface SyntheticTaskDraw {
+  readonly taskId: string;
+  readonly attempts: readonly SyntheticAttemptDraw[];
 }
 
 export class PowerAnalysisValidationError extends Error {
@@ -468,6 +489,25 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     compareString(left, right))) {
     taskIdsByRepository.set(repositoryId, [...taskIds].sort(compareString));
   }
+  const jointAttemptsByTask = new Map<string, readonly JointPilotAttempt[]>();
+  const firstComparisonId = comparisonIds[0];
+  for (const taskId of allTaskIds) {
+    const trialIds = referenceTrialIds?.get(taskId) as readonly string[];
+    const attempts = trialIds.map((trialId) => {
+      const primaryOutcome = cells
+        .get(`${firstComparisonId}\u0000${taskId}`)
+        ?.get(trialId)?.primaryOutcome as 0 | 1;
+      const comparatorOutcomes = new Map<string, 0 | 1>();
+      for (const comparisonId of comparisonIds) {
+        comparatorOutcomes.set(
+          comparisonId,
+          cells.get(`${comparisonId}\u0000${taskId}`)?.get(trialId)?.comparatorOutcome as 0 | 1,
+        );
+      }
+      return { primaryOutcome, comparatorOutcomes };
+    });
+    jointAttemptsByTask.set(taskId, attempts);
+  }
   return {
     comparisons: comparisonTasks,
     repositoryIds: [...taskIdsByRepository.keys()],
@@ -475,6 +515,7 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     minimumRepetitions,
     maximumRepetitions,
     normalizedOutcomes: validOutcomes.sort(compareOutcome),
+    jointAttemptsByTask,
   };
 }
 
@@ -516,29 +557,38 @@ function summarizeComparison(
   };
 }
 
-function clampUnitDifference(value: number): number {
-  return Math.max(-1, Math.min(1, value));
+function clampProbability(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
-function createShiftedTaskEffects(
+function createTargetComparatorProbabilities(
   comparison: AggregatedComparison,
   taskIdsByRepository: ReadonlyMap<string, readonly string[]>,
   assumedEffect: number,
   heterogeneityMultiplier: number,
 ): ReadonlyMap<string, number> {
   const observedMean = repositoryWeightedMean(comparison.tasks, taskIdsByRepository);
-  const raw = new Map<string, number>();
+  const rawDesiredEffects = new Map<string, number>();
   for (const task of comparison.tasks.values()) {
-    raw.set(task.taskId, assumedEffect + heterogeneityMultiplier * (task.difference - observedMean));
+    rawDesiredEffects.set(
+      task.taskId,
+      assumedEffect + heterogeneityMultiplier * (task.difference - observedMean),
+    );
   }
   const meanForOffset = (offset: number): number => average(
     [...taskIdsByRepository.values()].map((taskIds) => average(
-      taskIds.map((taskId) => clampUnitDifference((raw.get(taskId) as number) + offset)),
+      taskIds.map((taskId) => {
+        const task = comparison.tasks.get(taskId) as AggregatedTask;
+        const targetComparatorProbability = clampProbability(
+          task.primaryMean - ((rawDesiredEffects.get(taskId) as number) + offset),
+        );
+        return task.primaryMean - targetComparatorProbability;
+      }),
     )),
   );
 
-  // A monotone bounded location correction keeps the requested population mean
-  // exact even when sensitivity inflation reaches the [-1, 1] outcome bounds.
+  // This monotone correction keeps the requested repository-population effect
+  // exact while respecting the feasible comparator probability [0, 1].
   let low = -2;
   let high = 2;
   for (let iteration = 0; iteration < 80; iteration += 1) {
@@ -547,7 +597,13 @@ function createShiftedTaskEffects(
     else high = midpoint;
   }
   const offset = (low + high) / 2;
-  return new Map([...raw].map(([taskId, value]) => [taskId, clampUnitDifference(value + offset)]));
+  return new Map([...rawDesiredEffects].map(([taskId, desiredEffect]) => {
+    const task = comparison.tasks.get(taskId) as AggregatedTask;
+    return [
+      taskId,
+      clampProbability(task.primaryMean - (desiredEffect + offset)),
+    ];
+  }));
 }
 
 function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot): readonly ScenarioModel[] {
@@ -556,9 +612,9 @@ function createScenarioModels(input: PowerAnalysisInput, pilot: ValidatedPilot):
   return effects.flatMap((assumedEffect) => multipliers.map((heterogeneityMultiplier) => ({
     assumedEffect,
     heterogeneityMultiplier,
-    taskEffectsByComparison: new Map(pilot.comparisons.map((comparison) => [
+    targetComparatorProbabilitiesByComparison: new Map(pilot.comparisons.map((comparison) => [
       comparison.comparisonId,
-      createShiftedTaskEffects(
+      createTargetComparatorProbabilities(
         comparison,
         pilot.taskIdsByRepository,
         assumedEffect,
@@ -593,6 +649,10 @@ class DeterministicRandom {
     while (value >= limit) value = this.nextUint32();
     return value % exclusiveMaximum;
   }
+
+  nextUnitInterval(): number {
+    return (this.nextUint32() + 0.5) / 0x1_0000_0000;
+  }
 }
 
 function deriveRandomSeed(randomSeed: number, taskCount: number, replication: number): number {
@@ -602,25 +662,59 @@ function deriveRandomSeed(randomSeed: number, taskCount: number, replication: nu
   return digest.readUInt32BE(0);
 }
 
+function deriveAttemptSeed(replicationSeed: number, repositoryIndex: number, taskIndex: number): number {
+  // The replication seed is SHA-256 domain separated above. This avalanche
+  // mix cheaply derives per-task xorshift streams without
+  // making configured repeat counts perturb repository/task selection.
+  let value = replicationSeed
+    ^ Math.imul(repositoryIndex + 1, 0x9e37_79b1)
+    ^ Math.imul(taskIndex + 1, 0x85eb_ca6b);
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb_352d);
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846c_a68b);
+  value ^= value >>> 16;
+  return value >>> 0;
+}
+
 function sampleSyntheticRepositories(
   pilot: ValidatedPilot,
   repositoryCount: number,
   taskCount: number,
+  repetitions: number,
+  replicationSeed: number,
   random: DeterministicRandom,
-): readonly (readonly string[])[] {
+): readonly (readonly SyntheticTaskDraw[])[] {
   const baseTasks = Math.floor(taskCount / repositoryCount);
   const repositoriesWithExtraTask = taskCount % repositoryCount;
   return Array.from({ length: repositoryCount }, (_, repositoryIndex) => {
     const sourceRepository = pilot.repositoryIds[random.nextInteger(pilot.repositoryIds.length)];
     const sourceTasks = pilot.taskIdsByRepository.get(sourceRepository) as readonly string[];
     const count = baseTasks + (repositoryIndex < repositoriesWithExtraTask ? 1 : 0);
-    return Array.from({ length: count }, () => sourceTasks[random.nextInteger(sourceTasks.length)]);
+    return Array.from({ length: count }, (_, taskIndex): SyntheticTaskDraw => {
+      const taskId = sourceTasks[random.nextInteger(sourceTasks.length)];
+      const jointAttempts = pilot.jointAttemptsByTask.get(taskId) as readonly JointPilotAttempt[];
+      // Attempt streams are independent of the requested repetition count, so
+      // a five-repeat design extends the exact three-repeat prefix.
+      const attemptRandom = new DeterministicRandom(deriveAttemptSeed(
+        replicationSeed,
+        repositoryIndex,
+        taskIndex,
+      ));
+      return {
+        taskId,
+        attempts: Array.from({ length: repetitions }, () => ({
+          jointAttemptIndex: attemptRandom.nextInteger(jointAttempts.length),
+          adjustmentUniforms: pilot.comparisons.map(() => attemptRandom.nextUnitInterval()),
+        })),
+      };
+    });
   });
 }
 
 function studentTCritical975(degreesOfFreedom: number): number {
-  // Cornish-Fisher through O(df^-4); at the enforced df >= 19 its error is
-  // negligible relative to Monte Carlo error and it is platform deterministic.
+  // Cornish-Fisher through O(df^-4); under the enforced balanced 20+-cluster
+  // design its error is below 1e-6 and it is platform deterministic.
   const z = NORMAL_975;
   const z2 = z * z;
   const z3 = z2 * z;
@@ -635,12 +729,9 @@ function studentTCritical975(degreesOfFreedom: number): number {
     + (79 * z9 + 776 * z7 + 1_482 * z5 - 1_920 * z3 - 945 * z) / (92_160 * df ** 4);
 }
 
-function comparisonSucceeds(
-  sampledTaskIdsByRepository: readonly (readonly string[])[],
-  effects: ReadonlyMap<string, number>,
-): boolean {
-  const clusters = sampledTaskIdsByRepository.map((taskIds) =>
-    taskIds.map((taskId) => effects.get(taskId) as number));
+function computeInterceptOnlyCr2Raw(
+  clusters: readonly (readonly number[])[],
+): InterceptOnlyCr2Inference {
   const taskCount = clusters.reduce((sum, cluster) => sum + cluster.length, 0);
   const point = clusters.reduce(
     (sum, cluster) => sum + cluster.reduce((clusterSum, value) => clusterSum + value, 0),
@@ -648,12 +739,138 @@ function comparisonSucceeds(
   ) / taskCount;
   const clusterScores = clusters.map((cluster) =>
     cluster.reduce((sum, value) => sum + value - point, 0));
-  const repositoryCount = clusters.length;
-  const variance = (repositoryCount / (repositoryCount - 1))
-    * clusterScores.reduce((sum, score) => sum + score ** 2, 0)
-    / taskCount ** 2;
-  const lower = point - studentTCritical975(repositoryCount - 1) * Math.sqrt(Math.max(0, variance));
-  return point + EPSILON >= EVAL_POWER_MINIMUM_EFFECT && lower > 0;
+  const clusterSizes = clusters.map((cluster) => cluster.length);
+  const variance = clusterScores.reduce((sum, score, index) => {
+    const leverage = clusterSizes[index] / taskCount;
+    return sum + score ** 2 / (1 - leverage);
+  }, 0) / taskCount ** 2;
+
+  // Bell-McCaffrey Satterthwaite df for an intercept-only OLS model. This is
+  // the closed form independently exercised by clubSandwich's reference tests
+  // and follows Pustejovsky & Tipton (2018), doi:10.1080/07350015.2016.1247004.
+  const firstDfTerm = clusterSizes.reduce(
+    (sum, size) => sum + size ** 2 / (taskCount - size) ** 2,
+    0,
+  );
+  const secondDfTerm = clusterSizes.reduce(
+    (sum, size) => sum + size ** 3 / (taskCount - size) ** 2,
+    0,
+  );
+  const thirdDfTerm = clusterSizes.reduce(
+    (sum, size) => sum + size ** 2 / (taskCount - size),
+    0,
+  );
+  const dfDenominator = taskCount ** 2 * firstDfTerm
+    - 2 * taskCount * secondDfTerm
+    + thirdDfTerm ** 2;
+  const degreesOfFreedom = taskCount ** 2 / dfDenominator;
+  const standardError = Math.sqrt(Math.max(0, variance));
+  const criticalValue = studentTCritical975(degreesOfFreedom);
+  return {
+    estimate: point,
+    standardError,
+    degreesOfFreedom,
+    lower95: point - criticalValue * standardError,
+    upper95: point + criticalValue * standardError,
+  };
+}
+
+/**
+ * Bias-reduced CR2/Satterthwaite inference for an intercept-only task effect,
+ * clustered by repository. The confirmatory design constraints are enforced
+ * here as well as in the power-analysis input.
+ */
+export function computeInterceptOnlyCr2Inference(
+  clusters: readonly (readonly number[])[],
+): InterceptOnlyCr2Inference {
+  if (!Array.isArray(clusters) || clusters.length < EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES) {
+    throw new PowerAnalysisValidationError([
+      `CR2 inference requires at least ${EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES} repositories`,
+    ]);
+  }
+  if (clusters.some((cluster) => !Array.isArray(cluster) || cluster.length === 0)) {
+    throw new PowerAnalysisValidationError(["CR2 inference requires non-empty repository clusters"]);
+  }
+  const taskCount = clusters.reduce((sum, cluster) => sum + cluster.length, 0);
+  if (taskCount < EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS) {
+    throw new PowerAnalysisValidationError([
+      `CR2 inference requires at least ${EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS} tasks`,
+    ]);
+  }
+  if (clusters.some((cluster) => cluster.length * 100 > taskCount * 10)) {
+    throw new PowerAnalysisValidationError(["CR2 inference repository clusters must obey the 10% task cap"]);
+  }
+  if (clusters.some((cluster) => cluster.some((value: unknown) =>
+    typeof value !== "number" || !Number.isFinite(value) || value < -1 || value > 1))) {
+    throw new PowerAnalysisValidationError(["CR2 task effects must be finite values from -1 through 1"]);
+  }
+  return computeInterceptOnlyCr2Raw(clusters);
+}
+
+function adjustComparatorOutcome(
+  baseOutcome: 0 | 1,
+  baseProbability: number,
+  targetProbability: number,
+  uniform: number,
+): 0 | 1 {
+  if (Math.abs(targetProbability - baseProbability) < EPSILON) return baseOutcome;
+  if (targetProbability < baseProbability) {
+    if (baseOutcome === 0) return 0;
+    return uniform < targetProbability / baseProbability ? 1 : 0;
+  }
+  if (baseOutcome === 1) return 1;
+  return uniform < (targetProbability - baseProbability) / (1 - baseProbability) ? 1 : 0;
+}
+
+function simulateClusteredTaskDifferences(
+  sampledRepositories: readonly (readonly SyntheticTaskDraw[])[],
+  scenario: ScenarioModel,
+  pilot: ValidatedPilot,
+): ReadonlyMap<string, readonly (readonly number[])[]> {
+  const clustersByComparison = new Map<string, number[][]>(
+    pilot.comparisons.map((comparison) => [
+      comparison.comparisonId,
+      sampledRepositories.map(() => []),
+    ]),
+  );
+  for (const [repositoryIndex, repository] of sampledRepositories.entries()) {
+    for (const task of repository) {
+      const differences = pilot.comparisons.map(() => 0);
+      const jointAttempts = pilot.jointAttemptsByTask.get(task.taskId) as readonly JointPilotAttempt[];
+      for (const attempt of task.attempts) {
+        // Resampling the whole attempt row preserves the empirical joint
+        // multinomial (one shared primary plus every comparator). The monotone
+        // transport below changes only the requested comparator marginal.
+        const base = jointAttempts[attempt.jointAttemptIndex];
+        for (const [comparisonIndex, comparison] of pilot.comparisons.entries()) {
+          const baseComparatorOutcome = base.comparatorOutcomes.get(comparison.comparisonId) as 0 | 1;
+          const baseComparatorProbability = (
+            comparison.tasks.get(task.taskId) as AggregatedTask
+          ).comparatorMean;
+          const targetComparatorProbability = scenario.targetComparatorProbabilitiesByComparison
+            .get(comparison.comparisonId)
+            ?.get(task.taskId) as number;
+          const comparatorOutcome = adjustComparatorOutcome(
+            baseComparatorOutcome,
+            baseComparatorProbability,
+            targetComparatorProbability,
+            attempt.adjustmentUniforms[comparisonIndex],
+          );
+          differences[comparisonIndex] += base.primaryOutcome - comparatorOutcome;
+        }
+      }
+      for (const [comparisonIndex, comparison] of pilot.comparisons.entries()) {
+        (clustersByComparison.get(comparison.comparisonId) as number[][])[repositoryIndex]
+          .push(differences[comparisonIndex] / task.attempts.length);
+      }
+    }
+  }
+  return clustersByComparison;
+}
+
+function comparisonSucceeds(clusters: readonly (readonly number[])[]): boolean {
+  const inference = computeInterceptOnlyCr2Raw(clusters);
+  return inference.estimate + EPSILON >= EVAL_POWER_MINIMUM_EFFECT && inference.lower95 > 0;
 }
 
 function wilsonEstimate(successes: number, replications: number): PowerEstimate {
@@ -687,19 +904,22 @@ function simulateGrid(
       new Map(pilot.comparisons.map((comparison) => [comparison.comparisonId, 0])));
     const intersectionSuccesses = scenarios.map(() => 0);
     for (let replication = 0; replication < input.simulationReplications; replication += 1) {
-      const random = new DeterministicRandom(deriveRandomSeed(input.randomSeed, taskCount, replication));
+      const replicationSeed = deriveRandomSeed(input.randomSeed, taskCount, replication);
+      const random = new DeterministicRandom(replicationSeed);
       const sample = sampleSyntheticRepositories(
         pilot,
         input.confirmatoryRepositoryCount,
         taskCount,
+        input.confirmatoryRepetitionsPerSystemTask,
+        replicationSeed,
         random,
       );
       for (const [scenarioIndex, scenario] of scenarios.entries()) {
         let intersection = true;
+        const clustersByComparison = simulateClusteredTaskDifferences(sample, scenario, pilot);
         for (const comparison of pilot.comparisons) {
           const succeeds = comparisonSucceeds(
-            sample,
-            scenario.taskEffectsByComparison.get(comparison.comparisonId) as ReadonlyMap<string, number>,
+            clustersByComparison.get(comparison.comparisonId) as readonly (readonly number[])[],
           );
           if (succeeds) {
             const successes = comparisonSuccesses[scenarioIndex];
@@ -799,6 +1019,11 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       comparisonCount: pilot.comparisons.length,
       minimumRepetitionsPerTaskComparison: pilot.minimumRepetitions,
       maximumRepetitionsPerTaskComparison: pilot.maximumRepetitions,
+      contractMinimumRepetitionsPerTaskComparison: EVAL_POWER_MINIMUM_REPETITIONS,
+      recommendedRepetitionsPerTaskComparison: EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
+      repetitionRecommendation: pilot.minimumRepetitions >= EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS
+        ? "met"
+        : "accepted_contract_minimum_below_recommended",
       aggregation: "mean_within_task_then_equal_task_weight",
       repositoryTaskCounts,
       comparisons: pilot.comparisons.map((comparison) =>
@@ -809,7 +1034,8 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       targetPower: EVAL_POWER_TARGET,
       minimumEffect: EVAL_POWER_MINIMUM_EFFECT,
       primaryMetric: "paired_binary_success_rate_difference",
-      inference: "cluster_robust_t_interval_cr1",
+      inference: "bias_reduced_linearization_cr2",
+      degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only",
       inferenceUnit: "task_mean_after_repetition_aggregation",
       clusteringUnit: "repository",
       multipleComparators: "intersection_union",
@@ -822,15 +1048,18 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       optionalStopping: false,
     },
     simulation: {
-      method: "hierarchical_empirical_repository_task_bootstrap",
-      sensitivityModel: "bounded_location_shift_of_pilot_task_means",
+      method: "hierarchical_repository_task_joint_attempt_bootstrap",
+      attemptModel: "empirical_joint_multinomial_with_minimal_marginal_transport",
+      sensitivityModel: "bounded_location_shift_of_paired_attempt_means",
+      outcomeDependence: "shared_primary_and_joint_comparator_attempt_resampling",
+      repetitionAggregation: "mean_within_task_before_repository_inference",
       repositorySampling: "uniform_with_replacement",
       taskSamplingWithinRepository: "uniform_with_replacement",
       commonRandomNumbersAcrossSensitivityCells: true,
       simulationReplications: input.simulationReplications,
       randomSeed: input.randomSeed,
       randomStream: "sha256_domain_seeded_xorshift32_rejection_sampling_v1",
-      confidenceCriticalValue: "student_t_cornish_fisher_df_repositories_minus_one",
+      confidenceCriticalValue: "student_t_cornish_fisher_satterthwaite_df",
       powerDecisionInterval: "two_sided_wilson_95",
     },
     sensitivityGrid,

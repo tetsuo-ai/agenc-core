@@ -5,10 +5,11 @@ export const EVAL_POWER_ALPHA = "0.05" as const;
 export const EVAL_POWER_TARGET = "0.80" as const;
 export const EVAL_POWER_MINIMUM_EFFECT = 0.1 as const;
 export const EVAL_POWER_MINIMUM_PILOT_TASKS = 30 as const;
-export const EVAL_POWER_MINIMUM_PILOT_REPOSITORIES = 10 as const;
+export const EVAL_POWER_MINIMUM_PILOT_REPOSITORIES = 15 as const;
 export const EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS = 50 as const;
 export const EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES = 20 as const;
 export const EVAL_POWER_MINIMUM_REPETITIONS = 3 as const;
+export const EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS = 5 as const;
 
 export type BinaryOutcome = 0 | 1;
 
@@ -61,6 +62,14 @@ export interface PowerEstimate {
   readonly wilsonUpper95: number;
 }
 
+export interface InterceptOnlyCr2Inference {
+  readonly estimate: number;
+  readonly standardError: number;
+  readonly degreesOfFreedom: number;
+  readonly lower95: number;
+  readonly upper95: number;
+}
+
 export interface SensitivityCell {
   readonly assumedPairedDifference: number;
   readonly heterogeneityMultiplier: number;
@@ -101,6 +110,9 @@ export interface PowerAnalysisDocument {
     readonly comparisonCount: number;
     readonly minimumRepetitionsPerTaskComparison: number;
     readonly maximumRepetitionsPerTaskComparison: number;
+    readonly contractMinimumRepetitionsPerTaskComparison: typeof EVAL_POWER_MINIMUM_REPETITIONS;
+    readonly recommendedRepetitionsPerTaskComparison: typeof EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS;
+    readonly repetitionRecommendation: "met" | "accepted_contract_minimum_below_recommended";
     readonly aggregation: "mean_within_task_then_equal_task_weight";
     readonly repositoryTaskCounts: readonly {
       readonly repositoryId: string;
@@ -113,7 +125,8 @@ export interface PowerAnalysisDocument {
     readonly targetPower: typeof EVAL_POWER_TARGET;
     readonly minimumEffect: typeof EVAL_POWER_MINIMUM_EFFECT;
     readonly primaryMetric: "paired_binary_success_rate_difference";
-    readonly inference: "cluster_robust_t_interval_cr1";
+    readonly inference: "bias_reduced_linearization_cr2";
+    readonly degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only";
     readonly inferenceUnit: "task_mean_after_repetition_aggregation";
     readonly clusteringUnit: "repository";
     readonly multipleComparators: "intersection_union";
@@ -126,15 +139,18 @@ export interface PowerAnalysisDocument {
     readonly optionalStopping: false;
   };
   readonly simulation: {
-    readonly method: "hierarchical_empirical_repository_task_bootstrap";
-    readonly sensitivityModel: "bounded_location_shift_of_pilot_task_means";
+    readonly method: "hierarchical_repository_task_joint_attempt_bootstrap";
+    readonly attemptModel: "empirical_joint_multinomial_with_minimal_marginal_transport";
+    readonly sensitivityModel: "bounded_location_shift_of_paired_attempt_means";
+    readonly outcomeDependence: "shared_primary_and_joint_comparator_attempt_resampling";
+    readonly repetitionAggregation: "mean_within_task_before_repository_inference";
     readonly repositorySampling: "uniform_with_replacement";
     readonly taskSamplingWithinRepository: "uniform_with_replacement";
     readonly commonRandomNumbersAcrossSensitivityCells: true;
     readonly simulationReplications: number;
     readonly randomSeed: number;
     readonly randomStream: "sha256_domain_seeded_xorshift32_rejection_sampling_v1";
-    readonly confidenceCriticalValue: "student_t_cornish_fisher_df_repositories_minus_one";
+    readonly confidenceCriticalValue: "student_t_cornish_fisher_satterthwaite_df";
     readonly powerDecisionInterval: "two_sided_wilson_95";
   };
   readonly sensitivityGrid: readonly SensitivityCell[];
