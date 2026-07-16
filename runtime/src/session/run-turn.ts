@@ -61,6 +61,7 @@ import type {
 } from "../llm/types.js";
 import {
   cloneLlmContent as cloneContent,
+  cloneLlmMessageSnapshot,
   fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
@@ -2490,6 +2491,31 @@ function buildSamplingRequestContract(
   };
 }
 
+/**
+ * Capture the complete provider-facing request before the first transport
+ * attempt. Reconnects reuse this semantic snapshot instead of re-running
+ * context preparation and stateful attachment producers, which can change
+ * while a request is in flight.
+ *
+ * `streamModel` gives each transport attempt its own clone, so neither a
+ * provider adapter nor a failed prewarm handle can mutate this saved copy.
+ */
+function snapshotSamplingRequestContract(
+  request: StreamModelRequestContract,
+): StreamModelRequestContract {
+  return {
+    ...request,
+    input: request.input.map(cloneLlmMessageSnapshot),
+    tools: request.tools.map((tool) => ({
+      ...tool,
+      function: {
+        ...tool.function,
+        parameters: structuredClone(tool.function.parameters),
+      },
+    })),
+  };
+}
+
 function removeLastAssistantMessage(state: TurnState): void {
   const last = state.messages.at(-1);
   if (last?.role === "assistant") {
@@ -2546,32 +2572,24 @@ export interface SamplingRequestResult {
   readonly terminal?: Terminal;
 }
 
-/**
- * Port of agenc runtime `try_run_sampling_request` (turn.rs:1828-2222). In
- * agenc runtime this is the single-attempt stream consumer: it builds the
- * request, streams events, dispatches tool calls via the
- * ToolCallRuntime, and returns a SamplingRequestResult when the
- * stream completes or an Err on retryable failure.
- *
- * AgenC's translation runs ONE phase-machine iteration. The phase
- * machine handles the stream (stream-model phase), tool dispatch
- * (execute-tools phase), nudging (continuation-nudge phase), and
- * history commit (commit phase). The resulting TurnState tells us
- * whether a follow-up iteration is needed.
- *
- * On retry-worthy errors (stream idle, transient provider error),
- * throw so `runSamplingRequest` can apply the retry policy. Fatal
- * errors throw too; the caller routes them as terminal.
- */
-async function tryRunSamplingRequest(
+type PreparedSamplingRequestBoundary =
+  | {
+      readonly kind: "request";
+      readonly request: StreamModelRequestContract;
+    }
+  | {
+      readonly kind: "terminal";
+      readonly result: SamplingRequestResult;
+    };
+
+async function prepareSamplingRequestBoundary(
   state: TurnState,
   ctx: TurnContext,
   session: Session,
   signal: AbortSignal,
   events: PhaseEvent[],
   querySource: string,
-): Promise<SamplingRequestResult> {
-  // Phase 1: prepare context.
+): Promise<PreparedSamplingRequestBoundary> {
   await prepareAgenCTurnContext(state, ctx, session, querySource, signal);
   const prepareTerminal = getAgenCPreparedTerminal(state);
   if (prepareTerminal) {
@@ -2592,27 +2610,24 @@ async function tryRunSamplingRequest(
       });
     }
     return {
-      needsFollowUp: false,
-      lastAgentMessage: assistantText,
-      assistantText,
-      usage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
+      kind: "terminal",
+      result: {
+        needsFollowUp: false,
+        lastAgentMessage: assistantText,
+        assistantText,
+        usage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        },
+        terminal: prepareTerminal.terminal,
       },
-      terminal: prepareTerminal.terminal,
     };
   }
-  // Per-turn attachments orchestrator (agenc `getAttachments()`
-  // parity, ported into AgenC). Runs after `prepareContext` projects
-  // the post-compaction history onto `state.messagesForQuery` and
-  // before `buildSamplingRequestContract` snapshots it for the model
-  // request. Each registered producer reads cross-turn state via
-  // `attachment-state.ts` and emits zero or more attachments. The
-  // attachments are converted to user-channel `LLMMessage`s and
-  // prepended to `state.messagesForQuery` so they ride into the model
-  // request through the existing build path. Producer registry lives
-  // in `runtime/src/prompts/attachments/orchestrator.ts`.
+
+  // Per-turn attachments run once, immediately before the retry-stable
+  // request snapshot is captured. A reconnect must never consume one-shot
+  // attachment state or observe a different prompt than the first attempt.
   const agencHome = session.services.configStore?.agencHome;
   const currentConfig = session.services.configStore?.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
@@ -2653,8 +2668,39 @@ async function tryRunSamplingRequest(
     }
   }
 
-  const request = buildSamplingRequestContract(state, session, ctx);
+  return {
+    kind: "request",
+    request: snapshotSamplingRequestContract(
+      buildSamplingRequestContract(state, session, ctx),
+    ),
+  };
+}
 
+/**
+ * Port of agenc runtime `try_run_sampling_request` (turn.rs:1828-2222). In
+ * agenc runtime this is the single-attempt stream consumer: it streams the
+ * already-snapshotted request, dispatches tool calls via the
+ * ToolCallRuntime, and returns a SamplingRequestResult when the
+ * stream completes or an Err on retryable failure.
+ *
+ * AgenC's translation runs ONE phase-machine iteration. The phase
+ * machine handles the stream (stream-model phase), tool dispatch
+ * (execute-tools phase), nudging (continuation-nudge phase), and
+ * history commit (commit phase). The resulting TurnState tells us
+ * whether a follow-up iteration is needed.
+ *
+ * On retry-worthy errors (stream idle, transient provider error),
+ * throw so `runSamplingRequest` can apply the retry policy. Fatal
+ * errors throw too; the caller routes them as terminal.
+ */
+async function tryRunSamplingRequest(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  request: StreamModelRequestContract,
+  signal: AbortSignal,
+  events: PhaseEvent[],
+): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
   // post-stream finalize hook below (and future delta callbacks) share
@@ -2796,11 +2842,28 @@ async function runSamplingRequest(
   events: PhaseEvent[],
   querySource: string,
 ): Promise<SamplingRequestResult> {
+  const prepared = await prepareSamplingRequestBoundary(
+    state,
+    ctx,
+    session,
+    signal,
+    events,
+    querySource,
+  );
+  if (prepared.kind === "terminal") return prepared.result;
+
   const outcome = await reconnectWithBackoff<SamplingRequestResult>({
     session,
     signal,
     attempt: () =>
-      tryRunSamplingRequest(state, ctx, session, signal, events, querySource),
+      tryRunSamplingRequest(
+        state,
+        ctx,
+        session,
+        prepared.request,
+        signal,
+        events,
+      ),
     isTransient: (err) => {
       if (isPartialProviderResponseError(err)) return false;
       if (isRetryableStreamError(err)) return true;

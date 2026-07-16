@@ -8,7 +8,7 @@
  * are pure functions of `(opts, trackingState)` and are responsible for
  * their own gating (turn-counting, hash diffing, mode checks).
  *
- * Call site: `runtime/src/session/run-turn.ts:tryRunSamplingRequest`
+ * Call site: `runtime/src/session/run-turn.ts:prepareSamplingRequestBoundary`
  * between `prepareContext()` and `buildSamplingRequestContract()`. The
  * orchestrator's `Attachment[]` output is converted to `LLMMessage[]` via
  * `./messages.ts:attachmentsToMessages` and inserted after the leading

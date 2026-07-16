@@ -33,11 +33,13 @@
 import type {
   LLMChatOptions,
   LLMMessage,
+  LLMProvider,
   LLMResponse,
   LLMStreamChunk,
   LLMTool,
   LLMToolCall,
 } from "../llm/types.js";
+import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
   installStreamWatchdog,
   STREAM_IDLE_ABORT_REASON,
@@ -138,7 +140,17 @@ function toVisibleAssistantText(
 function buildProviderMessages(
   request: StreamModelRequestContract,
 ): LLMMessage[] {
-  return [...request.input];
+  return request.input.map(cloneLlmMessageSnapshot);
+}
+
+function cloneProviderTools(tools: ReadonlyArray<LLMTool>): LLMTool[] {
+  return tools.map((tool) => ({
+    ...tool,
+    function: {
+      ...tool.function,
+      parameters: structuredClone(tool.function.parameters),
+    },
+  }));
 }
 
 function buildProviderOptions(
@@ -151,7 +163,7 @@ function buildProviderOptions(
   const systemPrompt = request.baseInstructions.trim();
   return {
     signal,
-    tools: request.tools,
+    tools: cloneProviderTools(request.tools),
     parallelToolCalls: request.parallelToolCalls,
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
     ...(request.contextWindowTokens !== undefined
@@ -782,7 +794,6 @@ export async function streamModel(
   }
 
   const planMode = isPlanMode(ctx);
-  const messages = buildProviderMessages(request);
 
   // Scoped AbortController: aborted by either the external signal or
   // the watchdog, whichever fires first.
@@ -916,7 +927,14 @@ export async function streamModel(
   };
 
   let response: LLMResponse;
-  const providerOptions = buildProviderOptions(request, ctx, scoped.signal);
+  const callProvider = (
+    provider: Pick<LLMProvider, "chatStream">,
+  ): Promise<LLMResponse> =>
+    provider.chatStream(
+      buildProviderMessages(request),
+      onChunk,
+      buildProviderOptions(request, ctx, scoped.signal),
+    );
   const startupPrewarmHandle =
     await session.services.startupPrewarm?.consumeProviderHandle({
       signal: scoped.signal,
@@ -925,16 +943,8 @@ export async function streamModel(
   try {
     response =
       startupPrewarmHandle !== undefined
-        ? await startupPrewarmHandle.chatStream(
-            messages,
-            onChunk,
-            providerOptions,
-          )
-        : await session.services.provider.chatStream(
-            messages,
-            onChunk,
-            providerOptions,
-          );
+        ? await callProvider(startupPrewarmHandle)
+        : await callProvider(session.services.provider);
   } catch (error) {
     if (
       startupPrewarmHandle !== undefined &&
@@ -948,11 +958,7 @@ export async function streamModel(
         /* disposal is best-effort before direct provider fallback */
       }
       try {
-        response = await session.services.provider.chatStream(
-          messages,
-          onChunk,
-          providerOptions,
-        );
+        response = await callProvider(session.services.provider);
       } catch (fallbackError) {
         throw new StreamModelError(fallbackError);
       }
