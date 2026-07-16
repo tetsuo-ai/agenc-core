@@ -103,6 +103,7 @@ interface PhasePlan {
 
 class FakeContainerRunner implements ContainerRunner {
   readonly writtenFiles: string[] = [];
+  readonly executedScripts: string[] = [];
   private phaseIndex = -1;
 
   constructor(private readonly phases: readonly PhasePlan[]) {}
@@ -126,8 +127,12 @@ class FakeContainerRunner implements ContainerRunner {
 
   async exec(_handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult> {
     const plan = this.phases[this.phaseIndex]!;
+    this.executedScripts.push(request.script);
     if (request.script.includes(" apply ")) {
       return { ...OK, exitCode: plan.applyExitCode ?? 0, stderr: "apply output" };
+    }
+    if (request.script.endsWith(">> /agenc-eval/parser-input.log")) {
+      return OK;
     }
     if (request.script === "make rebuild") {
       return {
@@ -186,6 +191,16 @@ describe("eval executor triple preflight", () => {
     expect(runner.writtenFiles.filter((file) => file.endsWith("test.patch"))).toHaveLength(6);
     expect(runner.writtenFiles.filter((file) => file.endsWith("reference.patch"))).toHaveLength(3);
     expect(runner.writtenFiles.filter((file) => file.endsWith("parse-log.py"))).toHaveLength(6);
+    expect(
+      runner.executedScripts.filter((script) =>
+        script === "( cat test-output.log ) >> /agenc-eval/parser-input.log"
+      ),
+    ).toHaveLength(6);
+    expect(
+      runner.executedScripts.filter((script) => script.includes("parse-log.py")).every((script) =>
+        script.includes("/agenc-eval/parser-input.log ")
+      ),
+    ).toBe(true);
   });
 
   test("a target check passing on base disqualifies the candidate", async () => {
