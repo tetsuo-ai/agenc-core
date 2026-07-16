@@ -143,6 +143,12 @@ describe.sequential("git process sandbox boundaries", () => {
       `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
       "-c",
       "core.fsmonitor=false",
+      "-c",
+      "credential.helper=",
+      "-c",
+      "protocol.ext.allow=never",
+      "-c",
+      "diff.external=",
     ];
     const addArgs: Record<string, unknown> = {
       name: slug,

@@ -83,6 +83,7 @@ import {
   initializeForkedLspServerManager,
   shutdownLspServerManager,
 } from "../services/lsp/manager.js";
+import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -470,7 +471,7 @@ function wrapProviderForAgentSummary(
   provider: LLMProvider,
   capture: AgentSummaryProviderRequestCapture,
 ): LLMProvider {
-  return {
+  const wrapped: LLMProvider = {
     name: provider.name,
     chat: (messages, options) => provider.chat(messages, options),
     healthCheck: () => provider.healthCheck(),
@@ -518,7 +519,21 @@ function wrapProviderForAgentSummary(
             provider.deleteStoredResponse!(responseId),
         }
       : {}),
+    ...(provider.forkForSession !== undefined
+      ? {
+          forkForSession(options) {
+            const forked = provider.forkForSession!(options);
+            return forked === provider
+              ? wrapped
+              : wrapProviderForAgentSummary(forked, capture);
+          },
+        }
+      : {}),
+    ...(provider.dispose !== undefined
+      ? { dispose: () => provider.dispose!() }
+      : {}),
   };
+  return wrapped;
 }
 
 interface AgentRunContext {
@@ -1169,8 +1184,16 @@ export function buildFilteredRegistry(
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
   const disabled = opts.disabledTools ?? new Set<string>();
+  const mcpOriginToolNames = new Set(
+    base.tools
+      .filter(isMcpOriginTool)
+      .map((tool) => tool.name),
+  );
   const isEligible = (name: string): boolean =>
-    !disabled.has(name) && (allowed === null || allowed.has(name));
+    !disabled.has(name) &&
+    !mcpOriginToolNames.has(name) &&
+    !isMcpWireToolName(name) &&
+    (allowed === null || allowed.has(name));
   const wrappedTools = base.tools
     .filter((tool) => isEligible(tool.name))
     .map((tool) => wrapToolForChild(tool, opts));
@@ -1270,6 +1293,21 @@ export function buildFilteredRegistry(
       });
     },
   };
+}
+
+function isMcpOriginTool(tool: Tool): boolean {
+  const metadata = asRecord(tool.metadata);
+  return (
+    metadata?.source === "mcp" ||
+    metadata?.family === "mcp" ||
+    (typeof tool.serverId === "string" && tool.serverId.length > 0) ||
+    isMcpWireToolName(tool.name)
+  );
+}
+
+function isMcpWireToolName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized.startsWith("mcp.") || normalized.startsWith("mcp__");
 }
 
 const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
@@ -1708,6 +1746,22 @@ interface ChildSessionAuthority {
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
+function createInertChildMcpManager(): Session["services"]["mcpManager"] {
+  return {
+    effectiveServers: async () => new Map(),
+    toolPluginProvenance: async () => null,
+    refreshFromConfig: async () => ({
+      configuredServers: [],
+      requiredServers: [],
+    }),
+    getTools: () => [],
+    getToolsByServer: () => [],
+    getConfiguredServers: () => [],
+    getConnectedServers: () => [],
+    isConnected: () => false,
+  };
+}
+
 function prepareChildSessionAuthority(
   params: RunAgentParams,
 ): ChildSessionAuthority {
@@ -1805,6 +1859,10 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      // A child has no independently owned MCP transport in this path. Never
+      // retain the parent's manager or its live tool closures under a forked
+      // sandbox authority; refresh is deliberately inert and local.
+      mcpManager: createInertChildMcpManager(),
       lspManager: undefined,
       ...(sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker }
@@ -1935,6 +1993,7 @@ export async function* runAgent(
 
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
+  let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -2083,6 +2142,7 @@ export async function* runAgent(
       );
     };
     const childAuthority = prepareChildSessionAuthority(params);
+    childSandboxExecutionBroker = childAuthority.sandboxExecutionBroker;
     if (
       provider.forkForSession !== undefined &&
       childAuthority.sandboxExecutionBroker === undefined
@@ -2440,16 +2500,23 @@ export async function* runAgent(
       merged.signal.removeEventListener("abort", forwardMergedAbort);
     }
     const cleanupErrors: unknown[] = [];
-    if (childSession !== null) {
+    if (childSandboxExecutionBroker !== undefined) {
       try {
-        await shutdownLspServerManager(
-          childSession.services.sandboxExecutionBroker,
-        );
+        await shutdownLspServerManager(childSandboxExecutionBroker);
       } catch (error) {
         cleanupErrors.push(error);
       }
+    }
+    if (childSession !== null) {
       try {
         await childSession.shutdown();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (childSandboxExecutionBroker !== undefined) {
+      try {
+        await disposeSandboxExecutionBroker(childSandboxExecutionBroker);
       } catch (error) {
         cleanupErrors.push(error);
       }

@@ -6,17 +6,29 @@ export interface SandboxExecutionLifecycleParticipant {
   quiesce(): Promise<void>;
   /** Re-arm the service after the broker has moved; lazy services may no-op. */
   resume(cwd: string): Promise<void>;
+  /** Permanently release broker-owned state. Defaults to {@link quiesce}. */
+  dispose?(): Promise<void>;
 }
 
 const participants = new WeakMap<
   SandboxExecutionBrokerLike,
   Set<SandboxExecutionLifecycleParticipant>
 >();
+const disposedBrokers = new WeakSet<SandboxExecutionBrokerLike>();
+const disposalPromises = new WeakMap<
+  SandboxExecutionBrokerLike,
+  Promise<void>
+>();
 
 export function registerSandboxExecutionLifecycleParticipant(
   broker: SandboxExecutionBrokerLike,
   participant: SandboxExecutionLifecycleParticipant,
 ): () => void {
+  if (disposedBrokers.has(broker)) {
+    throw new Error(
+      `cannot register ${participant.name} on a disposed sandbox execution broker`,
+    );
+  }
   const scoped = participants.get(broker) ?? new Set();
   scoped.add(participant);
   participants.set(broker, scoped);
@@ -29,6 +41,51 @@ export function registerSandboxExecutionLifecycleParticipant(
   };
 }
 
+export function isSandboxExecutionBrokerDisposed(
+  broker: SandboxExecutionBrokerLike,
+): boolean {
+  return disposedBrokers.has(broker);
+}
+
+/**
+ * Permanently stop and detach every process owner registered to a child
+ * broker. Disposal is idempotent and runs in reverse registration order so
+ * higher-level services release their dependencies before earlier owners.
+ */
+export function disposeSandboxExecutionBroker(
+  broker: SandboxExecutionBrokerLike,
+): Promise<void> {
+  const existing = disposalPromises.get(broker);
+  if (existing !== undefined) return existing;
+
+  disposedBrokers.add(broker);
+  const scoped = [...(participants.get(broker) ?? [])].reverse();
+  participants.delete(broker);
+  const disposal = (async () => {
+    const errors: unknown[] = [];
+    for (const participant of scoped) {
+      try {
+        if (participant.dispose !== undefined) {
+          await participant.dispose();
+        } else {
+          await participant.quiesce();
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw lifecycleAggregateError(
+        "disposal failed; broker remains closed",
+        scoped,
+        errors,
+      );
+    }
+  })();
+  disposalPromises.set(broker, disposal);
+  return disposal;
+}
+
 /**
  * Move a live broker only after every process created under its old authority
  * has stopped. A failed resume is rolled back: new-authority children are
@@ -38,6 +95,9 @@ export async function transitionSandboxExecutionBroker(
   broker: SandboxExecutionBrokerLike,
   cwd: string,
 ): Promise<void> {
+  if (disposedBrokers.has(broker)) {
+    throw new Error("cannot transition a disposed sandbox execution broker");
+  }
   if (broker.cwd === cwd) return;
   const previousCwd = broker.cwd;
   const scoped = [...(participants.get(broker) ?? [])];

@@ -25,6 +25,7 @@ import { applyRuntimeSandboxToSpawn } from "../../src/tools/system/apply-runtime
 import {
   rebaseWorktreeSandboxBrokers,
   requireWorktreeSandboxBrokers,
+  runWorktreeSandboxedProcess,
 } from "../../src/tools/worktree-sandbox-boundary.js";
 
 const roots: string[] = [];
@@ -236,6 +237,62 @@ describe("SandboxExecutionBroker", () => {
     expect(fork.forkDepth).toBe(1);
     expect(fork.forkForCwd(root).forkDepth).toBe(2);
     expect(probedCwds).toEqual([root, child, sibling]);
+  });
+
+  it("runs ExitWorktree inspection with hardened Git authority and finite supervision", async () => {
+    const root = tempRoot("agenc-exit-worktree-git-helper-");
+    const prepareSpawn = vi.fn(
+      (_surface: string, command: Record<string, unknown>) => ({
+        program: process.execPath,
+        args: ["-e", "process.stdout.write('clean')"],
+        cwd: root,
+        env: { PATH: process.env.PATH ?? "" },
+        argv0: "git",
+        original: command,
+      }),
+    );
+    vi.stubEnv("GIT_CONFIG_COUNT", "99");
+    try {
+      const result = await runWorktreeSandboxedProcess(
+        { cwd: root, prepareSpawn } as never,
+        "git",
+        ["-C", root, "status", "--porcelain"],
+        root,
+      );
+
+      expect(result).toMatchObject({ code: 0, stdout: "clean" });
+      const prepared = prepareSpawn.mock.calls[0]?.[1] as {
+        args: readonly string[];
+        env: Record<string, string>;
+        trustedExecutable?: boolean;
+      };
+      expect(prepared.args).toEqual([
+        "-c",
+        `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "diff.external=",
+        "--no-optional-locks",
+        "-C",
+        root,
+        "status",
+        "--porcelain",
+      ]);
+      expect(prepared.trustedExecutable).toBe(true);
+      expect(prepared.env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(prepared.env).toMatchObject({
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_PROTOCOL_FROM_USER: "0",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("wraps transform failures with a stable code and never returns the host command", () => {

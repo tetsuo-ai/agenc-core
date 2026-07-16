@@ -53,6 +53,7 @@ import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
@@ -490,6 +491,22 @@ function createDisabledToolRegistry(): ToolRegistry {
   } as unknown as ToolRegistry;
 }
 
+function createInertDelegateMcpManager(): SessionServices["mcpManager"] {
+  return {
+    effectiveServers: async () => new Map(),
+    toolPluginProvenance: async () => null,
+    refreshFromConfig: async () => ({
+      configuredServers: [],
+      requiredServers: [],
+    }),
+    getTools: () => [],
+    getToolsByServer: () => [],
+    getConfiguredServers: () => [],
+    getConnectedServers: () => [],
+    isConnected: () => false,
+  };
+}
+
 interface DelegateProviderLease {
   readonly provider: LLMProvider;
   readonly ownedProvider?: LLMProvider;
@@ -628,6 +645,9 @@ function buildChildServices(
     lspManager: undefined,
     startupPrewarm: undefined,
     registry: createDisabledToolRegistry(),
+    // Review delegates do not own an MCP transport. Keep their service
+    // surface inert so refresh/resource operations cannot mutate the parent.
+    mcpManager: createInertDelegateMcpManager(),
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
     ),
@@ -806,6 +826,13 @@ export function spawnAgenCDelegateThread(
         await childSession.shutdown();
       } catch (error) {
         runError ??= error instanceof Error ? error : new Error(String(error));
+      }
+      if (sandboxExecutionBroker !== undefined) {
+        try {
+          await disposeSandboxExecutionBroker(sandboxExecutionBroker);
+        } catch (error) {
+          runError ??= error instanceof Error ? error : new Error(String(error));
+        }
       }
       try {
         await providerLease.ownedProvider?.dispose?.();

@@ -438,6 +438,42 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     },
   );
 
+  it("uses an inert child MCP manager and never refreshes the parent transport", async () => {
+    const parentRefresh = vi.fn(async () => ({
+      configuredServers: ["parent"],
+      requiredServers: [],
+    }));
+    const parentMcpManager = {
+      effectiveServers: async () => new Map(),
+      toolPluginProvenance: async () => null,
+      refreshFromConfig: parentRefresh,
+      getTools: () => [{ name: "mcp.parent.query" }],
+      getConnectedServers: () => ["parent"],
+      isConnected: () => true,
+    } as unknown as SessionServices["mcpManager"];
+    const session = mkSession(mkScriptedProvider({ content: "ok" }), {
+      mcpManager: parentMcpManager,
+    });
+    const req = mkOneShotRequest(session);
+    const thread = spawnAgenCDelegateThread(
+      session,
+      req,
+      req.parentContext.modelInfo.slug,
+      req.parentContext.modelInfo,
+      new AbortController(),
+    );
+
+    expect(thread.childSession.services.mcpManager).not.toBe(parentMcpManager);
+    expect(thread.childSession.services.mcpManager.getTools?.()).toEqual([]);
+    expect(thread.childSession.services.registry.tools).toEqual([]);
+    await thread.childSession.services.mcpManager.refreshFromConfig?.({
+      servers: ["child"],
+    });
+    expect(parentRefresh).not.toHaveBeenCalled();
+
+    await thread.shutdown("test complete");
+  });
+
   it("returns a structured outcome + emits exit_review_mode with reason=completed", async () => {
     const provider = mkScriptedProvider({
       content: JSON.stringify({

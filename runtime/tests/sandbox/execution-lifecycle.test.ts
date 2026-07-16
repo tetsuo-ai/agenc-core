@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import {
+  disposeSandboxExecutionBroker,
+  isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
   transitionSandboxExecutionBroker,
 } from "../../src/sandbox/execution-lifecycle.js";
+import { rebaseWorktreeSandboxBrokers } from "../../src/tools/worktree-sandbox-boundary.js";
 
 describe("transitionSandboxExecutionBroker", () => {
   it("quiesces every participant before rebasing and resuming", async () => {
@@ -122,5 +125,90 @@ describe("transitionSandboxExecutionBroker", () => {
       "stopped:resume:/stable-workspace",
       "failing:resume:/stable-workspace",
     ]);
+  });
+
+  it("disposes participants once in reverse order and permanently closes registration", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/child-workspace",
+    });
+    const events: string[] = [];
+
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "lsp",
+      quiesce: async () => {
+        events.push("lsp:quiesce");
+      },
+      resume: async () => {},
+      dispose: async () => {
+        events.push("lsp:dispose");
+      },
+    });
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "browser",
+      quiesce: async () => {
+        events.push("browser:quiesce");
+      },
+      resume: async () => {},
+      dispose: async () => {
+        events.push("browser:dispose");
+      },
+    });
+
+    await Promise.all([
+      disposeSandboxExecutionBroker(broker),
+      disposeSandboxExecutionBroker(broker),
+    ]);
+
+    expect(events).toEqual(["browser:dispose", "lsp:dispose"]);
+    expect(isSandboxExecutionBrokerDisposed(broker)).toBe(true);
+    expect(() =>
+      registerSandboxExecutionLifecycleParticipant(broker, {
+        name: "late",
+        quiesce: async () => {},
+        resume: async () => {},
+      })
+    ).toThrow(/disposed/);
+    await expect(
+      transitionSandboxExecutionBroker(broker, "/other-workspace"),
+    ).rejects.toThrow(/disposed/);
+  });
+
+  it("rolls multiple brokers back in reverse order when a later transition fails", async () => {
+    const brokers = ["one", "two", "three"].map((name) =>
+      new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: `/${name}`,
+      })
+    );
+    const events: string[] = [];
+    brokers.forEach((broker, index) => {
+      const name = ["one", "two", "three"][index]!;
+      registerSandboxExecutionLifecycleParticipant(broker, {
+        name,
+        quiesce: async () => {
+          events.push(`${name}:quiesce:${broker.cwd}`);
+        },
+        resume: async (cwd) => {
+          events.push(`${name}:resume:${cwd}`);
+          if (name === "three" && cwd === "/target") {
+            throw new Error("third broker failed");
+          }
+        },
+      });
+    });
+
+    await expect(
+      rebaseWorktreeSandboxBrokers(brokers, "/target"),
+    ).rejects.toThrow(/rolled back/);
+
+    expect(brokers.map((broker) => broker.cwd)).toEqual([
+      "/one",
+      "/two",
+      "/three",
+    ]);
+    expect(events.indexOf("two:resume:/two")).toBeLessThan(
+      events.indexOf("one:resume:/one"),
+    );
   });
 });

@@ -19,7 +19,10 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
-import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
+import {
+  isSandboxExecutionBrokerDisposed,
+  registerSandboxExecutionLifecycleParticipant,
+} from "../../sandbox/execution-lifecycle.js";
 import { resolveBrowserPolicy } from "../../browser/config.js";
 import { loadConfig } from "../../config/loader.js";
 import { resolveAgencHome } from "../../config/env.js";
@@ -69,7 +72,7 @@ interface BrowserToolInput extends ToolExecutionInjectedArgs {
 export interface CreateBrowserToolOptions {
   /** Override AGENC_HOME resolution (tests / embedding). */
   readonly agencHome?: string;
-  /** Inject a manager (tests). When absent one is created lazily. */
+  /** Inject a lifecycle-owned manager (tests). When absent one is created lazily. */
   readonly manager?: BrowserManager;
 }
 
@@ -147,35 +150,59 @@ export function createBrowserTool(
   async function ensureManager(
     sandboxExecutionBroker: SandboxExecutionBrokerLike,
   ): Promise<BrowserManager> {
-    if (injectedManager !== undefined) return injectedManager;
+    if (isSandboxExecutionBrokerDisposed(sandboxExecutionBroker)) {
+      throw new Error("browser sandbox authority has been disposed");
+    }
     const existing = managers.get(sandboxExecutionBroker);
     if (existing !== undefined) return existing;
     const pending = initializations.get(sandboxExecutionBroker);
     if (pending !== undefined) return pending;
     const initializing = (async () => {
-      let browserConfig;
-      try {
-        const loaded = await loadConfig();
-        browserConfig = loaded.config.browser;
-      } catch {
-        browserConfig = undefined;
+      let created = injectedManager;
+      if (created === undefined) {
+        let browserConfig;
+        try {
+          const loaded = await loadConfig();
+          browserConfig = loaded.config.browser;
+        } catch {
+          browserConfig = undefined;
+        }
+        const policy = resolveBrowserPolicy(browserConfig, process.env);
+        const agencHome = safeAgencHome(options.agencHome);
+        created = new BrowserManager({
+          ...(agencHome !== undefined ? { agencHome } : {}),
+          policy,
+          sandboxExecutionBroker,
+        });
       }
-      const policy = resolveBrowserPolicy(browserConfig, process.env);
-      const agencHome = safeAgencHome(options.agencHome);
-      const created = new BrowserManager({
-        ...(agencHome !== undefined ? { agencHome } : {}),
-        policy,
-        sandboxExecutionBroker,
-      });
       managers.set(sandboxExecutionBroker, created);
-      registerSandboxExecutionLifecycleParticipant(
-        sandboxExecutionBroker,
-        {
+      try {
+        registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
           name: "browser",
           quiesce: () => created.closeAll(),
           resume: async () => {},
-        },
-      );
+          dispose: async () => {
+            try {
+              await created.closeAll();
+            } finally {
+              if (managers.get(sandboxExecutionBroker) === created) {
+                managers.delete(sandboxExecutionBroker);
+              }
+            }
+          },
+        });
+      } catch (registrationError) {
+        managers.delete(sandboxExecutionBroker);
+        try {
+          await created.closeAll();
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [registrationError, cleanupError],
+            "browser manager registration failed and cleanup was incomplete",
+          );
+        }
+        throw registrationError;
+      }
       return created;
     })();
     initializations.set(sandboxExecutionBroker, initializing);
