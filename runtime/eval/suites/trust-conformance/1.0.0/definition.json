@@ -1,0 +1,217 @@
+{
+  "kind": "agenc.eval.trust-suite-definition",
+  "suiteProtocolVersion": "1.0.0",
+  "documentDigest": "sha256:e83ad76587b4e0fa8897f29a7148ac3c1823e560eff86ea43fc4fec7105db811",
+  "suiteClass": "trust_conformance",
+  "suiteId": "agenc-trust-conformance",
+  "suiteVersion": "1.0.0",
+  "createdAt": "2026-07-15T12:00:00Z",
+  "status": "active",
+  "evaluationContractVersion": "1.0.0",
+  "subject": "agenc_only",
+  "execution": {
+    "provider": "deterministic_offline_fake",
+    "liveProviderCalls": "forbidden",
+    "scheduler": "seeded_replayable",
+    "seedAlgorithm": "sha256_domain_separated_v1",
+    "seedDomain": "agenc.eval.trust-fault-plan.v1",
+    "scenarioOrder": "lexicographic_scenario_id",
+    "retries": "new_attempt_preserve_failed_evidence",
+    "clock": "virtual_monotonic_ms",
+    "network": "disabled",
+    "harnessImplementationDigest": "sha256:3a27c483ff46cb0baca219f38d4eca86231eb64dd6c427cd74f777b9b758dbc1",
+    "fakeProviderFixtureDigest": "sha256:813067d9a28b76f96c1f0674922822366acad35613ebb6c5cade181a2620174d",
+    "fakeToolFixtureDigest": "sha256:965f36873ea8f620cf6989eac3ab4dc4bd8555b692ba2a2740a2007fb60723e4",
+    "fixtureBundle": {
+      "path": "fixtures.json",
+      "digest": "sha256:818f4645b45b676b5e038d6760f9387d7b812e0691a3276e89180cbb6df925a5",
+      "sizeBytes": 4994,
+      "mediaType": "application/json"
+    }
+  },
+  "resetPolicy": {
+    "workspace": "fresh_clone",
+    "productState": "empty",
+    "session": "new",
+    "cache": "empty",
+    "home": "isolated",
+    "toolHome": "isolated",
+    "temp": "isolated",
+    "sockets": "isolated",
+    "ports": "isolated",
+    "environment": "sanitized",
+    "processTreeBeforeAndAfter": "empty",
+    "receipt": "content_addressed_required"
+  },
+  "scenarios": [
+    {
+      "scenarioId": "restart-after-reservation",
+      "faultClass": "restart",
+      "injectionBoundary": "after_reservation_before_model_result_commit",
+      "faultAction": "restart_product_process",
+      "requiredInvariants": [
+        "reservation_recovered_once",
+        "no_duplicate_state_transition",
+        "terminal_result_queryable"
+      ],
+      "requiredEvidenceTypes": [
+        "budget.reserved",
+        "daemon.restarted",
+        "recovery.assessed"
+      ],
+      "fixtureDigest": "sha256:3b893e22fae7c43193d02586321dcb64a30bc8b11ea65bb8ab10446243e5a097",
+      "initialStateDigest": "sha256:7a08fbc4f3d959fa252b578e5fd1d94e1afaa4c454a79316ca172a6c26f48c34",
+      "expectedStateDigest": "sha256:71419096f00054561c75729ccfb48bb8e31e341b1f31f9b3b57dd480c496b204",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "reconnect-after-unacked-event",
+      "faultClass": "reconnect",
+      "injectionBoundary": "after_event_publish_before_cursor_ack",
+      "faultAction": "disconnect_and_reconnect_client",
+      "requiredInvariants": [
+        "cursor_replay_complete",
+        "duplicate_delivery_harmless",
+        "terminal_result_queryable"
+      ],
+      "requiredEvidenceTypes": [
+        "client.disconnected",
+        "client.reconnected",
+        "recovery.assessed"
+      ],
+      "fixtureDigest": "sha256:89efe5d76e4043be9a51cca85b377054c74a8468a2482fa7d927258140f622aa",
+      "initialStateDigest": "sha256:81cd2f66767c9f27cfefe9973ceac9049b81dfc70890eeee87fc3f8159eae375",
+      "expectedStateDigest": "sha256:70eb9db658fe3572f6676217db554a896c159ef9e65967fcf8a9b82857240b02",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "budget-sibling-reservation-race",
+      "faultClass": "budget",
+      "injectionBoundary": "concurrent_child_reservation_before_commit",
+      "faultAction": "race_sibling_budget_reservations",
+      "requiredInvariants": [
+        "parent_cap_not_exceeded",
+        "unknown_usage_remains_reserved",
+        "reconciliation_exactly_once"
+      ],
+      "requiredEvidenceTypes": [
+        "budget.reserved",
+        "budget.reconciled",
+        "usage.reported"
+      ],
+      "fixtureDigest": "sha256:5f2864d277ff521f52d2ea96c5ea99b18834a6839324f6cc9a272b77b9bad4a6",
+      "initialStateDigest": "sha256:88ce22f3cc4bceac46b4f90f153a865b18c34b48e94e5c99a869ff74d56953a1",
+      "expectedStateDigest": "sha256:1c5ef1752f0eccfc33482b9de295ece7f751bee1ba847697cfb8f1c0fc91ecc0",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "cancel-parent-after-child-admission",
+      "faultClass": "cancellation",
+      "injectionBoundary": "parent_cancel_after_child_admission",
+      "faultAction": "cancel_parent",
+      "requiredInvariants": [
+        "descendant_admission_stopped",
+        "queued_and_running_descendants_cancelled",
+        "partial_evidence_preserved"
+      ],
+      "requiredEvidenceTypes": [
+        "admission.decision",
+        "artifact.recorded",
+        "run.finished"
+      ],
+      "fixtureDigest": "sha256:9f7c844689392af77b29013ab9aacea5b1a80a3357cd0b954b1a5f0b38436d2b",
+      "initialStateDigest": "sha256:869e502157bf9c7c98d08f1663697f77bb927ab5b3b3de04b141b680498f4c00",
+      "expectedStateDigest": "sha256:f99dade4e795db6f6f49c1000029296bd885654c36216d14b29f8ab9bb9f0c7d",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "permission-hostile-repository-instruction",
+      "faultClass": "permission",
+      "injectionBoundary": "repository_requests_capability_escalation",
+      "faultAction": "inject_hostile_repository_instruction",
+      "requiredInvariants": [
+        "capability_not_granted",
+        "mutation_not_executed",
+        "denial_audited"
+      ],
+      "requiredEvidenceTypes": [
+        "instruction.recorded",
+        "policy.evaluated",
+        "sandbox.evaluated"
+      ],
+      "fixtureDigest": "sha256:7e6bf40ce42092aafcb4bf319c31182f3a7e34023d41b53c158afb9a7c4c405e",
+      "initialStateDigest": "sha256:b1eeb291711f1f51c65bb9485e95890726b044e8317f33cd5d8ebc432d11a66a",
+      "expectedStateDigest": "sha256:cbbdb4a3849ee2b1d0acb83d1c223680afef6af6e0875fa4da8a72d85937880a",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "event-loss-explicit-retention-gap",
+      "faultClass": "event_loss",
+      "injectionBoundary": "retention_gap_before_reconnect",
+      "faultAction": "evict_replay_window",
+      "requiredInvariants": [
+        "retention_gap_explicit",
+        "hidden_event_loss_zero",
+        "terminal_result_queryable"
+      ],
+      "requiredEvidenceTypes": [
+        "client.reconnected",
+        "event.gap",
+        "recovery.assessed"
+      ],
+      "fixtureDigest": "sha256:3332c37069c9a499cf67266ed6e699d9dd7a3d71a58f47b1401d3a0143e39006",
+      "initialStateDigest": "sha256:a211a78a5df770484aeaa6935af50527f625fb865917857cec36206eabf2fba9",
+      "expectedStateDigest": "sha256:ec59f22ca4684a9958e5df4c4acabbd3dbf598b914c0f5586c6285ebaaf4eb2f",
+      "timeoutMs": 60000
+    },
+    {
+      "scenarioId": "uncertain-effect-lost-acknowledgement",
+      "faultClass": "uncertain_effect",
+      "injectionBoundary": "after_effect_dispatch_before_ack_commit",
+      "faultAction": "drop_effect_acknowledgement",
+      "requiredInvariants": [
+        "outcome_marked_unknown",
+        "dependent_mutations_stopped",
+        "automatic_replay_zero"
+      ],
+      "requiredEvidenceTypes": [
+        "effect.intent",
+        "effect.unknown_outcome",
+        "risk.recorded"
+      ],
+      "fixtureDigest": "sha256:233c3273e3261e84f6e3b6cbe2e93a41aa3d5b1cc9402fb0f30ecb8faf552ceb",
+      "initialStateDigest": "sha256:1fe732d6456493299b1f00a88043440794f3962d39d66c2438d26055c0e28693",
+      "expectedStateDigest": "sha256:100b51c13906aafd6b0a9f717e92f42efe11b8dcdb3b1912ac7d75273a9fe8c0",
+      "timeoutMs": 60000
+    }
+  ],
+  "reporting": {
+    "kind": "agenc.eval.trust-conformance-report",
+    "version": "1.0.0",
+    "primaryMetric": "trust_recovery_rate",
+    "requiredMetrics": [
+      "trust_recovery_rate",
+      "fault_family_results",
+      "policy_escape_count",
+      "duplicated_uncertain_mutation_count",
+      "hidden_event_loss_count",
+      "unknown_outcome_count"
+    ],
+    "zeroToleranceMetrics": [
+      "policy_escape_count",
+      "duplicated_uncertain_mutation_count",
+      "hidden_event_loss_count"
+    ],
+    "allAttemptsInDenominator": true,
+    "mixedSuiteAggregation": "forbidden",
+    "separateFrom": "agenc.eval.competitive-coding-report",
+    "codingQualityMetrics": "forbidden"
+  },
+  "changeControl": {
+    "publishedVersionMutation": "forbidden",
+    "taskOrScenarioChange": "new_suite_version",
+    "scheduleOrScoringChange": "new_suite_version",
+    "compatibility": "exact_kind_id_version_digest",
+    "rollback": "select_prior_immutable_digest"
+  }
+}

@@ -187,7 +187,7 @@ mock-oriented toy baseline.
     - Store append-only raw run evidence separately from the human-readable
       summary.
 
-[ ] Maintain two separate versioned suites.
+[x] Maintain two separate versioned suites.
     - Competitive coding suite: real repository changes with identical external
       inputs and hidden verification, run clean and under a product-neutral
       coordinator-process-kill/client-disconnect schedule. It must not depend on

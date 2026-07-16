@@ -1,0 +1,24 @@
+{
+  "kind": "agenc.eval.suite-catalog",
+  "suiteProtocolVersion": "1.0.0",
+  "documentDigest": "sha256:531627aec0c3a287ebd568494e1a9c0dc8116f01d324a61d571d1a200e2bde62",
+  "catalogId": "agenc-evaluation-suites",
+  "catalogVersion": "1.0.0",
+  "createdAt": "2026-07-15T12:00:00Z",
+  "activeDefinitions": [
+    {
+      "suiteClass": "competitive_coding",
+      "suiteId": "agenc-competitive-coding",
+      "suiteVersion": "1.0.0",
+      "definitionDigest": "sha256:e7214668c3bd9d9299afb61ade397232f3e060d8a45ee7bd26ac87675514f69b",
+      "path": "competitive-coding/1.0.0/definition.json"
+    },
+    {
+      "suiteClass": "trust_conformance",
+      "suiteId": "agenc-trust-conformance",
+      "suiteVersion": "1.0.0",
+      "definitionDigest": "sha256:e83ad76587b4e0fa8897f29a7148ac3c1823e560eff86ea43fc4fec7105db811",
+      "path": "trust-conformance/1.0.0/definition.json"
+    }
+  ]
+}

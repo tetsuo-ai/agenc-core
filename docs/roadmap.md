@@ -34,7 +34,8 @@ shipped / open summary.
   `send_message`, `list_agents`
 - Background agents over the 41-method daemon protocol
 - Embedding SDK `@tetsuo-ai/agenc-sdk` **0.2.0** (`connect`, `promptViaSubprocess`)
-- Local agent-eval suite + regression gate (`runtime/eval/`)
+- Legacy local agent-eval diagnostic + regression gate (`runtime/eval/tasks/`)
+- Versioned competitive/trust evaluation suite protocols (`runtime/eval/suites/`)
 - Trajectory export → SFT/DPO curation (`agenc trajectories export`)
 - SLM transaction guard (Ollama court, fail closed, `agenc doctor`)
 - Embedded Neovim BUFFER (`auto|neovim|inline|external`)

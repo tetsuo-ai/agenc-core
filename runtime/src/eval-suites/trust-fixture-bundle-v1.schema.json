@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:eval:trust-fixture-bundle:1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "bundleVersion",
+    "documentDigest",
+    "createdAt",
+    "harness",
+    "fakeProvider",
+    "fakeTools",
+    "scenarios"
+  ],
+  "properties": {
+    "kind": { "const": "agenc.eval.trust-fixture-bundle" },
+    "bundleVersion": { "const": "1.0.0" },
+    "documentDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementationId",
+        "implementationVersion",
+        "clock",
+        "scheduler",
+        "injectionSemantics"
+      ],
+      "properties": {
+        "implementationId": { "const": "agenc-trust-state-machine" },
+        "implementationVersion": { "const": "1.0.0" },
+        "clock": { "const": "virtual_monotonic_ms" },
+        "scheduler": { "const": "seeded_replayable" },
+        "injectionSemantics": { "const": "exact_scenario_boundary" }
+      }
+    },
+    "fakeProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixtureId", "fixtureVersion", "network", "responseStates"],
+      "properties": {
+        "fixtureId": { "const": "agenc-offline-fake-provider" },
+        "fixtureVersion": { "const": "1.0.0" },
+        "network": { "const": "disabled" },
+        "responseStates": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" }
+        }
+      }
+    },
+    "fakeTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixtureId", "fixtureVersion", "network", "resultStates"],
+      "properties": {
+        "fixtureId": { "const": "agenc-offline-fake-tools" },
+        "fixtureVersion": { "const": "1.0.0" },
+        "network": { "const": "disabled" },
+        "resultStates": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenarioId", "fixture", "initialState", "expectedState"],
+        "properties": {
+          "scenarioId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "fixture": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["steps"],
+            "properties": {
+              "steps": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" }
+              }
+            }
+          },
+          "initialState": { "$ref": "#/definitions/state" },
+          "expectedState": { "$ref": "#/definitions/state" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["facts"],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" }
+        }
+      }
+    }
+  }
+}

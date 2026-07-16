@@ -4,6 +4,19 @@
 > not a private real-agent scorecard or competitive result. They cannot produce
 > Trusted Fix Rate. The versioned contract is documented in
 > [`../../docs/evaluation-contract-v1.md`](../../docs/evaluation-contract-v1.md).
+> The separate competitive and trust-conformance definitions live under
+> [`suites/`](suites/) and are documented in
+> [`../../docs/evaluation-suites-v1.md`](../../docs/evaluation-suites-v1.md).
+
+Validate those definitions without running a task or loading a provider:
+
+```bash
+npm run check:eval-suites -- --json
+```
+
+The suite layer also defines deterministic competitive/trust fault plans and
+strict, separately namespaced reset/report evidence envelopes. It does not yet
+execute the real-agent matrix or deterministic trust scenarios.
 
 Local, deterministic coding-task suite plus a regression gate over
 agent-eval reports (`src/eval/agent-eval-report.schema.json`).

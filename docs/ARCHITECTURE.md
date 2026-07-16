@@ -102,7 +102,9 @@ Everything past the launcher lives in the single runtime workspace
 | `services/` | Concrete provider/API wire layer, caching, and related services |
 | `recovery/` | Crash/recovery helpers for in-flight work |
 | `onboarding/` | Guided `agenc onboard` wizard UI |
-| `eval/` | Agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`) |
+| `eval/` | Legacy diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`) |
+| `eval-contract/` | Immutable task/preregistration/evidence/score contract v1 |
+| `eval-suites/` | Versioned competitive/trust suite definitions, catalog, schedule compiler, and validators |
 | `tui/` | Terminal UI (custom Ink reconciler fork under `tui/ink`) |
 | `entrypoints/` | Public/SDK type entry surfaces |
 | `protocol/` | Marketplace protocol A1/A2 (read-only CLI adapter + types); mutating claim verbs reserved / owner-gated |

@@ -1,0 +1,542 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:eval:suite-protocol:1.0.0",
+  "title": "AgenC Evaluation Suite Protocol v1",
+  "oneOf": [
+    { "$ref": "#/definitions/competitiveDefinition" },
+    { "$ref": "#/definitions/trustDefinition" },
+    { "$ref": "#/definitions/catalog" }
+  ],
+  "definitions": {
+    "protocolVersion": { "const": "1.0.0" },
+    "evalContractVersion": { "const": "1.0.0" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifactDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "sizeBytes", "mediaType"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "digest": { "$ref": "#/definitions/digest" },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "mediaType": { "const": "application/json" }
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "changeControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publishedVersionMutation",
+        "taskOrScenarioChange",
+        "scheduleOrScoringChange",
+        "compatibility",
+        "rollback"
+      ],
+      "properties": {
+        "publishedVersionMutation": { "const": "forbidden" },
+        "taskOrScenarioChange": { "const": "new_suite_version" },
+        "scheduleOrScoringChange": { "const": "new_suite_version" },
+        "compatibility": { "const": "exact_kind_id_version_digest" },
+        "rollback": { "const": "select_prior_immutable_digest" }
+      }
+    },
+    "resetPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace",
+        "productState",
+        "session",
+        "cache",
+        "home",
+        "toolHome",
+        "temp",
+        "sockets",
+        "ports",
+        "environment",
+        "processTreeBeforeAndAfter",
+        "receipt"
+      ],
+      "properties": {
+        "workspace": { "const": "fresh_clone" },
+        "productState": { "const": "empty" },
+        "session": { "const": "new" },
+        "cache": { "const": "empty" },
+        "home": { "const": "isolated" },
+        "toolHome": { "const": "isolated" },
+        "temp": { "const": "isolated" },
+        "sockets": { "const": "isolated" },
+        "ports": { "const": "isolated" },
+        "environment": { "const": "sanitized" },
+        "processTreeBeforeAndAfter": { "const": "empty" },
+        "receipt": { "const": "content_addressed_required" }
+      }
+    },
+    "competitiveFaultAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["condition", "target", "operation", "recovery"],
+      "properties": {
+        "condition": {
+          "enum": ["coordinator_process_kill", "client_disconnect"]
+        },
+        "target": {
+          "enum": ["coordinator_process_group", "client_transport"]
+        },
+        "operation": { "enum": ["sigkill", "abrupt_close"] },
+        "recovery": {
+          "enum": ["adapter_restart_and_attach", "adapter_reconnect"]
+        }
+      }
+    },
+    "competitiveDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "suiteClass",
+        "suiteId",
+        "suiteVersion",
+        "createdAt",
+        "status",
+        "evaluationContractVersion",
+        "taskProtocol",
+        "adapterContract",
+        "resetPolicy",
+        "conditions",
+        "faultSchedule",
+        "reporting",
+        "changeControl"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.competitive-suite-definition" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "suiteClass": { "const": "competitive_coding" },
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "status": { "const": "active" },
+        "evaluationContractVersion": { "$ref": "#/definitions/evalContractVersion" },
+        "taskProtocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "taskKind",
+            "operatorTaskKind",
+            "agentTaskKind",
+            "agentInputEquality",
+            "hiddenVerification",
+            "outputTruth",
+            "containerReferences",
+            "productSpecificTaskSemantics",
+            "unsupportedCapability"
+          ],
+          "properties": {
+            "taskKind": { "const": "real_repository_change" },
+            "operatorTaskKind": { "const": "agenc.eval.operator-task" },
+            "agentTaskKind": { "const": "agenc.eval.agent-task" },
+            "agentInputEquality": { "const": "exact_canonical_agent_task_bytes" },
+            "hiddenVerification": { "const": "out_of_workspace_result_only" },
+            "outputTruth": { "const": "external_workspace_patch_and_declared_artifacts" },
+            "containerReferences": { "const": "digest_only" },
+            "productSpecificTaskSemantics": { "const": "forbidden" },
+            "unsupportedCapability": { "const": "count_failure" }
+          }
+        },
+        "adapterContract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "operations",
+            "acceptanceSource",
+            "resultTruth",
+            "productReportedCompletion"
+          ],
+          "properties": {
+            "version": { "const": "1.0.0" },
+            "operations": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": [
+                { "const": "start" },
+                { "const": "deliver_task_and_record_receipt" },
+                { "const": "disconnect_client_transport" },
+                { "const": "reconnect_client_transport" },
+                { "const": "kill_coordinator_process_group" },
+                { "const": "collect_result" }
+              ],
+              "additionalItems": false
+            },
+            "acceptanceSource": { "const": "harness_task_delivery_receipt" },
+            "resultTruth": { "const": "external_workspace_and_hidden_verifier" },
+            "productReportedCompletion": { "const": "diagnostic_only" }
+          }
+        },
+        "resetPolicy": { "$ref": "#/definitions/resetPolicy" },
+        "conditions": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": [
+            { "const": "clean" },
+            { "const": "coordinator_process_kill" },
+            { "const": "client_disconnect" }
+          ],
+          "additionalItems": false
+        },
+        "faultSchedule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "scheduleVersion",
+            "triggerSource",
+            "delayAlgorithm",
+            "seedDomain",
+            "minimumDelayMs",
+            "maximumDelayMs",
+            "recoveryWindowMs",
+            "maximumInjectionJitterMs",
+            "actions",
+            "productProtocolObservation",
+            "systemSpecificTriggerFields",
+            "faultNotInjected"
+          ],
+          "properties": {
+            "kind": { "const": "product_neutral_black_box_v1" },
+            "scheduleVersion": { "const": "1.0.0" },
+            "triggerSource": { "const": "harness_delivery_receipt_monotonic" },
+            "delayAlgorithm": { "const": "sha256_rejection_u32_v1" },
+            "seedDomain": { "const": "agenc.eval.competitive-fault-delay.v1" },
+            "minimumDelayMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "maximumDelayMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "recoveryWindowMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "maximumInjectionJitterMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000
+            },
+            "actions": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/competitiveFaultAction" }
+            },
+            "productProtocolObservation": { "const": "forbidden" },
+            "systemSpecificTriggerFields": { "const": "forbidden" },
+            "faultNotInjected": { "const": "count_failure" }
+          }
+        },
+        "reporting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version",
+            "primaryMetric",
+            "requiredMetrics",
+            "allAttemptsInDenominator",
+            "mixedSuiteAggregation",
+            "separateFrom",
+            "trustConformanceMetrics"
+          ],
+          "properties": {
+            "kind": { "const": "agenc.eval.competitive-coding-report" },
+            "version": { "const": "1.0.0" },
+            "primaryMetric": { "const": "verified_fix_rate_clean" },
+            "requiredMetrics": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "verified_fix_rate_clean",
+                  "verified_fix_rate_by_fault_condition",
+                  "recovery_rate_by_fault_condition",
+                  "attempt_count",
+                  "unsupported_count"
+                ]
+              }
+            },
+            "allAttemptsInDenominator": { "const": true },
+            "mixedSuiteAggregation": { "const": "forbidden" },
+            "separateFrom": { "const": "agenc.eval.trust-conformance-report" },
+            "trustConformanceMetrics": { "const": "forbidden" }
+          }
+        },
+        "changeControl": { "$ref": "#/definitions/changeControl" }
+      }
+    },
+    "trustScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenarioId",
+        "faultClass",
+        "injectionBoundary",
+        "faultAction",
+        "requiredInvariants",
+        "requiredEvidenceTypes",
+        "fixtureDigest",
+        "initialStateDigest",
+        "expectedStateDigest",
+        "timeoutMs"
+      ],
+      "properties": {
+        "scenarioId": { "$ref": "#/definitions/id" },
+        "faultClass": {
+          "enum": [
+            "restart",
+            "reconnect",
+            "budget",
+            "cancellation",
+            "permission",
+            "event_loss",
+            "uncertain_effect"
+          ]
+        },
+        "injectionBoundary": {
+          "enum": [
+            "after_reservation_before_model_result_commit",
+            "after_event_publish_before_cursor_ack",
+            "concurrent_child_reservation_before_commit",
+            "parent_cancel_after_child_admission",
+            "repository_requests_capability_escalation",
+            "retention_gap_before_reconnect",
+            "after_effect_dispatch_before_ack_commit"
+          ]
+        },
+        "faultAction": {
+          "enum": [
+            "restart_product_process",
+            "disconnect_and_reconnect_client",
+            "race_sibling_budget_reservations",
+            "cancel_parent",
+            "inject_hostile_repository_instruction",
+            "evict_replay_window",
+            "drop_effect_acknowledgement"
+          ]
+        },
+        "requiredInvariants": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,127}$" }
+        },
+        "requiredEvidenceTypes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.]{1,127}$" }
+        },
+        "fixtureDigest": { "$ref": "#/definitions/digest" },
+        "initialStateDigest": { "$ref": "#/definitions/digest" },
+        "expectedStateDigest": { "$ref": "#/definitions/digest" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 3600000 }
+      }
+    },
+    "trustDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "suiteClass",
+        "suiteId",
+        "suiteVersion",
+        "createdAt",
+        "status",
+        "evaluationContractVersion",
+        "subject",
+        "execution",
+        "resetPolicy",
+        "scenarios",
+        "reporting",
+        "changeControl"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.trust-suite-definition" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "suiteClass": { "const": "trust_conformance" },
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "status": { "const": "active" },
+        "evaluationContractVersion": { "$ref": "#/definitions/evalContractVersion" },
+        "subject": { "const": "agenc_only" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "liveProviderCalls",
+            "scheduler",
+            "seedAlgorithm",
+            "seedDomain",
+            "scenarioOrder",
+            "retries",
+            "clock",
+            "network",
+            "harnessImplementationDigest",
+            "fakeProviderFixtureDigest",
+            "fakeToolFixtureDigest",
+            "fixtureBundle"
+          ],
+          "properties": {
+            "provider": { "const": "deterministic_offline_fake" },
+            "liveProviderCalls": { "const": "forbidden" },
+            "scheduler": { "const": "seeded_replayable" },
+            "seedAlgorithm": { "const": "sha256_domain_separated_v1" },
+            "seedDomain": { "const": "agenc.eval.trust-fault-plan.v1" },
+            "scenarioOrder": { "const": "lexicographic_scenario_id" },
+            "retries": { "const": "new_attempt_preserve_failed_evidence" },
+            "clock": { "const": "virtual_monotonic_ms" },
+            "network": { "const": "disabled" },
+            "harnessImplementationDigest": { "$ref": "#/definitions/digest" },
+            "fakeProviderFixtureDigest": { "$ref": "#/definitions/digest" },
+            "fakeToolFixtureDigest": { "$ref": "#/definitions/digest" },
+            "fixtureBundle": { "$ref": "#/definitions/artifactDescriptor" }
+          }
+        },
+        "resetPolicy": { "$ref": "#/definitions/resetPolicy" },
+        "scenarios": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/trustScenario" }
+        },
+        "reporting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version",
+            "primaryMetric",
+            "requiredMetrics",
+            "zeroToleranceMetrics",
+            "allAttemptsInDenominator",
+            "mixedSuiteAggregation",
+            "separateFrom",
+            "codingQualityMetrics"
+          ],
+          "properties": {
+            "kind": { "const": "agenc.eval.trust-conformance-report" },
+            "version": { "const": "1.0.0" },
+            "primaryMetric": { "const": "trust_recovery_rate" },
+            "requiredMetrics": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "trust_recovery_rate",
+                  "fault_family_results",
+                  "policy_escape_count",
+                  "duplicated_uncertain_mutation_count",
+                  "hidden_event_loss_count",
+                  "unknown_outcome_count"
+                ]
+              }
+            },
+            "zeroToleranceMetrics": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "policy_escape_count",
+                  "duplicated_uncertain_mutation_count",
+                  "hidden_event_loss_count"
+                ]
+              }
+            },
+            "allAttemptsInDenominator": { "const": true },
+            "mixedSuiteAggregation": { "const": "forbidden" },
+            "separateFrom": { "const": "agenc.eval.competitive-coding-report" },
+            "codingQualityMetrics": { "const": "forbidden" }
+          }
+        },
+        "changeControl": { "$ref": "#/definitions/changeControl" }
+      }
+    },
+    "catalogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suiteClass", "suiteId", "suiteVersion", "definitionDigest", "path"],
+      "properties": {
+        "suiteClass": { "enum": ["competitive_coding", "trust_conformance"] },
+        "suiteId": { "$ref": "#/definitions/id" },
+        "suiteVersion": { "$ref": "#/definitions/semver" },
+        "definitionDigest": { "$ref": "#/definitions/digest" },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suiteProtocolVersion",
+        "documentDigest",
+        "catalogId",
+        "catalogVersion",
+        "createdAt",
+        "activeDefinitions"
+      ],
+      "properties": {
+        "kind": { "const": "agenc.eval.suite-catalog" },
+        "suiteProtocolVersion": { "$ref": "#/definitions/protocolVersion" },
+        "documentDigest": { "$ref": "#/definitions/digest" },
+        "catalogId": { "$ref": "#/definitions/id" },
+        "catalogVersion": { "$ref": "#/definitions/semver" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "activeDefinitions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/catalogEntry" }
+        }
+      }
+    }
+  }
+}
