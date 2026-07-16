@@ -273,7 +273,7 @@ async function main() {
   const document = withDocumentDigest({
     kind: "agenc.eval.pilot-source-lock",
     version: "1.0.0",
-    createdAt: "2026-07-16T12:00:00Z",
+    createdAt: "2026-07-16T07:42:00Z",
     source: {
       datasetId: DATASET_ID,
       datasetRevision: DATASET_REVISION,

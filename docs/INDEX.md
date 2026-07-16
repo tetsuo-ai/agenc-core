@@ -35,6 +35,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [agent-eval-reports.md](agent-eval-reports.md) | Local agent-eval suite, reports, and regression gate |
 | [evaluation-contract-v1.md](evaluation-contract-v1.md) | Versioned real-agent task, preregistration, evidence, and score derivation contract |
 | [evaluation-suites-v1.md](evaluation-suites-v1.md) | Separate versioned competitive-coding and deterministic trust-conformance suite protocols |
+| [evaluation-pilot-v1.md](evaluation-pilot-v1.md) | Frozen 30-task public pilot candidates, qualification boundary, and powered-holdout design |
 | [ci-required-gates.md](ci-required-gates.md) | Local exact-SHA gates and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Tool JSON-schema root-type requirements for strict providers |
 | [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | BUFFER providers, nvim trust boundary, env knobs |

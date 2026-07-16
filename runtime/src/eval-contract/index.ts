@@ -95,3 +95,9 @@ export {
   type PairedTaskTrials,
   type ValidatedBundle,
 } from "./experiment-bundle.js";
+export {
+  EvaluationPlanValidationError,
+  validateEvaluationPlan,
+  type EvaluationPlanInput,
+  type ValidatedEvaluationPlan,
+} from "./evaluation-plan.js";

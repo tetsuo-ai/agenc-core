@@ -11,6 +11,8 @@
 export { VERSION } from "./version.js";
 
 export * from "./eval-contract/index.js";
+export * from "./eval-pilot/index.js";
+export * from "./eval-power/index.js";
 export * from "./eval-suites/index.js";
 
 export {
