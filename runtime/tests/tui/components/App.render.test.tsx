@@ -30,6 +30,31 @@ let mockHasConsoleBillingAccess = false;
 let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
 const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
+const roleDefinitionProbe = vi.hoisted(() =>
+  vi.fn((_cwd: string) => [
+    {
+      agentType: "default",
+      whenToUse: "Default agent.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+    {
+      agentType: "explorer",
+      whenToUse: "Explore code.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+    {
+      agentType: "worker",
+      whenToUse: "Execute work.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+  ]),
+);
 const fullscreenProbe = vi.hoisted(() => ({
   fullscreen: false,
   mouseTracking: false,
@@ -362,29 +387,7 @@ vi.mock("../../commands.js", () => ({
 }));
 
 vi.mock("../../agents/role-definitions.js", () => ({
-  listAgentRoleDefinitions: () => [
-    {
-      agentType: "default",
-      whenToUse: "Default agent.",
-      source: "built-in",
-      baseDir: "built-in",
-      getSystemPrompt: () => "",
-    },
-    {
-      agentType: "explorer",
-      whenToUse: "Explore code.",
-      source: "built-in",
-      baseDir: "built-in",
-      getSystemPrompt: () => "",
-    },
-    {
-      agentType: "worker",
-      whenToUse: "Execute work.",
-      source: "built-in",
-      baseDir: "built-in",
-      getSystemPrompt: () => "",
-    },
-  ],
+  listAgentRoleDefinitions: roleDefinitionProbe,
 }));
 
 vi.mock("../keybindings/KeybindingProviderSetup.js", async () => {
@@ -792,11 +795,20 @@ function createSession(opts: {
   readonly setDaemonPermissionMode?: (mode: ToolPermissionContext["mode"]) => Promise<unknown>;
   readonly emit?: AgenCBridgeSession["emit"];
   readonly nextInternalSubId?: AgenCBridgeSession["nextInternalSubId"];
+  readonly executionCwd?: string;
+  readonly roleWorkspaceCwd?: string;
+  readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
 } = {}): AgenCBridgeSession {
   const modeSubscribers: Array<() => void> = [];
   const permissionContext = opts.permissionContext ?? PERMISSION_CONTEXT;
+  const executionCwd = opts.executionCwd ?? process.cwd();
+  const roleWorkspaceCwd = opts.roleWorkspaceCwd ?? executionCwd;
   return {
     conversationId: "conversation-app-smoke",
+    roleWorkspace: { id: roleWorkspaceCwd, cwd: roleWorkspaceCwd },
+    ...(opts.agentDefinitions !== undefined
+      ? { agentDefinitions: opts.agentDefinitions }
+      : {}),
     services: {
       permissionModeRegistry: {
         current: () => permissionContext,
@@ -833,6 +845,7 @@ function createSession(opts: {
       displayText: "Conversation rewound",
     }),
     sessionConfiguration: {
+      cwd: executionCwd,
       provider: { slug: "test-provider" },
       collaborationMode: { model: "test-model" },
     },
@@ -1388,10 +1401,14 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("hydrates the TUI app state with registered agent roles", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     providerProbe.appStateProps.length = 0;
+    roleDefinitionProbe.mockClear();
+    const roleWorkspaceCwd = join(tmpdir(), "agenc-tui-role-workspace-a");
+    const executionCwd = join(tmpdir(), "agenc-tui-role-workspace-b");
+    const session = createSession({ roleWorkspaceCwd, executionCwd });
 
     await renderApp(
       <AgenCTuiApp
-        session={createSession()}
+        session={session}
         configStore={{}}
         isInteractive={false}
       />,
@@ -1408,6 +1425,56 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
     expect(active).toEqual(expect.arrayContaining(["default", "explorer", "worker"]));
     expect(all).toEqual(expect.arrayContaining(["default", "explorer", "worker"]));
+    expect(roleDefinitionProbe.mock.calls).toEqual([[roleWorkspaceCwd]]);
+  });
+
+  test("uses the session's canonical custom-agent catalog on the first render", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    providerProbe.appStateProps.length = 0;
+    roleDefinitionProbe.mockClear();
+    const roleWorkspaceCwd = join(tmpdir(), "agenc-tui-canonical-catalog");
+    const canonicalCustomAgent = {
+      agentType: "scanner",
+      whenToUse: "Exact restrictive scanner",
+      source: "projectSettings" as const,
+      baseDir: join(roleWorkspaceCwd, ".agenc", "agents"),
+      permissionMode: "plan" as const,
+      disallowedTools: ["Write"],
+      agentRoleFingerprint: "canonical-fingerprint",
+      getSystemPrompt: () => "Exact restrictive scanner prompt",
+    };
+    const session = createSession({
+      roleWorkspaceCwd,
+      executionCwd: join(tmpdir(), "agenc-tui-execution-worktree"),
+      agentDefinitions: {
+        agentRoleWorkspaceId: roleWorkspaceCwd,
+        activeAgents: [canonicalCustomAgent],
+        allAgents: [canonicalCustomAgent],
+      },
+    });
+
+    await renderApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    const initial = providerProbe.appStateProps.at(-1)?.initialState as {
+      agentDefinitions?: {
+        activeAgents?: Array<Record<string, unknown>>;
+      };
+    };
+    expect(initial.agentDefinitions?.activeAgents).toEqual([
+      expect.objectContaining({
+        agentType: "scanner",
+        permissionMode: "plan",
+        disallowedTools: ["Write"],
+        agentRoleFingerprint: "canonical-fingerprint",
+      }),
+    ]);
+    expect(roleDefinitionProbe).not.toHaveBeenCalled();
   });
 
   test("prioritizes a pending permission overlay over an elicitation overlay", async () => {

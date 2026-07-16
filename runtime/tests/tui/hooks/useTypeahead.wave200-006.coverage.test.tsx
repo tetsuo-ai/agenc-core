@@ -110,6 +110,7 @@ vi.mock('../../utils/bash/shellCompletion.js', () => ({
 vi.mock('../../utils/sessionStorage.js', () => ({
   getSessionIdFromLog: () => 'session-1',
   searchSessionsByCustomTitle: vi.fn(async () => []),
+  writeAgentMetadata: vi.fn(async () => undefined),
 }))
 
 vi.mock('../../utils/suggestions/directoryCompletion.js', () => ({

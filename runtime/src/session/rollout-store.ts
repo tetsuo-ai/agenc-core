@@ -22,10 +22,13 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import type {
-  AgentMetadata,
-  AgentPath,
-  ThreadId,
+import {
+  AgentIdExistsError,
+  InvalidAgentMetadataError,
+  normalizeAgentMetadata,
+  type AgentMetadata,
+  type AgentPath,
+  type ThreadId,
 } from "../agents/registry.js";
 import type { Event } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";
@@ -70,7 +73,6 @@ export class RolloutStore {
   private readonly threadSpawnEdgePath: string;
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
-  private readonly threadSpawnEdges = new Map<ThreadId, ThreadSpawnEdgeRecord>();
 
   constructor(opts: RolloutStoreOpts) {
     this.store = new SessionStore(opts);
@@ -147,31 +149,30 @@ export class RolloutStore {
     return this.store.getCompactionIndexSnapshot();
   }
 
+  createThreadSpawnEdge(edge: ThreadSpawnEdgeRecord): void {
+    const normalized = normalizeThreadSpawnEdge(edge);
+    this.threadSpawnEdgeRepo.create(normalized);
+  }
+
+  /** @deprecated Spawn-edge identity is create-only; use createThreadSpawnEdge. */
   upsertThreadSpawnEdge(edge: ThreadSpawnEdgeRecord): void {
-    this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
-    this.threadSpawnEdgeRepo.upsert(edge);
+    this.createThreadSpawnEdge(edge);
   }
 
   setThreadSpawnEdgeStatus(
     childThreadId: ThreadId,
     status: ThreadSpawnEdgeStatus,
   ): void {
-    const existing = this.threadSpawnEdges.get(childThreadId);
-    if (!existing || existing.status === status) {
-      return;
-    }
-    this.threadSpawnEdges.set(childThreadId, {
-      ...existing,
-      status,
-      metadata: cloneAgentMetadata(existing.metadata),
-    });
-    this.threadSpawnEdgeRepo.upsert({ ...existing, status });
+    // Never decide from a constructor-time snapshot. Multiple daemon/session
+    // handles can share this project database, so the repository performs the
+    // authoritative monotonic transition (or idempotent acknowledgement).
+    this.threadSpawnEdgeRepo.setStatus(childThreadId, status);
   }
 
   getThreadSpawnEdge(
     childThreadId: ThreadId,
   ): ThreadSpawnEdgeRecord | undefined {
-    const edge = this.threadSpawnEdges.get(childThreadId);
+    const edge = this.threadSpawnEdgeRepo.get(childThreadId);
     return edge ? cloneThreadSpawnEdge(edge) : undefined;
   }
 
@@ -227,7 +228,8 @@ export class RolloutStore {
     parentThreadId: ThreadId,
     status?: ThreadSpawnEdgeStatus,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
-    return Array.from(this.threadSpawnEdges.values())
+    return this.threadSpawnEdgeRepo
+      .list()
       .filter((edge) => edge.parentThreadId === parentThreadId)
       .filter((edge) => status === undefined || edge.status === status)
       .sort(compareThreadSpawnEdges)
@@ -239,7 +241,7 @@ export class RolloutStore {
     status?: ThreadSpawnEdgeStatus,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
     const childrenByParent = new Map<ThreadId, ThreadSpawnEdgeRecord[]>();
-    for (const edge of this.threadSpawnEdges.values()) {
+    for (const edge of this.threadSpawnEdgeRepo.list()) {
       if (status !== undefined && edge.status !== status) continue;
       const bucket = childrenByParent.get(edge.parentThreadId) ?? [];
       bucket.push(edge);
@@ -278,15 +280,23 @@ export class RolloutStore {
   }
 
   private loadThreadSpawnEdges(): void {
-    this.threadSpawnEdges.clear();
-    for (const edge of this.threadSpawnEdgeRepo.list()) {
-      this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
-    }
+    const persistedChildIds = new Set(
+      this.threadSpawnEdgeRepo.list().map((edge) => edge.childThreadId),
+    );
 
     for (const edge of this.readLegacyThreadSpawnEdges()) {
-      if (this.threadSpawnEdges.has(edge.childThreadId)) continue;
-      this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
-      this.threadSpawnEdgeRepo.upsert(edge);
+      if (persistedChildIds.has(edge.childThreadId)) continue;
+      try {
+        this.threadSpawnEdgeRepo.create(edge);
+        persistedChildIds.add(edge.childThreadId);
+      } catch (error) {
+        // Another process can win the create between list() and legacy import.
+        // Accept only its durable row; never rewrite it from the legacy file.
+        if (!(error instanceof AgentIdExistsError)) throw error;
+        const persisted = this.threadSpawnEdgeRepo.get(edge.childThreadId);
+        if (!persisted) throw error;
+        persistedChildIds.add(persisted.childThreadId);
+      }
     }
   }
 
@@ -386,18 +396,7 @@ function cloneThreadSpawnEdge(
 }
 
 function cloneAgentMetadata(metadata: AgentMetadata): AgentMetadata {
-  return {
-    ...(metadata.agentId !== undefined ? { agentId: metadata.agentId } : {}),
-    ...(metadata.agentPath !== undefined ? { agentPath: metadata.agentPath } : {}),
-    ...(metadata.agentNickname !== undefined
-      ? { agentNickname: metadata.agentNickname }
-      : {}),
-    ...(metadata.agentRole !== undefined ? { agentRole: metadata.agentRole } : {}),
-    ...(metadata.lastTaskMessage !== undefined
-      ? { lastTaskMessage: metadata.lastTaskMessage }
-      : {}),
-    depth: metadata.depth,
-  };
+  return normalizeAgentMetadata(metadata);
 }
 
 function normalizeThreadSpawnEdge(
@@ -415,43 +414,24 @@ function normalizeThreadSpawnEdge(
   const status =
     edge.status === undefined ? "open" : edge.status;
 
+  const metadata = normalizeAgentMetadata(edge.metadata);
   if (
     typeof childThreadId !== "string" ||
     typeof edge.parentThreadId !== "string" ||
     typeof edge.parentPath !== "string" ||
-    (status !== "open" && status !== "closed")
+    (status !== "open" && status !== "closed") ||
+    metadata.agentId !== childThreadId
   ) {
-    throw new Error("invalid thread-spawn edge record");
+    throw new InvalidAgentMetadataError(
+      "invalid thread-spawn edge record or child identity",
+    );
   }
 
   return {
     childThreadId,
     parentThreadId: edge.parentThreadId,
     parentPath: edge.parentPath,
-    metadata: normalizeAgentMetadata(edge.metadata),
+    metadata,
     status,
   };
-}
-
-function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
-  if (!isRecord(metadata) || typeof metadata.depth !== "number") {
-    throw new Error("invalid thread-spawn edge metadata");
-  }
-
-  const normalized: AgentMetadata = { depth: metadata.depth };
-  for (const key of [
-    "agentId",
-    "agentPath",
-    "agentNickname",
-    "agentRole",
-    "lastTaskMessage",
-  ] as const) {
-    const value = metadata[key];
-    if (value === undefined) continue;
-    if (typeof value !== "string") {
-      throw new Error("invalid thread-spawn edge metadata");
-    }
-    (normalized as Record<typeof key, string>)[key] = value;
-  }
-  return normalized;
 }

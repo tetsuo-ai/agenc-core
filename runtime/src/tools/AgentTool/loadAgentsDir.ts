@@ -1,20 +1,39 @@
 import {
   type Dirent,
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   statSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 
 import yaml from 'js-yaml'
 import memoize from 'lodash-es/memoize.js'
 import { z } from 'zod/v4'
 
-import { listAgentRoles } from '../../agents/role.js'
+import {
+  createAgentRoleWorkspace,
+  listBuiltInAgentRoles,
+  listRegisteredAgentRoles,
+} from '../../agents/role.js'
+import { canonicalAgentRoleName } from '../../agents/role-presentation.js'
+import { agentDefinitionFingerprint } from '../../agents/agent-definition-fingerprint.js'
+import type { AgentRoleWorkspace } from '../../agents/role.js'
 import {
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
@@ -134,6 +153,10 @@ export type BaseAgentDefinition = {
   isolation?: 'worktree' | 'remote'
   pendingSnapshotUpdate?: { snapshotTimestamp: string }
   omitAgenCMd?: boolean
+  /** Content identity used to fail closed when a named role changes. */
+  agentRoleFingerprint?: string
+  /** Immutable base prompt before mutable persistent-memory augmentation. */
+  roleDefinitionPrompt?: string
 }
 
 export type BuiltInAgentDefinition = BaseAgentDefinition & {
@@ -165,10 +188,37 @@ export type AgentDefinition =
   | PluginAgentDefinition
 
 export type AgentDefinitionsResult = {
+  /** Immutable trust domain for every definition in this catalog. */
+  agentRoleWorkspaceId?: string
   activeAgents: AgentDefinition[]
   allAgents: AgentDefinition[]
   failedFiles?: FailedAgentFile[]
   allowedAgentTypes?: string[]
+}
+
+export type WorkspaceAgentDefinitionsResult = AgentDefinitionsResult & {
+  readonly agentRoleWorkspaceId: string
+}
+
+/**
+ * Resolve a public type without allowing an earlier canonical alias to hide
+ * an exact workspace or plugin definition. Catalog ordering is not an
+ * authority boundary: exact names win, then public aliases may fall back to
+ * their canonical built-in role.
+ */
+export function findAgentDefinitionByType(
+  definitions: readonly AgentDefinition[],
+  requestedType: string,
+): AgentDefinition | undefined {
+  const exact = definitions.find(
+    definition => definition.agentType === requestedType,
+  )
+  if (exact !== undefined) return exact
+  const canonicalType = canonicalAgentRoleName(requestedType)
+  return definitions.find(
+    definition =>
+      canonicalAgentRoleName(definition.agentType) === canonicalType,
+  )
 }
 
 type FailedAgentFile = { path: string; error: string }
@@ -403,9 +453,10 @@ function systemPromptWithMemory(
   agentType: string,
   systemPrompt: string,
   memory: AgentMemoryScope | undefined,
+  roleCwd: string,
 ): string {
   if (!memory || !isAutoMemoryEnabled()) return systemPrompt
-  return `${systemPrompt}\n\n${loadAgentMemoryPrompt(agentType, memory)}`
+  return `${systemPrompt}\n\n${loadAgentMemoryPrompt(agentType, memory, roleCwd)}`
 }
 
 function isAutoMemoryEnabled(): boolean {
@@ -417,18 +468,18 @@ function isAutoMemoryEnabled(): boolean {
 }
 
 export function roleToAgentDefinition(
-  role: ReturnType<typeof listAgentRoles>[number],
+  role: ReturnType<typeof listBuiltInAgentRoles>[number],
 ): BuiltInAgentDefinition {
   const description = role.config.description ?? role.name
   const systemPrompt = role.config.systemPrompt ?? ''
   const tools = role.config.allowlist
     ? Array.from(role.config.allowlist)
     : undefined
-  return {
+  const definition = {
     agentType: role.name,
     whenToUse: description,
-    source: 'built-in',
-    baseDir: 'built-in',
+    source: 'built-in' as const,
+    baseDir: 'built-in' as const,
     getSystemPrompt: () => systemPrompt,
     ...(tools !== undefined ? { tools } : {}),
     ...(role.config.disallowlist
@@ -439,10 +490,64 @@ export function roleToAgentDefinition(
       ? { effort: role.config.reasoningEffort }
       : {}),
   }
+  return {
+    ...definition,
+    agentRoleFingerprint: agentDefinitionFingerprint(definition),
+  }
+}
+
+export function requireAgentDefinitionRoleFingerprint(
+  definition: AgentDefinition,
+): string {
+  const computed = agentDefinitionFingerprint(definition)
+  const recorded = definition.agentRoleFingerprint?.trim()
+  if (recorded !== undefined && recorded.length > 0 && recorded !== computed) {
+    throw new Error(
+      `Agent type '${definition.agentType}' has stale or invalid role fingerprint metadata`,
+    )
+  }
+  return computed
+}
+
+export function bindAgentDefinitionToWorkspace(
+  definition: AgentDefinition,
+  _workspace: AgentRoleWorkspace,
+): AgentDefinition {
+  const renderedSystemPrompt = definition.getSystemPrompt()
+  const boundDefinition = {
+    ...definition,
+    getSystemPrompt: () => renderedSystemPrompt,
+  } as AgentDefinition
+  return {
+    ...boundDefinition,
+    agentRoleFingerprint: agentDefinitionFingerprint(boundDefinition),
+  }
 }
 
 function getBuiltInAgents(): BuiltInAgentDefinition[] {
-  return listAgentRoles().map(roleToAgentDefinition)
+  return listBuiltInAgentRoles().map(roleToAgentDefinition)
+}
+
+function getRegisteredAgents(
+  workspace: AgentRoleWorkspace,
+): CustomAgentDefinition[] {
+  return listRegisteredAgentRoles(workspace).map(role => {
+    const projected = roleToAgentDefinition(role)
+    const definition: CustomAgentDefinition = {
+      ...projected,
+      source: 'projectSettings',
+      baseDir: 'programmatic',
+      roleDefinitionPrompt: role.config.systemPrompt ?? '',
+      ...(role.config.model !== undefined
+        ? { model: role.config.model }
+        : {}),
+      getSystemPrompt: () => role.config.systemPrompt ?? '',
+    }
+    return {
+      ...definition,
+      agentRoleFingerprint: agentDefinitionFingerprint(definition),
+    }
+  })
 }
 
 function parseMarkdown(raw: string): {
@@ -505,9 +610,8 @@ function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): str
   for (const entry of entries) {
     const fullPath = join(dir, entry.name)
     try {
-      const entryStats = entry.isSymbolicLink()
-        ? statSync(fullPath)
-        : lstatSync(fullPath)
+      if (entry.isSymbolicLink()) continue
+      const entryStats = lstatSync(fullPath)
       if (entryStats.isDirectory()) {
         out.push(...collectMarkdownFiles(fullPath, visitedDirs))
       } else if (entryStats.isFile() && entry.name.endsWith('.md')) {
@@ -565,6 +669,7 @@ function projectAgentDirs(
 
 async function loadSharedMarkdownAgentFiles(
   cwd: string,
+  fresh = false,
 ): Promise<MarkdownAgentFile[] | null> {
   try {
     // Literal specifier so esbuild discovers the module at bundle time.
@@ -573,18 +678,26 @@ async function loadSharedMarkdownAgentFiles(
         (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
         cache: { clear?: () => void }
       }
+      loadMarkdownFilesForSubdirFresh: (
+        subdir: 'agents',
+        cwd: string,
+      ) => Promise<MarkdownAgentFile[]>
     }
     sharedMarkdownCacheClearer = module.loadMarkdownFilesForSubdir.cache.clear?.bind(
       module.loadMarkdownFilesForSubdir.cache,
     )
-    const files = await module.loadMarkdownFilesForSubdir('agents', cwd)
-    return files.map(file => ({
-      filePath: file.filePath,
-      baseDir: file.baseDir,
-      frontmatter: file.frontmatter,
-      content: file.content,
-      source: file.source as SettingSource,
-    }))
+    const files = fresh
+      ? await module.loadMarkdownFilesForSubdirFresh('agents', cwd)
+      : await module.loadMarkdownFilesForSubdir('agents', cwd)
+    return files
+      .filter(file => isSafeAgentDefinitionPath(file.baseDir, file.filePath))
+      .map(file => ({
+        filePath: file.filePath,
+        baseDir: file.baseDir,
+        frontmatter: file.frontmatter,
+        content: file.content,
+        source: file.source as SettingSource,
+      }))
   } catch {
     return null
   }
@@ -592,9 +705,10 @@ async function loadSharedMarkdownAgentFiles(
 
 async function loadMarkdownAgentFiles(
   cwd: string,
+  fresh = false,
 ): Promise<{ files: MarkdownAgentFile[]; failedFiles: FailedAgentFile[] }> {
   if (!markdownDirsForTesting) {
-    const sharedFiles = await loadSharedMarkdownAgentFiles(cwd)
+    const sharedFiles = await loadSharedMarkdownAgentFiles(cwd, fresh)
     if (sharedFiles) return { files: sharedFiles, failedFiles: [] }
   }
 
@@ -612,10 +726,13 @@ async function loadMarkdownAgentFiles(
     }
     for (const filePath of filePaths) {
       try {
+        const raw = readSafeAgentDefinitionFile(dir, filePath)
+        if (raw === null) {
+          throw new Error('agent definition path escapes its discovery tier')
+        }
         const identity = fileIdentity(filePath)
         if (identity && seenFileIds.has(identity)) continue
         if (identity) seenFileIds.add(identity)
-        const raw = readFileSync(filePath, 'utf8')
         const { frontmatter, content } = parseMarkdown(raw)
         files.push({
           filePath,
@@ -632,6 +749,77 @@ async function loadMarkdownAgentFiles(
   return { files, failedFiles }
 }
 
+function isSafeAgentDefinitionPath(baseDir: string, filePath: string): boolean {
+  try {
+    const lexicalBase = lstatSync(baseDir)
+    const lexicalFile = lstatSync(filePath)
+    if (
+      !lexicalBase.isDirectory() ||
+      lexicalBase.isSymbolicLink() ||
+      !lexicalFile.isFile() ||
+      lexicalFile.isSymbolicLink()
+    ) {
+      return false
+    }
+    const canonicalAnchor = realpathSync(dirname(dirname(baseDir)))
+    const canonicalBase = realpathSync(baseDir)
+    const canonicalFile = realpathSync(filePath)
+    return isSameOrChildPath(canonicalAnchor, canonicalBase) &&
+      isSameOrChildPath(canonicalBase, canonicalFile) &&
+      canonicalBase !== canonicalFile
+  } catch {
+    return false
+  }
+}
+
+function readSafeAgentDefinitionFile(
+  baseDir: string,
+  filePath: string,
+): string | null {
+  if (!isSafeAgentDefinitionPath(baseDir, filePath)) return null
+  let fd: number | undefined
+  try {
+    const lexicalFile = lstatSync(filePath)
+    const canonicalFile = realpathSync(filePath)
+    fd = openSync(
+      filePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    )
+    const opened = fstatSync(fd)
+    if (
+      !opened.isFile() ||
+      opened.dev !== lexicalFile.dev ||
+      opened.ino !== lexicalFile.ino
+    ) {
+      return null
+    }
+    const content = readFileSync(fd, 'utf8')
+    const afterRead = fstatSync(fd)
+    if (
+      afterRead.dev !== opened.dev ||
+      afterRead.ino !== opened.ino ||
+      realpathSync(filePath) !== canonicalFile ||
+      !isSafeAgentDefinitionPath(baseDir, filePath)
+    ) {
+      return null
+    }
+    return content
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function isSameOrChildPath(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate)
+  return child === '' || (
+    child !== '..' &&
+    !child.startsWith(`..${sep}`) &&
+    !isAbsolute(child)
+  )
+}
+
 function parseAgentFields(
   name: string,
   description: string,
@@ -640,6 +828,7 @@ function parseAgentFields(
   raw: Record<string, unknown>,
   filePath?: string,
   baseDir?: string,
+  roleCwd: string = process.cwd(),
 ): CustomAgentDefinition {
   const memory = parseMemoryScope(raw.memory)
   const tools = addMemoryTools(parseAgentTools(raw.tools), memory)
@@ -665,7 +854,9 @@ function parseAgentFields(
     agentType: name,
     whenToUse: description.replace(/\\n/g, '\n'),
     source,
-    getSystemPrompt: () => systemPromptWithMemory(name, systemPrompt, memory),
+    getSystemPrompt: () =>
+      systemPromptWithMemory(name, systemPrompt, memory, roleCwd),
+    roleDefinitionPrompt: systemPrompt,
     ...(filePath ? { filename: basename(filePath, '.md') } : {}),
     ...(baseDir ? { baseDir } : {}),
     ...(tools !== undefined ? { tools } : {}),
@@ -689,12 +880,22 @@ export function parseAgentFromJson(
   name: string,
   definition: unknown,
   source: SettingSource = 'flagSettings',
+  roleCwd: string = process.cwd(),
 ): CustomAgentDefinition | null {
   if (!isRecord(definition)) return null
   const description = nonEmptyString(definition.description)
   const prompt = nonEmptyString(definition.prompt)
   if (!description || !prompt) return null
-  return parseAgentFields(name, description, source, prompt, definition)
+  return parseAgentFields(
+    name,
+    description,
+    source,
+    prompt,
+    definition,
+    undefined,
+    undefined,
+    roleCwd,
+  )
 }
 
 export function parseAgentsFromJson(
@@ -713,6 +914,7 @@ export function parseAgentFromMarkdown(
   frontmatter: Record<string, unknown>,
   content: string,
   source: SettingSource,
+  roleCwd: string = process.cwd(),
 ): CustomAgentDefinition | null {
   const name = nonEmptyString(frontmatter.name)
   const description = nonEmptyString(frontmatter.description)
@@ -725,11 +927,13 @@ export function parseAgentFromMarkdown(
     frontmatter,
     filePath,
     baseDir,
+    roleCwd,
   )
 }
 
 async function initializeAgentMemorySnapshots(
   agents: CustomAgentDefinition[],
+  roleCwd: string,
 ): Promise<void> {
   if (!isAutoMemoryEnabled()) return
   const memoryAgents = agents.filter(agent => agent.memory === 'user')
@@ -742,12 +946,14 @@ async function initializeAgentMemorySnapshots(
         const result = await snapshots.checkAgentMemorySnapshot(
           agent.agentType,
           agent.memory ?? 'user',
+          roleCwd,
         )
         if (result.action === 'initialize') {
           await snapshots.initializeFromSnapshot(
             agent.agentType,
             agent.memory ?? 'user',
             result.snapshotTimestamp ?? '',
+            roleCwd,
           )
         } else if (result.action === 'prompt-update') {
           agent.pendingSnapshotUpdate = {
@@ -761,13 +967,16 @@ async function initializeAgentMemorySnapshots(
   }
 }
 
-async function loadPluginAgentsSafe(cwd: string): Promise<PluginAgentDefinition[]> {
+async function loadPluginAgentsSafe(
+  cwd: string,
+  fresh = false,
+): Promise<PluginAgentDefinition[]> {
   try {
     if (pluginAgentsLoaderForTesting) {
       return await pluginAgentsLoaderForTesting()
     }
     pluginAgentCacheClearer = clearPluginAgentCache
-    const loaded = await loadPluginAgents({ cwd })
+    const loaded = await loadPluginAgents({ cwd, fresh })
     return Array.isArray(loaded)
       ? loaded.filter((agent): agent is PluginAgentDefinition =>
           isRecord(agent) &&
@@ -782,20 +991,34 @@ async function loadPluginAgentsSafe(cwd: string): Promise<PluginAgentDefinition[
   }
 }
 
-async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult> {
+async function loadAgentDefinitions(
+  cwd: string,
+  options: { readonly fresh?: boolean } = {},
+): Promise<WorkspaceAgentDefinitionsResult> {
+  const workspace = createAgentRoleWorkspace(cwd)
   const builtInAgents = getBuiltInAgents()
+  const registeredAgents = getRegisteredAgents(workspace)
   if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
+    // Simple mode skips disk/plugin discovery, but programmatic roles are
+    // already explicit in-process configuration. Keep the same workspace
+    // overrides that AgentControl resolves instead of silently falling back to
+    // a less restrictive built-in definition with the same name.
+    const simpleAgents = [...builtInAgents, ...registeredAgents]
     return {
-      activeAgents: builtInAgents,
-      allAgents: builtInAgents,
+      agentRoleWorkspaceId: workspace.id,
+      activeAgents: getActiveAgentsFromList(simpleAgents),
+      allAgents: simpleAgents,
     }
   }
 
   try {
     const failedFiles: FailedAgentFile[] = []
-    const markdownResult = await loadMarkdownAgentFiles(cwd)
+    const markdownResult = await loadMarkdownAgentFiles(
+      cwd,
+      options.fresh === true,
+    )
     failedFiles.push(...markdownResult.failedFiles)
-    const customAgents = markdownResult.files
+    const parsedCustomAgents = markdownResult.files
       .map(file => {
         const agent = parseAgentFromMarkdown(
           file.filePath,
@@ -803,6 +1026,7 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
           file.frontmatter,
           file.content,
           file.source,
+          cwd,
         )
         if (!agent && file.frontmatter.name) {
           failedFiles.push({
@@ -815,11 +1039,31 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
       .filter((agent): agent is CustomAgentDefinition => agent !== null)
 
     const [pluginAgents] = await Promise.all([
-      loadPluginAgentsSafe(cwd),
-      initializeAgentMemorySnapshots(customAgents),
+      loadPluginAgentsSafe(cwd, options.fresh === true),
+      initializeAgentMemorySnapshots(parsedCustomAgents, cwd),
     ])
 
-    const allAgents = [...builtInAgents, ...pluginAgents, ...customAgents]
+    const customAgents = parsedCustomAgents.map(
+      agent =>
+        bindAgentDefinitionToWorkspace(
+          agent,
+          workspace,
+        ) as CustomAgentDefinition,
+    )
+
+    const scopedPluginAgents = pluginAgents.map(
+      agent => bindAgentDefinitionToWorkspace(agent, workspace) as PluginAgentDefinition,
+    )
+    // Programmatic roles live in the same immutable workspace registry used
+    // by AgentControl. Keep them in the canonical catalog too; otherwise the
+    // bootstrap-supplied fresh loader makes those roles disappear from the
+    // TUI, AgentTool, and nested child sessions.
+    const allAgents = [
+      ...builtInAgents,
+      ...registeredAgents,
+      ...scopedPluginAgents,
+      ...customAgents,
+    ]
     const activeAgents = getActiveAgentsFromList(allAgents)
     for (const agent of activeAgents) {
       if (agent.color) {
@@ -828,14 +1072,17 @@ async function loadAgentDefinitions(cwd: string): Promise<AgentDefinitionsResult
     }
 
     return {
+      agentRoleWorkspaceId: workspace.id,
       activeAgents,
       allAgents,
       ...(failedFiles.length > 0 ? { failedFiles } : {}),
     }
   } catch (error) {
+    const safeAgents = [...builtInAgents, ...registeredAgents]
     return {
-      activeAgents: builtInAgents,
-      allAgents: builtInAgents,
+      agentRoleWorkspaceId: workspace.id,
+      activeAgents: getActiveAgentsFromList(safeAgents),
+      allAgents: safeAgents,
       failedFiles: [{ path: 'unknown', error: errorToMessage(error) }],
     }
   }
@@ -856,9 +1103,17 @@ function getParseError(frontmatter: Record<string, unknown>): string {
 }
 
 export const getAgentDefinitionsWithOverrides = memoize(
-  async (cwd: string): Promise<AgentDefinitionsResult> => loadAgentDefinitions(cwd),
+  async (cwd: string): Promise<WorkspaceAgentDefinitionsResult> =>
+    loadAgentDefinitions(cwd),
   cwd => cwd,
 )
+
+/** Bypass the UI memoizer when validating a persisted role during resume. */
+export async function loadFreshAgentDefinitions(
+  cwd: string,
+): Promise<WorkspaceAgentDefinitionsResult> {
+  return loadAgentDefinitions(cwd, { fresh: true })
+}
 
 export function clearAgentDefinitionsCache(): void {
   getAgentDefinitionsWithOverrides.cache.clear?.()

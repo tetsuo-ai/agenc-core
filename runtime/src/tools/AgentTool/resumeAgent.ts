@@ -1,14 +1,23 @@
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
+import {
+  assertAgentRoleWorkspaceMatches,
+  type AgentRoleWorkspace,
+} from '../../agents/role.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import type { ToolPermissionContext, ToolUseContext } from '../Tool.js'
 import type { AdditionalWorkingDirectory } from '../../types/permissions.js'
 import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
 import { assembleToolPool } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
-import { runWithAgentContext } from '../../utils/agentContext.js'
+import {
+  getAgentContext,
+  runWithAgentContext,
+  type SubagentContext,
+} from '../../utils/agentContext.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
@@ -20,6 +29,7 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  type AgentMetadata as AgentSidecarMetadata,
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -30,15 +40,96 @@ import { getParentSessionId } from '../../utils/teammate.js'
 import { reconstructForSubagentResume } from '../../utils/toolResultStorage.js'
 import { runAsyncAgentLifecycle } from './agentToolUtils.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
-import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { isBuiltInAgent, roleToAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { getDefaultAgentRole } from 'src/agents/role.js'
+import type {
+  AgentDefinition,
+  AgentDefinitionsResult,
+} from 'src/tools/AgentTool/loadAgentsDir.js'
+import {
+  isBuiltInAgent,
+  loadFreshAgentDefinitions,
+  requireAgentDefinitionRoleFingerprint,
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
 export type ResumeAgentResult = {
   agentId: string
   description: string
   outputFile: string
 }
+
+export type ResumeAgentLaunchPreflight = {
+  readonly agentId: string
+  readonly selectedAgent: AgentDefinition
+  readonly agentContext: SubagentContext
+  readonly availableTools: Parameters<typeof runAgent>[0]['availableTools']
+  readonly workerPermissionMode: ToolPermissionContext['mode']
+}
+
+type ResumeAgentLaunchForTesting = (
+  preflight: ResumeAgentLaunchPreflight,
+) => Promise<ResumeAgentResult> | ResumeAgentResult
+
+let resumeAgentLaunchForTesting: ResumeAgentLaunchForTesting | undefined
+
+/** @internal Injects the post-policy launch boundary for focused tests. */
+export function __setResumeAgentLaunchForTesting(
+  launch: ResumeAgentLaunchForTesting | undefined,
+): void {
+  resumeAgentLaunchForTesting = launch
+}
+
+export function resolveAgentDefinitionForResume(
+  metadata: AgentSidecarMetadata | null,
+  workspace: AgentRoleWorkspace,
+  catalog: Pick<
+    AgentDefinitionsResult,
+    'agentRoleWorkspaceId' | 'activeAgents'
+  >,
+): { readonly selectedAgent: AgentDefinition; readonly isResumedFork: boolean } {
+  if (!metadata) {
+    throw new Error(
+      'Cannot resume agent: role workspace metadata is missing',
+    )
+  }
+
+  assertAgentRoleWorkspaceMatches(
+    workspace,
+    metadata.agentRoleWorkspaceId,
+  )
+  assertAgentRoleWorkspaceMatches(workspace, catalog.agentRoleWorkspaceId)
+  const requireMatchingFingerprint = (
+    selectedAgent: AgentDefinition,
+  ): AgentDefinition => {
+    if (
+      metadata.agentRoleFingerprint === undefined ||
+      metadata.agentRoleFingerprint !==
+        requireAgentDefinitionRoleFingerprint(selectedAgent)
+    ) {
+      throw new Error(
+        `Cannot resume changed agent type '${metadata.agentType}' in workspace ${workspace.id}`,
+      )
+    }
+    return selectedAgent
+  }
+  if (metadata.agentType === FORK_AGENT.agentType) {
+    return {
+      selectedAgent: requireMatchingFingerprint(FORK_AGENT),
+      isResumedFork: true,
+    }
+  }
+  const selectedAgent = catalog.activeAgents.find(
+    agent => agent.agentType === metadata.agentType,
+  )
+  if (!selectedAgent) {
+    throw new Error(
+      `Cannot resume agent type '${metadata.agentType}': it is not available in workspace ${workspace.id}`,
+    )
+  }
+  return {
+    selectedAgent: requireMatchingFingerprint(selectedAgent),
+    isResumedFork: false,
+  }
+}
+
 export async function resumeAgentBackground({
   agentId,
   prompt,
@@ -59,14 +150,31 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
   const permissionMode = appState.toolPermissionContext.mode
+  const parentSession = requireCurrentRuntimeSession('subagent resume')
+  assertAgentRoleWorkspaceMatches(
+    parentSession.roleWorkspace,
+    toolUseContext.options.agentDefinitions.agentRoleWorkspaceId,
+  )
+  assertAgentRoleWorkspaceMatches(
+    parentSession.roleWorkspace,
+    appState.agentDefinitions.agentRoleWorkspaceId,
+  )
+  const freshCatalog = await loadFreshAgentDefinitions(
+    parentSession.roleWorkspace.cwd,
+  )
 
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),
-    readAgentMetadata(asAgentId(agentId)),
+    readAgentMetadata(asAgentId(agentId), { strict: true }),
   ])
   if (!transcript) {
     throw new Error(`No transcript found for agent ID: ${agentId}`)
   }
+  const { selectedAgent, isResumedFork } = resolveAgentDefinitionForResume(
+    meta,
+    parentSession.roleWorkspace,
+    freshCatalog,
+  )
   const resumedMessages = filterWhitespaceOnlyAssistantMessages(
     filterOrphanedThinkingOnlyMessages(
       filterUnresolvedToolUses(transcript.messages),
@@ -96,22 +204,26 @@ export async function resumeAgentBackground({
     await fsp.utimes(resumedWorktreePath, now, now)
   }
 
-  // Skip filterDeniedAgents re-gating — original spawn already passed permission checks
-  let selectedAgent: AgentDefinition
-  let isResumedFork = false
-  if (meta?.agentType === FORK_AGENT.agentType) {
-    selectedAgent = FORK_AGENT
-    isResumedFork = true
-  } else if (meta?.agentType) {
-    const found = toolUseContext.options.agentDefinitions.activeAgents.find(
-      a => a.agentType === meta.agentType,
-    )
-    selectedAgent = found ?? roleToAgentDefinition(getDefaultAgentRole())
-  } else {
-    selectedAgent = roleToAgentDefinition(getDefaultAgentRole())
-  }
-
   const uiDescription = meta?.description ?? '(resumed)'
+
+  const asyncAgentContext: SubagentContext = {
+    agentId,
+    parentSessionId: getParentSessionId(),
+    agentType: 'subagent' as const,
+    subagentName: selectedAgent.agentType,
+    isBuiltIn: isBuiltInAgent(selectedAgent),
+    invokingRequestId,
+    invocationKind: 'resume' as const,
+    invocationEmitted: false,
+    ...(selectedAgent.memory !== undefined
+      ? {
+          memoryAuthorization: {
+            agentType: selectedAgent.agentType,
+            scope: selectedAgent.memory,
+          },
+        }
+      : {}),
+  }
 
   let forkParentSystemPrompt: SystemPrompt | undefined
   if (isResumedFork) {
@@ -211,6 +323,22 @@ export async function resumeAgentBackground({
     contentReplacementState: resumedReplacementState,
   }
 
+  if (resumeAgentLaunchForTesting !== undefined) {
+    return runWithAgentContext(asyncAgentContext, () => {
+      const ambientContext = getAgentContext()
+      if (ambientContext?.agentType !== 'subagent') {
+        throw new Error('resume launch is missing its subagent context')
+      }
+      return resumeAgentLaunchForTesting!({
+        agentId,
+        selectedAgent,
+        agentContext: ambientContext,
+        availableTools: runAgentParams.availableTools,
+        workerPermissionMode: workerPermissionContext.mode,
+      })
+    })
+  }
+
   // Skip name-registry write — original entry persists from the initial spawn
   const agentBackgroundTask = registerAsyncAgent({
     agentId,
@@ -228,17 +356,6 @@ export async function resumeAgentBackground({
     startTime,
     agentType: selectedAgent.agentType,
     isAsync: true,
-  }
-
-  const asyncAgentContext = {
-    agentId,
-    parentSessionId: getParentSessionId(),
-    agentType: 'subagent' as const,
-    subagentName: selectedAgent.agentType,
-    isBuiltIn: isBuiltInAgent(selectedAgent),
-    invokingRequestId,
-    invocationKind: 'resume' as const,
-    invocationEmitted: false,
   }
 
   const wrapWithCwd = <T>(fn: () => T): T =>

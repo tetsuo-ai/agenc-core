@@ -47,6 +47,12 @@ import {
   type RequestId,
 } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
+import {
+  AgentRoleWorkspaceError,
+  createAgentRoleWorkspace,
+  normalizeAgentRoleWorkspace,
+  type AgentRoleWorkspace,
+} from "../agents/role-workspace.js";
 
 export type AgenCAgentCliCommand =
   | {
@@ -956,6 +962,58 @@ export function resolveAgenCAgentAttachCwd(
 ): string {
   const cwd = resolveAgenCAgentAttachSession(result)?.cwd?.trim();
   return cwd && cwd.length > 0 ? cwd : fallbackCwd;
+}
+
+/** Resolve persisted role authority independently from the execution cwd. */
+export function resolveAgenCAgentAttachRoleWorkspace(
+  result: AgentAttachResult,
+  fallbackCwd: string,
+): AgentRoleWorkspace {
+  const session = resolveAgenCAgentAttachSession(result);
+  if (session?.roleWorkspace !== undefined) {
+    return normalizeAgentRoleWorkspace(session.roleWorkspace);
+  }
+
+  const metadata = session?.metadata;
+  const hasMetadataId =
+    metadata !== undefined &&
+    Object.prototype.hasOwnProperty.call(metadata, "agentRoleWorkspaceId");
+  const hasMetadataCwd =
+    metadata !== undefined &&
+    Object.prototype.hasOwnProperty.call(metadata, "agentRoleWorkspaceCwd");
+  if (hasMetadataId || hasMetadataCwd) {
+    const metadataId = metadata?.agentRoleWorkspaceId;
+    if (typeof metadataId !== "string" || metadataId.length === 0) {
+      throw invalidAgenCAgentAttachRoleWorkspace(
+        "agentRoleWorkspaceId must be a non-empty absolute path",
+      );
+    }
+
+    let roleWorkspaceCwd = metadataId;
+    if (hasMetadataCwd) {
+      const metadataCwd = metadata?.agentRoleWorkspaceCwd;
+      if (typeof metadataCwd !== "string" || metadataCwd.length === 0) {
+        throw invalidAgenCAgentAttachRoleWorkspace(
+          "agentRoleWorkspaceCwd must be a non-empty absolute path when present",
+        );
+      }
+      roleWorkspaceCwd = metadataCwd;
+    }
+
+    return normalizeAgentRoleWorkspace({
+      id: metadataId,
+      cwd: roleWorkspaceCwd,
+    });
+  }
+  return createAgentRoleWorkspace(session?.cwd?.trim() || fallbackCwd);
+}
+
+function invalidAgenCAgentAttachRoleWorkspace(
+  detail: string,
+): AgentRoleWorkspaceError {
+  return new AgentRoleWorkspaceError(
+    `Invalid agent role workspace provenance: ${detail}`,
+  );
 }
 
 export function formatAgenCAgentList(result: AgentListResult): string {

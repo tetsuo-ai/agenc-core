@@ -97,6 +97,7 @@ vi.mock('src/utils/Shell.js', () => ({
 
 vi.mock('src/utils/sessionStorage.js', () => ({
   saveWorktreeState: harness.saveWorktreeState,
+  writeAgentMetadata: vi.fn(async () => undefined),
 }))
 
 vi.mock('src/utils/worktree.js', () => ({

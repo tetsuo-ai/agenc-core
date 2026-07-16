@@ -18,6 +18,7 @@ import { getSessionId } from '../../bootstrap/state.js'
 import { getSpinnerVerbs } from '../../constants/spinnerVerbs.js'
 import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js'
 import type { AppState } from '../../tui/state/AppState.js'
+import type { PermissionMode } from '../../permissions/types.js'
 import { createTaskStateBase, generateTaskId } from '../../tasks/Task.js'
 import type {
   InProcessTeammateTaskState,
@@ -64,6 +65,8 @@ export type InProcessSpawnConfig = {
   planModeRequired: boolean
   /** Optional model override for this teammate */
   model?: string
+  /** Initial policy mode inherited from the selected agent definition. */
+  permissionMode?: PermissionMode
 }
 
 /**
@@ -100,7 +103,15 @@ export async function spawnInProcessTeammate(
   config: InProcessSpawnConfig,
   context: SpawnContext,
 ): Promise<InProcessSpawnOutput> {
-  const { name, teamName, prompt, color, planModeRequired, model } = config
+  const {
+    name,
+    teamName,
+    prompt,
+    color,
+    planModeRequired,
+    model,
+    permissionMode,
+  } = config
   const { setAppState } = context
 
   // Generate deterministic agent ID
@@ -165,7 +176,9 @@ export async function spawnInProcessTeammate(
       awaitingPlanApproval: false,
       spinnerVerb: sample(getSpinnerVerbs()),
       pastTenseVerb: sample(TURN_COMPLETION_VERBS),
-      permissionMode: planModeRequired ? 'plan' : 'default',
+      permissionMode: planModeRequired
+        ? 'plan'
+        : (permissionMode ?? 'default'),
       isIdle: false,
       shutdownRequested: false,
       lastReportedToolCount: 0,

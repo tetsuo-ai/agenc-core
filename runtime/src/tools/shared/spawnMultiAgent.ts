@@ -5,6 +5,14 @@
 
 import React from 'react'
 import { getSessionId } from '../../bootstrap/state.js'
+import {
+  assertAgentRoleWorkspaceMatches,
+  createAgentRoleWorkspace,
+  normalizeAgentRoleWorkspace,
+} from '../../agents/role.js'
+import { canonicalAgentRoleName } from '../../agents/role-presentation.js'
+import type { AgentRoleWorkspace } from '../../agents/role.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import { createTaskStateBase, generateTaskId } from '../../tasks/Task.js'
 import type { ToolUseContext } from '../Tool.js'
@@ -17,6 +25,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
+import { getDenyRuleForAgent } from '../../utils/permissions/permissions.js'
 import { isTmuxAvailable } from '../../utils/swarm/backends/detection.js'
 import {
   detectAndGetBackend,
@@ -62,8 +71,13 @@ import {
 import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
-import type { CustomAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { isCustomAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
+import {
+  findAgentDefinitionByType,
+  loadFreshAgentDefinitions,
+  type AgentDefinition,
+} from 'src/tools/AgentTool/loadAgentsDir.js'
+import { setAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
+import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
   const configured = getGlobalConfig().teammateDefaultModel
@@ -125,6 +139,9 @@ export type SpawnTeammateConfig = {
   model?: string
   agent_type?: string
   description?: string
+  /** Immutable role authority inherited from the parent session. */
+  agent_role_workspace_id: string
+  agent_role_workspace_cwd: string
   /** request_id of the API call whose response contained the tool_use that
    *  spawned this teammate. Threaded through to TeammateAgentContext for
    *  lineage tracing on tengu_api_* events. */
@@ -142,7 +159,23 @@ type SpawnInput = {
   model?: string
   agent_type?: string
   description?: string
+  agent_role_workspace_id: string
+  agent_role_workspace_cwd: string
   invokingRequestId?: string
+}
+
+export type SpawnTeammateBackend = (
+  input: SpawnTeammateConfig,
+  context: ToolUseContext,
+) => Promise<{ data: SpawnOutput }>
+
+let spawnTeammateBackendForTesting: SpawnTeammateBackend | undefined
+
+/** @internal Injects the post-policy spawn boundary for focused tests. */
+export function __setSpawnTeammateBackendForTesting(
+  backend: SpawnTeammateBackend | undefined,
+): void {
+  spawnTeammateBackendForTesting = backend
 }
 
 // ============================================================================
@@ -832,13 +865,13 @@ async function handleSpawnInProcess(
   // Assign a unique color to this teammate
   const teammateColor = assignTeammateColor(teammateId)
 
-  // Look up custom agent definition if agent_type is provided
-  let agentDefinition: CustomAgentDefinition | undefined
+  // Look up the already workspace-validated definition if agent_type is provided.
+  let agentDefinition: AgentDefinition | undefined
   if (agent_type) {
     const allAgents = context.options.agentDefinitions.activeAgents
-    const foundAgent = allAgents.find(a => a.agentType === agent_type)
-    if (foundAgent && isCustomAgent(foundAgent)) {
-      agentDefinition = foundAgent
+    agentDefinition = findAgentDefinitionByType(allAgents, agent_type)
+    if (agentDefinition === undefined) {
+      throw new Error(`Agent type '${agent_type}' not found for teammate spawn`)
     }
     logForDebugging(
       `[handleSpawnInProcess] agent_type=${agent_type}, found=${!!agentDefinition}`,
@@ -853,6 +886,7 @@ async function handleSpawnInProcess(
     color: teammateColor,
     planModeRequired: plan_mode_required ?? false,
     model,
+    permissionMode: agentDefinition?.permissionMode,
   }
 
   const result = await spawnInProcessTeammate(config, context)
@@ -1043,5 +1077,131 @@ export async function spawnTeammate(
   config: SpawnTeammateConfig,
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
-  return handleSpawn(config, context)
+  let effectiveContext = context
+  let effectiveConfig = config
+  const parentSession = requireCurrentRuntimeSession('teammate spawn')
+  assertTeammateSpawnRoleWorkspace({
+    parentWorkspace: parentSession.roleWorkspace,
+    suppliedWorkspaceId: config.agent_role_workspace_id,
+    suppliedWorkspaceCwd: config.agent_role_workspace_cwd,
+    catalogWorkspaceId:
+      context.options.agentDefinitions.agentRoleWorkspaceId,
+    executionCwd: config.cwd ?? getCwd(),
+    inProcess: isInProcessEnabled(),
+  })
+  assertAgentRoleWorkspaceMatches(
+    parentSession.roleWorkspace,
+    context.getAppState().agentDefinitions.agentRoleWorkspaceId,
+  )
+  if (config.agent_type) {
+    const freshCatalog = await loadFreshAgentDefinitions(
+      parentSession.roleWorkspace.cwd,
+    )
+    assertAgentRoleWorkspaceMatches(
+      parentSession.roleWorkspace,
+      freshCatalog.agentRoleWorkspaceId,
+    )
+    const selected = findAgentDefinitionByType(
+      freshCatalog.activeAgents,
+      config.agent_type,
+    )
+    if (selected === undefined) {
+      throw new Error(`Agent type '${config.agent_type}' not found for teammate spawn`)
+    }
+    const allowedAgentTypes =
+      context.options.agentDefinitions.allowedAgentTypes
+    if (
+      allowedAgentTypes !== undefined &&
+      !allowedAgentTypes.some(allowedType =>
+        allowedType === selected.agentType ||
+        (selected.agentType !== config.agent_type &&
+          canonicalAgentRoleName(allowedType) ===
+            canonicalAgentRoleName(selected.agentType)),
+      )
+    ) {
+      throw new Error(`Agent type '${config.agent_type}' not found for teammate spawn`)
+    }
+    const permissionContext = context.getAppState().toolPermissionContext
+    const denyRule =
+      getDenyRuleForAgent(
+        permissionContext,
+        AGENT_TOOL_NAME,
+        config.agent_type,
+      ) ??
+      (selected.agentType !== config.agent_type
+        ? getDenyRuleForAgent(
+            permissionContext,
+            AGENT_TOOL_NAME,
+            selected.agentType,
+          )
+        : null)
+    if (denyRule !== null) {
+      throw new Error(
+        `Agent type '${config.agent_type}' has been denied by permission rule '${AGENT_TOOL_NAME}(${denyRule.ruleValue.ruleContent ?? config.agent_type})' from ${denyRule.source ?? 'settings'}.`,
+      )
+    }
+    // Pane processes currently have no startup protocol that carries the
+    // immutable role workspace, exact definition fingerprint, prompt, tool
+    // restrictions, permission mode, and memory policy. `--agent-type` is not
+    // a supported bootstrap contract, so allowing this path would validate one
+    // role in the parent and execute an unrestricted/default role in the child.
+    // Fail closed until the complete provenance envelope can be consumed by
+    // the spawned process. In-process teammates inherit the validated catalog.
+    if (!isInProcessEnabled()) {
+      throw new Error(
+        `Agent type '${config.agent_type}' requires in-process teammate mode; pane teammates cannot enforce exact agent-role provenance`,
+      )
+    }
+    if (selected.color) {
+      setAgentColor(selected.agentType, selected.color)
+    }
+    effectiveConfig = {
+      ...config,
+      model: config.model ?? selected.model,
+    }
+    effectiveContext = {
+      ...context,
+      options: {
+        ...context.options,
+        agentDefinitions: {
+          ...context.options.agentDefinitions,
+          activeAgents: freshCatalog.activeAgents,
+        },
+      },
+    }
+  }
+  return (spawnTeammateBackendForTesting ?? handleSpawn)(
+    effectiveConfig,
+    effectiveContext,
+  )
+}
+
+export function assertTeammateSpawnRoleWorkspace(opts: {
+  readonly parentWorkspace: AgentRoleWorkspace
+  readonly suppliedWorkspaceId: string
+  readonly suppliedWorkspaceCwd: string
+  readonly catalogWorkspaceId?: string
+  readonly executionCwd: string
+  readonly inProcess: boolean
+}): void {
+  const suppliedWorkspace = normalizeAgentRoleWorkspace({
+    id: opts.suppliedWorkspaceId,
+    cwd: opts.suppliedWorkspaceCwd,
+  })
+  assertAgentRoleWorkspaceMatches(opts.parentWorkspace, suppliedWorkspace.id)
+  assertAgentRoleWorkspaceMatches(
+    opts.parentWorkspace,
+    opts.catalogWorkspaceId,
+  )
+
+  // Pane teammates bootstrap role authority from their process cwd. Until the
+  // daemon protocol has a separate role-workspace field, reject a pane spawn
+  // whose execution cwd would select a different trust domain. In-process
+  // teammates inherit the already-validated parent context.
+  const executionWorkspace = createAgentRoleWorkspace(opts.executionCwd)
+  if (!opts.inProcess && executionWorkspace.id !== suppliedWorkspace.id) {
+    throw new Error(
+      `teammate execution cwd ${executionWorkspace.cwd} does not match role workspace ${suppliedWorkspace.cwd}`,
+    )
+  }
 }

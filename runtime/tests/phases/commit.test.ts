@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -56,6 +57,7 @@ vi.mock("../utils/forkedAgent.js", async () => {
 });
 
 const originalPromptSuggestionEnv = process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 
 function mkCtx(): TurnContext {
   return {
@@ -122,6 +124,13 @@ function terminalAssistant(
 
 function mkSession(): Session {
   return {
+    roleWorkspace: ROLE_WORKSPACE,
+    agentDefinitions: {
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      activeAgents: [],
+      allAgents: [],
+      allowedAgentTypes: [],
+    },
     emit: vi.fn(),
     nextInternalSubId: () => "sub-1",
     nextEventId: () => "event-1",
@@ -275,7 +284,12 @@ describe("commit", () => {
       getAppState: () => ({
         toolPermissionContext:
           session.services.permissionModeRegistry.current(),
-        agentDefinitions: { activeAgents: [], allowedAgentTypes: [] },
+        agentDefinitions: {
+          agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+          activeAgents: [],
+          allAgents: [],
+          allowedAgentTypes: [],
+        },
         tasks: {},
         promptSuggestionEnabled: true,
         pendingWorkerRequest: null,

@@ -91,6 +91,54 @@ describe("AgenC daemon session lifecycle", () => {
     });
   });
 
+  it("rejects malformed present role provenance on create and restore", async () => {
+    const cwd = await workspaces.create();
+    const manager = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_valid"]),
+      now: sequence(["2026-05-01T10:00:00.000Z"]),
+    });
+    const malformedMetadata = [
+      { agentRoleWorkspaceId: "" },
+      { agentRoleWorkspaceId: 42 },
+      { agentRoleWorkspaceCwd: cwd },
+      { agentRoleWorkspaceId: cwd, agentRoleWorkspaceCwd: "" },
+      { agentRoleWorkspaceId: cwd, agentRoleWorkspaceCwd: 42 },
+      { agentRoleWorkspaceId: "relative", agentRoleWorkspaceCwd: "relative" },
+      { agentRoleWorkspaceId: cwd, agentRoleWorkspaceCwd: join(cwd, "other") },
+    ] as const;
+
+    for (const metadata of malformedMetadata) {
+      await expect(
+        manager.createSession({ agentId: "agent_bad", cwd, metadata }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining(
+          "Invalid agent role workspace provenance",
+        ),
+      });
+      await expect(
+        manager.restoreSession({
+          sessionId: `restored_${JSON.stringify(metadata)}`,
+          agentId: "agent_bad",
+          cwd,
+          metadata,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    }
+
+    await expect(manager.listSessions()).resolves.toEqual({ sessions: [] });
+    await expect(
+      manager.createSession({
+        agentId: "agent_valid",
+        cwd,
+        metadata: { agentRoleWorkspaceId: cwd },
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session_valid",
+      roleWorkspace: { id: cwd, cwd },
+    });
+  });
+
   it("attaches and detaches clients without terminating the session", async () => {
     const manager = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
@@ -290,6 +338,65 @@ describe("AgenC daemon session lifecycle", () => {
       restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers worktree execution cwd without rebinding role authority", async () => {
+    const { cwd: worktreeCwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const authorityCwd = mkdtempSync(join(tmpdir(), "agenc-role-authority-"));
+    const rollout = openRollout(worktreeCwd, "stored-worktree-child");
+    const threadStore = new FileThreadStore({ cwd: worktreeCwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "stored-worktree-child",
+        rolloutStore: rollout,
+        source: {
+          kind: "subagent",
+          source: {
+            kind: "thread_spawn",
+            parentThreadId: "parent-session",
+            depth: 1,
+            agentPath: "/root/child",
+            agentRole: "scanner",
+            agentRoleWorkspaceId: authorityCwd,
+          },
+        },
+        cwd: worktreeCwd,
+      });
+      threadStore.shutdownThread("stored-worktree-child");
+
+      const recreated = new AgenCDaemonSessionManager({
+        threadStore,
+        createAttachmentId: sequence(["attachment-worktree-child"]),
+        now: sequence(["2026-05-01T10:31:30.000Z"]),
+      });
+      await expect(
+        recreated.attachSession({
+          sessionId: "stored-worktree-child",
+          clientId: "tui-worktree",
+        }),
+      ).resolves.toMatchObject({
+        attachmentId: "attachment-worktree-child",
+      });
+      await expect(
+        recreated.getSession("stored-worktree-child"),
+      ).resolves.toMatchObject({
+        sessionId: "stored-worktree-child",
+        cwd: worktreeCwd,
+        roleWorkspace: { id: authorityCwd, cwd: authorityCwd },
+        metadata: {
+          agentRoleWorkspaceId: authorityCwd,
+          agentRoleWorkspaceCwd: authorityCwd,
+          recovered: true,
+        },
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(worktreeCwd, { recursive: true, force: true });
+      rmSync(authorityCwd, { recursive: true, force: true });
     }
   });
 

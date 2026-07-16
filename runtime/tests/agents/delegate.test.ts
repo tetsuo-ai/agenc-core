@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./fork-context.js", () => ({
@@ -10,21 +13,30 @@ vi.mock("./run-agent.js", () => ({
   runAgent: vi.fn(),
 }));
 
-vi.mock("../session/event-log.js", () => ({
+vi.mock("../session/event-log.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../session/event-log.js")>()),
   emitWarning: vi.fn(),
 }));
 
 import { AgentStatusTracker } from "./status.js";
 import { Mailbox } from "./mailbox.js";
-import { resolveAgentRole } from "./role.js";
+import {
+  _resetAgentRolesForTesting,
+  createAgentRoleWorkspace,
+  registerAgentRole,
+  resolveAgentRole,
+} from "./role.js";
 import { delegate } from "./delegate.js";
 import { forkSubagent } from "./fork-context.js";
 import { runAgent } from "./run-agent.js";
-import type { LiveAgent } from "./control.js";
+import { AgentControl, type LiveAgent } from "./control.js";
+import { AgentRegistry } from "./registry.js";
 import type { AgentMetadata } from "./registry.js";
+import { RolloutStore } from "../session/rollout-store.js";
 
 const mockRunAgent = vi.mocked(runAgent);
 const mockForkSubagent = vi.mocked(forkSubagent);
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 function makeLive(
   agentId: string,
@@ -36,12 +48,13 @@ function makeLive(
     agentPath,
     agentNickname: nickname,
     agentRole: "default",
+    agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId,
     agentPath,
-    role: resolveAgentRole(undefined),
+    role: resolveAgentRole(ROLE_WORKSPACE, undefined),
     depth: 1,
     nickname,
     status: new AgentStatusTracker(),
@@ -77,6 +90,59 @@ function runResult(result: {
   return (async function* () {
     return result;
   })();
+}
+
+function makeRealDelegateHarness(label: string) {
+  const cwd = mkdtempSync(join(tmpdir(), `agenc-delegate-${label}-`));
+  const priorAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = cwd;
+  const rolloutStore = new RolloutStore({
+    cwd,
+    sessionId: label,
+    agencVersion: "0.6.0",
+    autoStartScheduler: false,
+  });
+  rolloutStore.open({
+    sessionId: label,
+    timestamp: new Date().toISOString(),
+    cwd,
+    originator: "delegate-test",
+    agencVersion: "0.6.0",
+    model: "test-model",
+    modelProvider: "test-provider",
+  });
+  const roleWorkspace = createAgentRoleWorkspace(cwd);
+  const parent = {
+    ...makeParentSession(),
+    conversationId: `${label}-parent`,
+    sessionConfiguration: { cwd },
+    config: { cwd },
+    roleWorkspace,
+    rolloutStore,
+    childInboxes: new Map(),
+    mailbox: { send: vi.fn() },
+    services: {},
+  };
+  const registry = new AgentRegistry();
+  const control = new AgentControl({
+    session: parent as never,
+    registry,
+  });
+  control.registerSessionRoot(parent.conversationId);
+  return {
+    cwd,
+    parent,
+    registry,
+    control,
+    rolloutStore,
+    cleanup: () => {
+      rolloutStore.close();
+      _resetAgentRolesForTesting();
+      if (priorAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = priorAgencHome;
+      rmSync(cwd, { recursive: true, force: true });
+    },
+  };
 }
 
 describe("delegate lifecycle recovery", () => {
@@ -190,7 +256,7 @@ describe("delegate lifecycle recovery", () => {
     const live = {
       ...makeLive("thread-sync", "/root/sync"),
       role: {
-        ...resolveAgentRole(undefined),
+        ...resolveAgentRole(ROLE_WORKSPACE, undefined),
         config: { background: true },
       },
     };
@@ -339,6 +405,7 @@ describe("delegate lifecycle recovery", () => {
     const control = {
       spawn: vi.fn(async () => live1),
       shutdown: vi.fn(async () => {}),
+      assertAgentMetadataRoleWorkspace: vi.fn(),
       resumeAgentFromRollout: vi.fn(async () => ({
         resumedCount: 1,
         rootLive: resumedLive,
@@ -382,6 +449,9 @@ describe("delegate lifecycle recovery", () => {
     }
 
     expect(control.spawn).toHaveBeenCalledTimes(1);
+    expect(control.assertAgentMetadataRoleWorkspace).toHaveBeenCalledWith(
+      live1.metadata,
+    );
     expect(control.shutdown).toHaveBeenCalledWith("thread-1", "delegate_resume");
     expect(control.resumeAgentFromRollout).toHaveBeenCalledWith({
       rootThreadId: "thread-1",
@@ -395,6 +465,51 @@ describe("delegate lifecycle recovery", () => {
     expect(resumeManager.recordSuccess).toHaveBeenCalledWith("thread-1");
   });
 
+  it("validates role provenance before mutating retryable resume state", async () => {
+    const live = makeLive("thread-provenance", "/root/provenance");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      assertAgentMetadataRoleWorkspace: vi.fn(() => {
+        throw new Error("agent role workspace mismatch");
+      }),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const resumeManager = {
+      recordFailure: vi.fn(() => ({ kind: "resume" as const, reason: "retry" })),
+      recordSuccess: vi.fn(),
+    };
+    mockRunAgent.mockImplementationOnce(() =>
+      runResult({
+        threadId: live.agentId,
+        durationMs: 10,
+        outcome: "errored",
+        error: new Error("transient"),
+      }),
+    );
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "fix it",
+      runInBackground: false,
+      resumeManager: resumeManager as never,
+    });
+
+    expect(outcome.kind).toBe("sync_completed");
+    if (outcome.kind !== "sync_completed") {
+      throw new Error("expected sync_completed");
+    }
+    expect(outcome.result.outcome).toBe("errored");
+    expect(control.assertAgentMetadataRoleWorkspace).toHaveBeenCalledWith(
+      live.metadata,
+    );
+    expect(control.shutdown).not.toHaveBeenCalled();
+    expect(control.resumeAgentFromRollout).not.toHaveBeenCalled();
+  });
+
   it("restarts with a fresh live handle after a hard failure", async () => {
     const live1 = makeLive("thread-1", "/root/alpha");
     const restartedLive = makeLive("thread-2", "/root/bravo");
@@ -404,6 +519,7 @@ describe("delegate lifecycle recovery", () => {
         .mockImplementationOnce(async () => live1)
         .mockImplementationOnce(async () => restartedLive),
       shutdown: vi.fn(async () => {}),
+      assertAgentMetadataRoleWorkspace: vi.fn(),
       resumeAgentFromRollout: vi.fn(async () => ({
         resumedCount: 0,
         rootLive: null,
@@ -451,6 +567,15 @@ describe("delegate lifecycle recovery", () => {
     }
 
     expect(control.spawn).toHaveBeenCalledTimes(2);
+    expect(control.spawn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        expectedRoleProvenance: live1.metadata,
+      }),
+    );
+    expect(control.assertAgentMetadataRoleWorkspace).toHaveBeenCalledWith(
+      live1.metadata,
+    );
     expect(control.shutdown).toHaveBeenCalledWith("thread-1", "delegate_restart");
     expect(control.shutdown).toHaveBeenCalledWith(
       "thread-2",
@@ -463,5 +588,137 @@ describe("delegate lifecycle recovery", () => {
     expect(outcome.result.outcome).toBe("completed");
     expect(outcome.result.finalMessage).toBe("done after restart");
     expect(resumeManager.recordSuccess).toHaveBeenCalledWith("thread-2");
+  });
+
+  it("preserves a live edge when a restrictive role changed before restart preflight", async () => {
+    const harness = makeRealDelegateHarness("changed-role-restart");
+    try {
+      registerAgentRole(harness.control.roleWorkspace, {
+        name: "scanner",
+        config: { disallowlist: ["Edit", "Write"] },
+      });
+      const spawnSpy = vi.spyOn(harness.control, "spawn");
+      const shutdownSpy = vi.spyOn(harness.control, "shutdown");
+      const resumeFromRolloutSpy = vi.spyOn(
+        harness.control,
+        "resumeAgentFromRollout",
+      );
+      const resumeManager = {
+        recordFailure: vi.fn(() => ({
+          kind: "restart" as const,
+          reason: "hard_error",
+        })),
+        recordSuccess: vi.fn(),
+        transferFailureCount: vi.fn(),
+      };
+      mockRunAgent.mockImplementationOnce((params) => {
+        registerAgentRole(harness.control.roleWorkspace, {
+          name: "scanner",
+          config: { disallowlist: [] },
+        });
+        return runResult({
+          threadId: params.live.agentId,
+          durationMs: 10,
+          outcome: "errored",
+          error: new Error("hard fail"),
+        });
+      });
+
+      const outcome = await delegate({
+        parent: harness.parent as never,
+        parentPath: "/root",
+        control: harness.control,
+        registry: harness.registry,
+        taskPrompt: "inspect only",
+        role: "scanner",
+        runInBackground: false,
+        forceSynchronous: true,
+        resumeManager: resumeManager as never,
+      });
+
+      expect(outcome.kind).toBe("sync_completed");
+      if (outcome.kind !== "sync_completed") {
+        throw new Error("expected sync_completed");
+      }
+      expect(outcome.result.outcome).toBe("errored");
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      expect(shutdownSpy).not.toHaveBeenCalled();
+      expect(resumeFromRolloutSpy).not.toHaveBeenCalled();
+      expect(harness.control.getLive(outcome.thread.threadId)).toBe(
+        outcome.thread.live,
+      );
+      expect(harness.registry.activeCount).toBe(1);
+      expect(
+        harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)
+          ?.status,
+      ).toBe("open");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("preserves a live edge when an alias-named role was removed before resume preflight", async () => {
+    const harness = makeRealDelegateHarness("removed-role-resume");
+    try {
+      registerAgentRole(harness.control.roleWorkspace, {
+        name: "scanner",
+        config: { disallowlist: ["Edit", "Write"] },
+      });
+      const spawnSpy = vi.spyOn(harness.control, "spawn");
+      const shutdownSpy = vi.spyOn(harness.control, "shutdown");
+      const resumeFromRolloutSpy = vi.spyOn(
+        harness.control,
+        "resumeAgentFromRollout",
+      );
+      const resumeManager = {
+        recordFailure: vi.fn(() => ({
+          kind: "resume" as const,
+          reason: "transient_provider_error",
+        })),
+        recordSuccess: vi.fn(),
+      };
+      mockRunAgent.mockImplementationOnce((params) => {
+        // Removing the exact workspace role leaves the public `scanner`
+        // built-in alias available. Provenance must not fall through to it.
+        _resetAgentRolesForTesting();
+        return runResult({
+          threadId: params.live.agentId,
+          durationMs: 10,
+          outcome: "errored",
+          error: new Error("transient"),
+        });
+      });
+
+      const outcome = await delegate({
+        parent: harness.parent as never,
+        parentPath: "/root",
+        control: harness.control,
+        registry: harness.registry,
+        taskPrompt: "inspect only",
+        role: "scanner",
+        runInBackground: false,
+        forceSynchronous: true,
+        resumeManager: resumeManager as never,
+      });
+
+      expect(outcome.kind).toBe("sync_completed");
+      if (outcome.kind !== "sync_completed") {
+        throw new Error("expected sync_completed");
+      }
+      expect(outcome.result.outcome).toBe("errored");
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+      expect(shutdownSpy).not.toHaveBeenCalled();
+      expect(resumeFromRolloutSpy).not.toHaveBeenCalled();
+      expect(harness.control.getLive(outcome.thread.threadId)).toBe(
+        outcome.thread.live,
+      );
+      expect(harness.registry.activeCount).toBe(1);
+      expect(
+        harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)
+          ?.status,
+      ).toBe("open");
+    } finally {
+      harness.cleanup();
+    }
   });
 });

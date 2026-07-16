@@ -9,13 +9,53 @@ import {
   type SqlMigration,
 } from "./migrations/index.js";
 import { applyMigrations } from "./sqlite-driver.js";
+import { StateSchemaMismatchError } from "./errors.js";
 
 const migrationDir = sourcePath("state");
 
 describe("state migration registry", () => {
+  it("rolls back a failed migration to a savepoint inside an outer transaction", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec("BEGIN");
+      expect(() =>
+        applyMigrations(db, [
+          {
+            version: 1,
+            name: "fails_after_ddl",
+            apply: (migrationDb) => {
+              migrationDb.exec(
+                "CREATE TABLE partial_migration (id INTEGER PRIMARY KEY)",
+              );
+              migrationDb.exec("INSERT INTO partial_migration (id) VALUES (1)");
+              throw new Error("forced migration failure");
+            },
+          },
+        ]),
+      ).toThrow(/state migration 1 failed/);
+      db.exec("COMMIT");
+
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'partial_migration'",
+          )
+          .get(),
+      ).toBeUndefined();
+      expect(
+        db
+          .prepare("SELECT version FROM schema_migrations WHERE version = 1")
+          .get(),
+      ).toBeUndefined();
+    } finally {
+      if (db.inTransaction) db.exec("ROLLBACK");
+      db.close();
+    }
+  });
+
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -29,6 +69,7 @@ describe("state migration registry", () => {
       "agent_run_metadata_schema",
       "tool_recovery_category_schema",
       "memory_pipeline_schema",
+      "agent_role_workspace_provenance",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -56,7 +97,113 @@ describe("state migration registry", () => {
       "009_agent_run_metadata_schema.ts",
       "010_tool_recovery_category_schema.ts",
       "011_memory_pipeline_schema.ts",
+      "012_agent_role_workspace_provenance.ts",
     ]);
+  });
+
+  it("backfills durable role-workspace provenance idempotently", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(db, STATE_DB_MIGRATIONS.slice(0, -1));
+      db.prepare(
+        `INSERT INTO thread_spawn_edges (
+          child_thread_id, parent_thread_id, parent_path, metadata_json, status
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        "child-1",
+        "root-1",
+        "/root",
+        JSON.stringify({
+          agentId: "child-1",
+          agentPath: "/root/child",
+          agentRole: "reviewer",
+          agentRoleWorkspaceId: "/workspace/a",
+          agentRoleFingerprint: "reviewer-fingerprint",
+          depth: 1,
+        }),
+        "open",
+      );
+      db.prepare(
+        `INSERT INTO thread_spawn_edges (
+          child_thread_id, parent_thread_id, parent_path, metadata_json, status
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        "legacy-named-child",
+        "root-1",
+        "/root",
+        JSON.stringify({
+          agentId: "legacy-named-child",
+          agentPath: "/root/legacy-named-child",
+          agentRole: "reviewer",
+          depth: 1,
+        }),
+        "open",
+      );
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db
+          .prepare(
+            `SELECT agent_role_workspace_id, agent_role_fingerprint
+             FROM thread_spawn_edges
+             WHERE child_thread_id = ?`,
+          )
+          .get("child-1"),
+      ).toEqual({
+        agent_role_workspace_id: "/workspace/a",
+        agent_role_fingerprint: "reviewer-fingerprint",
+      });
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE thread_spawn_edges
+             SET metadata_json = ?
+             WHERE child_thread_id = ?`,
+          )
+          .run(
+            JSON.stringify({
+              agentId: "child-1",
+              agentPath: "/root/child",
+              agentRole: "default",
+              depth: 1,
+            }),
+            "child-1",
+          ),
+      ).toThrow(/identity is immutable/);
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE thread_spawn_edges
+             SET metadata_json = ?
+             WHERE child_thread_id = ?`,
+          )
+          .run(
+            JSON.stringify({
+              agentId: "legacy-named-child",
+              agentPath: "/root/legacy-named-child",
+              agentRole: "reviewer",
+              agentRoleWorkspaceId: "/workspace/injected",
+              agentRoleFingerprint: "injected-fingerprint",
+              depth: 1,
+            }),
+            "legacy-named-child",
+          ),
+      ).toThrow(/identity is immutable/);
+      expect(
+        db
+          .prepare(
+            "SELECT version FROM schema_migrations WHERE version = 12",
+          )
+          .get(),
+      ).toEqual({ version: 12 });
+      expect(() =>
+        applyMigrations(db, STATE_DB_MIGRATIONS.slice(0, -1)),
+      ).toThrow(StateSchemaMismatchError);
+    } finally {
+      db.close();
+    }
   });
 
   it("adds memory pipeline schema to legacy memory job tables idempotently", () => {

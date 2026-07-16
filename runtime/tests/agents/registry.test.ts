@@ -12,7 +12,9 @@ import {
   normalizeAgentNameForPath,
   resolveAgentPath,
 } from "./registry.js";
-import { resolveAgentRole } from "./role.js";
+import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 describe("AgentRegistry", () => {
   it("I-63: slot acquisition is atomic and uncapped under the lock", async () => {
@@ -36,7 +38,7 @@ describe("AgentRegistry", () => {
 
   it("failed spawn rollback keeps the allocated nickname reserved like reference", async () => {
     const reg = new AgentRegistry({ maxThreads: 1 });
-    const role = resolveAgentRole(undefined);
+    const role = resolveAgentRole(ROLE_WORKSPACE, undefined);
     const nickname = reg.allocateNickname(role);
     const r = await reg.reserveSpawnSlot();
     r.release();
@@ -72,7 +74,9 @@ describe("AgentRegistry", () => {
     const meta = buildChildMetadata({
       agentId: "t1",
       parentPath: "/root",
-      role: resolveAgentRole(undefined),
+      role: resolveAgentRole(ROLE_WORKSPACE, undefined),
+      roleWorkspaceId: ROLE_WORKSPACE.id,
+      roleFingerprint: "test-role-fingerprint",
       nickname: "alpha",
       depth: 1,
     });
@@ -93,7 +97,9 @@ describe("AgentRegistry", () => {
     const meta = buildChildMetadata({
       agentId: "t2",
       parentPath: "/root",
-      role: resolveAgentRole(undefined),
+      role: resolveAgentRole(ROLE_WORKSPACE, undefined),
+      roleWorkspaceId: ROLE_WORKSPACE.id,
+      roleFingerprint: "test-role-fingerprint",
       nickname: "beta",
       depth: 1,
     });
@@ -113,7 +119,7 @@ describe("AgentRegistry", () => {
     "releaseSpawnedThread keeps nicknames reserved like reference",
     async () => {
       const reg = new AgentRegistry();
-      const role = resolveAgentRole(undefined);
+      const role = resolveAgentRole(ROLE_WORKSPACE, undefined);
       // Allocate via the registry (the single source of truth).
       const nickname = reg.allocateNickname(role);
       const reservation = await reg.reserveSpawnSlot();
@@ -122,6 +128,8 @@ describe("AgentRegistry", () => {
           agentId: "t-reuse",
           parentPath: "/root",
           role,
+          roleWorkspaceId: ROLE_WORKSPACE.id,
+          roleFingerprint: "test-role-fingerprint",
           nickname,
           depth: 1,
         }),
@@ -180,7 +188,9 @@ describe("path helpers", () => {
     const meta = buildChildMetadata({
       agentId: "t3",
       parentPath: "/root",
-      role: resolveAgentRole(undefined),
+      role: resolveAgentRole(ROLE_WORKSPACE, undefined),
+      roleWorkspaceId: ROLE_WORKSPACE.id,
+      roleFingerprint: "test-role-fingerprint",
       nickname: "Scout the 2nd",
       depth: 1,
     });

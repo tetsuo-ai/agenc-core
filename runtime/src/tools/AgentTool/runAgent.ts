@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { canonicalAgentRoleName } from 'src/agents/role-presentation.js'
+import { assertAgentRoleWorkspaceMatches } from 'src/agents/role.js'
 import type { EffortValue } from '../../utils/effort.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import {
@@ -92,7 +93,11 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
-import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
+import {
+  type AgentDefinition,
+  isBuiltInAgent,
+  requireAgentDefinitionRoleFingerprint,
+} from 'src/tools/AgentTool/loadAgentsDir.js'
 
 function formatSkillLoadingMetadata(skillName: string): string {
   return [
@@ -302,6 +307,7 @@ export async function* runAgent({
   transcriptSubdir,
   onQueryProgress,
   agentName,
+  agentMetadataAlreadyPersisted,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -363,6 +369,10 @@ export async function* runAgent({
   onQueryProgress?: () => void
   /** Agent name (team member name) for routing resolution */
   agentName?: string
+  /** The launch boundary durably persisted this agent's role sidecar before
+   * publishing the task. Direct callers omit this and runAgent persists it
+   * before performing any agent work. */
+  agentMetadataAlreadyPersisted?: boolean
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -374,6 +384,16 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
   const parentSession = requireCurrentRuntimeSession('subagent')
+  assertAgentRoleWorkspaceMatches(
+    parentSession.roleWorkspace,
+    toolUseContext.options.agentDefinitions.agentRoleWorkspaceId,
+  )
+  assertAgentRoleWorkspaceMatches(
+    parentSession.roleWorkspace,
+    appState.agentDefinitions.agentRoleWorkspaceId,
+  )
+  const agentRoleFingerprint =
+    requireAgentDefinitionRoleFingerprint(agentDefinition)
 
   const resolvedAgentModel = getAgentModel(
     agentDefinition.model,
@@ -396,6 +416,23 @@ export async function* runAgent({
   // (e.g. workflow subagents write to subagents/workflows/<runId>/).
   if (transcriptSubdir) {
     setAgentTranscriptSubdir(agentId, transcriptSubdir)
+  }
+
+  if (!agentMetadataAlreadyPersisted) {
+    try {
+      await writeAgentMetadata(agentId, {
+        agentType: agentDefinition.agentType,
+        agentRoleWorkspaceId: parentSession.roleWorkspace.id,
+        agentRoleFingerprint,
+        ...(worktreePath && { worktreePath }),
+        ...(description && { description }),
+      })
+    } catch (error) {
+      if (transcriptSubdir) {
+        clearAgentTranscriptSubdir(agentId)
+      }
+      throw error
+    }
   }
 
   // Log API calls path for subagents (internal-only)
@@ -801,17 +838,12 @@ export async function* runAgent({
     })
   }
 
-  // Record initial messages before the query loop starts, plus the agentType
-  // so resume can route correctly when subagent_type is omitted. Both writes
-  // are fire-and-forget — persistence failure shouldn't block the agent.
+  // Record initial messages before the query loop starts. Role metadata was
+  // already durably persisted above (or by the launch boundary before task
+  // publication), so the model never starts without resumable provenance.
   void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
-  void writeAgentMetadata(agentId, {
-    agentType: agentDefinition.agentType,
-    ...(worktreePath && { worktreePath }),
-    ...(description && { description }),
-  }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null

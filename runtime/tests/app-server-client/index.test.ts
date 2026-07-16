@@ -278,6 +278,34 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
+  it("keeps daemon attach execution cwd separate from role authority", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-attach-home-"));
+    const authority = mkdtempSync(join(tmpdir(), "agenc-attach-authority-"));
+    const worktree = mkdtempSync(join(tmpdir(), "agenc-attach-worktree-"));
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: worktree,
+        roleWorkspace: { id: authority, cwd: authority },
+        conversationId: "agenc-tui-worktree-child",
+      });
+
+      expect(context.baseSession.roleWorkspace).toMatchObject({
+        id: authority,
+        cwd: authority,
+      });
+      expect(context.baseSession.sessionConfiguration?.cwd).toBe(worktree);
+      expect(context.workspaceRoot).toBe(worktree);
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(authority, { recursive: true, force: true });
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
   it("applies daemon-only TUI provider and model startup overrides", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-tui-context-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-model-tui-workspace-"));

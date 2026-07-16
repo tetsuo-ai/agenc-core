@@ -1,9 +1,18 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { clearAllSessions as clearSessionIngressState } from "../../src/services/api/sessionIngress.js";
 import {
@@ -12,6 +21,7 @@ import {
   switchSession,
 } from "../../src/bootstrap/state.js";
 import {
+  __setAgentMetadataWritePhaseForTesting,
   buildConversationChain,
   clearAgentTranscriptSubdir,
   cacheSessionTitle,
@@ -261,6 +271,7 @@ async function configureIsolatedSession(): Promise<{
 }
 
 afterEach(async () => {
+  __setAgentMetadataWritePhaseForTesting(undefined);
   resetProjectForTesting();
   resetStateForTests();
   restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
@@ -319,11 +330,15 @@ test("uses isolated session paths for transcripts and agent metadata", async () 
 
   await writeAgentMetadata(agentId, {
     agentType: "review",
+    agentRoleWorkspaceId: "/workspace/review",
+    agentRoleFingerprint: "review-fingerprint",
     worktreePath: "/tmp/worktree",
     description: "inspect changes",
   });
   expect(await readAgentMetadata(agentId)).toEqual({
     agentType: "review",
+    agentRoleWorkspaceId: "/workspace/review",
+    agentRoleFingerprint: "review-fingerprint",
     worktreePath: "/tmp/worktree",
     description: "inspect changes",
   });
@@ -338,7 +353,7 @@ test("readAgentMetadata returns null for a corrupt sidecar instead of throwing",
   await configureIsolatedSession();
   const agentId = "agent-corrupt" as never;
 
-  // Simulate a partial write from a crashed fire-and-forget persist.
+  // Simulate a partial sidecar left by an older non-atomic writer.
   const metaPath = getAgentTranscriptPath(agentId).replace(
     /\.jsonl$/,
     ".meta.json",
@@ -347,6 +362,73 @@ test("readAgentMetadata returns null for a corrupt sidecar instead of throwing",
   await writeFile(metaPath, "{");
 
   await expect(readAgentMetadata(agentId)).resolves.toBeNull();
+  await expect(
+    readAgentMetadata(agentId, { strict: true }),
+  ).rejects.toThrow("invalid agent metadata sidecar");
+});
+
+test("agent metadata publication is atomic, durable, and preserves permissions", async () => {
+  await configureIsolatedSession();
+  const agentId = "agent-atomic" as never;
+  const metadataPath = getAgentTranscriptPath(agentId).replace(
+    /\.jsonl$/,
+    ".meta.json",
+  );
+  const oldMetadata = {
+    agentType: "review",
+    agentRoleWorkspaceId: "/workspace/review",
+    agentRoleFingerprint: "old-fingerprint",
+    description: "old metadata",
+  };
+  const newMetadata = {
+    ...oldMetadata,
+    agentRoleFingerprint: "new-fingerprint",
+    description: "new metadata",
+  };
+
+  await writeAgentMetadata(agentId, oldMetadata);
+  await chmod(metadataPath, 0o640);
+
+  let crashCheckpointObserved = false;
+  __setAgentMetadataWritePhaseForTesting(async (phase, paths) => {
+    expect(phase).toBe("temporary-file-synced");
+    crashCheckpointObserved = true;
+
+    // Until atomic rename, strict readers continue to see the complete old
+    // generation. The fully-written temporary generation is parseable too.
+    await expect(readAgentMetadata(agentId, { strict: true })).resolves.toEqual(
+      oldMetadata,
+    );
+    expect(JSON.parse(await readFile(paths.temporaryPath, "utf8"))).toEqual(
+      newMetadata,
+    );
+    throw new Error("simulated crash before metadata rename");
+  });
+
+  await expect(writeAgentMetadata(agentId, newMetadata)).rejects.toThrow(
+    "simulated crash before metadata rename",
+  );
+  expect(crashCheckpointObserved).toBe(true);
+  await expect(readAgentMetadata(agentId, { strict: true })).resolves.toEqual(
+    oldMetadata,
+  );
+  expect(
+    (await readdir(dirname(metadataPath))).filter((entry) =>
+      entry.startsWith(`${basename(metadataPath)}.`) &&
+      entry.endsWith(".tmp"),
+    ),
+  ).toEqual([]);
+
+  __setAgentMetadataWritePhaseForTesting(async () => {
+    await expect(readAgentMetadata(agentId, { strict: true })).resolves.toEqual(
+      oldMetadata,
+    );
+  });
+  await writeAgentMetadata(agentId, newMetadata);
+  await expect(readAgentMetadata(agentId, { strict: true })).resolves.toEqual(
+    newMetadata,
+  );
+  expect((await stat(metadataPath)).mode & 0o777).toBe(0o640);
 });
 
 test("checks session file existence in the current project directory", async () => {

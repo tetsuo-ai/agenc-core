@@ -1484,6 +1484,11 @@ export interface SessionSummary extends JsonObject {
   readonly status: SessionStatus;
   readonly createdAt: string;
   readonly cwd?: string;
+  /** Immutable role-discovery authority; execution cwd may be a worktree. */
+  readonly roleWorkspace?: {
+    readonly id: string;
+    readonly cwd: string;
+  };
   readonly metadata?: JsonObject;
   readonly activeAttachmentIds?: readonly string[];
   readonly closedAt?: string;

@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import { createAgentRoleWorkspace } from '../../../agents/role.js'
 import { runWithCwdOverride } from '../../../utils/cwd.js'
 import {
   deleteAgentFromFile,
@@ -26,6 +27,8 @@ import {
 describe('agent file utilities wave 200 coverage', () => {
   test('formats options and handles custom agent file lifecycle paths', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-file-utils-'))
+    const roleWorkspace = createAgentRoleWorkspace(cwd)
+    const authority = { roleWorkspace, catalogWorkspaceId: roleWorkspace.id }
 
     try {
       await runWithCwdOverride(cwd, async () => {
@@ -62,7 +65,7 @@ describe('agent file utilities wave 200 coverage', () => {
           getNewAgentFilePath({
             source: 'projectSettings',
             agentType: 'triage-helper',
-          }),
+          }, cwd),
         ).toBe(newAgentPath)
         expect(
           getNewRelativeAgentFilePath({
@@ -80,7 +83,7 @@ describe('agent file utilities wave 200 coverage', () => {
           getNewAgentFilePath({
             source: 'flagSettings',
             agentType: 'cli-helper',
-          }),
+          }, cwd),
         ).toThrow('Cannot get directory path for flagSettings agents')
 
         const agentDir = join(cwd, '.agenc', 'agents')
@@ -95,7 +98,7 @@ describe('agent file utilities wave 200 coverage', () => {
           filename: 'stored-helper',
           getSystemPrompt: () => 'old content',
         }
-        expect(getActualAgentFilePath(customAgent)).toBe(storedAgentPath)
+        expect(getActualAgentFilePath(customAgent, cwd)).toBe(storedAgentPath)
         expect(getActualRelativeAgentFilePath(customAgent)).toBe(
           join('.agenc', 'agents', 'stored-helper.md'),
         )
@@ -107,7 +110,7 @@ describe('agent file utilities wave 200 coverage', () => {
           baseDir: 'built-in',
           getSystemPrompt: () => 'built-in prompt',
         }
-        expect(getActualAgentFilePath(builtInAgent)).toBe('Built-in')
+        expect(getActualAgentFilePath(builtInAgent, cwd)).toBe('Built-in')
         expect(getActualRelativeAgentFilePath(builtInAgent)).toBe('Built-in')
 
         const pluginAgent: AgentDefinition = {
@@ -117,7 +120,7 @@ describe('agent file utilities wave 200 coverage', () => {
           plugin: '',
           getSystemPrompt: () => 'plugin prompt',
         }
-        expect(() => getActualAgentFilePath(pluginAgent)).toThrow(
+        expect(() => getActualAgentFilePath(pluginAgent, cwd)).toThrow(
           'Cannot get file path for plugin agents',
         )
         expect(getActualRelativeAgentFilePath(pluginAgent)).toBe(
@@ -125,6 +128,7 @@ describe('agent file utilities wave 200 coverage', () => {
         )
 
         await updateAgentFile(
+          authority,
           customAgent,
           'Use after update.',
           ['Search'],
@@ -142,6 +146,7 @@ describe('agent file utilities wave 200 coverage', () => {
         expect(updated).toContain('memory: local')
 
         await saveAgentToFile(
+          authority,
           'projectSettings',
           'triage-helper',
           'Use for duplicate checks.',
@@ -152,6 +157,7 @@ describe('agent file utilities wave 200 coverage', () => {
         expect(readFileSync(newAgentPath, 'utf8')).not.toContain('\ntools:')
         await expect(
           saveAgentToFile(
+            authority,
             'projectSettings',
             'triage-helper',
             'Use for duplicate checks.',
@@ -160,9 +166,11 @@ describe('agent file utilities wave 200 coverage', () => {
           ),
         ).rejects.toThrow(`Agent file already exists: ${newAgentPath}`)
 
-        await deleteAgentFromFile(customAgent)
+        await deleteAgentFromFile(authority, customAgent)
         expect(existsSync(storedAgentPath)).toBe(false)
-        await expect(deleteAgentFromFile(customAgent)).resolves.toBeUndefined()
+        await expect(
+          deleteAgentFromFile(authority, customAgent),
+        ).resolves.toBeUndefined()
       })
     } finally {
       rmSync(cwd, { recursive: true, force: true })

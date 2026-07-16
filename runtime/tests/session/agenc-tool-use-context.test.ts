@@ -1,8 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp/agenc-context-test");
 
 function createTurnContext(): TurnContext {
   return {
@@ -19,6 +22,13 @@ function createTurnContext(): TurnContext {
 function createSession(overrides: Record<string, unknown> = {}) {
   return {
     conversationId: "session-1",
+    roleWorkspace: ROLE_WORKSPACE,
+    agentDefinitions: {
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      activeAgents: [],
+      allAgents: [],
+      allowedAgentTypes: [],
+    },
     services: {
       registry: { toLLMTools: () => [] },
       provider: undefined,
@@ -41,7 +51,9 @@ describe("buildAgenCToolUseContext", () => {
       tasks: { fallback: true },
       getAppState: () => arrayState,
       agentDefinitions: {
+        agentRoleWorkspaceId: ROLE_WORKSPACE.id,
         activeAgents: [{ agentType: "safe-agent" }],
+        allAgents: [{ agentType: "safe-agent" }],
         allowedAgentTypes: ["safe-agent"],
       },
     });

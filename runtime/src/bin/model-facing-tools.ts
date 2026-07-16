@@ -76,7 +76,10 @@ import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 import { createMultiAgentV2Tools } from "../agents/v2/index.js";
-import { loadMarkdownAgentRoles } from "../agents/role.js";
+import {
+  createAgentRoleWorkspace,
+  loadMarkdownAgentRoles,
+} from "../agents/role.js";
 import { createTaskTools } from "../tools/tasks/index.js";
 import {
   createStructuredOutputTool,
@@ -1459,7 +1462,8 @@ function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
 }
 
 function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  loadMarkdownAgentRoles(opts.workspaceRoot);
+  const roleWorkspace = createAgentRoleWorkspace(opts.workspaceRoot);
+  loadMarkdownAgentRoles(roleWorkspace);
 
   const emit = (session: Session, msg: Parameters<Session["emit"]>[0]["msg"]): void => {
     session.emit({
@@ -1470,6 +1474,7 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
 
   const multiAgentV2Tools = createMultiAgentV2Tools({
     getSession: opts.getSession,
+    workspace: roleWorkspace,
     ensureAgentControl,
   });
 

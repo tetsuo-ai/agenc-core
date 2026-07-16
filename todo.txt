@@ -302,7 +302,7 @@ boundary. They are higher leverage than new surface area.
       never 2x, 4x, or cumulatively more.
     - Add canned transport failures and capture every retry payload.
 
-[ ] Close workspace role leakage.
+[x] Close workspace role leakage.
     - Require workspace identity in role lookup and every spawn path.
     - Reject cross-workspace role resolution even when role names collide.
     - Add a two-workspace regression test that fails against the old call site.

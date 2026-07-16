@@ -99,6 +99,7 @@ vi.mock("../../utils/worktree.js", () => ({
 
 vi.mock("../../utils/sessionStorage.js", () => ({
   saveWorktreeState: sessionStorageMock.saveWorktreeState,
+  writeAgentMetadata: vi.fn(async () => undefined),
 }));
 
 vi.mock("./spinner/Spinner.js", () => ({

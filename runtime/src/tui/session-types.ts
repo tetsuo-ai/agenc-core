@@ -17,6 +17,7 @@ import type {
 } from "../elicitation/types.js";
 import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 import type { FpsMetrics } from "../utils/fpsTracker.js";
+import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 
 export interface AgenCCompactProgressControls {
   setStreamMode?(mode: "requesting" | "responding" | null): void;
@@ -38,6 +39,14 @@ export interface PermissionModeRegistryLike {
 
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
+  /** Immutable role-discovery identity; execution cwd may move independently. */
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
+  readonly agentDefinitions?: {
+    readonly agentRoleWorkspaceId: string;
+    readonly activeAgents: readonly unknown[];
+    readonly allAgents?: readonly unknown[];
+    readonly allowedAgentTypes?: readonly unknown[];
+  };
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
     readonly configStore?: ConfigStore;

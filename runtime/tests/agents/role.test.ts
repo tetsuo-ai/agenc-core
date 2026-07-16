@@ -1,13 +1,25 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRegistry } from "./registry.js";
 import {
   _resetAgentRolesForTesting,
+  _setMarkdownAgentRoleReadHookForTesting,
+  agentRoleFingerprint,
   allocateNickname,
   applyRoleToConfig,
   buildConfigLayerStack,
+  createAgentRoleWorkspace,
   defaultAgentNicknameCandidates,
   formatRoleList,
   getAgentRole,
@@ -23,6 +35,7 @@ import {
 } from "./role.js";
 
 let registry: AgentRegistry;
+const DEFAULT_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 beforeEach(() => {
   registry = new AgentRegistry();
@@ -30,26 +43,35 @@ beforeEach(() => {
 });
 
 describe("role registry", () => {
+  it("rejects a missing or relative role workspace", () => {
+    expect(() => createAgentRoleWorkspace("")).toThrow(
+      "agent role workspace requires a non-empty absolute cwd",
+    );
+    expect(() => createAgentRoleWorkspace("relative/project")).toThrow(
+      "agent role workspace cwd must be absolute",
+    );
+  });
+
   it("returns built-in default when name is undefined", () => {
-    const role = resolveAgentRole(undefined);
+    const role = resolveAgentRole(DEFAULT_WORKSPACE, undefined);
     expect(role.name).toBe("default");
     expect(role.config.nicknameCandidates).toBeUndefined();
     expect(defaultAgentNicknameCandidates()).toContain("Snowcrash");
   });
 
   it("falls back to default for unknown role names", () => {
-    expect(resolveAgentRole("unknown-role").name).toBe("default");
+    expect(resolveAgentRole(DEFAULT_WORKSPACE, "unknown-role").name).toBe("default");
   });
 
   it("strict spawn role lookup rejects unrecognized agent_type", () => {
-    expect(() => requireAgentRole("missing-role")).toThrow(
+    expect(() => requireAgentRole(DEFAULT_WORKSPACE, "missing-role")).toThrow(
       "unknown agent_type 'missing-role'",
     );
-    expect(requireAgentRole("runner").name).toBe("worker");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("worker");
   });
 
   it("lists all built-in roles", () => {
-    const names = listAgentRoles().map((role) => role.name);
+    const names = listAgentRoles(DEFAULT_WORKSPACE).map((role) => role.name);
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
@@ -62,20 +84,20 @@ describe("role registry", () => {
   it("resolves promoted built-in agents (scanner/Explore, Plan, verification)", () => {
     // The Explore agent folds into the explorer/scanner role.
     for (const name of ["explorer", "scanner", "Explore", "explore"]) {
-      expect(requireAgentRole(name).name).toBe("explorer");
+      expect(requireAgentRole(DEFAULT_WORKSPACE, name).name).toBe("explorer");
     }
     // Plan's capital registry key is reachable only via the `plan` alias,
     // because spawn lowercases the requested name before lookup.
-    expect(requireAgentRole("Plan").name).toBe("Plan");
-    expect(requireAgentRole("plan").name).toBe("Plan");
-    expect(requireAgentRole("verification").name).toBe("verification");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "Plan").name).toBe("Plan");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "plan").name).toBe("Plan");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "verification").name).toBe("verification");
     // general-purpose is an alias of the default role.
-    expect(requireAgentRole("general-purpose").name).toBe("default");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "general-purpose").name).toBe("default");
     expect(getDefaultAgentRole().name).toBe("default");
   });
 
   it("carries promoted built-in behavior on role config", () => {
-    const explorer = requireAgentRole("scanner");
+    const explorer = requireAgentRole(DEFAULT_WORKSPACE, "scanner");
     expect(explorer.config.systemPrompt).toContain("file search specialist");
     expect(explorer.config.disallowlist).toContain("spawn_agent");
     expect(explorer.config.disallowlist).toContain("Edit");
@@ -86,11 +108,11 @@ describe("role registry", () => {
     expect(explorer.config.systemPrompt).toContain("targeted spans");
     expect(explorer.config.systemPrompt).toMatch(/Skip generated\/build\/vendored/);
 
-    const plan = requireAgentRole("Plan");
+    const plan = requireAgentRole(DEFAULT_WORKSPACE, "Plan");
     expect(plan.config.systemPrompt).toContain("software architect");
     expect(plan.config.disallowlist).toContain("Write");
 
-    const verification = requireAgentRole("verification");
+    const verification = requireAgentRole(DEFAULT_WORKSPACE, "verification");
     expect(verification.config.background).toBe(true);
     expect(verification.config.disallowlist).toContain("Edit");
     expect(verification.config.systemPrompt).toContain("VERDICT:");
@@ -98,14 +120,14 @@ describe("role registry", () => {
     // The default/general-purpose role is unrestricted (no denylist) and carries
     // no system prompt — it is also used by internal silent default-role spawns,
     // so a subagent prompt must not ride along.
-    const def = requireAgentRole("general-purpose");
+    const def = requireAgentRole(DEFAULT_WORKSPACE, "general-purpose");
     expect(def.name).toBe("default");
     expect(def.config.systemPrompt).toBeUndefined();
     expect(def.config.disallowlist).toBeUndefined();
   });
 
   it("explorer resolves through upstream-compatible config-file metadata", () => {
-    const role = getAgentRole("explorer")!;
+    const role = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
     expect(role.config.configFile).toBe("explorer.toml");
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.allowlist).toBeUndefined();
@@ -115,12 +137,12 @@ describe("role registry", () => {
   });
 
   it("accepts cyberpunk role aliases without changing compatibility ids", () => {
-    expect(getAgentRole("scanner")?.name).toBe("explorer");
-    expect(resolveAgentRole("runner").name).toBe("worker");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "scanner")?.name).toBe("explorer");
+    expect(resolveAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("worker");
   });
 
   it("worker has the default description and no built-in config-layer override", () => {
-    const role = resolveAgentRole("worker");
+    const role = resolveAgentRole(DEFAULT_WORKSPACE, "worker");
     expect(role.name).toBe("worker");
     expect(role.config.configFile).toBeUndefined();
     expect(role.config.reasoningEffort).toBeUndefined();
@@ -131,7 +153,7 @@ describe("role registry", () => {
   });
 
   it("user-registered awaiter roles can still derive runtime hints from built-in TOML", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "awaiter",
       config: {
         description: "Custom awaiter",
@@ -139,14 +161,14 @@ describe("role registry", () => {
         background: true,
       },
     });
-    const role = getAgentRole("awaiter")!;
+    const role = getAgentRole(DEFAULT_WORKSPACE, "awaiter")!;
     expect(role.config.background).toBe(true);
     expect(role.config.reasoningEffort).toBe("low");
     expect(role.config.timeoutMs).toBe(3_600_000);
   });
 
   it("derives xhigh reasoning effort from user role layers", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "deep-review",
       config: {
         description: "review",
@@ -154,11 +176,11 @@ describe("role registry", () => {
       },
     });
 
-    expect(getAgentRole("deep-review")?.config.reasoningEffort).toBe("xhigh");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "deep-review")?.config.reasoningEffort).toBe("xhigh");
   });
 
   it("derives model and service tier hints from user role layers", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "priority-review",
       config: {
         description: "review",
@@ -169,16 +191,37 @@ describe("role registry", () => {
       },
     });
 
-    expect(getAgentRole("priority-review")?.config.model).toBe("gpt-5.4");
-    expect(getAgentRole("priority-review")?.config.serviceTier).toBe("priority");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "priority-review")?.config.model).toBe("gpt-5.4");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "priority-review")?.config.serviceTier).toBe("priority");
   });
 
   it("registerAgentRole overrides built-ins by name", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "explorer",
       config: { description: "override" },
     });
-    expect(getAgentRole("explorer")!.config.description).toBe("override");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "explorer")!.config.description).toBe("override");
+  });
+
+  it("keeps same-named programmatic roles inside their workspace", () => {
+    const workspaceA = createAgentRoleWorkspace("/tmp/agenc-role-registry-a");
+    const workspaceB = createAgentRoleWorkspace("/tmp/agenc-role-registry-b");
+    registerAgentRole(workspaceA, {
+      name: "shared-reviewer",
+      config: { description: "Programmatic reviewer A" },
+    });
+    registerAgentRole(workspaceB, {
+      name: "shared-reviewer",
+      config: { description: "Programmatic reviewer B" },
+    });
+
+    expect(getAgentRole(workspaceA, "shared-reviewer")?.config.description).toBe(
+      "Programmatic reviewer A",
+    );
+    expect(getAgentRole(workspaceB, "shared-reviewer")?.config.description).toBe(
+      "Programmatic reviewer B",
+    );
+    expect(getAgentRole(DEFAULT_WORKSPACE, "shared-reviewer")).toBeUndefined();
   });
 
   it("registers project markdown agents into the spawn_agent role registry", () => {
@@ -199,16 +242,143 @@ describe("role registry", () => {
       ].join("\n"),
     );
 
-    loadMarkdownAgentRoles(root);
+    const workspace = createAgentRoleWorkspace(root);
+    loadMarkdownAgentRoles(workspace);
 
-    const role = requireAgentRole("project-reviewer");
+    const role = requireAgentRole(workspace, "project-reviewer");
     expect(role.config.description).toBe("Project reviewer");
     expect(role.config.systemPrompt).toBe("Review the current project changes.");
     expect(role.config.allowlist).toEqual(["Read"]);
     expect(role.config.reasoningEffort).toBe("high");
   });
 
-  it("resolves same-named markdown roles independently per cwd", () => {
+  it("rejects role files reached through file, directory, or hard links", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-markdown-role-links-"));
+    const workspaceRoot = join(root, "workspace");
+    const trustedAgents = join(workspaceRoot, ".agenc", "agents");
+    const externalAgents = join(root, "external-agents");
+    try {
+      mkdirSync(join(workspaceRoot, ".git"), { recursive: true });
+      mkdirSync(trustedAgents, { recursive: true });
+      mkdirSync(externalAgents, { recursive: true });
+      writeFileSync(
+        join(trustedAgents, "local.md"),
+        "---\nname: trusted-local\ndescription: Trusted local\n---\nTrusted prompt.\n",
+      );
+      const linkedFile = join(externalAgents, "linked-file.md");
+      writeFileSync(
+        linkedFile,
+        "---\nname: escaped-file\ndescription: Escaped file\n---\nEscaped.\n",
+      );
+      const linkedDirectory = join(externalAgents, "nested");
+      mkdirSync(linkedDirectory);
+      writeFileSync(
+        join(linkedDirectory, "linked-directory.md"),
+        "---\nname: escaped-directory\ndescription: Escaped directory\n---\nEscaped.\n",
+      );
+      const hardLinkTarget = join(externalAgents, "hard-link.md");
+      writeFileSync(
+        hardLinkTarget,
+        "---\nname: escaped-hard-link\ndescription: Escaped hard link\n---\nEscaped.\n",
+      );
+
+      symlinkSync(linkedFile, join(trustedAgents, "file-link.md"));
+      symlinkSync(
+        linkedDirectory,
+        join(trustedAgents, "directory-link"),
+        "dir",
+      );
+      linkSync(hardLinkTarget, join(trustedAgents, "hard-link.md"));
+
+      const workspace = createAgentRoleWorkspace(workspaceRoot);
+      loadMarkdownAgentRoles(workspace);
+
+      expect(getAgentRole(workspace, "trusted-local")?.config.systemPrompt).toBe(
+        "Trusted prompt.",
+      );
+      expect(getAgentRole(workspace, "escaped-file")).toBeUndefined();
+      expect(getAgentRole(workspace, "escaped-directory")).toBeUndefined();
+      expect(getAgentRole(workspace, "escaped-hard-link")).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects symlinked user and managed role tier roots", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-markdown-role-roots-"));
+    const workspaceRoot = join(root, "workspace");
+    const userTarget = join(root, "user-target");
+    const userLink = join(root, "user-link");
+    const managedTarget = join(root, "managed-target");
+    const managedLink = join(root, "managed-link");
+    try {
+      mkdirSync(join(workspaceRoot, ".git"), { recursive: true });
+      mkdirSync(join(userTarget, "agents"), { recursive: true });
+      mkdirSync(managedTarget, { recursive: true });
+      writeFileSync(
+        join(userTarget, "agents", "user.md"),
+        "---\nname: escaped-user-root\ndescription: Escaped user root\n---\nEscaped.\n",
+      );
+      writeFileSync(
+        join(managedTarget, "managed.md"),
+        "---\nname: escaped-managed-root\ndescription: Escaped managed root\n---\nEscaped.\n",
+      );
+      symlinkSync(userTarget, userLink, "dir");
+      symlinkSync(managedTarget, managedLink, "dir");
+      vi.stubEnv("AGENC_CONFIG_DIR", userLink);
+      vi.stubEnv("AGENC_MANAGED_AGENTS_DIR", managedLink);
+
+      const workspace = createAgentRoleWorkspace(workspaceRoot);
+      loadMarkdownAgentRoles(workspace);
+
+      expect(getAgentRole(workspace, "escaped-user-root")).toBeUndefined();
+      expect(getAgentRole(workspace, "escaped-managed-root")).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the trusted role directory is swapped before open", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-markdown-role-swap-"));
+    const workspaceRoot = join(root, "workspace");
+    const trustedAgents = join(workspaceRoot, ".agenc", "agents");
+    const movedAgents = join(workspaceRoot, ".agenc", "agents-before-swap");
+    const externalAgents = join(root, "external-agents");
+    const victimPath = join(trustedAgents, "victim.md");
+    let swapped = false;
+    try {
+      mkdirSync(join(workspaceRoot, ".git"), { recursive: true });
+      mkdirSync(trustedAgents, { recursive: true });
+      mkdirSync(externalAgents, { recursive: true });
+      writeFileSync(
+        victimPath,
+        "---\nname: trusted-before-swap\ndescription: Trusted before swap\n---\nTrusted.\n",
+      );
+      writeFileSync(
+        join(externalAgents, "victim.md"),
+        "---\nname: escaped-after-swap\ndescription: Escaped after swap\n---\nEscaped.\n",
+      );
+      _setMarkdownAgentRoleReadHookForTesting((filePath) => {
+        if (swapped || filePath !== victimPath) return;
+        swapped = true;
+        renameSync(trustedAgents, movedAgents);
+        symlinkSync(externalAgents, trustedAgents, "dir");
+      });
+
+      const workspace = createAgentRoleWorkspace(workspaceRoot);
+      loadMarkdownAgentRoles(workspace);
+
+      expect(swapped).toBe(true);
+      expect(getAgentRole(workspace, "trusted-before-swap")).toBeUndefined();
+      expect(getAgentRole(workspace, "escaped-after-swap")).toBeUndefined();
+    } finally {
+      _setMarkdownAgentRoleReadHookForTesting(undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves same-named markdown roles only inside their workspace", () => {
     const roots: string[] = [];
     for (const label of ["a", "b"] as const) {
       const root = mkdtempSync(join(tmpdir(), `agenc-md-role-${label}-`));
@@ -227,35 +397,32 @@ describe("role registry", () => {
       roots.push(root);
     }
     const [rootA, rootB] = roots;
+    const workspaceA = createAgentRoleWorkspace(rootA);
+    const workspaceB = createAgentRoleWorkspace(rootB);
 
-    loadMarkdownAgentRoles(rootA);
-    loadMarkdownAgentRoles(rootB);
+    loadMarkdownAgentRoles(workspaceA);
+    loadMarkdownAgentRoles(workspaceB);
 
-    expect(getAgentRole("shared-reviewer", rootA)?.config.description).toBe(
+    expect(getAgentRole(workspaceA, "shared-reviewer")?.config.description).toBe(
       "Reviewer a",
     );
-    expect(getAgentRole("shared-reviewer", rootB)?.config.description).toBe(
+    expect(getAgentRole(workspaceB, "shared-reviewer")?.config.description).toBe(
       "Reviewer b",
     );
-    expect(requireAgentRole("shared-reviewer", rootA).config.systemPrompt).toBe(
+    expect(requireAgentRole(workspaceA, "shared-reviewer").config.systemPrompt).toBe(
       "Reviewer a prompt.",
     );
 
-    // Per-cwd listings surface the cwd's own role definition.
-    const listedA = listAgentRoles(rootA).find(
+    const listedA = listAgentRoles(workspaceA).find(
       (role) => role.name === "shared-reviewer",
     );
-    const listedB = listAgentRoles(rootB).find(
+    const listedB = listAgentRoles(workspaceB).find(
       (role) => role.name === "shared-reviewer",
     );
     expect(listedA?.config.description).toBe("Reviewer a");
     expect(listedB?.config.description).toBe("Reviewer b");
 
-    // cwd-less lookups keep the legacy process-global fallback: the most
-    // recently loaded cwd wins.
-    expect(getAgentRole("shared-reviewer")?.config.description).toBe(
-      "Reviewer b",
-    );
+    expect(getAgentRole(DEFAULT_WORKSPACE, "shared-reviewer")).toBeUndefined();
   });
 
   it("reloads a cwd's markdown roles on a fresh load after the file changes", () => {
@@ -274,8 +441,9 @@ describe("role registry", () => {
       ].join("\n"),
     );
 
-    loadMarkdownAgentRoles(root);
-    expect(getAgentRole("editable-role", root)?.config.description).toBe(
+    const workspace = createAgentRoleWorkspace(root);
+    loadMarkdownAgentRoles(workspace);
+    expect(getAgentRole(workspace, "editable-role")?.config.description).toBe(
       "Before edit",
     );
 
@@ -293,8 +461,8 @@ describe("role registry", () => {
     const future = new Date(Date.now() + 5_000);
     utimesSync(filePath, future, future);
 
-    loadMarkdownAgentRoles(root);
-    const reloaded = getAgentRole("editable-role", root);
+    loadMarkdownAgentRoles(workspace);
+    const reloaded = getAgentRole(workspace, "editable-role");
     expect(reloaded?.config.description).toBe("After edit");
     expect(reloaded?.config.systemPrompt).toBe("New prompt.");
   });
@@ -355,7 +523,7 @@ describe("nickname allocation", () => {
   });
 
   it("two sibling spawns from roles without candidate lists use distinct shared nicknames", () => {
-    const role = resolveAgentRole("worker");
+    const role = resolveAgentRole(DEFAULT_WORKSPACE, "worker");
     const first = allocateNickname(role, registry);
     const second = allocateNickname(role, registry);
     expect(first).not.toBe(second);
@@ -366,7 +534,7 @@ describe("nickname allocation", () => {
 
 describe("config-layer stack", () => {
   it("applyRoleToConfig keeps explorer as a no-op when explorer.toml is empty", () => {
-    const explorer = getAgentRole("explorer")!;
+    const explorer = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
     const base = { cwd: "/tmp/project", reasoning_effort: "high" as const };
     const next = applyRoleToConfig(explorer, base);
     expect(next).toEqual(base);
@@ -374,7 +542,7 @@ describe("config-layer stack", () => {
   });
 
   it("applyRoleToConfig parses AgenC TOML aliases into canonical AgenC config keys", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "custom-inline",
       config: {
         description: "inline role",
@@ -389,7 +557,10 @@ describe("config-layer stack", () => {
     });
 
     const base = { cwd: "/tmp/project" };
-    const next = applyRoleToConfig(getAgentRole("custom-inline")!, base);
+    const next = applyRoleToConfig(
+      getAgentRole(DEFAULT_WORKSPACE, "custom-inline")!,
+      base,
+    );
     expect(next.cwd).toBe("/tmp/project");
     expect(next.model).toBe("role-model");
     expect(next.reasoning_effort).toBe("high");
@@ -399,7 +570,7 @@ describe("config-layer stack", () => {
   });
 
   it("applyRoleToConfig preserves the parent service tier when the role does not override it", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "custom-inline",
       config: {
         description: "inline role",
@@ -408,12 +579,15 @@ describe("config-layer stack", () => {
     });
 
     const base = { cwd: "/tmp/project", service_tier: "priority" as const };
-    const next = applyRoleToConfig(getAgentRole("custom-inline")!, base);
+    const next = applyRoleToConfig(
+      getAgentRole(DEFAULT_WORKSPACE, "custom-inline")!,
+      base,
+    );
     expect(next.service_tier).toBe("priority");
   });
 
   it("buildConfigLayerStack applies base → role → user precedence", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "custom-precedence",
       config: {
         description: "precedence role",
@@ -426,6 +600,7 @@ describe("config-layer stack", () => {
 
     const effective = buildConfigLayerStack({
       base: { cwd: "/x", model: "base-model" },
+      workspace: DEFAULT_WORKSPACE,
       roleName: "custom-precedence",
       userLayer: { model: "user-model" },
     });
@@ -436,7 +611,7 @@ describe("config-layer stack", () => {
   });
 
   it("buildConfigLayerStack resolves a role-selected profile against the merged config", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "profile-role",
       config: {
         description: "profile role",
@@ -454,6 +629,7 @@ describe("config-layer stack", () => {
           },
         },
       },
+      workspace: DEFAULT_WORKSPACE,
       roleName: "profile-role",
     });
 
@@ -465,6 +641,7 @@ describe("config-layer stack", () => {
   it("buildConfigLayerStack leaves unknown roles unchanged except for the user overlay", () => {
     const effective = buildConfigLayerStack({
       base: { cwd: "/x", reasoning_effort: "medium" as const },
+      workspace: DEFAULT_WORKSPACE,
       roleName: "missing-role",
       userLayer: { mode: "user-overlay" },
     });
@@ -475,14 +652,16 @@ describe("config-layer stack", () => {
   });
 
   it("tryResolveRoleConfig returns undefined for unknown; resolveAgentRole falls back to default", () => {
-    expect(tryResolveRoleConfig("unknown")).toBeUndefined();
-    expect(tryResolveRoleConfig(undefined)).toBeUndefined();
-    expect(tryResolveRoleConfig("explorer")).toBeDefined();
-    expect(resolveAgentRole("unknown").name).toBe("default");
+    expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, "unknown")).toBeUndefined();
+    expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, undefined)).toBeUndefined();
+    expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, "explorer")).toBeDefined();
+    expect(resolveAgentRole(DEFAULT_WORKSPACE, "unknown").name).toBe("default");
   });
 
   it("loadRoleLayerToml reads built-in TOML and strips user-role metadata from disk-backed TOML", () => {
-    expect(loadRoleLayerToml(getAgentRole("explorer")!)).toEqual({});
+    expect(
+      loadRoleLayerToml(getAgentRole(DEFAULT_WORKSPACE, "explorer")!),
+    ).toEqual({});
 
     const dir = mkdtempSync(join(tmpdir(), "agenc-role-test-"));
     const path = join(dir, "custom-role.toml");
@@ -498,7 +677,7 @@ describe("config-layer stack", () => {
       ].join("\n"),
     );
 
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "file-backed-role",
       config: {
         description: "file-backed role",
@@ -506,14 +685,33 @@ describe("config-layer stack", () => {
       },
     });
 
-    expect(loadRoleLayerToml(getAgentRole("file-backed-role")!)).toEqual({
+    expect(
+      loadRoleLayerToml(getAgentRole(DEFAULT_WORKSPACE, "file-backed-role")!),
+    ).toEqual({
       model: "file-model",
       model_reasoning_effort: "medium",
     });
   });
 
+  it("fingerprints the effective contents of a same-path role config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-role-fingerprint-"));
+    const path = join(dir, "guarded.toml");
+    writeFileSync(path, 'approval_policy = "never"\n');
+    const role = {
+      name: "guarded",
+      config: {
+        description: "Guarded role",
+        configFile: path,
+      },
+    };
+
+    const first = agentRoleFingerprint(role);
+    writeFileSync(path, 'approval_policy = "on-request"\n');
+    expect(agentRoleFingerprint(role)).not.toBe(first);
+  });
+
   it("formatRoleList uses AgenC-style locked-setting notes from role TOML", () => {
-    registerAgentRole({
+    registerAgentRole(DEFAULT_WORKSPACE, {
       name: "model-locked-role",
       config: {
         description: "Locked config role.",
@@ -527,7 +725,7 @@ describe("config-layer stack", () => {
 
     const text = formatRoleList([
       getDefaultAgentRole(),
-      getAgentRole("model-locked-role")!,
+      getAgentRole(DEFAULT_WORKSPACE, "model-locked-role")!,
     ]);
 
     expect(text).toContain("Available roles:");
@@ -543,7 +741,7 @@ describe("config-layer stack", () => {
   });
 
   it("formatRoleList skips duplicate names", () => {
-    const explorer = getAgentRole("explorer")!;
+    const explorer = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
     const text = formatRoleList([explorer, explorer]);
     expect(text.match(/scanner:/g)?.length).toBe(1);
     expect(text).toContain("Legacy alias accepted: `explorer`");

@@ -63,6 +63,7 @@ import type {
 import type { AgenCCompactProgressControls } from "./session-types.js";
 import type { McpServerMutationResult } from "../session/session.js";
 import { isRecord } from "../utils/record.js";
+import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -99,6 +100,8 @@ export interface AgenCDaemonConnectionState extends JsonObject {
 
 export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
+  /** Preserved from the daemon/bootstrap session for immutable role discovery. */
+  readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
   readonly services: {
     approvalResolver?: ApprovalResolver;
     requestUserInputResolver?: {

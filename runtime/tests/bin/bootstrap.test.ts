@@ -29,6 +29,13 @@ import type { RolloutItem } from "../session/rollout-item.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import { Session } from "../session/session.js";
+import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+import {
+  _resetAgentRolesForTesting,
+  createAgentRoleWorkspace,
+  registerAgentRole,
+} from "../agents/role.js";
+import { findAgentDefinitionByType } from "../tools/AgentTool/loadAgentsDir.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import { PERSONALITY_MIGRATION_FILENAME } from "../personality/migration.js";
@@ -448,6 +455,81 @@ describe("readStartupCliFlags", () => {
 describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    _resetAgentRolesForTesting();
+  });
+
+  it("keeps a workspace programmatic role in bootstrap and model-facing catalogs", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-role-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-role-ws-"));
+    const roleWorkspace = createAgentRoleWorkspace(workspace);
+    registerAgentRole(roleWorkspace, {
+      name: "programmatic-auditor",
+      config: {
+        description: "Strict registered auditor",
+        systemPrompt: "Audit without editing.",
+        model: "grok-4.5",
+        allowlist: ["FileRead"],
+        disallowlist: ["Write"],
+        reasoningEffort: "high",
+      },
+    });
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: workspace,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      const bootDefinition = findAgentDefinitionByType(
+        boot.session.agentDefinitions.activeAgents as never[],
+        "programmatic-auditor",
+      );
+      expect(bootDefinition).toMatchObject({
+        source: "projectSettings",
+        model: "grok-4.5",
+        tools: ["FileRead"],
+        disallowedTools: ["Write"],
+        effort: "high",
+      });
+      expect(bootDefinition?.getSystemPrompt()).toBe("Audit without editing.");
+
+      const toolContext = buildAgenCToolUseContext(boot.session, boot.ctx);
+      expect(
+        findAgentDefinitionByType(
+          toolContext.options.agentDefinitions.activeAgents,
+          "programmatic-auditor",
+        ),
+      ).toMatchObject({ agentRoleFingerprint: expect.any(String) });
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("runs personality migration before constructing the first turn context", async () => {
@@ -609,13 +691,22 @@ describe("bootstrapLocalRuntimeSession", () => {
         "cli_main",
       );
       expect(boot.config.agentRoles.length).toBeGreaterThan(0);
-      expect(boot.session.agentDefinitions.activeAgents).toEqual(
-        boot.config.agentRoles.map((role) => ({
-          agentType: role.name,
-          ...(role.description.length > 0
-            ? { whenToUse: role.description }
-            : {}),
-        })),
+      expect(
+        boot.session.agentDefinitions.activeAgents.map((definition) =>
+          (definition as { agentType: string }).agentType,
+        ),
+      ).toEqual(boot.config.agentRoles.map((role) => role.name));
+      expect(
+        boot.session.agentDefinitions.activeAgents,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            agentType: "explorer",
+            source: "built-in",
+            agentRoleFingerprint: expect.any(String),
+            disallowedTools: expect.arrayContaining(["Write"]),
+          }),
+        ]),
       );
       expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
         signal: boot.session.services.mcpStartupCancellationToken.signal,
@@ -3001,6 +3092,10 @@ required = true
   it("keeps untrusted project settings from relaxing bootstrap permissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    // Pin this temporary directory as the project root. Test runners and local
+    // developer machines may legitimately have a root marker (for example a
+    // package.json) higher in the system temp directory.
+    await writeFile(join(workspace, "package.json"), "{}\n", "utf8");
     await writeFile(
       join(home, "config.toml"),
       'approval_policy = "never"\n',

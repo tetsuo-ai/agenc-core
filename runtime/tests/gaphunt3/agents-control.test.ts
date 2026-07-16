@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentControl } from "src/agents/control";
 import { AgentRegistry } from "src/agents/registry";
 import {
+  createAgentRoleWorkspace,
   registerAgentRole,
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
@@ -37,6 +38,7 @@ function stubSession(): ConstructorParameters<typeof AgentControl>[0]["session"]
     childInboxes: new Map(),
     rolloutStore: null,
     conversationId: "gaphunt3-control",
+    sessionConfiguration: { cwd: agencHome },
     _emitted: emitted,
   } as unknown as ConstructorParameters<typeof AgentControl>[0]["session"];
 }
@@ -48,7 +50,7 @@ beforeEach(() => {
   _resetNicknamePoolForTesting();
   // Two candidates so there is always exactly one free name to allocate for
   // the grandchild after the live child has taken the first.
-  registerAgentRole({
+  registerAgentRole(createAgentRoleWorkspace(agencHome), {
     name: LEAK_ROLE,
     config: { nicknameCandidates: ["scout", "ranger"] },
   });

@@ -2,15 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentThread } from "./thread.js";
 import type { LiveAgent } from "./control.js";
 import { AgentStatusTracker } from "./status.js";
-import { resolveAgentRole } from "./role.js";
+import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 import { Mailbox } from "./mailbox.js";
 import type { LLMMessage } from "../llm/types.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 function makeLive(): LiveAgent {
   return {
     agentId: "thread-1",
     agentPath: "/root/alpha",
-    role: resolveAgentRole(undefined),
+    role: resolveAgentRole(ROLE_WORKSPACE, undefined),
     depth: 1,
     nickname: "alpha",
     status: new AgentStatusTracker(),
@@ -22,6 +24,7 @@ function makeLive(): LiveAgent {
       agentPath: "/root/alpha",
       agentNickname: "alpha",
       agentRole: "default",
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
       depth: 1,
     },
     messages: [],

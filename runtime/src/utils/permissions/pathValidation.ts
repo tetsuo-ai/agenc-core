@@ -167,7 +167,11 @@ export function isPathAllowed(
   // and internal editable paths live under ~/.agenc/ — matching the ordering in
   // checkWritePermissionForTool (filesystem.ts step 1.5)
   if (operationType !== 'read') {
-    const internalEditResult = checkEditableInternalPath(resolvedPath, {})
+    const internalEditResult = checkEditableInternalPath(
+      resolvedPath,
+      {},
+      precomputedPathsToCheck,
+    )
     if (internalEditResult.behavior === 'allow') {
       return {
         allowed: true,
@@ -214,7 +218,11 @@ export function isPathAllowed(
   // 3.5. For read operations, check internal readable paths (project temp dir, session memory, etc.)
   // This allows reading agent output files without explicit permission
   if (operationType === 'read') {
-    const internalReadResult = checkReadableInternalPath(resolvedPath, {})
+    const internalReadResult = checkReadableInternalPath(
+      resolvedPath,
+      {},
+      precomputedPathsToCheck,
+    )
     if (internalReadResult.behavior === 'allow') {
       return {
         allowed: true,

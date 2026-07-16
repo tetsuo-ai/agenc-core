@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { AgentDefinition } from '../../../src/tools/AgentTool/loadAgentsDir.js'
+import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
 import { runWithCwdOverride } from '../../../src/utils/cwd.js'
 import {
   deleteAgentFromFile,
@@ -45,6 +46,7 @@ describe('agentFileUtils coverage swarm row 108', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-paths-'))
     const configHome = join(cwd, 'config-home')
     const managedHome = join(cwd, 'managed-home')
+    const roleWorkspace = createAgentRoleWorkspace(cwd)
 
     vi.stubEnv('AGENC_CONFIG_DIR', configHome)
     vi.stubEnv('USER_TYPE', 'ant')
@@ -56,7 +58,7 @@ describe('agentFileUtils coverage swarm row 108', () => {
           getNewAgentFilePath({
             source: 'userSettings',
             agentType: 'user-helper',
-          }),
+          }, cwd),
         ).toBe(join(configHome, 'agents', 'user-helper.md'))
         expect(
           getNewRelativeAgentFilePath({
@@ -69,7 +71,7 @@ describe('agentFileUtils coverage swarm row 108', () => {
           getNewAgentFilePath({
             source: 'policySettings',
             agentType: 'managed-helper',
-          }),
+          }, cwd),
         ).toBe(join(managedHome, '.agenc', 'agents', 'managed-helper.md'))
         expect(
           getNewRelativeAgentFilePath({
@@ -82,16 +84,16 @@ describe('agentFileUtils coverage swarm row 108', () => {
           getNewAgentFilePath({
             source: 'localSettings',
             agentType: 'local-helper',
-          }),
+          }, cwd),
         ).toBe(join(cwd, '.agenc', 'agents', 'local-helper.md'))
         expect(
           getNewRelativeAgentFilePath({
             source: 'localSettings',
             agentType: 'local-helper',
-          }),
+          }, roleWorkspace.cwd),
         ).toBe(join(cwd, '.agenc', 'agents', 'local-helper.md'))
 
-        expect(getActualAgentFilePath(customAgent('user-helper', 'userSettings'))).toBe(
+        expect(getActualAgentFilePath(customAgent('user-helper', 'userSettings'), roleWorkspace.cwd)).toBe(
           join(configHome, 'agents', 'user-helper.md'),
         )
         expect(
@@ -117,14 +119,17 @@ describe('agentFileUtils coverage swarm row 108', () => {
     }
   })
 
-  test('saves user agents and preserves non-existence write errors', async () => {
+  test('saves user agents and rejects nested filename escapes', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-save-'))
     const configHome = join(cwd, 'config-home')
+    const roleWorkspace = createAgentRoleWorkspace(cwd)
+    const authority = { roleWorkspace, catalogWorkspaceId: roleWorkspace.id }
 
     vi.stubEnv('AGENC_CONFIG_DIR', configHome)
 
     try {
       await saveAgentToFile(
+        authority,
         'userSettings',
         'user-helper',
         'Use this helper for user-wide work.',
@@ -138,20 +143,21 @@ describe('agentFileUtils coverage swarm row 108', () => {
       await runWithCwdOverride(cwd, async () => {
         await expect(
           saveAgentToFile(
+            authority,
             'projectSettings',
             'missing-dir/nested-helper',
             'Use this helper when a nested path is requested.',
             ['Read'],
             'This write should fail before content is created.',
           ),
-        ).rejects.toMatchObject({ code: 'ENOENT' })
+        ).rejects.toThrow('invalid agent filename')
       })
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }
   })
 
-  test('rejects built-in mutations and rethrows delete failures', async () => {
+  test('rejects built-in mutations and unsafe delete targets', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-errors-'))
     const builtInAgent: AgentDefinition = {
       agentType: 'built-in-helper',
@@ -160,10 +166,13 @@ describe('agentFileUtils coverage swarm row 108', () => {
       baseDir: 'built-in',
       getSystemPrompt: () => 'Built-in prompt.',
     }
+    const roleWorkspace = createAgentRoleWorkspace(cwd)
+    const authority = { roleWorkspace, catalogWorkspaceId: roleWorkspace.id }
 
     try {
       await expect(
         saveAgentToFile(
+          authority,
           'built-in',
           'built-in-helper',
           'Use built-in behavior.',
@@ -173,13 +182,14 @@ describe('agentFileUtils coverage swarm row 108', () => {
       ).rejects.toThrow('Cannot save built-in agents')
       await expect(
         updateAgentFile(
+          authority,
           builtInAgent,
           'Use built-in behavior.',
           undefined,
           'Built-in prompt.',
         ),
       ).rejects.toThrow('Cannot update built-in agents')
-      await expect(deleteAgentFromFile(builtInAgent)).rejects.toThrow(
+      await expect(deleteAgentFromFile(authority, builtInAgent)).rejects.toThrow(
         'Cannot delete built-in agents',
       )
 
@@ -189,9 +199,10 @@ describe('agentFileUtils coverage swarm row 108', () => {
 
         await expect(
           deleteAgentFromFile(
+            authority,
             customAgent('blocked-helper', 'projectSettings'),
           ),
-        ).rejects.toMatchObject({ code: 'EISDIR' })
+        ).rejects.toThrow('agent file must be a regular single-link file')
         expect(existsSync(join(agentDir, 'blocked-helper.md'))).toBe(true)
       })
     } finally {

@@ -336,8 +336,15 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
     });
 
     expect(session.agentDefinitions.activeAgents).toEqual([
-      { agentType: "worker", whenToUse: "Implementation work" },
-      { agentType: "explorer" },
+      expect.objectContaining({
+        agentType: "worker",
+        whenToUse: "Implementation work",
+        agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
+      expect.objectContaining({
+        agentType: "explorer",
+        agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
     ]);
   });
 });
@@ -473,6 +480,7 @@ describe("Session provider continuity hooks", () => {
 describe("Session.setPendingWorktreeState", () => {
   it("stores and clears the active worktree binding", () => {
     const session = buildSession();
+    expect(session.roleWorkspace.id).toBe("/tmp");
     const pending: PendingWorktreeState = {
       handle: {
         path: "/repo/.agenc-worktrees/feat",
@@ -487,10 +495,12 @@ describe("Session.setPendingWorktreeState", () => {
     session.setPendingWorktreeState(pending);
     expect(session.pendingWorktreeState).toEqual(pending);
     expect(session.sessionConfiguration.cwd).toBe("/repo/.agenc-worktrees/feat");
+    expect(session.roleWorkspace.id).toBe("/tmp");
 
     session.setPendingWorktreeState(null);
     expect(session.pendingWorktreeState).toBeNull();
     expect(session.sessionConfiguration.cwd).toBe("/repo");
+    expect(session.roleWorkspace.id).toBe("/tmp");
   });
 });
 

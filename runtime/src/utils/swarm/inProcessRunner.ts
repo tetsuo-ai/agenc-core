@@ -40,17 +40,10 @@ import {
   getProgressUpdate,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import type { CustomAgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
+import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { awaitClassifierAutoApproval } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
-import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
-import { TASK_CREATE_TOOL_NAME } from '../../tools/TaskCreateTool/constants.js'
-import { TASK_GET_TOOL_NAME } from '../../tools/TaskGetTool/constants.js'
-import { TASK_LIST_TOOL_NAME } from '../../tools/TaskListTool/constants.js'
-import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
-import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
 import {
@@ -102,6 +95,7 @@ import {
   sendPermissionRequestViaMailbox,
 } from './permissionSync.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
+import { resolveInProcessAgentDefinition } from './inProcessRolePolicy.js'
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
@@ -494,7 +488,7 @@ export type InProcessRunnerConfig = {
   /** Initial prompt for the teammate */
   prompt: string
   /** Optional agent definition (for specialized agents) */
-  agentDefinition?: CustomAgentDefinition
+  agentDefinition?: AgentDefinition
   /** Teammate context for AsyncLocalStorage */
   teammateContext: TeammateContext
   /** Parent's tool use context */
@@ -937,6 +931,14 @@ export async function runInProcessTeammate(
     invokingRequestId,
     invocationKind: 'spawn',
     invocationEmitted: false,
+    ...(agentDefinition?.memory !== undefined
+      ? {
+          memoryAuthorization: {
+            agentType: agentDefinition.agentType,
+            scope: agentDefinition.memory,
+          },
+        }
+      : {}),
   }
 
   // Build system prompt based on systemPromptMode
@@ -972,36 +974,11 @@ export async function runInProcessTeammate(
     teammateSystemPrompt = systemPromptParts.join('\n')
   }
 
-  // Resolve agent definition - use full system prompt with teammate addendum
-  // IMPORTANT: Set permissionMode to 'default' so teammates always get full tool
-  // access regardless of the leader's permission mode.
-  const resolvedAgentDefinition: CustomAgentDefinition = {
-    agentType: identity.agentName,
-    whenToUse: `In-process teammate: ${identity.agentName}`,
-    getSystemPrompt: () => teammateSystemPrompt,
-    // Inject team-essential tools so teammates can always respond to
-    // shutdown requests, send messages, and coordinate via the task list,
-    // even with explicit tool lists
-    tools: agentDefinition?.tools
-      ? [
-          ...new Set([
-            ...agentDefinition.tools,
-            SEND_MESSAGE_TOOL_NAME,
-            TEAM_CREATE_TOOL_NAME,
-            TEAM_DELETE_TOOL_NAME,
-            TASK_CREATE_TOOL_NAME,
-            TASK_GET_TOOL_NAME,
-            TASK_LIST_TOOL_NAME,
-            TASK_UPDATE_TOOL_NAME,
-          ]),
-        ]
-      : ['*'],
-    source: 'projectSettings',
-    permissionMode: 'default',
-    // Propagate model from custom agent definition so getAgentModel()
-    // can use it as a fallback when no tool-level model is specified
-    ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
-  }
+  const resolvedAgentDefinition = resolveInProcessAgentDefinition({
+    identity,
+    teammateSystemPrompt,
+    agentDefinition,
+  })
 
   // All messages across all prompts
   const allMessages: Message[] = []
@@ -1197,6 +1174,7 @@ export async function runInProcessTeammate(
             availableTools: toolUseContext.options.tools,
             allowedTools,
             contentReplacementState: teammateReplacementState,
+            agentName: identity.agentName,
           })) {
             // Check lifecycle abort first (kills whole teammate)
             if (abortController.signal.aborted) {

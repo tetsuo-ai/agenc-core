@@ -16,13 +16,14 @@ vi.mock("../session/event-log.js", () => ({
 
 import { AgentStatusTracker } from "./status.js";
 import { Mailbox } from "./mailbox.js";
-import { resolveAgentRole } from "./role.js";
+import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 import { delegate } from "./delegate.js";
 import { runAgent } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
 
 const mockRunAgent = vi.mocked(runAgent);
+const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 function makeLive(
   agentId: string,
@@ -34,12 +35,13 @@ function makeLive(
     agentPath,
     agentNickname: nickname,
     agentRole: "default",
+    agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId,
     agentPath,
-    role: resolveAgentRole(undefined),
+    role: resolveAgentRole(ROLE_WORKSPACE, undefined),
     depth: 1,
     nickname,
     status: new AgentStatusTracker(),

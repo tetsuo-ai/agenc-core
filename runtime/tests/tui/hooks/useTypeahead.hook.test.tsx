@@ -137,6 +137,7 @@ vi.mock('../../utils/sessionStorage.js', () => ({
     }
     return harness.sessionTitleMatches
   }),
+  writeAgentMetadata: vi.fn(async () => undefined),
 }))
 
 vi.mock('../../utils/suggestions/directoryCompletion.js', () => ({

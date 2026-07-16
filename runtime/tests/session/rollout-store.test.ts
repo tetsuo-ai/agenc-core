@@ -10,7 +10,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 import type { AgentMetadata } from "../agents/registry.js";
+import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import { RolloutStore } from "./rollout-store.js";
 import { getProjectDir, getSessionDir } from "./session-store.js";
 
@@ -135,7 +137,10 @@ describe("RolloutStore thread-spawn edges", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-persist";
     const original = openStore({ cwd, sessionId });
-    const childMetadata = metadata("child-1", "/root/alpha", 1);
+    const childMetadata: AgentMetadata = {
+      ...metadata("child-1", "/root/alpha", 1),
+      agentRoleWorkspaceId: cwd,
+    };
 
     try {
       original.upsertThreadSpawnEdge({
@@ -166,6 +171,7 @@ describe("RolloutStore thread-spawn edges", () => {
               agentPath: "/root/alpha",
               agentNickname: "alpha",
               agentRole: "default",
+              agentRoleWorkspaceId: cwd,
               depth: 1,
             },
             status: "closed",
@@ -176,6 +182,407 @@ describe("RolloutStore thread-spawn edges", () => {
       }
     } finally {
       original.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed instead of reopening a corrupted persisted edge status", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-invalid-status";
+    const original = openStore({ cwd, sessionId });
+    try {
+      original.createThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-invalid-status",
+        parentPath: "/root",
+        metadata: metadata(
+          "child-invalid-status",
+          "/root/child_invalid_status",
+          1,
+        ),
+        status: "open",
+      });
+      original.close();
+
+      const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+      try {
+        raw.prepare(
+          `UPDATE thread_spawn_edges
+           SET status = 'corrupted'
+           WHERE child_thread_id = ?`,
+        ).run("child-invalid-status");
+      } finally {
+        raw.close();
+      }
+
+      expect(() => openStore({ cwd, sessionId, resume: true })).toThrow(
+        /invalid thread-spawn edge status: corrupted/,
+      );
+    } finally {
+      original.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a legacy metadata rewrite that would remove provenance", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-legacy-rewrite";
+    const original = openStore({ cwd, sessionId });
+    try {
+      original.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-legacy",
+        parentPath: "/root",
+        metadata: {
+          ...metadata("child-legacy", "/root/legacy", 1),
+          agentRoleWorkspaceId: cwd,
+        },
+        status: "open",
+      });
+      original.close();
+
+      const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+      try {
+        expect(() =>
+          raw.prepare(
+            `UPDATE thread_spawn_edges
+             SET metadata_json = ?, status = 'closed'
+             WHERE child_thread_id = ?`,
+          ).run(
+            JSON.stringify(metadata("child-legacy", "/root/legacy", 1)),
+            "child-legacy",
+          ),
+        ).toThrow(/identity is immutable/);
+      } finally {
+        raw.close();
+      }
+
+      const reopened = openStore({ cwd, sessionId, resume: true });
+      try {
+        expect(reopened.getThreadSpawnEdge("child-legacy")?.metadata).toEqual({
+          ...metadata("child-legacy", "/root/legacy", 1),
+          agentRoleWorkspaceId: cwd,
+        });
+        expect(reopened.getThreadSpawnEdge("child-legacy")?.status).toBe("open");
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      original.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps spawn identity create-only and publishes only durable status", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const otherWorkspace = join(cwd, "other-workspace");
+    const sessionId = "thread-spawn-provenance-immutability";
+    const store = openStore({ cwd, sessionId });
+    const baseMetadata = {
+      ...metadata("child-immutable", "/root/immutable", 1),
+      agentRoleWorkspaceId: cwd,
+      agentRoleFingerprint: "default-role-fingerprint",
+    };
+    try {
+      store.createThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-immutable",
+        parentPath: "/root",
+        metadata: baseMetadata,
+        status: "open",
+      });
+      store.setThreadSpawnEdgeStatus("child-immutable", "closed");
+      expect(store.getThreadSpawnEdge("child-immutable")).toMatchObject({
+        status: "closed",
+        metadata: {
+          agentRoleWorkspaceId: cwd,
+          agentRoleFingerprint: "default-role-fingerprint",
+          agentRole: "default",
+        },
+      });
+
+      const paths = resolveStateDatabasePaths({ cwd });
+      const raw = new Database(paths.stateDbPath);
+      try {
+        const before = raw
+          .prepare(
+            `SELECT parent_thread_id, parent_path, metadata_json,
+                    agent_role_workspace_id, agent_role_fingerprint, status
+             FROM thread_spawn_edges
+             WHERE child_thread_id = ?`,
+          )
+          .get("child-immutable");
+        const inMemoryBefore = store.getThreadSpawnEdge("child-immutable");
+
+        expect(() =>
+          store.createThreadSpawnEdge({
+            parentThreadId: "attacker-root",
+            childThreadId: "child-immutable",
+            parentPath: "/root",
+            metadata: {
+              ...baseMetadata,
+              agentRoleWorkspaceId: otherWorkspace,
+            },
+            status: "open",
+          }),
+        ).toThrow(/agent thread id already exists/);
+        expect(store.getThreadSpawnEdge("child-immutable")).toEqual(
+          inMemoryBefore,
+        );
+        expect(
+          raw
+            .prepare(
+              `SELECT parent_thread_id, parent_path, metadata_json,
+                      agent_role_workspace_id, agent_role_fingerprint, status
+               FROM thread_spawn_edges
+               WHERE child_thread_id = ?`,
+            )
+            .get("child-immutable"),
+        ).toEqual(before);
+
+        expect(() =>
+          store.createThreadSpawnEdge({
+            parentThreadId: "root-1",
+            childThreadId: "child-immutable",
+            parentPath: "/root",
+            metadata: {
+              ...baseMetadata,
+              agentRole: "worker",
+              agentRoleFingerprint: "worker-role-fingerprint",
+            },
+            status: "open",
+          }),
+        ).toThrow(/agent thread id already exists/);
+        expect(store.getThreadSpawnEdge("child-immutable")).toEqual(
+          inMemoryBefore,
+        );
+
+        expect(() =>
+          store.createThreadSpawnEdge({
+            parentThreadId: "root-1",
+            childThreadId: "child-immutable",
+            parentPath: "/root",
+            metadata: baseMetadata,
+            status: "open",
+          }),
+        ).toThrow(/agent thread id already exists/);
+        expect(store.getThreadSpawnEdge("child-immutable")).toEqual(
+          inMemoryBefore,
+        );
+
+        expect(() =>
+          store.createThreadSpawnEdge({
+            parentThreadId: "root-1",
+            childThreadId: "edge-key",
+            parentPath: "/root",
+            metadata: metadata("metadata-id", "/root/metadata-id", 1),
+            status: "open",
+          }),
+        ).toThrow(/child identity/);
+        expect(store.getThreadSpawnEdge("edge-key")).toBeUndefined();
+
+        expect(() =>
+          store.createThreadSpawnEdge({
+            parentThreadId: "root-1",
+            childThreadId: "invalid-status-edge",
+            parentPath: "/root",
+            metadata: metadata(
+              "invalid-status-edge",
+              "/root/invalid_status_edge",
+              1,
+            ),
+            status: "corrupted" as "open",
+          }),
+        ).toThrow(/invalid thread-spawn edge record or child identity/);
+        expect(store.getThreadSpawnEdge("invalid-status-edge")).toBeUndefined();
+        expect(
+          raw
+            .prepare(
+              "SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+            )
+            .get("invalid-status-edge"),
+        ).toBeUndefined();
+
+        store.createThreadSpawnEdge({
+          parentThreadId: "root-1",
+          childThreadId: "status-failure-child",
+          parentPath: "/root",
+          metadata: metadata(
+            "status-failure-child",
+            "/root/status_failure_child",
+            1,
+          ),
+          status: "open",
+        });
+        raw.exec(`
+          CREATE TRIGGER reject_spawn_edge_status_update
+          BEFORE UPDATE OF status ON thread_spawn_edges
+          WHEN OLD.child_thread_id = 'status-failure-child'
+            AND NEW.status = 'closed'
+          BEGIN
+            SELECT RAISE(ABORT, 'forced status persistence failure');
+          END;
+        `);
+        expect(() =>
+          store.setThreadSpawnEdgeStatus("status-failure-child", "closed"),
+        ).toThrow(/forced status persistence failure/);
+        expect(store.getThreadSpawnEdge("status-failure-child")?.status).toBe(
+          "open",
+        );
+        expect(
+          raw
+            .prepare(
+              "SELECT status FROM thread_spawn_edges WHERE child_thread_id = ?",
+            )
+            .get("status-failure-child"),
+        ).toEqual({ status: "open" });
+      } finally {
+        raw.close();
+      }
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("lets exactly one concurrent store create a child identity", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const first = openStore({ cwd, sessionId: "create-race-first" });
+    const second = openStore({ cwd, sessionId: "create-race-second" });
+    try {
+      first.createThreadSpawnEdge({
+        parentThreadId: "root-first",
+        childThreadId: "race-child",
+        parentPath: "/root",
+        metadata: metadata("race-child", "/root/race_child", 1),
+        status: "open",
+      });
+      const winner = first.getThreadSpawnEdge("race-child");
+
+      expect(() =>
+        second.createThreadSpawnEdge({
+          parentThreadId: "root-second",
+          childThreadId: "race-child",
+          parentPath: "/root",
+          metadata: metadata("race-child", "/root/attacker", 1),
+          status: "closed",
+        }),
+      ).toThrow(/agent thread id already exists/);
+      expect(second.getThreadSpawnEdge("race-child")).toEqual(winner);
+      expect(first.getThreadSpawnEdge("race-child")).toEqual(winner);
+    } finally {
+      first.close();
+      second.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes a monotonic close across live stores", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const first = openStore({ cwd, sessionId: "close-coherence-first" });
+    first.createThreadSpawnEdge({
+      parentThreadId: "root-1",
+      childThreadId: "close-coherence-child",
+      parentPath: "/root",
+      metadata: metadata(
+        "close-coherence-child",
+        "/root/close_coherence_child",
+        1,
+      ),
+      status: "open",
+    });
+    const second = openStore({ cwd, sessionId: "close-coherence-second" });
+
+    try {
+      expect(second.getThreadSpawnEdge("close-coherence-child")?.status).toBe(
+        "open",
+      );
+
+      first.setThreadSpawnEdgeStatus("close-coherence-child", "closed");
+
+      expect(second.getThreadSpawnEdge("close-coherence-child")?.status).toBe(
+        "closed",
+      );
+      expect(() =>
+        second.setThreadSpawnEdgeStatus("close-coherence-child", "open"),
+      ).toThrow(/cannot transition.*closed.*open/i);
+
+      // A second close is a successful idempotent acknowledgement of the
+      // already-durable terminal state, even from another live store.
+      second.setThreadSpawnEdgeStatus("close-coherence-child", "closed");
+      first.setThreadSpawnEdgeStatus("close-coherence-child", "closed");
+      expect(first.getThreadSpawnEdge("close-coherence-child")?.status).toBe(
+        "closed",
+      );
+    } finally {
+      first.close();
+      second.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads current direct and descendant lists across live stores", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const first = openStore({ cwd, sessionId: "list-coherence-first" });
+    first.createThreadSpawnEdge({
+      parentThreadId: "root-1",
+      childThreadId: "list-coherence-existing",
+      parentPath: "/root",
+      metadata: metadata(
+        "list-coherence-existing",
+        "/root/list_coherence_existing",
+        1,
+      ),
+      status: "open",
+    });
+    const second = openStore({ cwd, sessionId: "list-coherence-second" });
+
+    try {
+      first.setThreadSpawnEdgeStatus("list-coherence-existing", "closed");
+      first.createThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "list-coherence-late",
+        parentPath: "/root",
+        metadata: metadata(
+          "list-coherence-late",
+          "/root/list_coherence_late",
+          1,
+        ),
+        status: "open",
+      });
+
+      expect(
+        second
+          .listThreadSpawnChildrenWithStatus("root-1", "open")
+          .map((edge) => edge.childThreadId),
+      ).toEqual(["list-coherence-late"]);
+      expect(
+        second
+          .listThreadSpawnChildrenWithStatus("root-1", "closed")
+          .map((edge) => edge.childThreadId),
+      ).toEqual(["list-coherence-existing"]);
+      expect(
+        second.listThreadSpawnDescendants("root-1").map((edge) => ({
+          childThreadId: edge.childThreadId,
+          status: edge.status,
+        })),
+      ).toEqual([
+        { childThreadId: "list-coherence-existing", status: "closed" },
+        { childThreadId: "list-coherence-late", status: "open" },
+      ]);
+
+      // The second store did not have this row at construction time. Closing
+      // it must still reach SQLite instead of returning from a stale cache.
+      second.setThreadSpawnEdgeStatus("list-coherence-late", "closed");
+      expect(first.getThreadSpawnEdge("list-coherence-late")?.status).toBe(
+        "closed",
+      );
+      expect(
+        second.listThreadSpawnChildrenWithStatus("root-1", "open"),
+      ).toEqual([]);
+    } finally {
+      first.close();
+      second.close();
       rmSync(cwd, { recursive: true, force: true });
     }
   });

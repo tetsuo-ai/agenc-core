@@ -21,7 +21,7 @@ import {
   isAutoMemoryEnabled,
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
-import { isAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
+import { isAnyAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
 import { getAgenCConfigHomeDir } from '../utils/envUtils.js'
 import { capitalize } from '../utils/stringUtils.js'
 import {
@@ -137,7 +137,7 @@ export function memoryScopeForPath(filePath: string): MemoryScope | null {
 
 function isAgentMemFile(filePath: string): boolean {
   if (isAutoMemoryEnabled()) {
-    return isAgentMemoryPath(filePath)
+    return isAnyAgentMemoryPath(filePath)
   }
   return false
 }

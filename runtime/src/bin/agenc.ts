@@ -24,6 +24,7 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
@@ -112,6 +113,7 @@ import {
   formatAgenCAgentCliHelpText,
   parseAgenCAgentCliArgs,
   resolveAgenCAgentAttachCwd,
+  resolveAgenCAgentAttachRoleWorkspace,
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
 import {
@@ -1127,14 +1129,25 @@ export function resolveCliCwdForStartup(
   if (options.useEnvWorkspace !== false) {
     const workspace = resolveWorkspaceFromEnv(env);
     if (workspace !== undefined) {
-      return { ok: true, cwd: workspace };
+      if (isAbsolute(workspace)) {
+        return { ok: true, cwd: resolve(workspace) };
+      }
+      const baseCwd = readProcessCwdSafely(options.cwdFn);
+      if (baseCwd === null) {
+        return {
+          ok: false,
+          message:
+            "AGENC_WORKSPACE must be absolute when the current working directory is unavailable.",
+        };
+      }
+      return { ok: true, cwd: resolve(baseCwd, workspace) };
     }
   }
   const cwd = readProcessCwdSafely(options.cwdFn);
   if (cwd === null) {
     return { ok: false, message: formatUnavailableCliCwdMessage() };
   }
-  return { ok: true, cwd };
+  return { ok: true, cwd: resolve(cwd) };
 }
 
 export function isUnavailableCliCwdError(error: unknown): boolean {
@@ -3747,6 +3760,21 @@ export async function attachAgentTuiEntry(
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
     const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+    const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
+      attachment,
+      targetCwd,
+    );
+    if (
+      roleWorkspace.cwd !== targetCwd &&
+      !(await requireProjectTrustForTui({
+        env,
+        argv: process.argv,
+        cwd: roleWorkspace.cwd,
+        useEnvWorkspace: false,
+      }))
+    ) {
+      return 1;
+    }
     const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
     const attachArgvForYolo = process.argv.slice(2);
     const isYoloAttach =
@@ -3764,6 +3792,7 @@ export async function attachAgentTuiEntry(
     } = await daemonCliDeps().createTuiContext({
       env: bootstrapEnv,
       cwd: bootstrapCwd,
+      roleWorkspace,
       conversationId: runtimeSessionId,
       ...(isYoloAttach
         ? { permissionMode: "bypassPermissions" as const }

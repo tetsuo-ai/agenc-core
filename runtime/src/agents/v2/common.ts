@@ -13,6 +13,7 @@ import {
 } from "../status.js";
 import { SESSION_ID_ARG } from "../_deps/filesystem-args.js";
 import type { Session } from "../../session/session.js";
+import type { AgentRoleWorkspace } from "../role.js";
 import type { Tool, ToolResult } from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
 
@@ -22,6 +23,7 @@ export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
 
 export interface MultiAgentV2Options {
   readonly getSession: () => Session | null;
+  readonly workspace: AgentRoleWorkspace;
   readonly ensureAgentControl: (session: Session) => {
     readonly control: AgentControl;
     readonly registry: AgentRegistry;

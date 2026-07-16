@@ -662,6 +662,8 @@ export function spawnAgenCDelegateThread(
   );
   const childSession = new Session({
     conversationId: `${parent.conversationId}:review:${req.subId}`,
+    roleWorkspace: parent.roleWorkspace,
+    agentDefinitions: parent.agentDefinitions,
     initialState: {
       sessionConfiguration: childSessionConfiguration,
       history: [...(req.initialHistory ?? [])],

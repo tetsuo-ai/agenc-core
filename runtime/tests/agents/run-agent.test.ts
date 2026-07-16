@@ -34,6 +34,7 @@ import {
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
+  createAgentRoleWorkspace,
   registerAgentRole,
 } from "./role.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
@@ -45,6 +46,8 @@ import type {
   LLMResponse,
   StreamProgressCallback,
 } from "../llm/types.js";
+
+const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import type {
@@ -158,6 +161,8 @@ function makeStubSession(opts: {
   sessionConfiguration?: SessionConfiguration;
   config?: Config;
   modelInfo?: ModelInfo;
+  roleWorkspace?: SessionOpts["roleWorkspace"];
+  agentDefinitions?: SessionOpts["agentDefinitions"];
 } = {}): Session {
   const state = {
     sessionConfiguration:
@@ -169,6 +174,12 @@ function makeStubSession(opts: {
   };
   const session = new Session({
     conversationId: "conv-parent",
+    ...(opts.roleWorkspace !== undefined
+      ? { roleWorkspace: opts.roleWorkspace }
+      : {}),
+    ...(opts.agentDefinitions !== undefined
+      ? { agentDefinitions: opts.agentDefinitions }
+      : {}),
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
     services: {
@@ -598,7 +609,7 @@ describe("runAgent", () => {
   });
 
   it("applies role model, reasoning, and service tier to the child session", async () => {
-    registerAgentRole({
+    registerAgentRole(ROLE_WORKSPACE, {
       name: "priority-reviewer",
       config: {
         description: "Review quickly.",
@@ -742,6 +753,72 @@ describe("runAgent", () => {
           content: providerMessages[0]?.content,
         }),
       }),
+    );
+  });
+
+  it("preserves the canonical parent catalog in a real worktree child session", async () => {
+    const provider = makeProvider([{ content: "nested catalog" }]);
+    const exactPluginAgent = {
+      agentType: "plugin:strict-reviewer",
+      description: "workspace exact plugin role",
+      source: "plugin",
+      getSystemPrompt: () => "strict reviewer prompt",
+    };
+    const session = makeStubSession({
+      services: { provider },
+      roleWorkspace: ROLE_WORKSPACE,
+      agentDefinitions: {
+        agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+        activeAgents: [exactPluginAgent],
+        allAgents: [exactPluginAgent],
+        allowedAgentTypes: ["plugin:strict-reviewer"],
+      },
+    });
+    const { live } = await spawnLive(session);
+    const childWorktree = mkdtempSync(join(tmpdir(), "agenc-child-catalog-"));
+    let childCatalog:
+      | {
+          agentRoleWorkspaceId?: string;
+          activeAgents: unknown[];
+          allAgents?: unknown[];
+          allowedAgentTypes?: unknown[];
+        }
+      | undefined;
+
+    try {
+      await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          worktree: {
+            path: childWorktree,
+            branch: "agent/catalog-child",
+            gitRoot: childWorktree,
+            created: false,
+          },
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          onCacheSafeParams: (params) => {
+            childCatalog = (
+              params.toolUseContext as unknown as {
+                options: { agentDefinitions: typeof childCatalog };
+              }
+            ).options.agentDefinitions;
+          },
+        }),
+      );
+    } finally {
+      rmSync(childWorktree, { recursive: true, force: true });
+    }
+
+    expect(childCatalog).toMatchObject({
+      agentRoleWorkspaceId: ROLE_WORKSPACE.id,
+      activeAgents: [exactPluginAgent],
+      allAgents: [exactPluginAgent],
+      allowedAgentTypes: ["plugin:strict-reviewer"],
+    });
+    expect(childCatalog?.activeAgents).not.toBe(
+      session.agentDefinitions.activeAgents,
     );
   });
 
