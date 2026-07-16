@@ -32,6 +32,7 @@ import {
 } from "src/tools/system/coding-common.js";
 import { createGitAndRepoTools } from "./git-tools.js";
 import type { Tool } from "../../../src/tools/types.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 
 const execFileP = promisify(execFile);
 
@@ -54,7 +55,7 @@ async function setupRepo(): Promise<string> {
 function toolByName(tools: readonly Tool[], name: string): Tool {
   const tool = tools.find((entry) => entry.name === name);
   if (!tool) throw new Error(`tool ${name} not found`);
-  return tool;
+  return bindExplicitDangerBoundary(tool);
 }
 
 describe("parseStatusPorcelain (ahead/behind regression)", () => {

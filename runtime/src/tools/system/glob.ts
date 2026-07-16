@@ -35,6 +35,8 @@ import {
   type FilesystemToolConfig,
 } from "./filesystem.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 
 export const GLOB_TOOL_NAME = "Glob";
 
@@ -286,6 +288,7 @@ export function runRipgrepFiles(params: {
   readonly command: string;
   readonly pattern: string;
   readonly cwd: string;
+  readonly toolArgs: Record<string, unknown>;
   readonly limit: number;
   readonly includeIgnored: boolean;
   readonly signal?: AbortSignal;
@@ -317,6 +320,14 @@ export function runRipgrepFiles(params: {
       args.push("--glob", `!${exclude}`);
     }
   }
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs: params.toolArgs,
+    fallbackCwd: params.cwd,
+    program: params.command,
+    args,
+    cwd: params.cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   return new Promise((resolveResult) => {
     const lines: string[] = [];
     let pending = "";
@@ -325,9 +336,11 @@ export function runRipgrepFiles(params: {
     let settled = false;
     let child;
     try {
-      child = spawn(params.command, args, {
-        cwd: params.cwd,
+      child = spawn(command.program, [...command.args], {
+        cwd: command.cwd,
+        env: command.env,
         stdio: ["ignore", "pipe", "pipe"],
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
       });
     } catch (err) {
       resolveResult({
@@ -495,6 +508,7 @@ export function createGlobTool(
         command: ripgrepCommand,
         pattern: target.pattern,
         cwd: target.searchRoot,
+        toolArgs: rawArgs,
         limit: effectiveLimit,
         includeIgnored,
         signal,

@@ -23,6 +23,11 @@ import type { ToolUseContext } from '../../../src/tools/Tool.js'
 import { getDefaultAppState } from '../../../src/tui/state/AppStateStore.js'
 import { setIsInteractive } from '../../../src/bootstrap/state.js'
 import {
+  SandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from '../../../src/sandbox/execution-broker.js'
+import { explicitDangerBroker } from '../../helpers/explicit-danger-boundary.js'
+import {
   captureTeammateModeSnapshot,
   clearCliTeammateModeOverride,
   setCliTeammateModeOverride,
@@ -100,9 +105,13 @@ function configFor(
   }
 }
 
-function sessionFor(workspace: string): Session {
+function sessionFor(
+  workspace: string,
+  sandboxExecutionBroker: SandboxExecutionBrokerLike = explicitDangerBroker,
+): Session {
   return {
     roleWorkspace: createAgentRoleWorkspace(workspace),
+    services: { sandboxExecutionBroker },
   } as unknown as Session
 }
 
@@ -272,6 +281,46 @@ Do not execute without exact role provenance.
       ).rejects.toThrow(
         "requires in-process teammate mode; pane teammates cannot enforce exact agent-role provenance",
       )
+      expect(backend).not.toHaveBeenCalled()
+    } finally {
+      setIsInteractive(false)
+    }
+  })
+
+  it('rejects a pane backend before mutation when required isolation is unavailable', async () => {
+    const workspace = tempWorkspace('teammate-pane-sandbox')
+    setCliTeammateModeOverride('tmux')
+    captureTeammateModeSnapshot()
+    setIsInteractive(true)
+    const backend = vi.fn(successfulBackend(() => {
+      throw new Error('pane backend must not run without a healthy boundary')
+    }))
+    __setSpawnTeammateBackendForTesting(backend)
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: workspace,
+      platform: 'linux',
+      probe: () => ({
+        kind: 'unavailable',
+        mode: 'workspace_write',
+        platform: 'linux',
+        reason: 'probe: forced unavailable for pane boundary test',
+        remediation: 'repair the test sandbox',
+      }),
+    })
+
+    try {
+      await expect(
+        runWithCurrentRuntimeSession(sessionFor(workspace, broker), () =>
+          spawnTeammate(
+            configFor(workspace, 'general-purpose'),
+            contextFor(workspace),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        code: 'sandbox_probe_failed',
+        surface: 'pane_agent',
+      })
       expect(backend).not.toHaveBeenCalled()
     } finally {
       setIsInteractive(false)

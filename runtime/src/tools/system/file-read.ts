@@ -39,7 +39,7 @@
  * @module
  */
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, resolve } from "node:path";
@@ -73,6 +73,8 @@ import {
 import { parsePDFInfoPageCount } from "../../utils/pdfInfo.js";
 import { asRecord } from "../../utils/record.js";
 import { maybeResizeAndDownsampleImageBuffer } from "../../utils/imageResizer.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+import { applyRuntimeSandboxToSpawn } from "./apply-runtime-sandbox.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -421,32 +423,89 @@ interface CommandResult {
 function execFileNoThrow(
   command: string,
   args: readonly string[],
+  toolArgs: Record<string, unknown>,
+  cwd: string,
   timeoutMs = PDF_SUBPROCESS_TIMEOUT_MS,
 ): Promise<CommandResult> {
+  const spawnCommand = applyRuntimeSandboxToSpawn({
+    toolArgs,
+    fallbackCwd: cwd,
+    program: command,
+    args,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   return new Promise((resolve) => {
-    execFile(
-      command,
-      [...args],
-      {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        timeout: timeoutMs,
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(spawnCommand.program, [...spawnCommand.args], {
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        const exitCode =
-          error && typeof (error as { code?: unknown }).code === "number"
-            ? ((error as { code: number }).code)
-            : error
-              ? 1
-              : 0;
-        resolve({
-          exitCode,
-          stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
-          stderr: typeof stderr === "string" ? stderr : String(stderr ?? ""),
-        });
-      },
-    );
+        ...(spawnCommand.argv0 !== undefined
+          ? { argv0: spawnCommand.argv0 }
+          : {}),
+      });
+    } catch {
+      resolve({ exitCode: 1, stdout: "", stderr: "" });
+      return;
+    }
+
+    const maxBufferBytes = 64 * 1024 * 1024;
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overflowed = false;
+    let timedOut = false;
+    let settled = false;
+    const finish = (exitCode: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: overflowed
+          ? "PDF helper output exceeded the 64 MiB limit"
+          : Buffer.concat(stderr).toString("utf8"),
+      });
+    };
+    const collect = (
+      chunks: Buffer[],
+      chunk: Buffer,
+      currentBytes: number,
+    ): number => {
+      const remaining = maxBufferBytes - currentBytes;
+      if (remaining <= 0) {
+        overflowed = true;
+        child.kill("SIGTERM");
+        return currentBytes;
+      }
+      if (chunk.byteLength > remaining) {
+        chunks.push(chunk.subarray(0, remaining));
+        overflowed = true;
+        child.kill("SIGTERM");
+        return maxBufferBytes;
+      }
+      chunks.push(chunk);
+      return currentBytes + chunk.byteLength;
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutBytes = collect(stdout, chunk, stdoutBytes);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBytes = collect(stderr, chunk, stderrBytes);
+    });
+    child.once("error", () => finish(1));
+    child.once("close", (code) => {
+      finish(timedOut || overflowed ? 1 : (code ?? 1));
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
   });
 }
 
@@ -469,8 +528,17 @@ function pageRangeLength(range: PDFPageRange): number {
   return range.lastPage - range.firstPage + 1;
 }
 
-async function getPDFPageCount(filePath: string): Promise<number | null> {
-  const result = await execFileNoThrow("pdfinfo", [filePath], 10_000);
+async function getPDFPageCount(
+  filePath: string,
+  toolArgs: Record<string, unknown>,
+): Promise<number | null> {
+  const result = await execFileNoThrow(
+    "pdfinfo",
+    [filePath],
+    toolArgs,
+    dirname(filePath),
+    10_000,
+  );
   if (result.exitCode !== 0) return null;
   return parsePDFInfoPageCount(result.stdout);
 }
@@ -958,6 +1026,7 @@ async function readPDFFile(
   resolvedPath: ResolvedPath,
   opts: PDFReadOpts,
   sessionId: string | undefined,
+  toolArgs: Record<string, unknown>,
 ): Promise<ToolResult> {
   const fileStats = await stat(resolvedPath.canonical);
   if (!fileStats.isFile()) {
@@ -988,7 +1057,7 @@ async function readPDFFile(
     return errorResult(parsedRange.err);
   }
 
-  const pageCount = await getPDFPageCount(resolvedPath.canonical);
+  const pageCount = await getPDFPageCount(resolvedPath.canonical, toolArgs);
   const selectedRange =
     parsedRange ??
     (pageCount === null
@@ -1022,7 +1091,12 @@ async function readPDFFile(
   }
   args.push(resolvedPath.canonical, "-");
 
-  const extracted = await execFileNoThrow("pdftotext", args);
+  const extracted = await execFileNoThrow(
+    "pdftotext",
+    args,
+    toolArgs,
+    dirname(resolvedPath.canonical),
+  );
   if (extracted.exitCode !== 0) {
     const detail = extracted.stderr.trim();
     return errorResult(
@@ -1371,6 +1445,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               limit,
             },
             sessionId,
+            rawArgs,
           );
         }
         if (isNotebook) {

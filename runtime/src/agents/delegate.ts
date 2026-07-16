@@ -42,6 +42,10 @@ import {
 } from "./worktree.js";
 import { runAgent } from "./run-agent.js";
 import { ResumeManager } from "./resume.js";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Delegate options
@@ -115,6 +119,7 @@ export async function delegate(
   // Set up worktree if requested.
   let worktree: WorktreeHandle | undefined;
   let baseCommit: string | null = null;
+  let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
@@ -130,11 +135,22 @@ export async function delegate(
       };
     }
     try {
+      const parentSandboxExecutionBroker =
+        opts.parent.services?.sandboxExecutionBroker;
+      if (parentSandboxExecutionBroker === undefined) {
+        throw missingSandboxExecutionBoundary("child_agent");
+      }
+      worktreeSandboxExecutionBroker =
+        parentSandboxExecutionBroker.forkForCwd(canonicalGitRoot);
       worktree = await getOrCreateWorktree({
         gitRoot: canonicalGitRoot,
         slug: worktreeSlug,
+        sandboxExecutionBroker: worktreeSandboxExecutionBroker,
       });
-      baseCommit = await captureBaseCommit(canonicalGitRoot);
+      baseCommit = await captureBaseCommit(
+        canonicalGitRoot,
+        worktreeSandboxExecutionBroker,
+      );
     } catch (err) {
       return {
         kind: "rejected",
@@ -159,6 +175,12 @@ export async function delegate(
         path: worktree.path,
         branch: worktree.branch,
         gitRoot: worktree.gitRoot,
+        sandboxExecutionBroker:
+          worktreeSandboxExecutionBroker ??
+          requireChildWorktreeSandboxExecutionBroker(
+            opts.parent,
+            worktree.gitRoot,
+          ),
       }).catch(() => {});
     }
     return {
@@ -593,12 +615,22 @@ async function teardown(opts: {
       const changes = await hasWorktreeChanges({
         path: opts.thread.worktree.path,
         baseCommit: opts.baseCommit,
+        sandboxExecutionBroker:
+          requireChildWorktreeSandboxExecutionBroker(
+            opts.parent,
+            opts.thread.worktree.gitRoot,
+          ),
       });
       if (!changes.hasCommits && !changes.isDirty) {
         await removeAgentWorktree({
           path: opts.thread.worktree.path,
           branch: opts.thread.worktree.branch,
           gitRoot: opts.thread.worktree.gitRoot,
+          sandboxExecutionBroker:
+            requireChildWorktreeSandboxExecutionBroker(
+              opts.parent,
+              opts.thread.worktree.gitRoot,
+            ),
           onSparseCheckoutOrphaned: (detail) => {
             emitWarning(
               opts.parent.eventLog,
@@ -634,4 +666,15 @@ async function teardown(opts: {
       );
     }
   }
+}
+
+function requireChildWorktreeSandboxExecutionBroker(
+  session: Session,
+  cwd: string,
+): SandboxExecutionBrokerLike {
+  const broker = session.services?.sandboxExecutionBroker;
+  if (broker === undefined) {
+    throw missingSandboxExecutionBoundary("child_agent");
+  }
+  return broker.forkForCwd(cwd);
 }

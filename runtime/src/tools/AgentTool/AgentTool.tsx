@@ -41,6 +41,7 @@ import { isInProcessTeammate } from '../../utils/teammateContext.js';
 import { getAssistantMessageContentLength } from '../../utils/tokens.js';
 import { createAgentId } from '../../utils/uuid.js';
 import { createAgentWorktree, hasWorktreeChanges, removeAgentWorktree } from '../../utils/worktree.js';
+import { requireWorktreeSandboxBrokers } from '../worktree-sandbox-boundary.js';
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
@@ -590,10 +591,16 @@ export const AgentTool = buildTool({
       gitRoot?: string;
       hookBased?: boolean;
     } | null = null;
+    const worktreeSandboxExecutionBroker = effectiveIsolation === 'worktree'
+      ? requireWorktreeSandboxBrokers(toolUseContext)[0]!
+      : undefined;
     if (effectiveIsolation === 'worktree') {
       const slug = `agent-${earlyAgentId.slice(0, 8)}`;
       try {
-        worktreeInfo = await createAgentWorktree(slug);
+        worktreeInfo = await createAgentWorktree(
+          slug,
+          worktreeSandboxExecutionBroker,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes('Cannot create agent worktree: not in a git repository')) {
@@ -640,7 +647,8 @@ export const AgentTool = buildTool({
             unpublishedWorktree.worktreePath,
             unpublishedWorktree.worktreeBranch,
             unpublishedWorktree.gitRoot,
-            unpublishedWorktree.hookBased
+            unpublishedWorktree.hookBased,
+            worktreeSandboxExecutionBroker,
           );
           if (!removed) {
             throw new Error(
@@ -732,9 +740,19 @@ export const AgentTool = buildTool({
         };
       }
       if (headCommit) {
-        const changed = await hasWorktreeChanges(worktreePath, headCommit);
+        const changed = await hasWorktreeChanges(
+          worktreePath,
+          headCommit,
+          worktreeSandboxExecutionBroker,
+        );
         if (!changed) {
-          await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
+          await removeAgentWorktree(
+            worktreePath,
+            worktreeBranch,
+            gitRoot,
+            false,
+            worktreeSandboxExecutionBroker,
+          );
           // Clear worktreePath from metadata before returning cleanup. The
           // awaited atomic write prevents later resumes from racing a partial
           // sidecar or observing a deleted worktree as the current location.

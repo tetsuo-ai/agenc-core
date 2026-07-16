@@ -841,6 +841,8 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly conversationId?: string;
   readonly resumeConversation?: boolean;
   readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
+  /** Production daemon entrypoints require a healthy boundary before startup. */
+  readonly requireSandboxReadyAtStartup?: boolean;
 }
 
 export interface LocalRuntimeBootstrap {
@@ -920,6 +922,17 @@ export async function bootstrapLocalRuntimeSession(
     });
   }
   const cli = readStartupCliFlags(argv);
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: cli.allowDangerouslySkipPermissions
+      ? "danger_full_access"
+      : mapSandboxPolicy(startup.config.sandbox_mode),
+    cwd: workspaceRoot,
+    env,
+    allowGpu: startup.config.sandbox?.allow_gpu === true,
+  });
+  if (options.requireSandboxReadyAtStartup === true) {
+    sandboxExecutionBroker.assertReady("startup");
+  }
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
   const conversationId =
@@ -1076,14 +1089,6 @@ export async function bootstrapLocalRuntimeSession(
   const selectedProviderModel = managedKey.baseURL !== undefined
     ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
     : providerModel;
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: cli.allowDangerouslySkipPermissions
-      ? "danger_full_access"
-      : mapSandboxPolicy(startup.config.sandbox_mode),
-    cwd: workspaceRoot,
-    env,
-    allowGpu: startup.config.sandbox?.allow_gpu === true,
-  });
   const mcpManager = await createSessionMcpManagerFromSources(
     configStore.current(),
     env,
@@ -1192,6 +1197,7 @@ export async function bootstrapLocalRuntimeSession(
         emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: handleCapabilityDrift,
         fetchImpl,
+        sandboxExecutionBroker,
         ...(options.authBackend !== undefined
           ? {
             authBackend: options.authBackend,

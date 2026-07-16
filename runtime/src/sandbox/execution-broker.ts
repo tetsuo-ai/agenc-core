@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   SandboxManager,
+  type AdditionalPermissionProfile,
   type SandboxType,
 } from "./engine/index.js";
 import { findSystemBubblewrapInPath } from "./linux-launcher/launcher.js";
@@ -30,6 +31,7 @@ import {
 import { sanitizeSandboxLauncherEnvironment } from "./launcher-environment.js";
 
 export type SandboxExecutionSurface =
+  | "startup"
   | "interactive"
   | "print"
   | "background"
@@ -38,6 +40,11 @@ export type SandboxExecutionSurface =
   | "hook"
   | "cron"
   | "mcp_stdio"
+  | "lsp"
+  | "browser"
+  | "provider"
+  | "powershell_parser"
+  | "pane_agent"
   | "child_agent"
   | "command_exec"
   | "tool";
@@ -70,6 +77,8 @@ export interface SandboxSpawnCommand {
   readonly cwd: string;
   readonly env: Record<string, string>;
   readonly argv0?: string;
+  /** Narrow, surface-owned grants required by the child process. */
+  readonly additionalPermissions?: AdditionalPermissionProfile;
 }
 
 export type SandboxExecutionManager = Pick<
@@ -288,9 +297,16 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       };
     }
     try {
+      const sandboxWithSurfacePermissions =
+        command.additionalPermissions === undefined
+          ? runtimeSandbox
+          : {
+              ...runtimeSandbox,
+              additionalPermissions: command.additionalPermissions,
+            };
       return transformSandboxedCommand({
         ...command,
-        runtimeSandbox,
+        runtimeSandbox: sandboxWithSurfacePermissions,
         sandboxManager: this.#sandboxManager,
       });
     } catch (error) {
@@ -637,6 +653,7 @@ const BROKER_MARKER = Symbol("agenc.sandboxExecutionBroker");
 const BROKER_ARG = "__sandboxExecutionBroker";
 const SURFACE_ARG = "__sandboxExecutionSurface";
 const EXECUTION_SURFACES = new Set<SandboxExecutionSurface>([
+  "startup",
   "interactive",
   "print",
   "background",
@@ -645,6 +662,11 @@ const EXECUTION_SURFACES = new Set<SandboxExecutionSurface>([
   "hook",
   "cron",
   "mcp_stdio",
+  "lsp",
+  "browser",
+  "provider",
+  "powershell_parser",
+  "pane_agent",
   "child_agent",
   "command_exec",
   "tool",

@@ -13,6 +13,10 @@ import {
 import { canonicalAgentRoleName } from '../../agents/role-presentation.js'
 import type { AgentRoleWorkspace } from '../../agents/role.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import {
+  SandboxExecutionError,
+  missingSandboxExecutionBoundary,
+} from '../../sandbox/execution-broker.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import { createTaskStateBase, generateTaskId } from '../../tasks/Task.js'
 import type { ToolUseContext } from '../Tool.js'
@@ -1080,6 +1084,29 @@ export async function spawnTeammate(
   let effectiveContext = context
   let effectiveConfig = config
   const parentSession = requireCurrentRuntimeSession('teammate spawn')
+  const inProcess = isInProcessEnabled()
+  const sandboxExecutionBroker = parentSession.services.sandboxExecutionBroker
+  if (sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary(
+      inProcess ? 'child_agent' : 'pane_agent',
+    )
+  }
+  const readiness = sandboxExecutionBroker.assertReady(
+    inProcess ? 'child_agent' : 'pane_agent',
+  )
+  if (sandboxExecutionBroker.required && !inProcess) {
+    throw new SandboxExecutionError({
+      code: 'sandbox_surface_uncovered',
+      surface: 'pane_agent',
+      status: {
+        ...readiness,
+        reason:
+          'pane-backed teammates launch through a terminal server outside the session sandbox',
+        remediation:
+          'Use in-process teammate mode while restricted sandboxing is enabled, or select danger-full-access explicitly when host pane execution is intended.',
+      },
+    })
+  }
   assertTeammateSpawnRoleWorkspace({
     parentWorkspace: parentSession.roleWorkspace,
     suppliedWorkspaceId: config.agent_role_workspace_id,
@@ -1087,7 +1114,7 @@ export async function spawnTeammate(
     catalogWorkspaceId:
       context.options.agentDefinitions.agentRoleWorkspaceId,
     executionCwd: config.cwd ?? getCwd(),
-    inProcess: isInProcessEnabled(),
+    inProcess,
   })
   assertAgentRoleWorkspaceMatches(
     parentSession.roleWorkspace,

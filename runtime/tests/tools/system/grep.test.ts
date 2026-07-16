@@ -15,9 +15,14 @@ import {
   __INTERNAL,
   __resetRipgrepProbeForTests,
   __setRipgrepAvailabilityForTests,
-  createGrepTool,
+  createGrepTool as createUnboundGrepTool,
   GREP_TOOL_NAME,
 } from "./grep.js";
+import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+const createGrepTool = (
+  ...args: Parameters<typeof createUnboundGrepTool>
+) => bindExplicitDangerBoundary(createUnboundGrepTool(...args));
 
 function lines(content: string): string[] {
   return content.split("\n").filter(Boolean);

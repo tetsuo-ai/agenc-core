@@ -10,6 +10,7 @@ import {
 } from '../../src/llm/providers/grok/acp-adapter.ts'
 import { createProvider } from '../../src/llm/provider.ts'
 import type { LLMMessage } from '../../src/llm/types.ts'
+import { explicitDangerBroker } from '../helpers/explicit-danger-boundary.ts'
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -31,7 +32,10 @@ describe('composer model detection', () => {
 
 describe('factory routing', () => {
   test('composer models construct the ACP provider without an API key', () => {
-    const provider = createProvider('grok', { model: 'grok-composer-2.5-fast' })
+    const provider = createProvider('grok', {
+      model: 'grok-composer-2.5-fast',
+      extra: { sandboxExecutionBroker: explicitDangerBroker },
+    })
     expect(provider.name).toBe('grok')
     expect(provider).toBeInstanceOf(GrokAcpProvider)
   })
@@ -74,6 +78,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
       binaryPath: FIXTURE,
+      sandboxExecutionBroker: explicitDangerBroker,
     })
     try {
       const response = await provider.chat([{ role: 'user', content: 'hi' }])
@@ -90,6 +95,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
       binaryPath: FIXTURE,
+      sandboxExecutionBroker: explicitDangerBroker,
     })
     try {
       const chunks: Array<{ content: string; done: boolean }> = []
@@ -111,6 +117,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
       binaryPath: FIXTURE,
+      sandboxExecutionBroker: explicitDangerBroker,
     })
     try {
       await provider.chat([{ role: 'user', content: 'first' }])
@@ -127,6 +134,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',
       binaryPath: 'definitely-not-a-real-grok-binary',
+      sandboxExecutionBroker: explicitDangerBroker,
     })
     try {
       await expect(

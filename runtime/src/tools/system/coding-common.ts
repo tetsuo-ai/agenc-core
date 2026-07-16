@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import {
+  basename,
   dirname,
   join,
   resolve as resolvePath,
@@ -15,7 +17,12 @@ import {
   type PlanFileContext,
 } from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
-import { runCommand } from "../../utils/process.js";
+import type { RunCommandResult } from "../../utils/process.js";
+import {
+  missingSandboxExecutionBoundary,
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+} from "../../sandbox/execution-broker.js";
 import type { Tool, ToolCatalogEntry, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import {
@@ -98,6 +105,95 @@ export const MANIFEST_NAMES = [
   "Makefile",
   "README.md",
 ] as const;
+
+function stringEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+export function runSandboxedToolCommand(params: {
+  readonly toolArgs: Record<string, unknown>;
+  readonly program: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly timeoutMs?: number;
+  readonly maxBuffer?: number;
+  readonly env?: NodeJS.ProcessEnv;
+}): Promise<RunCommandResult> {
+  const surface = readSandboxExecutionSurface(params.toolArgs) ?? "tool";
+  const broker = readSandboxExecutionBroker(params.toolArgs);
+  if (broker === undefined) {
+    throw missingSandboxExecutionBoundary(surface);
+  }
+  const command = broker.prepareSpawn(surface, {
+    program: params.program,
+    args: params.args,
+    cwd: params.cwd,
+    env: stringEnvironment(params.env ?? process.env),
+    argv0: basename(params.program),
+  });
+
+  return new Promise((resolve) => {
+    const maxBuffer = params.maxBuffer ?? 10 * 1024 * 1024;
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    let timedOut = false;
+    let bufferExceeded = false;
+    const child = spawn(command.program, [...command.args], {
+      cwd: command.cwd,
+      env: command.env,
+      argv0: command.argv0,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timeout = params.timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+        }, params.timeoutMs);
+    timeout?.unref?.();
+    const append = (target: Buffer[], chunk: Buffer, bytes: number): number => {
+      const next = bytes + chunk.length;
+      if (next > maxBuffer) {
+        bufferExceeded = true;
+        child.kill("SIGTERM");
+        return bytes;
+      }
+      target.push(chunk);
+      return next;
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes = append(stdout, chunk, stdoutBytes);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes = append(stderr, chunk, stderrBytes);
+    });
+    child.once("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      resolve({ stdout: "", stderr: error.message, exitCode: 1 });
+    });
+    child.once("close", (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: bufferExceeded
+          ? `command output exceeded ${maxBuffer} bytes`
+          : Buffer.concat(stderr).toString("utf8"),
+        exitCode: timedOut ? 124 : bufferExceeded ? 1 : (code ?? 1),
+      });
+    });
+  });
+}
 
 export function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
@@ -188,7 +284,10 @@ export async function resolveRepoRoot(params: {
   }
   const target = await stat(workspacePath).catch(() => undefined);
   const cwd = target?.isDirectory() ? workspacePath : dirname(workspacePath);
-  const result = await runCommand("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+  const result = await runSandboxedToolCommand({
+    toolArgs: params.args,
+    program: "git",
+    args: ["-C", cwd, "rev-parse", "--show-toplevel"],
     cwd,
   });
   if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
@@ -197,12 +296,16 @@ export async function resolveRepoRoot(params: {
   return resolvePath(result.stdout.trim());
 }
 
-export async function listRepoFiles(repoRoot: string): Promise<readonly string[]> {
-  const gitFiles = await runCommand(
-    "git",
-    ["-C", repoRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
-    { cwd: repoRoot },
-  );
+export async function listRepoFiles(
+  repoRoot: string,
+  toolArgs: Record<string, unknown>,
+): Promise<readonly string[]> {
+  const gitFiles = await runSandboxedToolCommand({
+    toolArgs,
+    program: "git",
+    args: ["-C", repoRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
+    cwd: repoRoot,
+  });
   if (gitFiles.exitCode === 0) {
     return gitFiles.stdout
       .split(/\r?\n/)

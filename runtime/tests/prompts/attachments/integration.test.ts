@@ -46,6 +46,7 @@ import {
   clearSessionReadState,
   recordSessionRead,
 } from "../../tools/system/filesystem.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 vi.mock("../../utils/sideQuery.js", () => ({
   sideQuery: vi.fn(),
@@ -64,6 +65,7 @@ function makeOpts(
     messages: [],
     permissionContext: { mode: "default" } as never,
     cwd: "/tmp/agenc-attachments-integration-test",
+    sandboxExecutionBroker: explicitDangerBroker,
     subagentDepth: 0,
     signal: new AbortController().signal,
     ...partial,

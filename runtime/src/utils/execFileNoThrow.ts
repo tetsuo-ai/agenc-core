@@ -27,6 +27,7 @@ type ExecFileOptions = {
   env?: NodeJS.ProcessEnv
   stdin?: 'ignore' | 'inherit' | 'pipe'
   input?: string
+  argv0?: string
 }
 
 type ExecFileWithCwdOptions = {
@@ -38,6 +39,7 @@ type ExecFileWithCwdOptions = {
   env?: NodeJS.ProcessEnv
   stdin?: 'ignore' | 'inherit' | 'pipe'
   input?: string
+  argv0?: string
 }
 
 type ProcessResultWithError = {
@@ -149,6 +151,7 @@ export function execFileNoThrow(
     env: options.env,
     stdin: options.stdin,
     input: options.input,
+    argv0: options.argv0,
   })
 }
 
@@ -167,6 +170,7 @@ export function execFileNoThrowWithCwd(
     maxBuffer = DEFAULT_MAX_BUFFER,
     stdin: finalStdin,
     input: finalInput,
+    argv0: finalArgv0,
   }: ExecFileWithCwdOptions = {
     timeout: 10 * SECONDS_IN_MINUTE * MS_IN_SECOND,
     preserveOutputOnError: true,
@@ -218,6 +222,7 @@ export function execFileNoThrowWithCwd(
     const child = spawn(file, args, {
       cwd: finalCwd,
       env: sanitizedEnv.value,
+      argv0: finalArgv0,
       shell: false,
       signal: abortSignal,
       stdio: [stdinMode, 'pipe', 'pipe'],

@@ -573,6 +573,7 @@ export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
 
 export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentRunner {
   readonly #bootstrap: AgenCBootstrapFunction;
+  readonly #requireSandboxReadyAtStartup: boolean;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
   #agentBudget: AgentBudgetConfig | undefined;
@@ -604,6 +605,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
+    this.#requireSandboxReadyAtStartup = options.bootstrap === undefined;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
@@ -673,6 +675,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
+      ...(this.#requireSandboxReadyAtStartup
+        ? { requireSandboxReadyAtStartup: true }
+        : {}),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
     });
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
@@ -884,6 +889,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         conversationId: params.agentId,
         resumeConversation: true,
         argv: buildBootstrapArgv(params, this.#argv),
+        ...(this.#requireSandboxReadyAtStartup
+          ? { requireSandboxReadyAtStartup: true }
+          : {}),
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
       });
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(

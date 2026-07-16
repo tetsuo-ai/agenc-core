@@ -2,6 +2,7 @@ import { execa } from 'execa'
 import { logForDebugging } from 'src/utils/debug.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { getCachedPowerShellPath } from '../shell/powershellDetection.js'
+import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
 import { jsonParse } from '../slowOperations.js'
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1136,10 @@ function transformRawOutput(raw: RawParsedOutput): ParsedPowerShellCommand {
  */
 async function parsePowerShellCommandImpl(
   command: string,
+  sandbox?: {
+    readonly broker: SandboxExecutionBrokerLike
+    readonly cwd: string
+  },
 ): Promise<ParsedPowerShellCommand> {
   // SECURITY: MAX_COMMAND_LENGTH is a UTF-8 BYTE budget (see derivation at the
   // constant definition). command.length counts UTF-16 code units; a CJK
@@ -1178,6 +1183,25 @@ async function parsePowerShellCommandImpl(
     '-EncodedCommand',
     encodedScript,
   ]
+  const processEnv = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] =>
+      typeof entry[1] === 'string'
+    ),
+  )
+  const spawnCommand = sandbox === undefined
+    ? {
+        program: pwshPath,
+        args,
+        cwd: process.cwd(),
+        env: processEnv,
+        argv0: undefined,
+      }
+    : sandbox.broker.prepareSpawn('powershell_parser', {
+        program: pwshPath,
+        args,
+        cwd: sandbox.cwd,
+        env: processEnv,
+      })
 
   // Spawn pwsh with one retry on timeout. On loaded CI runners (Windows
   // especially), pwsh spawn + .NET JIT + ParseInput occasionally exceeds 5s
@@ -1192,9 +1216,14 @@ async function parsePowerShellCommandImpl(
   let timedOut = false
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const result = await execa(pwshPath, args, {
+      const result = await execa(spawnCommand.program, [...spawnCommand.args], {
         timeout: parseTimeoutMs,
         reject: false,
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        ...(spawnCommand.argv0 !== undefined
+          ? { argv0: spawnCommand.argv0 }
+          : {}),
       })
       stdout = result.stdout
       stderr = result.stderr
@@ -1292,6 +1321,40 @@ const parsePowerShellCommandCached = memoizeWithLRU(
   256,
 )
 export { parsePowerShellCommandCached as parsePowerShellCommand }
+
+const sandboxParseCaches = new WeakMap<
+  SandboxExecutionBrokerLike,
+  Map<string, Promise<ParsedPowerShellCommand>>
+>()
+
+/** Parse through the authenticated session boundary used by the model tool. */
+export function parsePowerShellCommandWithSandbox(
+  command: string,
+  broker: SandboxExecutionBrokerLike,
+  cwd: string = broker.cwd,
+): Promise<ParsedPowerShellCommand> {
+  let cache = sandboxParseCaches.get(broker)
+  if (cache === undefined) {
+    cache = new Map()
+    sandboxParseCaches.set(broker, cache)
+  }
+  const key = `${cwd}\0${command}`
+  const existing = cache.get(key)
+  if (existing !== undefined) return existing
+  const promise = parsePowerShellCommandImpl(command, { broker, cwd })
+  cache.set(key, promise)
+  void promise.then(result => {
+    if (
+      !result.valid &&
+      TRANSIENT_ERROR_IDS.has(result.errors[0]?.errorId ?? '')
+    ) {
+      cache?.delete(key)
+    }
+  }, () => {
+    cache?.delete(key)
+  })
+  return promise
+}
 
 // ---------------------------------------------------------------------------
 // Analysis helpers — derived from the parsed AST structure.

@@ -13,14 +13,55 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   STALE_WORKTREE_AGE_MS,
-  cleanupStaleAgentWorktrees,
+  cleanupStaleAgentWorktrees as cleanupStaleAgentWorktreesUnbound,
   findGitRoot,
-  getOrCreateWorktree,
-  hasWorktreeChanges,
+  getOrCreateWorktree as getOrCreateWorktreeUnbound,
+  hasWorktreeChanges as hasWorktreeChangesUnbound,
   isWorktreeStale,
-  removeAgentWorktree,
+  removeAgentWorktree as removeAgentWorktreeUnbound,
   validateWorktreeSlug,
 } from "./worktree.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+
+const getOrCreateWorktree = (
+  opts: Omit<
+    Parameters<typeof getOrCreateWorktreeUnbound>[0],
+    "sandboxExecutionBroker"
+  >,
+) => getOrCreateWorktreeUnbound({
+  ...opts,
+  sandboxExecutionBroker: explicitDangerBroker,
+});
+
+const removeAgentWorktree = (
+  opts: Omit<
+    Parameters<typeof removeAgentWorktreeUnbound>[0],
+    "sandboxExecutionBroker"
+  >,
+) => removeAgentWorktreeUnbound({
+  ...opts,
+  sandboxExecutionBroker: explicitDangerBroker,
+});
+
+const hasWorktreeChanges = (
+  opts: Omit<
+    Parameters<typeof hasWorktreeChangesUnbound>[0],
+    "sandboxExecutionBroker"
+  >,
+) => hasWorktreeChangesUnbound({
+  ...opts,
+  sandboxExecutionBroker: explicitDangerBroker,
+});
+
+const cleanupStaleAgentWorktrees = (
+  opts: Omit<
+    Parameters<typeof cleanupStaleAgentWorktreesUnbound>[0],
+    "sandboxExecutionBroker"
+  >,
+) => cleanupStaleAgentWorktreesUnbound({
+  ...opts,
+  sandboxExecutionBroker: explicitDangerBroker,
+});
 
 function createLinkedWorktree(
   canonicalRoot: string,

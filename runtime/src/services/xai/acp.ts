@@ -21,6 +21,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface, type Interface } from 'node:readline'
 
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from '../../sandbox/execution-broker.js'
 import { asRecord } from '../../utils/record.js'
 
 export const GROK_ACP_REFERRER_ENV = 'GROK_OAUTH2_REFERRER'
@@ -92,6 +96,8 @@ export interface XaiAcpClientOptions {
   args?: readonly string[]
   cwd: string
   env?: NodeJS.ProcessEnv
+  /** Authenticated session boundary used for the Grok CLI process. */
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike
   clientInfo?: { name: string; version: string }
   /**
    * Decides agent-initiated `session/request_permission` requests. The
@@ -159,13 +165,29 @@ export class XaiAcpClient {
     this.options = options
     const command = options.command ?? GROK_ACP_DEFAULT_COMMAND
     const args = options.args ?? GROK_ACP_ARGS
+    const sandboxExecutionBroker = options.sandboxExecutionBroker
+    if (sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary('provider')
+    }
+    const env = Object.fromEntries(
+      Object.entries({
+        ...(options.env ?? process.env),
+        [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
+      }).filter((entry): entry is [string, string] =>
+        typeof entry[1] === 'string'
+      ),
+    )
+    const spawnCommand = sandboxExecutionBroker.prepareSpawn('provider', {
+      program: command,
+      args,
+      cwd: options.cwd,
+      env,
+    })
     try {
-      this.child = spawn(command, [...args], {
-        cwd: options.cwd,
-        env: {
-          ...(options.env ?? process.env),
-          [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
-        },
+      this.child = spawn(spawnCommand.program, [...spawnCommand.args], {
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        argv0: spawnCommand.argv0,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (error) {

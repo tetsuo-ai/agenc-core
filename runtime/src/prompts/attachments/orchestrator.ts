@@ -43,6 +43,7 @@ import { mcpResourcesProducer } from "./mcp-resources.js";
 import { relevantMemoriesProducer } from "./relevant-memories.js";
 import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
+import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 
 /**
  * Inputs every producer receives. Mirrors the upstream donor's
@@ -84,6 +85,8 @@ export interface GetAttachmentsOptions {
   readonly permissionContext: ToolPermissionContext;
   /** Workspace cwd; used for AGENC.md walk + file-mention resolution. */
   readonly cwd: string;
+  /** Authenticated process boundary for attachment helpers such as Poppler. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /**
    * Additional roots allowed for `@path` file mention rendering. When
    * omitted, file mentions are limited to `cwd`.

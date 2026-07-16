@@ -26,14 +26,18 @@ import {
 import {
   classifyCommandName,
   deriveSecurityFlags,
-  getAllCommandNames,
   getFileRedirections,
   type ParsedCommandElement,
   type ParsedPowerShellCommand,
   PS_TOKENIZER_DASH_CHARS,
-  parsePowerShellCommand,
+  parsePowerShellCommandWithSandbox,
   stripModulePrefix,
 } from '../../utils/powershell/parser.js'
+import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from '../../sandbox/execution-broker.js'
 import { containsVulnerableUncPath } from '../../utils/shell/readOnlyCommandValidation.js'
 import { isDotGitPathPS, isGitInternalPathPS } from './gitSafety.js'
 import {
@@ -115,14 +119,15 @@ const GIT_SAFETY_ARCHIVE_EXTRACTORS = new Set([
  * Extract the command name from a PowerShell command string.
  * Uses the parser to get the first command name from the AST.
  */
-async function extractCommandName(command: string): Promise<string> {
+function extractCommandName(command: string): string {
   const trimmed = command.trim()
   if (!trimmed) {
     return ''
   }
-  const parsed = await parsePowerShellCommand(trimmed)
-  const names = getAllCommandNames(parsed)
-  return names[0] ?? ''
+  return trimmed
+    .replace(/^[&.]\s+/u, '')
+    .split(/\s+/u)[0]
+    ?.replace(/^['"]|['"]$/gu, '') ?? ''
 }
 
 /**
@@ -546,7 +551,7 @@ async function getSubCommandsForPermissionCheck(
       {
         text: originalCommand,
         element: {
-          name: await extractCommandName(originalCommand),
+          name: extractCommandName(originalCommand),
           nameType: 'unknown',
           elementType: 'CommandAst',
           args: [],
@@ -611,7 +616,7 @@ async function getSubCommandsForPermissionCheck(
     {
       text: originalCommand,
       element: {
-        name: await extractCommandName(originalCommand),
+        name: extractCommandName(originalCommand),
         nameType: 'unknown',
         elementType: 'CommandAst',
         args: [],
@@ -721,8 +726,16 @@ export async function powershellToolHasPermission(
     }
   }
 
+  const sandboxExecutionBroker = readPermissionSandboxBroker(context)
+  if (sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary('powershell_parser')
+  }
   // Parse the command once and thread through all sub-functions
-  const parsed = await parsePowerShellCommand(command)
+  const parsed = await parsePowerShellCommandWithSandbox(
+    command,
+    sandboxExecutionBroker,
+    sandboxExecutionBroker.cwd,
+  )
 
   // SECURITY: Check deny/ask rules BEFORE parse validity check.
   // Deny rules operate on the raw command string and don't need the parsed AST.
@@ -1629,4 +1642,22 @@ export async function powershellToolHasPermission(
     decisionReason,
     suggestions: pendingSuggestions,
   }
+}
+
+function readPermissionSandboxBroker(
+  context: ToolUseContext,
+): SandboxExecutionBrokerLike | undefined {
+  const extended = context as ToolUseContext & {
+    readonly services?: {
+      readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+    }
+    readonly session?: {
+      readonly services?: {
+        readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike
+      }
+    }
+  }
+  return extended.services?.sandboxExecutionBroker ??
+    extended.session?.services?.sandboxExecutionBroker ??
+    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
 }

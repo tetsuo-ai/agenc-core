@@ -7,9 +7,14 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   __resetRipgrepProbeForTests,
   __setRipgrepAvailabilityForTests,
-  createGrepTool,
+  createGrepTool as createUnboundGrepTool,
 } from "src/tools/system/grep";
 import type { ToolResult } from "src/tools/types";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
+
+const createGrepTool = (
+  ...args: Parameters<typeof createUnboundGrepTool>
+) => bindExplicitDangerBoundary(createUnboundGrepTool(...args));
 
 // gaphunt3 #26 & #30: the pure-JS Grep fallback runs a model-controlled,
 // backtracking V8 RegExp per line over up-to-2MB file content with no ReDoS

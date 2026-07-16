@@ -9,6 +9,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { resolve } from "node:path";
 
 import {
   createMessageConnection,
@@ -24,6 +25,10 @@ import type {
   InitializeResult,
   ServerCapabilities,
 } from "./protocol.js";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
 import { errorMessage } from "../../utils/errors.js";
 import { subprocessEnv } from "../../utils/subprocessEnv.js";
 
@@ -53,6 +58,7 @@ export interface LSPClientOptions {
   readonly onCrash?: (error: Error) => void;
   readonly onDiagnostic?: (message: string) => void;
   readonly baseEnv?: NodeJS.ProcessEnv;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_000;
@@ -61,11 +67,16 @@ const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
 function mergedEnv(
   baseEnv: NodeJS.ProcessEnv | undefined,
   extra?: Readonly<Record<string, string>>,
-): NodeJS.ProcessEnv {
-  return {
+): Record<string, string> {
+  const merged: NodeJS.ProcessEnv = {
     ...subprocessEnv(baseEnv),
     ...(extra ?? {}),
   };
+  return Object.fromEntries(
+    Object.entries(merged).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
 }
 
 function withTimeout<T>(
@@ -234,11 +245,24 @@ export function createLSPClient(
       startError = undefined;
 
       try {
-        child = spawn(command, [...args], {
-          stdio: ["pipe", "pipe", "pipe"],
+        const sandboxExecutionBroker = options.sandboxExecutionBroker;
+        if (sandboxExecutionBroker === undefined) {
+          throw missingSandboxExecutionBoundary("lsp");
+        }
+        const spawnCommand = sandboxExecutionBroker.prepareSpawn("lsp", {
+          program: command,
+          args,
+          cwd: resolve(runOptions?.cwd ?? sandboxExecutionBroker.cwd),
           env: mergedEnv(options.baseEnv, runOptions?.env),
-          cwd: runOptions?.cwd,
+        });
+        child = spawn(spawnCommand.program, [...spawnCommand.args], {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: spawnCommand.env,
+          cwd: spawnCommand.cwd,
           windowsHide: true,
+          ...(spawnCommand.argv0 !== undefined
+            ? { argv0: spawnCommand.argv0 }
+            : {}),
         });
 
         if (!child.stdin || !child.stdout) {

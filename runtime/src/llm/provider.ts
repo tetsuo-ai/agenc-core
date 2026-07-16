@@ -57,6 +57,7 @@ import {
   readXaiOauthAccessToken,
 } from "../utils/xaiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
@@ -782,9 +783,30 @@ function geminiVertexBaseURL(
 }
 
 function cloneExtraValue(value: unknown): unknown {
+  if (isSandboxExecutionBrokerLike(value)) return value;
   if (Array.isArray(value)) return [...value];
   if (value && typeof value === "object") return { ...value };
   return value;
+}
+
+function isSandboxExecutionBrokerLike(
+  value: unknown,
+): value is SandboxExecutionBrokerLike {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<
+    Record<keyof SandboxExecutionBrokerLike, unknown>
+  >;
+  return typeof candidate.assertReady === "function" &&
+    typeof candidate.prepareSpawn === "function" &&
+    typeof candidate.runtimeSandbox === "function" &&
+    typeof candidate.forkForCwd === "function";
+}
+
+function readSandboxExecutionBrokerExtra(
+  extra: Record<string, unknown> | undefined,
+): SandboxExecutionBrokerLike | undefined {
+  const value = extra?.sandboxExecutionBroker;
+  return isSandboxExecutionBrokerLike(value) ? value : undefined;
 }
 
 function cloneProviderFactoryOptions(
@@ -1339,8 +1361,14 @@ export function createProvider(
         // Per xAI: composer models are served ONLY through ACP (the Grok
         // Build CLI), never by direct inference calls. Auth belongs to the
         // CLI (cached `grok` login or XAI_API_KEY) — no factory key needed.
+        const sandboxExecutionBroker = readSandboxExecutionBrokerExtra(
+          opts.extra,
+        );
         const acpProvider = new GrokAcpProvider({
           model: grokRequestedModel as string,
+          ...(sandboxExecutionBroker !== undefined
+            ? { sandboxExecutionBroker }
+            : {}),
           ...(extra.contextWindowTokens !== undefined
             ? { contextWindowTokens: extra.contextWindowTokens }
             : {}),

@@ -37,11 +37,12 @@
  * @module
  */
 
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
 import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import {
   AUTONOMOUS_TICK_TAG,
   isAutonomousModeEnabled,
@@ -383,14 +384,33 @@ function getMemorySection(memoryPrompt: string | undefined): string | null {
 
 // Re-export for the env helper's use; kept internal so callers don't
 // depend on node:child_process directly.
-function readGitBranch(cwd: string): string | null {
+function readGitBranch(
+  cwd: string,
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+): string | null {
+  if (sandboxExecutionBroker === undefined) return null;
+  const command = sandboxExecutionBroker.prepareSpawn("tool", {
+    program: "git",
+    args: ["rev-parse", "--abbrev-ref", "HEAD"],
+    cwd,
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+    argv0: "git",
+  });
   try {
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd,
+    const result = spawnSync(command.program, [...command.args], {
+      cwd: command.cwd,
+      env: command.env,
+      argv0: command.argv0,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8",
       timeout: 1_000,
-    }).trim();
+    });
+    if (result.error !== undefined || result.status !== 0) return null;
+    const branch = result.stdout.trim();
     return branch.length > 0 ? branch : null;
   } catch {
     return null;
@@ -401,12 +421,13 @@ export interface EnvInfoInputs {
   readonly model: string;
   readonly provider?: string;
   readonly cwd: string;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 /** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   const { model, provider, cwd } = inputs;
-  const branch = readGitBranch(cwd);
+  const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
@@ -719,6 +740,9 @@ export async function assembleSystemPrompt(
     model,
     provider: opts.provider,
     cwd,
+    ...(session.services?.sandboxExecutionBroker !== undefined
+      ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }
+      : {}),
   };
 
   // AGENC_SIMPLE short-path.

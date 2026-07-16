@@ -15,6 +15,7 @@ import {
   type LSPServerInstance,
 } from "./LSPServerInstance.js";
 import type { LspServerConfigSource, ScopedLspServerConfig } from "./types.js";
+import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { errorMessage } from "../../utils/errors.js";
 
 export interface LSPServerManager {
@@ -38,6 +39,7 @@ export interface LSPServerManager {
 export interface LSPServerManagerOptions {
   readonly configSource?: LspServerConfigSource;
   readonly workspaceRoot?: string;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   readonly instanceFactory?: (
     name: string,
     config: ScopedLspServerConfig,
@@ -53,7 +55,14 @@ export function createLSPServerManager(
   const instanceFactory =
     options.instanceFactory ??
     ((name: string, config: ScopedLspServerConfig) =>
-      createLSPServerInstance(name, config, { cwd: options.workspaceRoot }));
+      createLSPServerInstance(name, config, {
+        ...(options.workspaceRoot !== undefined
+          ? { cwd: options.workspaceRoot }
+          : {}),
+        ...(options.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: options.sandboxExecutionBroker }
+          : {}),
+      }));
 
   function resolveFilePath(filePath: string): string {
     if (isAbsolute(filePath)) return resolve(filePath);

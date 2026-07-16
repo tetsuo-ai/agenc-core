@@ -1,13 +1,9 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
-
 import {
   extractBashCommand,
   parseShellCommand,
   parseWordOnlyShellSequence,
   stripLeadingSafeEnvVars,
 } from "./parser.js";
-import { parsePowerShellScriptWithNativeAst } from "./powershell-parser.js";
 
 const SIMPLE_SAFE_EXECUTABLES: ReadonlySet<string> = new Set([
   "cat",
@@ -238,19 +234,10 @@ export function isDangerousWindowsCommand(command: readonly string[]): boolean {
 export function isSafeWindowsCommand(command: readonly string[]): boolean {
   const invocation = parsePowerShellInvocation(command, "safe");
   if (invocation === null) return false;
-  const trustedExecutable = resolveTrustedPowerShellExecutable(
-    invocation.executable,
-  );
-  if (trustedExecutable === null) return false;
-  const parsed = parsePowerShellScriptWithNativeAst(
-    trustedExecutable,
-    invocation.script,
-  );
-  return (
-    parsed.ok &&
-    parsed.commands.length > 0 &&
-    parsed.commands.every((words) => isSafePowerShellWords(words))
-  );
+  // Native AST parsing starts a PowerShell process. This synchronous safety
+  // classifier has no authenticated session broker, so it must conservatively
+  // decline auto-allow instead of executing a parser outside the sandbox.
+  return false;
 }
 
 export function isDangerousPowerShellWords(words: readonly string[]): boolean {
@@ -607,36 +594,6 @@ function parsePowerShellInvocation(
   }
 
   return null;
-}
-
-function resolveTrustedPowerShellExecutable(executable: string): string | null {
-  const normalizedInput = executable.replace(/\\/g, "/");
-  if (normalizedInput.includes("/")) return null;
-
-  const base = executableBasename(executable);
-  if (!POWERSHELL_EXECUTABLES.has(base)) return null;
-  if (process.platform !== "win32") return null;
-
-  if (base === "powershell") {
-    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-    return path.win32.join(
-      systemRoot,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-  }
-
-  const candidates = [
-    process.env.ProgramFiles,
-    process.env["ProgramFiles(x86)"],
-  ]
-    .filter((value): value is string => value !== undefined && value.length > 0)
-    .map((programFiles) =>
-      path.win32.join(programFiles, "PowerShell", "7", "pwsh.exe"),
-    );
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function powershellFlagConsumesValue(flag: string): boolean {

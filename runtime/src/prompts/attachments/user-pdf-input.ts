@@ -18,6 +18,12 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
+
 export type NormalizedUserPdfInput = {
   readonly kind: "local";
   readonly source: string;
@@ -38,12 +44,18 @@ const PDF_MAGIC = "%PDF-";
 export const PDF_TEXT_EXTRACTION_MAX_BYTES = 256 * 1024;
 const PDF_TEXT_EXTRACTION_TIMEOUT_MS = 120_000;
 
+export interface UserPdfNormalizationOptions {
+  readonly cwd?: string;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
 export function isSupportedUserPdfPath(filePath: string): boolean {
   return PDF_FILE_RE.test(filePath);
 }
 
 export async function normalizeUserPdfInput(
   input: string,
+  options: UserPdfNormalizationOptions = {},
 ): Promise<NormalizedUserPdfInput | null> {
   if (!PDF_FILE_RE.test(input)) return null;
   try {
@@ -60,7 +72,7 @@ export async function normalizeUserPdfInput(
     ) {
       return null;
     }
-    const extracted = await extractPdfText(input);
+    const extracted = await extractPdfText(input, options);
     return {
       kind: "local",
       source: input,
@@ -81,11 +93,22 @@ export async function normalizeUserPdfInput(
   }
 }
 
-async function extractPdfText(filePath: string): Promise<
+async function extractPdfText(
+  filePath: string,
+  options: UserPdfNormalizationOptions,
+): Promise<
   | { readonly kind: "ok"; readonly text: string; readonly truncated: boolean }
   | { readonly kind: "error"; readonly error: string }
 > {
-  const result = await runPdfTextExtractor(filePath);
+  let result: Awaited<ReturnType<typeof runPdfTextExtractor>>;
+  try {
+    result = await runPdfTextExtractor(filePath, options);
+  } catch (error) {
+    return {
+      kind: "error",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
   if (result.kind === "error") return result;
   const text = normalizeExtractedText(Buffer.concat(result.stdout));
   if (text.length === 0) {
@@ -103,7 +126,10 @@ async function extractPdfText(filePath: string): Promise<
   };
 }
 
-function runPdfTextExtractor(filePath: string): Promise<
+function runPdfTextExtractor(
+  filePath: string,
+  options: UserPdfNormalizationOptions,
+): Promise<
   | {
       readonly kind: "ok";
       readonly stdout: readonly Buffer[];
@@ -111,12 +137,22 @@ function runPdfTextExtractor(filePath: string): Promise<
     }
   | { readonly kind: "error"; readonly error: string }
 > {
+  if (options.sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary("tool");
+  }
+  const command = options.sandboxExecutionBroker.prepareSpawn("tool", {
+    program: "pdftotext",
+    args: ["-layout", "-nopgbrk", "-q", filePath, "-"],
+    cwd: options.cwd ?? path.dirname(filePath),
+    env: scrubEnvForChildProcess(process.env),
+  });
   return new Promise((resolve) => {
-    const child = spawn(
-      "pdftotext",
-      ["-layout", "-nopgbrk", "-q", filePath, "-"],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const child = spawn(command.program, [...command.args], {
+      cwd: command.cwd,
+      env: command.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let stdoutBytes = 0;

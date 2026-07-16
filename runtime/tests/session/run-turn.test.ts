@@ -129,6 +129,7 @@ import {
   getSessionReadSnapshot,
 } from "../tools/system/filesystem.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
@@ -422,6 +423,7 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    sandboxExecutionBroker: explicitDangerBroker,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

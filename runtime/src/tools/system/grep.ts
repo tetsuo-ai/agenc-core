@@ -23,9 +23,13 @@ import { dirname, isAbsolute, join, relative, sep, win32 } from "node:path";
 
 import ignore from "ignore";
 
-import { runCommand } from "../../utils/process.js";
+import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
+import {
+  applyRuntimeSandboxToSpawn,
+  type SandboxSpawnCommand,
+} from "./apply-runtime-sandbox.js";
 import { resolveToolAllowedPaths, safePath } from "./filesystem.js";
 
 export const GREP_TOOL_NAME = "Grep";
@@ -164,18 +168,58 @@ function normalizeOutputMode(value: unknown): OutputMode | { error: string } {
 let ripgrepAvailability: boolean | undefined;
 
 /** Probe `rg` once per process and cache the result. */
-async function isRipgrepAvailable(cwd: string): Promise<boolean> {
+async function isRipgrepAvailable(
+  cwd: string,
+  toolArgs: Record<string, unknown>,
+): Promise<boolean> {
+  // Authenticate and prepare the probe before consulting the process-wide
+  // availability cache. A cached host result must never let a later restricted
+  // session skip its own required sandbox boundary.
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs,
+    fallbackCwd: cwd,
+    program: "rg",
+    args: ["--version"],
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   if (ripgrepAvailability !== undefined) return ripgrepAvailability;
-  try {
-    const result = await runCommand("rg", ["--version"], {
-      cwd,
-      maxBuffer: 64 * 1024,
-    });
-    ripgrepAvailability = result.exitCode === 0;
-  } catch {
-    ripgrepAvailability = false;
-  }
+  ripgrepAvailability = await probeRipgrepCommand(command);
   return ripgrepAvailability;
+}
+
+function probeRipgrepCommand(command: SandboxSpawnCommand): Promise<boolean> {
+  return new Promise((resolveProbe) => {
+    let settled = false;
+    let child: ReturnType<typeof spawn> | undefined;
+    const finish = (available: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveProbe(available);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child?.kill("SIGTERM");
+      } catch {
+        // Ignore process teardown races.
+      }
+      finish(false);
+    }, 5_000);
+    try {
+      child = spawn(command.program, [...command.args], {
+        cwd: command.cwd,
+        env: command.env,
+        stdio: "ignore",
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+      });
+    } catch {
+      finish(false);
+      return;
+    }
+    child.once("error", () => finish(false));
+    child.once("close", (code) => finish(code === 0));
+  });
 }
 
 /**
@@ -612,19 +656,30 @@ function appendBoundedText(current: string, chunk: string, maxChars: number): st
 function runRipgrepCollectLines(params: {
   readonly args: readonly string[];
   readonly cwd: string;
+  readonly toolArgs: Record<string, unknown>;
   readonly lineLimit?: number;
   readonly signal?: AbortSignal;
 }): Promise<LimitedRipgrepResult> {
   const { args, cwd, signal } = params;
+  const command = applyRuntimeSandboxToSpawn({
+    toolArgs: params.toolArgs,
+    fallbackCwd: cwd,
+    program: "rg",
+    args,
+    cwd,
+    env: scrubEnvForChildProcess(process.env),
+  });
   const lineLimit =
     params.lineLimit === undefined
       ? undefined
       : Math.max(1, Math.floor(params.lineLimit));
 
   return new Promise((resolve) => {
-    const child = spawn("rg", [...args], {
-      cwd,
+    const child = spawn(command.program, [...command.args], {
+      cwd: command.cwd,
+      env: command.env,
       stdio: ["ignore", "pipe", "pipe"],
+      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
     });
     const lines: string[] = [];
     let carry = "";
@@ -725,6 +780,7 @@ async function runRipgrepGrep(params: {
   readonly headLimit: number;
   readonly offset: number;
   readonly target: ResolvedTarget;
+  readonly toolArgs: Record<string, unknown>;
   readonly signal?: AbortSignal;
 }): Promise<ToolResult> {
   const { opts, headLimit, offset, target, signal } = params;
@@ -732,6 +788,7 @@ async function runRipgrepGrep(params: {
   const result = await runRipgrepCollectLines({
     args,
     cwd: target.searchRoot,
+    toolArgs: params.toolArgs,
     ...(headLimit === 0
       ? {}
       : { lineLimit: collectionLineLimit(headLimit, offset) }),
@@ -1397,7 +1454,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
 
       const signal = args.__abortSignal;
       const cwdForProbe = target.searchRoot || process.cwd();
-      const ripgrepReady = await isRipgrepAvailable(cwdForProbe);
+      const ripgrepReady = await isRipgrepAvailable(cwdForProbe, rawArgs);
 
       if (!ripgrepReady) {
         // Fallback path — narrow capability subset.
@@ -1445,6 +1502,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
         headLimit,
         offset,
         target,
+        toolArgs: rawArgs,
         signal,
       });
     },

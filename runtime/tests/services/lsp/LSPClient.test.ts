@@ -1,10 +1,13 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { createLSPClient } from "./LSPClient.js";
+import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
+import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
 
 const EXITING_SERVER = "setTimeout(() => process.exit(1), 10)";
 const CLEAN_EXIT_SERVER = "setTimeout(() => process.exit(0), 10)";
@@ -67,6 +70,7 @@ describe("createLSPClient", () => {
       onCrash: () => {
         crashCount += 1;
       },
+      sandboxExecutionBroker: explicitDangerBroker,
     });
 
     await client.start(process.execPath, ["-e", EXITING_SERVER]);
@@ -84,6 +88,7 @@ describe("createLSPClient", () => {
       onCrash: (error) => {
         terminalEvents.push(error.message);
       },
+      sandboxExecutionBroker: explicitDangerBroker,
     });
 
     await client.start(process.execPath, ["-e", CLEAN_EXIT_SERVER]);
@@ -103,6 +108,7 @@ describe("createLSPClient", () => {
       onCrash: (error) => {
         terminalEvents.push(error.message);
       },
+      sandboxExecutionBroker: explicitDangerBroker,
     });
 
     await client.start(process.execPath, ["-e", CLOSE_CONNECTION_SERVER]);
@@ -119,6 +125,7 @@ describe("createLSPClient", () => {
     const output = join(dir, "env.json");
     try {
       const client = createLSPClient("env", {
+        sandboxExecutionBroker: explicitDangerBroker,
         baseEnv: {
           PATH: process.env.PATH,
           HOME: "/home/test",
@@ -157,7 +164,9 @@ describe("createLSPClient", () => {
   });
 
   test("re-registers handlers after restart", async () => {
-    const client = createLSPClient("jsonrpc");
+    const client = createLSPClient("jsonrpc", {
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
     let notificationCount = 0;
     client.onNotification("custom/event", () => {
       notificationCount += 1;
@@ -180,5 +189,109 @@ describe("createLSPClient", () => {
     await client.stop();
 
     expect(notificationCount).toBe(2);
+  });
+
+  test("rejects an LSP process before spawn when its sandbox boundary is missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-uncovered-"));
+    const marker = join(dir, "escaped");
+    try {
+      const client = createLSPClient("uncovered");
+
+      await expect(
+        client.start(process.execPath, [
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped")`,
+        ], { cwd: dir }),
+      ).rejects.toMatchObject({
+        code: "sandbox_surface_uncovered",
+        surface: "lsp",
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an LSP process before spawn when required isolation is unavailable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-unavailable-"));
+    const marker = join(dir, "escaped");
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: dir,
+      probe: () => ({
+        kind: "unavailable",
+        mode: "workspace_write",
+        platform: process.platform,
+        reason: "probe: injected LSP namespace failure",
+        remediation: "repair sandbox support",
+      }),
+    });
+    try {
+      const client = createLSPClient("unavailable", {
+        sandboxExecutionBroker: broker,
+      });
+
+      await expect(
+        client.start(process.execPath, [
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped")`,
+        ], { cwd: dir }),
+      ).rejects.toMatchObject({
+        code: "sandbox_probe_failed",
+        surface: "lsp",
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("spawns only the command transformed by the authenticated boundary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-transform-"));
+    const output = join(dir, "spawn.json");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: dir,
+    });
+    const prepareSpawn = vi.spyOn(broker, "prepareSpawn").mockImplementation(
+      (_surface, command) => ({
+        program: process.execPath,
+        args: [
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify({ cwd: process.cwd(), env: process.env.LSP_TRANSFORMED_ENV, argv0: process.argv0 }))`,
+        ],
+        cwd: dir,
+        env: { ...command.env, LSP_TRANSFORMED_ENV: "present" },
+        argv0: "agenc-lsp-sandboxed",
+      }),
+    );
+    try {
+      const client = createLSPClient("transformed", {
+        sandboxExecutionBroker: broker,
+      });
+
+      await client.start("untrusted-original-command", ["--must-not-run"], {
+        cwd: dir,
+      });
+      await waitFor(() => existsSync(output));
+
+      expect(prepareSpawn).toHaveBeenCalledWith("lsp", {
+        program: "untrusted-original-command",
+        args: ["--must-not-run"],
+        cwd: dir,
+        env: expect.any(Object),
+      });
+      const observed = JSON.parse(
+        await readFile(output, "utf8"),
+      ) as Record<string, string>;
+      expect(observed).toEqual({
+        cwd: dir,
+        env: "present",
+        argv0: "agenc-lsp-sandboxed",
+      });
+    } finally {
+      prepareSpawn.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

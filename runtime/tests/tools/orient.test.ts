@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createOrientTool, ORIENT_TOOL_NAME } from "src/tools/system/orient";
 import type { ToolResult } from "src/tools/types";
+import { bindExplicitDangerBoundary } from "../helpers/explicit-danger-boundary.js";
 
 // Orient builds an ephemeral structural map of the workspace and returns a
 // ranked shortlist of files for a natural-language query. These exercise the
@@ -45,7 +46,7 @@ afterEach(async () => {
 });
 
 function orient() {
-  return createOrientTool({ allowedPaths: [dir] });
+  return bindExplicitDangerBoundary(createOrientTool({ allowedPaths: [dir] }));
 }
 
 describe("Orient tool", () => {

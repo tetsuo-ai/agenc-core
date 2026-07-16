@@ -23,6 +23,11 @@ import { resolveBrowserPolicy } from "../../browser/config.js";
 import { loadConfig } from "../../config/loader.js";
 import { resolveAgencHome } from "../../config/env.js";
 import {
+  missingSandboxExecutionBoundary,
+  readSandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from "../../sandbox/execution-broker.js";
+import {
   BROWSER_TOOL_NAME,
   BROWSER_TOOL_DESCRIPTION,
   BROWSER_READ_ONLY_ACTIONS,
@@ -134,7 +139,9 @@ export function createBrowserTool(
   let manager: BrowserManager | undefined = options.manager;
   let initializing: Promise<BrowserManager> | undefined;
 
-  async function ensureManager(): Promise<BrowserManager> {
+  async function ensureManager(
+    sandboxExecutionBroker: SandboxExecutionBrokerLike,
+  ): Promise<BrowserManager> {
     if (manager !== undefined) return manager;
     if (initializing !== undefined) return initializing;
     initializing = (async () => {
@@ -150,6 +157,7 @@ export function createBrowserTool(
       const created = new BrowserManager({
         ...(agencHome !== undefined ? { agencHome } : {}),
         policy,
+        sandboxExecutionBroker,
       });
       manager = created;
       return created;
@@ -187,6 +195,7 @@ export function createBrowserTool(
   async function dispatch(
     input: BrowserToolInput,
     signal: AbortSignal | undefined,
+    sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
   ): Promise<ToolResult> {
     const action = str(input.action);
     if (action === undefined || !BROWSER_ACTIONS.includes(action as never)) {
@@ -196,7 +205,10 @@ export function createBrowserTool(
     }
     const requiredError = validateRequired(action, input);
     if (requiredError !== undefined) return errorResult(requiredError);
-    const mgr = await ensureManager();
+    if (sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary("browser");
+    }
+    const mgr = await ensureManager(sandboxExecutionBroker);
 
     switch (action) {
       case "navigate": {
@@ -457,7 +469,8 @@ export function createBrowserTool(
       const input = rawArgs as BrowserToolInput;
       const signal = input.__abortSignal;
       try {
-        return await dispatch(input, signal);
+        const sandboxExecutionBroker = readSandboxExecutionBroker(rawArgs);
+        return await dispatch(input, signal, sandboxExecutionBroker);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResult(`Browser action failed: ${message}`);

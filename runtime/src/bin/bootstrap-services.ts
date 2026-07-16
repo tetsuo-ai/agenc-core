@@ -471,13 +471,24 @@ function readConfiguredLspServers(
   return parseLspServersConfig(cfg.lsp_servers);
 }
 
+interface BootstrapLspServerOptions {
+  readonly workspaceRoot?: string;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
 export async function loadBootstrapLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
-  opts: { readonly workspaceRoot?: string } = {},
+  opts: BootstrapLspServerOptions = {},
 ): Promise<void> {
   const parsed = readConfiguredLspServers(cfg);
-  const managerOptions =
-    opts.workspaceRoot !== undefined ? { workspaceRoot: opts.workspaceRoot } : {};
+  const managerOptions = {
+    ...(opts.workspaceRoot !== undefined
+      ? { workspaceRoot: opts.workspaceRoot }
+      : {}),
+    ...(opts.sandboxExecutionBroker !== undefined
+      ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
+      : {}),
+  };
   if (!parsed.success) {
     configureLspServerSource(() => {
       throw new Error(`Invalid LSP server config: ${parsed.reason}`);
@@ -510,7 +521,7 @@ function lspErrorMessage(error: unknown): string {
 
 export function loadBootstrapLspServersInBackground(
   cfg: ReturnType<ConfigStore["current"]>,
-  opts: { readonly workspaceRoot?: string } = {},
+  opts: BootstrapLspServerOptions = {},
 ): void {
   void loadBootstrapLspServers(cfg, opts).catch((error) => {
     // eslint-disable-next-line no-console
@@ -700,17 +711,24 @@ export function buildBootstrapSessionServices(
   loadHooks(opts.configStore.current());
   loadBootstrapLspServersInBackground(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
+    sandboxExecutionBroker: opts.sandboxExecutionBroker,
   });
   const lspManager: NonNullable<SessionServices["lspManager"]> = {
     refreshFromConfig: (config: unknown) =>
       loadBootstrapLspServers(
         config as ReturnType<ConfigStore["current"]>,
-        { workspaceRoot: opts.workspaceRoot },
+        {
+          workspaceRoot: opts.workspaceRoot,
+          sandboxExecutionBroker: opts.sandboxExecutionBroker,
+        },
       ),
   };
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
-    loadBootstrapLspServersInBackground(cfg, { workspaceRoot: opts.workspaceRoot });
+    loadBootstrapLspServersInBackground(cfg, {
+      workspaceRoot: opts.workspaceRoot,
+      sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    });
   });
 
   const services: SessionServices = {

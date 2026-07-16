@@ -7,12 +7,13 @@
  */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { createLSPClient, type LSPClient } from "./LSPClient.js";
 import type { InitializeParams } from "./protocol.js";
 import type { LspServerState, ScopedLspServerConfig } from "./types.js";
+import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { errorMessage, toError } from "../../utils/errors.js";
 
 const LSP_ERROR_CONTENT_MODIFIED = -32801;
@@ -47,6 +48,7 @@ export interface LSPServerInstanceOptions {
     onCrash: (error: Error) => void,
   ) => LSPClient;
   readonly cwd?: string;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 function withTimeout<T>(
@@ -87,7 +89,12 @@ export function createLSPServerInstance(
   const makeClient =
     options.createClient ??
     ((serverName: string, onCrash: (error: Error) => void) =>
-      createLSPClient(serverName, { onCrash }));
+      createLSPClient(serverName, {
+        onCrash,
+        ...(options.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: options.sandboxExecutionBroker }
+          : {}),
+      }));
   const client =
     options.client ??
     makeClient(name, (error) => {
@@ -124,12 +131,15 @@ export function createLSPServerInstance(
     let initPromise: Promise<unknown> | undefined;
     try {
       state = "starting";
+      const workspaceFolder = resolve(
+        options.cwd ?? process.cwd(),
+        config.workspaceFolder ?? ".",
+      );
       await client.start(config.command, config.args ?? [], {
         env: config.env,
-        cwd: config.workspaceFolder ?? options.cwd,
+        cwd: workspaceFolder,
       });
 
-      const workspaceFolder = config.workspaceFolder ?? options.cwd ?? process.cwd();
       const workspaceUri = pathToFileURL(workspaceFolder).href;
       const initParams: InitializeParams = {
         processId: process.pid,

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { CdpConnection, launchBrowser } from "./cdp.js";
+import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { BrowserPage, BrowserActionError } from "./page.js";
 import { BrowserProxy } from "./proxy.js";
 import { resolveBrowserExecutable } from "./executable.js";
@@ -38,6 +39,8 @@ export async function closeAllBrowserManagers(): Promise<void> {
 export interface BrowserManagerOptions {
   readonly agencHome?: string;
   readonly policy: BrowserPolicy;
+  /** Authenticated session boundary for the Chromium process. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   /** Test seam: overrides DNS resolution inside the proxy's SSRF checks. */
   readonly lookup?: HostLookup;
   /** Test seam: overrides idle shutdown delay. */
@@ -145,6 +148,9 @@ export class BrowserManager {
         headless: this.#options.policy.headless,
         noSandbox: this.#options.policy.noSandbox,
         proxyPort,
+        ...(this.#options.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: this.#options.sandboxExecutionBroker }
+          : {}),
       });
     } catch (err) {
       await proxy.stop();

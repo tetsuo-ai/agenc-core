@@ -28,6 +28,10 @@ import {
   type XaiAcpPermissionDecision,
   type XaiAcpPermissionRequest,
 } from "../../../services/xai/acp.js";
+import {
+  SandboxExecutionError,
+  type SandboxExecutionBrokerLike,
+} from "../../../sandbox/execution-broker.js";
 import { LLMProviderError } from "../../errors.js";
 import type {
   LLMChatOptions,
@@ -54,6 +58,8 @@ export interface GrokAcpProviderConfig {
   timeoutMs?: number;
   contextWindowTokens?: number;
   env?: NodeJS.ProcessEnv;
+  /** Authenticated session boundary for the ACP child process. */
+  sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 function resolvePermissionHandler(
@@ -216,6 +222,9 @@ export class GrokAcpProvider implements LLMProvider {
         : {}),
       cwd: this.config.cwd ?? process.cwd(),
       env,
+      ...(this.config.sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker: this.config.sandboxExecutionBroker }
+        : {}),
       clientInfo: { name: "agenc", version: "0" },
       onPermissionRequest: resolvePermissionHandler(env),
       ...(this.config.timeoutMs !== undefined
@@ -244,6 +253,7 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   private mapError(error: unknown): Error {
+    if (error instanceof SandboxExecutionError) return error;
     if (error instanceof LLMProviderError) return error;
     if (error instanceof XaiAcpError) {
       const hint =

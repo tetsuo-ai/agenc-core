@@ -16,6 +16,10 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
+import {
+  missingSandboxExecutionBoundary,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
 
 const NUL = "\0";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
@@ -310,6 +314,8 @@ export interface LaunchBrowserOptions {
    * every connection is address-checked once at the proxy (no rebinding).
    */
   readonly proxyPort: number;
+  /** Authenticated session boundary for the Chromium process. */
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 export interface LaunchedBrowser {
@@ -365,7 +371,36 @@ export function buildChromiumArgs(options: LaunchBrowserOptions): string[] {
 export async function launchBrowser(
   options: LaunchBrowserOptions,
 ): Promise<LaunchedBrowser> {
-  const child = spawn(options.executablePath, buildChromiumArgs(options), {
+  const sandboxExecutionBroker = options.sandboxExecutionBroker;
+  if (sandboxExecutionBroker === undefined) {
+    throw missingSandboxExecutionBoundary("browser");
+  }
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] =>
+      typeof entry[1] === "string"
+    ),
+  );
+  const spawnCommand = sandboxExecutionBroker.prepareSpawn("browser", {
+    program: options.executablePath,
+    args: buildChromiumArgs(options),
+    cwd: sandboxExecutionBroker.cwd,
+    env,
+    additionalPermissions: {
+      network: { enabled: true },
+      fileSystem: {
+        entries: [
+          {
+            path: { kind: "path", path: options.userDataDir },
+            access: "write",
+          },
+        ],
+      },
+    },
+  });
+  const child = spawn(spawnCommand.program, [...spawnCommand.args], {
+    cwd: spawnCommand.cwd,
+    env: spawnCommand.env,
+    argv0: spawnCommand.argv0,
     stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
     detached: false,
   });

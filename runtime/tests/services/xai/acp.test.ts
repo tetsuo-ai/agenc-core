@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 
 import { describe, expect, test } from 'vitest'
 
@@ -9,6 +11,8 @@ import {
   XaiAcpClient,
   type XaiAcpPermissionRequest,
 } from '../../../src/services/xai/acp.ts'
+import { SandboxExecutionBroker } from '../../../src/sandbox/execution-broker.ts'
+import { explicitDangerBroker } from '../../helpers/explicit-danger-boundary.ts'
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -29,6 +33,7 @@ function makeClient(options?: {
     args: [FIXTURE],
     cwd: process.cwd(),
     env: { ...process.env, ...options?.env },
+    sandboxExecutionBroker: explicitDangerBroker,
     ...(options?.onPermissionRequest !== undefined
       ? { onPermissionRequest: options.onPermissionRequest }
       : {}),
@@ -125,6 +130,7 @@ describe('XaiAcpClient', () => {
     const client = new XaiAcpClient({
       command: 'definitely-not-a-real-grok-binary',
       cwd: process.cwd(),
+      sandboxExecutionBroker: explicitDangerBroker,
     })
     try {
       await expect(client.initialize()).rejects.toMatchObject({
@@ -149,6 +155,46 @@ describe('XaiAcpClient', () => {
       ).rejects.toMatchObject({ code: 'timeout' })
     } finally {
       client.dispose()
+    }
+  })
+
+  test('required sandbox failure prevents the ACP executable from starting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agenc-acp-boundary-'))
+    const marker = join(root, 'spawned')
+    const executable = join(root, 'grok')
+    await writeFile(
+      executable,
+      `#!/bin/sh\nprintf spawned > "${marker}"\n`,
+      'utf8',
+    )
+    await chmod(executable, 0o755)
+    const broker = new SandboxExecutionBroker({
+      mode: 'workspace_write',
+      cwd: root,
+      platform: 'linux',
+      probe: () => ({
+        kind: 'unavailable',
+        mode: 'workspace_write',
+        platform: 'linux',
+        reason: 'probe: forced unavailable for ACP boundary test',
+        remediation: 'repair the test sandbox',
+      }),
+    })
+
+    try {
+      expect(() =>
+        new XaiAcpClient({
+          command: executable,
+          cwd: root,
+          sandboxExecutionBroker: broker,
+        }),
+      ).toThrowError(expect.objectContaining({
+        code: 'sandbox_probe_failed',
+        surface: 'provider',
+      }))
+      await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 })
