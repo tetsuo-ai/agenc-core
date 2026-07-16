@@ -6,14 +6,26 @@
 # Linux native dependencies build in a glibc 2.28 container so the generic
 # linux artifacts retain Node's Tier-1 compatibility baseline.
 #
-# Publishing stays local/operator-driven (no cross-repository write secret in
-# this workflow). The reviewed draft, explicit destination tag, attestation
-# verification, immutable publication, and downstream npm/Docker/Homebrew
-# sequence are documented in docs/install.md under "Reproducible release gate".
+# This is an artifact-build workflow, not a test workflow. Before dispatch, the
+# operator must complete and retain the exact-tag local release evidence defined
+# in docs/ci-required-gates.md. Publishing stays local/operator-driven (no
+# cross-repository write secret in this workflow). The reviewed draft, explicit
+# destination tag, artifact attestation, immutable publication, and downstream
+# npm/Docker/Homebrew sequence are documented in docs/install.md under
+# "Reproducible release gate".
 
 name: release-runtime
 on:
   workflow_dispatch:
+    inputs:
+      tested_sha:
+        description: Full immutable release-tag commit tested locally
+        required: true
+        type: string
+      local_evidence_sha256:
+        description: SHA-256 of the reviewed local release evidence record
+        required: true
+        type: string
 
 concurrency:
   group: release-runtime-${{ github.ref }}
@@ -34,7 +46,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      checks: read
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -44,10 +55,15 @@ jobs:
           persist-credentials: false
       - name: Bind the run to the version tag commit
         env:
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
           test "$GITHUB_REF_TYPE" = "tag"
@@ -59,19 +75,6 @@ jobs:
           test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Verify the App-owned local gate for this exact release SHA
-        env:
-          AGENC_LOCAL_GATE_APP_ID: ${{ vars.AGENC_LOCAL_GATE_APP_ID }}
-          GITHUB_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$AGENC_LOCAL_GATE_APP_ID" =~ ^[1-9][0-9]*$ ]]
-          node scripts/verify-required-gate-check.mjs \
-            --repository "$GITHUB_REPOSITORY" \
-            --sha "$GITHUB_SHA" \
-            --app-id "$AGENC_LOCAL_GATE_APP_ID"
-
   linux-tarball:
     needs: release-source
     permissions:

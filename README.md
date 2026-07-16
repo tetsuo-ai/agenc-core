@@ -372,12 +372,15 @@ The optional design-audit browser is likewise an explicit external process:
 it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
-**Required checks:** the complete suite runs on the trusted local gate host,
-never in GitHub Actions. A dedicated GitHub App records
-`agenc-local-required-v1` for the exact PR or merged-`main` SHA; the no-bypass
-ruleset and both dispatch-only release workflows only enforce/read back that
-result. Contract, trust boundary, setup, reproduction, and rollback details
-live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
+**Required checks:** the complete suite runs locally, never in GitHub Actions.
+Before merge, the PR records the exact tested SHA, commands, results, and
+skips; GitHub is only the branch/PR/merge record. Release verification repeats
+the same local gates against the immutable release-tag commit and retains the
+defined local evidence record. Manual release workflows may build artifacts
+afterward, but run no tests. The repository retains an optional GitHub
+App/ruleset design, but it is inactive and not required by the current
+local-only operating policy. Contract and reproduction details live in
+[`docs/ci-required-gates.md`](docs/ci-required-gates.md).
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 

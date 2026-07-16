@@ -1,17 +1,120 @@
-# Local required gates and GitHub App attestation
+# Local required gates and optional GitHub App attestation
 
 Decision record: 2026-07-15
 
-- Protected check: `agenc-local-required-v1`
-- Compute boundary: a dedicated local Linux gate host
-- GitHub boundary: record and enforce an authenticated exact-SHA result
-- Explicit non-goal: GitHub Actions never runs, proxies, or repeats the test
-  suite
+Operating policy update: 2026-07-16
 
-All required quality gates execute locally. A repository-scoped GitHub App
-publishes one Check Run only after the local supervisor has tested a fresh
-exact-SHA checkout, removed every candidate process and container, reread the
-remote ref, and removed the candidate workspace.
+The current policy is **local-only verification**. GitHub Actions runs no test
+suite, and merge does not require a GitHub App Check Run or an App-bound
+ruleset. Before merge, the PR must record the exact locally tested SHA,
+commands, results, and every skip. Release verification repeats the required
+gates locally against the immutable release-tag commit. For PR verification,
+GitHub is only the branch/PR/merge record. The dispatch-only release workflows
+may later build or publish artifacts, but they run no test suite and must not be
+invoked merely to verify a change.
+
+The sections explicitly labeled **Inactive optional** retain the reviewed App,
+dedicated-host, and ruleset deployment design. That design is not part of
+current completion and must not be provisioned or invoked unless an operator
+explicitly adopts it in a later policy change.
+
+## Current local PR evidence protocol
+
+Run the required gates from a clean checkout at the final PR-head commit, after
+the last source-changing commit. The PR description is the authoritative
+evidence record. It must contain:
+
+```bash
+npm test
+npm run build
+npm run build --workspace=@tetsuo-ai/agenc-sdk
+npm run typecheck --workspace=@tetsuo-ai/agenc-sdk
+npm run check:agent-surface-contract
+npm run sbom
+npm run check:sbom
+npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime
+```
+
+`npm test` contains the runtime typecheck and stable Vitest suite. The final
+startup command exercises the built TUI/daemon path in real PTYs. Run additional
+task-specific regression tests before this complete final-head sequence.
+
+The evidence must contain:
+
+- the full 40-character tested commit SHA and a clean-tree assertion;
+- Node.js and npm versions;
+- each command in execution order, its exit status, and pass/fail result;
+- every skipped gate with its reason (write `none` when there are no skips);
+- start and finish timestamps; and
+- the independent review result and any unresolved risk.
+
+A later push invalidates the record. Immediately before merge, reread the live
+head and compare it to the recorded SHA:
+
+```bash
+tested_sha=<40-character SHA recorded in the PR>
+current_sha="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
+test "$current_sha" = "$tested_sha"
+test "$(git rev-parse HEAD)" = "$tested_sha"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+```
+
+If any comparison fails, stop, test the new final head in full, and replace the
+stale evidence before merging. A GitHub status, workflow, or check run is not a
+substitute for this exact-SHA reread.
+
+## Current local release evidence protocol
+
+Create the immutable `agenc-v<version>` tag from reviewed `main`, then test a
+clean detached checkout of that tag. Store the authoritative record outside
+the repository at:
+
+```text
+${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/agenc-v<version>-<40-character-sha>.json
+```
+
+The directory must be mode `0700` and the record mode `0600`. This is a
+human-reviewed local record, not a machine or GitHub attestation. Its JSON root
+must contain only `schemaVersion` (integer `1`), `repository`, `tag`, `testedSha`,
+`mainShaAtVerification`, `startedAt`, `finishedAt`, `nodeVersion`, `npmVersion`,
+an ordered `gates` array with command/result/exit code/log SHA-256, a `skips`
+array with reasons, the clean-tree result, the reviewer, and unresolved risks.
+SHAs use lowercase hex; timestamps use UTC RFC 3339; results are `pass` or
+`fail`; exit codes are non-negative integers. Retain the referenced private logs
+with the record. After final review, compute the SHA-256 of the exact record
+bytes and do not edit the file; any correction creates a new digest.
+Before dispatching either release workflow, require all of the following:
+
+```bash
+tag=agenc-v<version>
+tested_sha=<40-character SHA in the release evidence>
+git fetch origin main --tags
+test "$(git rev-parse --verify "refs/tags/${tag}^{commit}")" = "$tested_sha"
+git merge-base --is-ancestor "$tested_sha" refs/remotes/origin/main
+test -f "${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json"
+evidence_sha256="$(sha256sum "${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json" | cut -d ' ' -f 1)"
+[[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
+```
+
+Dispatch with `tested_sha` and `local_evidence_sha256` set to those exact
+values. The workflow rejects a tag at any other commit and records both values
+as explicit invocation inputs before artifact work. It repeats the tag,
+exact-SHA, clean-tree, and `main` ancestry binding. It deliberately cannot turn
+a local record into a remote test result; the operator retains the record and
+the remote invocation makes later record mutation detectable by digest.
+
+## Inactive optional hardened enforcement design
+
+- Optional protected check: `agenc-local-required-v1`
+- Optional compute boundary: a dedicated local Linux gate host
+- Optional GitHub boundary: record and enforce an authenticated exact-SHA
+  result
+- Design non-goal: GitHub Actions never runs, proxies, or repeats the test suite
+
+All required quality gates execute locally. In the optional inactive mode, a
+repository-scoped GitHub App would publish one Check Run only after the local
+supervisor tested a fresh exact-SHA checkout, removed every candidate process
+and container, reread the remote ref, and removed the candidate workspace.
 
 ```text
 GitHub PR/main ref ──read──> root-installed dispatcher (global lock)
@@ -40,7 +143,7 @@ publisher environment. The publisher never accepts a SHA or result from its
 command line. Its only selection is `pr-<number>` or the fixed `main` subject,
 plus an unpredictable handoff ID created after successful cleanup.
 
-## Required gate contract
+## Inactive optional hardened gate contract
 
 The repository command is:
 
@@ -49,8 +152,8 @@ npm run check:required-gates
 ```
 
 It requires Linux, Node.js 25.9.0, npm 11.17.0, a clean checkout, and an exact
-lowercase 40-character commit. The authoritative deployment runs each gate in
-its own transient systemd cgroup.
+lowercase 40-character commit. In this optional design, the authoritative
+deployment runs each gate in its own transient systemd cgroup.
 
 | Order | Gate | Bound | Candidate write access |
 | ---: | --- | ---: | --- |
@@ -98,7 +201,7 @@ boundary, TUI supervisor, and their policy tests. The root-installed supervisor
 compares a candidate digest with the reviewed root-owned approval before
 `npm ci`. A PR cannot approve its own gate-policy change.
 
-## Worker and publisher trust boundaries
+## Inactive optional worker and publisher trust boundaries
 
 The trusted repository mirror is installed root-owned beneath
 `/opt/agenc-local-gatekeeper/repo`. systemd must never execute the dispatcher,
@@ -167,7 +270,7 @@ Failure classification is fail-closed:
 - two App-owned checks for the same name and SHA are rejected; and
 - a foreign same-name check never satisfies App-bound verification.
 
-## GitHub App
+## Inactive optional GitHub App
 
 Register a private App from
 [`packaging/github/agenc-local-gate-app-manifest.json`](../packaging/github/agenc-local-gate-app-manifest.json)
@@ -209,7 +312,7 @@ publisher receives
 Use overlapping App keys for rotation: install the new encrypted key, verify a
 genuine check and readback, then revoke the old key.
 
-## Dedicated Linux host
+## Inactive optional dedicated Linux host
 
 Use a dedicated cgroup-v2 Linux host. The two sibling resource domains can be
 active together, so the host must have at least 48 GiB RAM, 16 available CPUs,
@@ -247,7 +350,7 @@ Each `id -G` must print only its primary GID. Never add either identity to
 `docker`, `sudo`, or another supplementary group. The candidate worker and
 Docker account must not share a UID or GID.
 
-### Dedicated Docker filesystem and daemon
+### Inactive optional dedicated Docker filesystem and daemon
 
 Provision a new 24 GiB logical volume or encrypted mapping for this daemon.
 Formatting storage is destructive, so the operator must independently verify
@@ -335,7 +438,7 @@ and requires a second stable pristine baseline. Any cleanup forces the current
 attestation attempt to fail with `DOCKER_RECOVERED`, so only a later clean run
 can publish.
 
-### Trusted mirror, configuration, and static units
+### Inactive optional trusted mirror, configuration, and static units
 
 Install the reviewed commit and toolchain root-owned beneath
 `/opt/agenc-local-gatekeeper`; no file there may be writable by the candidate or
@@ -415,7 +518,7 @@ case, prove the job mount is gone, no candidate/transient process or container
 survives, and no success was published. Archive the unit properties, mountinfo,
 cgroup records, logs, and exact App readback as deployment evidence.
 
-## Exact App-bound `main` ruleset
+## Inactive optional exact App-bound `main` ruleset
 
 [`scripts/local-gate-ruleset.mjs`](../scripts/local-gate-ruleset.mjs) is the
 versioned ruleset policy. It renders the exact GitHub REST payload and verifies
@@ -658,25 +761,24 @@ require that merge SHA rather than the PR head. The deployment proof must
 confirm the repository's actual merge mode. The App always publishes to the
 exact SHA in its receipt; a prior SHA never authorizes a newer one.
 
-## Release enforcement
+## Current release-workflow source binding
 
 [`publish-npm.yml`](../.github/workflows/publish-npm.yml) and
 [`release-runtime.yml`](../.github/workflows/release-runtime.yml) continue to
 use GitHub-hosted jobs to produce release artifacts. They do not run tests.
 Before artifact work starts, each workflow:
 
-1. binds dispatch to the immutable `agenc-v<version>` tag, exact SHA, and
-   `main` ancestry;
-2. reads the configured gate App ID; and
-3. requires exactly one completed App-owned `agenc-local-required-v1` literal
-   success for that exact SHA, current policy digest, canonical receipt, and
-   `main` subject.
+1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
+2. requires `tested_sha` to equal the workflow's exact `GITHUB_SHA`;
+3. binds dispatch to the matching `agenc-v<version>` tag and `main` ancestry;
+   and
+4. requires the checked-out tree to be clean before artifact work.
 
-A PR-head receipt cannot release a squash-merged commit. A missing, stale,
-duplicate, wrong-App, wrong-SHA, PR-subject, failed, neutral, skipped, or
-malformed result blocks release before artifact production.
+They run no tests and do not read a GitHub App check. The operator must first
+complete and retain the exact-tag local evidence defined above. A PR-head test
+record cannot authorize release of a different squash-merged commit.
 
-## Required policy-context rotation
+## Inactive optional policy-context rotation
 
 GitHub matches a required check by context and App; it cannot inspect the
 policy digest inside AgenC's receipt. Reusing a context after changing
@@ -844,7 +946,7 @@ live source-binding flow still must be independently reviewed and proven.
 Installing B early to make its ordinary publisher seed vN is not an acceptable
 workaround.
 
-## Developer reproduction and policy changes
+## Local developer reproduction
 
 Provision the digest-pinned image outside the no-network boundary, then use a
 clean checkout:
@@ -857,35 +959,36 @@ npm rebuild better-sqlite3 esbuild node-pty
 npm run check:required-gates
 ```
 
-That direct command is a developer reproduction. Only the root-installed
-dispatcher with separate worker/Docker identities can issue an authoritative
-App receipt. Run the focused policy suite with:
+That direct command is a developer reproduction. The current authoritative PR
+record is the exact-SHA evidence in the PR description. Run the focused
+optional-policy suite with:
 
 ```bash
 npm run test:required-gates
 ```
 
-When a hashed policy file changes, independently review the diff, run local
-gates, and follow the required policy-context rotation above. Install the
-reviewed trusted mirror and update the root-owned digest only at rotation step
-7. Never copy a digest from candidate output merely to make a PR pass.
+If the inactive hardened mode is later adopted and a hashed policy file
+changes, independently review the diff, run local gates, and follow the
+optional policy-context rotation above. Install the reviewed trusted mirror and
+update the root-owned digest only at rotation step 7. Never copy a digest from
+candidate output merely to make a PR pass.
 
-The audited break-glass path is to disable the ruleset out of band, land only a
+In that optional mode, the audited break-glass path is to disable the ruleset
+out of band, land only a
 separately reviewed repair, attest the resulting `main` SHA locally, restore
 the exact App-bound ruleset, and rerun the negative proof. Leaving protection
 disabled, admin-merging unrelated work, or publishing a user-owned status is
 not rollback.
 
-## Current deployment evidence
+## Current operating evidence
 
-The repository policy tests and PTY supervisor run locally in ordinary
-development mode. This checkout does not have the required dedicated rootless
-Docker account/socket, so it cannot claim the authoritative multi-UID systemd
-and encrypted-credential end-to-end proof. Policy-context rotation still
-requires the dedicated-host seeder and source-binding proof described above.
-Do not mark the M0 attestation item complete until the dedicated-host proof,
-live App readback, active ruleset readback, and blocked-unattested-SHA proof are
-recorded.
+The repository policy tests, stable suite, builds, contracts, SBOM check, and
+PTY supervisor run locally. PR descriptions are the human-reviewed evidence
+record and must follow the exact-SHA protocol above. Release records use the
+defined local evidence path and immutable-tag protocol. No dedicated GitHub
+App, active App-bound ruleset, or hosted test workflow is claimed or required
+in local-only mode. The optional multi-UID systemd/App design has not been
+activated.
 
 ## Primary sources
 
@@ -915,6 +1018,12 @@ Research refreshed 2026-07-15:
   subscriptions for the versioned App registration.
 - [Installation access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
   document repository and permission narrowing below installed App grants.
+- [GitHub Actions inputs context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#inputs-context)
+  defines typed inputs for manually dispatched workflows; the release jobs use
+  those inputs to bind the locally tested SHA and evidence digest.
+- [SLSA build provenance 1.2](https://slsa.dev/spec/v1.2/build-provenance)
+  treats user-supplied build inputs as external parameters that must be recorded
+  and verified downstream; the release workflows fail closed on both inputs.
 - [Troubleshooting required checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)
   documents latest-SHA, merge-commit, conclusion, name-collision, and freshness
   behavior.
@@ -930,7 +1039,7 @@ Research refreshed 2026-07-15:
   defines frozen-lockfile installs.
 
 GitHub-hosted test execution was rejected because it spends remote runner time
-without strengthening the local hermetic boundary. A generic signed file or
-PAT-owned status was rejected because the protected context could not be bound
-to one dedicated producer. The App design keeps all expensive computation
-local while GitHub stores and enforces only the authenticated exact-SHA result.
+without strengthening the local hermetic boundary. The current policy keeps
+all verification local and records evidence in the PR. The optional App design
+would add authenticated exact-SHA enforcement without moving test compute to
+GitHub, but that extra control-plane complexity is deliberately inactive.

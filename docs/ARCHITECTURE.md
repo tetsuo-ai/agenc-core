@@ -332,13 +332,16 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Local required attestations** — the complete stable contract runs only on
-  the dedicated local gate host. A repository-scoped GitHub App records
-  `agenc-local-required-v1` for the exact PR head or merged-`main` SHA; the
-  no-bypass ruleset and release workflows enforce/read back that result without
-  running tests on GitHub. Trust boundaries and reproduction are documented in
-  [`ci-required-gates.md`](ci-required-gates.md). Release workflows still run
-  on demand; binaries publish to public `tetsuo-ai/agenc-releases`.
+- **Local required verification** — the complete stable contract runs locally,
+  never in GitHub Actions. Each PR records the exact tested SHA, commands,
+  results, and skips before merge; release verification repeats the gates on
+  the immutable release-tag commit and retains the defined local evidence
+  record. GitHub remains the branch/PR/merge record; manual release workflows
+  may build artifacts afterward, but run no tests. The repository-scoped
+  App/ruleset implementation is retained as an inactive optional design, not a
+  current merge requirement. Reproduction and trust boundaries are documented
+  in
+  [`ci-required-gates.md`](ci-required-gates.md).
 
 Root development loop (from repo root):
 
