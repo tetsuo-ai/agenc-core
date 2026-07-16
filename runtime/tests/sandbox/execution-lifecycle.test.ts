@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import {
@@ -172,6 +172,40 @@ describe("transitionSandboxExecutionBroker", () => {
     await expect(
       transitionSandboxExecutionBroker(broker, "/other-workspace"),
     ).rejects.toThrow(/disposed/);
+  });
+
+  it("retains failed participants for retry without double-disposing successes", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/child-workspace",
+    });
+    const disposed = vi.fn(async () => {});
+    const retried = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("process still alive"))
+      .mockResolvedValue(undefined);
+
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "already-closed",
+      quiesce: async () => {},
+      resume: async () => {},
+      dispose: disposed,
+    });
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "retained-owner",
+      quiesce: async () => {},
+      resume: async () => {},
+      dispose: retried,
+    });
+
+    await expect(disposeSandboxExecutionBroker(broker)).rejects.toThrow(
+      /retained-owner/,
+    );
+    await expect(disposeSandboxExecutionBroker(broker)).resolves.toBeUndefined();
+    await expect(disposeSandboxExecutionBroker(broker)).resolves.toBeUndefined();
+
+    expect(retried).toHaveBeenCalledTimes(2);
+    expect(disposed).toHaveBeenCalledOnce();
   });
 
   it("rolls multiple brokers back in reverse order when a later transition fails", async () => {

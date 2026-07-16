@@ -51,6 +51,9 @@ export function isSandboxExecutionBrokerDisposed(
  * Permanently stop and detach every process owner registered to a child
  * broker. Disposal is idempotent and runs in reverse registration order so
  * higher-level services release their dependencies before earlier owners.
+ * A failed participant remains attached to the now-closed broker and is
+ * retried by the next call; participants that already proved cleanup are not
+ * disposed twice.
  */
 export function disposeSandboxExecutionBroker(
   broker: SandboxExecutionBrokerLike,
@@ -59,10 +62,11 @@ export function disposeSandboxExecutionBroker(
   if (existing !== undefined) return existing;
 
   disposedBrokers.add(broker);
-  const scoped = [...(participants.get(broker) ?? [])].reverse();
-  participants.delete(broker);
-  const disposal = (async () => {
+  const registered = participants.get(broker);
+  const scoped = [...(registered ?? [])].reverse();
+  const disposal = Promise.resolve().then(async () => {
     const errors: unknown[] = [];
+    const failed: SandboxExecutionLifecycleParticipant[] = [];
     for (const participant of scoped) {
       try {
         if (participant.dispose !== undefined) {
@@ -71,18 +75,29 @@ export function disposeSandboxExecutionBroker(
           await participant.quiesce();
         }
       } catch (error) {
+        failed.push(participant);
         errors.push(error);
+        continue;
       }
+      registered?.delete(participant);
+    }
+    if (registered?.size === 0) {
+      participants.delete(broker);
     }
     if (errors.length > 0) {
       throw lifecycleAggregateError(
         "disposal failed; broker remains closed",
-        scoped,
+        failed,
         errors,
       );
     }
-  })();
+  });
   disposalPromises.set(broker, disposal);
+  void disposal.catch(() => {
+    if (disposalPromises.get(broker) === disposal) {
+      disposalPromises.delete(broker);
+    }
+  });
   return disposal;
 }
 

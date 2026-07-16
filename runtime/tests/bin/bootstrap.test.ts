@@ -40,6 +40,10 @@ import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import { PERSONALITY_MIGRATION_FILENAME } from "../personality/migration.js";
 import {
+  isSandboxExecutionBrokerDisposed,
+  registerSandboxExecutionLifecycleParticipant,
+} from "../sandbox/execution-lifecycle.js";
+import {
   adaptTranscriptEvents,
   appendSessionTranscriptEventForTesting,
   createSessionTranscriptStateForTesting,
@@ -2962,6 +2966,86 @@ required = true
       await boot.shutdown();
 
       expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("strictly disposes root sandbox owners and retries retained failures", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const broker = boot.session.services.sandboxExecutionBroker;
+      if (broker === undefined) {
+        throw new Error("bootstrap did not install its root sandbox broker");
+      }
+
+      const dispose = vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("root process survived cleanup"))
+        .mockResolvedValue(undefined);
+      registerSandboxExecutionLifecycleParticipant(broker, {
+        name: "test-root-process-owner",
+        quiesce: async () => {},
+        resume: async () => {},
+        dispose,
+      });
+
+      const first = await Promise.allSettled([boot.shutdown(), boot.shutdown()]);
+      expect(first).toEqual([
+        expect.objectContaining({ status: "rejected" }),
+        expect.objectContaining({ status: "rejected" }),
+      ]);
+      const firstError = first[0]?.status === "rejected"
+        ? first[0].reason
+        : undefined;
+      expect(firstError).toBeInstanceOf(AggregateError);
+      expect((firstError as AggregateError).errors).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining("test-root-process-owner"),
+        }),
+      ]);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(isSandboxExecutionBrokerDisposed(broker)).toBe(true);
+
+      await expect(boot.shutdown()).resolves.toBeUndefined();
+      await expect(boot.shutdown()).resolves.toBeUndefined();
+      expect(dispose).toHaveBeenCalledTimes(2);
+      shutdown = null;
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

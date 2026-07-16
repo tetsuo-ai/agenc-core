@@ -80,6 +80,7 @@ import type { Tools as PromptTools } from "../tools/Tool.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
@@ -1345,7 +1346,10 @@ export async function bootstrapLocalRuntimeSession(
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
   let clearActiveCostSidecar: (() => void) | null = null;
-  let shutdownStarted = false;
+  let shutdownTask: Promise<void> | null = null;
+  let shutdownComplete = false;
+  let shutdownPrepared = false;
+  let bootstrapServicesStopped = false;
   // Lifecycle slots filled by the bootstrapSession hooks. The shutdown
   // closure closes over these `let` bindings so it is safe to call at
   // any point in the bootstrap lifecycle, including partial-failure
@@ -1384,29 +1388,64 @@ export async function bootstrapLocalRuntimeSession(
       sandboxExecutionBroker,
     });
 
-  const shutdown = async (): Promise<void> => {
-    if (shutdownStarted) return;
-    shutdownStarted = true;
-    if (sessionForShutdown !== null) {
-      clearCurrentRuntimeSession(sessionForShutdown);
-    }
-    if (sidecarManager !== null) {
-      await sidecarManager.stop().catch(() => {
-        /* best effort */
-      });
-    }
-    clearActiveCostSidecar?.();
-    clearActiveCostSidecar = null;
-    if (sessionForShutdown !== null && agentControlForShutdown !== null) {
-      await shutdownSessionLifecycle({
-        session: sessionForShutdown,
-        agentControl: agentControlForShutdown,
-        mcpManager,
-      }).catch(() => {
-        /* best effort */
-      });
-    }
-    await bootstrapServices.shutdown();
+  const shutdown = (): Promise<void> => {
+    if (shutdownComplete) return Promise.resolve();
+    if (shutdownTask !== null) return shutdownTask;
+
+    const task = Promise.resolve().then(async (): Promise<void> => {
+      const errors: unknown[] = [];
+      if (!shutdownPrepared) {
+        shutdownPrepared = true;
+        if (sessionForShutdown !== null) {
+          clearCurrentRuntimeSession(sessionForShutdown);
+        }
+        if (sidecarManager !== null) {
+          await sidecarManager.stop().catch(() => {
+            /* best effort */
+          });
+        }
+        clearActiveCostSidecar?.();
+        clearActiveCostSidecar = null;
+        if (sessionForShutdown !== null && agentControlForShutdown !== null) {
+          await shutdownSessionLifecycle({
+            session: sessionForShutdown,
+            agentControl: agentControlForShutdown,
+            mcpManager,
+          }).catch(() => {
+            /* best effort */
+          });
+        }
+      }
+      if (!bootstrapServicesStopped) {
+        try {
+          await bootstrapServices.shutdown();
+          bootstrapServicesStopped = true;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        // The ordinary MCP stop is fail-soft. Its broker participant retries
+        // retained cleanup in strict mode before root shutdown can succeed.
+        await disposeSandboxExecutionBroker(sandboxExecutionBroker);
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "local runtime shutdown failed");
+      }
+      shutdownComplete = true;
+    });
+    shutdownTask = task;
+    void task.then(
+      () => {
+        if (shutdownTask === task) shutdownTask = null;
+      },
+      () => {
+        if (shutdownTask === task) shutdownTask = null;
+      },
+    );
+    return task;
   };
 
   try {
@@ -1802,7 +1841,15 @@ export async function bootstrapLocalRuntimeSession(
       autonomousModeEnabled,
     };
   } catch (err) {
-    await shutdown();
+    try {
+      await shutdown();
+    } catch (shutdownError) {
+      throw new AggregateError(
+        [err, shutdownError],
+        "local runtime bootstrap failed and cleanup was incomplete",
+        { cause: err },
+      );
+    }
     if (err instanceof SessionLockedError || err instanceof SchemaMismatchError) {
       throw err;
     }
