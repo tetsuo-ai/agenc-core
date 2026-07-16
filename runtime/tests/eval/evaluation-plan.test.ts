@@ -14,12 +14,14 @@ import {
   validateEvaluationPlan,
   type EvaluationPlanInput,
 } from "../../src/eval-contract/evaluation-plan.js";
+import type { PowerAnalysisDocument } from "../../src/eval-power/index.js";
 import {
   FIXED_TIME,
   digest,
   makeHoldoutDescriptor,
   makeOperatorTask,
   makePreregistration,
+  makeSystem,
 } from "./evaluation-contract-fixtures.js";
 
 function makeSuite(
@@ -62,23 +64,35 @@ function makeSuperiorityPlan(): {
   readonly suite: SuiteManifestDocument;
   readonly descriptor: HoldoutDescriptorDocument;
   readonly preregistration: PreregistrationDocument;
-  readonly powerAnalysisDigest: `sha256:${string}`;
+  readonly powerAnalysis: PowerAnalysisDocument;
 } {
   const suite = makeSuite(50, "private_holdout");
   const descriptor = makeHoldoutDescriptor(suite);
   const base = makePreregistration(suite, descriptor);
+  const secondComparator = makeSystem("comparator-two");
+  const systems = [...base.systems, secondComparator];
+  const comparisons = [
+    ...base.comparisons,
+    {
+      comparisonId: "agenc-vs-two",
+      primarySystemId: base.primarySystemId,
+      comparatorSystemId: secondComparator.systemId,
+    },
+  ];
   const seedSlots = [101, 202, 303];
   const powerAnalysisDigest = digest("reviewed-superiority-power-analysis");
   const preregistration = withDocumentDigest<PreregistrationDocument>({
     ...base,
     experimentId: "superiority-clean",
     claim: "superiority",
+    systems,
+    comparisons,
     trialDesign: {
       ...base.trialDesign,
       repetitionsPerSystemTask: seedSlots.length,
       seedSlots,
       plannedExecutionOrderDigest: computePlannedExecutionOrderDigest({
-        systemIds: base.systems.map((system) => system.systemId),
+        systemIds: systems.map((system) => system.systemId),
         taskIds: suite.tasks.map((task) => task.taskId),
         seedSlots,
         orderSeed: base.trialDesign.orderSeed,
@@ -92,7 +106,128 @@ function makeSuperiorityPlan(): {
       stoppingRule: { kind: "fixed", taskCount: 50 },
     },
   });
-  return { suite, descriptor, preregistration, powerAnalysisDigest };
+  const repositoryTaskCounts = Array.from({ length: 50 }, () => 1);
+  const powerAnalysis = withDocumentDigest<PowerAnalysisDocument>({
+    kind: "agenc.eval.power-analysis",
+    analysisVersion: "1.0.0",
+    analysisId: "reviewed-superiority-power-analysis",
+    pilotId: "pilot-30-v1",
+    createdAt: "2026-07-15T10:00:00.000Z",
+    primarySystemId: comparisons[0].primarySystemId,
+    pilot: {
+      inputDigest: digest("pilot-input"),
+      taskCount: 30,
+      repositoryCount: 30,
+      comparisonCount: comparisons.length,
+      minimumRepetitionsPerTaskComparison: 3,
+      maximumRepetitionsPerTaskComparison: 3,
+      contractMinimumRepetitionsPerTaskComparison: 3,
+      recommendedRepetitionsPerTaskComparison: 5,
+      repetitionRecommendation: "accepted_contract_minimum_below_recommended",
+      aggregation: "mean_within_task_then_equal_task_weight",
+      repositoryTaskCounts: Array.from({ length: 30 }, (_, index) => ({
+        repositoryId: `pilot-repo-${String(index).padStart(2, "0")}`,
+        taskCount: 1,
+      })),
+      comparisons: comparisons.map((comparison) => ({
+        comparisonId: comparison.comparisonId,
+        comparatorSystemId: comparison.comparatorSystemId,
+        primaryTaskMeanSuccessRate: 0.8,
+        comparatorTaskMeanSuccessRate: 0.5,
+        pairedDifferenceTaskWeighted: 0.3,
+        pairedDifferenceRepositoryWeighted: 0.3,
+        repositoryBetweenVariance: 0.01,
+        withinRepositoryVariance: 0.02,
+        empiricalRepositoryVarianceShare: 0.333333333333,
+      })),
+    },
+    design: {
+      alpha: "0.05",
+      targetPower: "0.80",
+      minimumEffect: 0.1,
+      primaryMetric: "paired_binary_success_rate_difference",
+      inference: "repository_clustered_paired_percentile_bootstrap",
+      interval: "two_sided_percentile",
+      quantileMethod: "linear_type_7",
+      inferenceUnit: "task_mean_after_repetition_aggregation",
+      clusteringUnit: "repository",
+      multipleComparators: "intersection_union",
+      successRule: "point_at_least_minimum_effect_and_two_sided_lower_bound_above_zero_for_every_comparator",
+      planningEffectSize: 0.2,
+      assumedEffectSizes: [0.1, 0.2],
+      heterogeneityMultipliers: [1, 1.5],
+      confirmatorySuiteId: suite.suiteId,
+      confirmatorySuiteVersion: suite.suiteVersion,
+      confirmatoryExperimentId: "superiority-clean",
+      candidateRepositoryTaskAllocations: [repositoryTaskCounts],
+      confirmatoryRepetitionsPerSystemTask: 3,
+      confirmatoryInferenceResamples: base.inference.resamples,
+      confirmatoryInferenceRandomSeed: base.inference.randomSeed,
+      confirmatoryRepositoryCapPercent: 10,
+      optionalStopping: false,
+    },
+    simulation: {
+      method: "hierarchical_repository_task_joint_attempt_bootstrap",
+      attemptModel: "empirical_joint_multinomial_with_minimal_marginal_transport",
+      sensitivityModel: "bounded_location_shift_of_paired_attempt_means",
+      outcomeDependence: "shared_primary_and_joint_comparator_attempt_resampling",
+      repetitionAggregation: "mean_within_task_before_repository_inference",
+      repositorySampling: "uniform_with_replacement",
+      taskSamplingWithinRepository: "uniform_with_replacement",
+      commonRandomNumbersAcrossSensitivityCells: true,
+      simulationReplications: 100,
+      randomSeed: 1234,
+      randomStream: "sha256_domain_seeded_xorshift32_rejection_sampling_v1",
+      confirmatoryInference: "production_repository_clustered_percentile_bootstrap",
+      powerDecisionInterval: "two_sided_wilson_95",
+    },
+    sensitivityGrid: [0.1, 0.2].flatMap((assumedPairedDifference) => [1, 1.5].map((heterogeneityMultiplier) => ({
+      assumedPairedDifference,
+      heterogeneityMultiplier,
+      taskCount: 50,
+      repositoryCount: 50,
+      comparisonPower: comparisons.map((comparison) => ({
+        comparisonId: comparison.comparisonId,
+        power: {
+          successes: 95,
+          replications: 100,
+          estimate: 0.95,
+          monteCarloStandardError: 0.021794494718,
+          wilsonLower95: 0.888249530768,
+          wilsonUpper95: 0.978456320846,
+        },
+      })),
+      intersectionPower: {
+        successes: 90,
+        replications: 100,
+        estimate: 0.9,
+        monteCarloStandardError: 0.03,
+        wilsonLower95: 0.825634338495,
+        wilsonUpper95: 0.94477086294,
+      },
+    }))),
+    decision: {
+      status: "adequately_powered",
+      rule: "smallest_fixed_n_whose_intersection_power_wilson_lower_95_meets_target_at_planning_effect_across_heterogeneity_grid",
+      confirmatoryPlan: {
+        suiteId: suite.suiteId,
+        suiteVersion: suite.suiteVersion,
+        experimentId: "superiority-clean",
+        taskCount: 50,
+        repositoryCount: 50,
+        repositoryTaskCounts,
+        repetitionsPerSystemTask: 3,
+        inferenceResamples: base.inference.resamples,
+        inferenceRandomSeed: base.inference.randomSeed,
+        stoppingRule: { kind: "fixed", taskCount: 50, interimLooks: 0, optionalStopping: false },
+      },
+    },
+  });
+  const boundPreregistration = withDocumentDigest<PreregistrationDocument>({
+    ...preregistration,
+    inference: { ...preregistration.inference, powerAnalysisDigest: powerAnalysis.documentDigest },
+  });
+  return { suite, descriptor, preregistration: boundPreregistration, powerAnalysis };
 }
 
 function pilotInput(
@@ -267,13 +402,13 @@ describe("pre-run evaluation plan validation", () => {
     ))).toThrow(/pilot tasks must be public real-repository issues|must not be synthetic/u);
   });
 
-  test("accepts a sealed superiority plan only with its independently reviewed power digest", () => {
-    const { suite, descriptor, preregistration, powerAnalysisDigest } = makeSuperiorityPlan();
+  test("accepts a sealed superiority plan only with its complete reviewed power document", () => {
+    const { suite, descriptor, preregistration, powerAnalysis } = makeSuperiorityPlan();
     const validated = validateEvaluationPlan({
       suite,
       preregistration,
       holdoutDescriptor: descriptor,
-      expectedPowerAnalysisDigest: powerAnalysisDigest,
+      powerAnalysis,
     });
 
     expect(validated).toMatchObject({
@@ -287,22 +422,25 @@ describe("pre-run evaluation plan validation", () => {
       suite,
       preregistration,
       holdoutDescriptor: descriptor,
-    })).toThrow(/independently supplied power-analysis digest/u);
+    })).toThrow(/complete independently supplied power-analysis document/u);
     expect(() => validateEvaluationPlan({
       suite,
       preregistration,
       holdoutDescriptor: descriptor,
-      expectedPowerAnalysisDigest: digest("different-power-analysis"),
+      powerAnalysis: withDocumentDigest<PowerAnalysisDocument>({
+        ...powerAnalysis,
+        analysisId: "different-power-analysis",
+      }),
     })).toThrow(/power-analysis digest differs/u);
     expect(() => validateEvaluationPlan({
       suite,
       preregistration,
-      expectedPowerAnalysisDigest: powerAnalysisDigest,
+      powerAnalysis,
     })).toThrow(/private holdout plan requires its public descriptor/u);
   });
 
   test("binds superiority descriptor counts, commitments, and lifecycle ordering", () => {
-    const { suite, descriptor, preregistration, powerAnalysisDigest } = makeSuperiorityPlan();
+    const { suite, descriptor, preregistration, powerAnalysis } = makeSuperiorityPlan();
     const wrongCountDescriptor = withDocumentDigest<HoldoutDescriptorDocument>({
       ...descriptor,
       taskCount: 51,
@@ -318,7 +456,7 @@ describe("pre-run evaluation plan validation", () => {
       suite,
       preregistration: wrongCountPreregistration,
       holdoutDescriptor: wrongCountDescriptor,
-      expectedPowerAnalysisDigest: powerAnalysisDigest,
+      powerAnalysis,
     })).toThrow(/holdout descriptor counts/u);
 
     const wrongCommitmentDescriptor = withDocumentDigest<HoldoutDescriptorDocument>({
@@ -339,7 +477,7 @@ describe("pre-run evaluation plan validation", () => {
       suite,
       preregistration: wrongCommitmentPreregistration,
       holdoutDescriptor: wrongCommitmentDescriptor,
-      expectedPowerAnalysisDigest: powerAnalysisDigest,
+      powerAnalysis,
     })).toThrow(/task-manifest commitment differs/u);
 
     const lateSealDescriptor = withDocumentDigest<HoldoutDescriptorDocument>({
@@ -357,8 +495,100 @@ describe("pre-run evaluation plan validation", () => {
       suite,
       preregistration: lateSealPreregistration,
       holdoutDescriptor: lateSealDescriptor,
-      expectedPowerAnalysisDigest: powerAnalysisDigest,
+      powerAnalysis,
     })).toThrow(/created, sealed, and then preregistered/u);
+  });
+
+  test("rejects underpowered, malformed, and differently allocated reviewed artifacts", () => {
+    const { suite, descriptor, preregistration, powerAnalysis } = makeSuperiorityPlan();
+    const underpowered = withDocumentDigest<PowerAnalysisDocument>({
+      ...powerAnalysis,
+      decision: {
+        ...powerAnalysis.decision,
+        status: "no_candidate_meets_target",
+        confirmatoryPlan: null,
+      },
+    });
+    const underpoweredPreregistration = withDocumentDigest<PreregistrationDocument>({
+      ...preregistration,
+      inference: { ...preregistration.inference, powerAnalysisDigest: underpowered.documentDigest },
+    });
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration: underpoweredPreregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: underpowered,
+    })).toThrow(/not adequately powered|smallest adequately powered/u);
+
+    const wrongVector = [...Array.from({ length: 48 }, () => 1), 2];
+    const wrongAllocation = withDocumentDigest<PowerAnalysisDocument>({
+      ...powerAnalysis,
+      design: {
+        ...powerAnalysis.design,
+        candidateRepositoryTaskAllocations: [wrongVector],
+      },
+      sensitivityGrid: powerAnalysis.sensitivityGrid.map((cell) => ({
+        ...cell,
+        repositoryCount: 49,
+      })),
+      decision: {
+        ...powerAnalysis.decision,
+        confirmatoryPlan: {
+          ...(powerAnalysis.decision.confirmatoryPlan as NonNullable<typeof powerAnalysis.decision.confirmatoryPlan>),
+          repositoryCount: 49,
+          repositoryTaskCounts: wrongVector,
+        },
+      },
+    });
+    const wrongAllocationPreregistration = withDocumentDigest<PreregistrationDocument>({
+      ...preregistration,
+      inference: { ...preregistration.inference, powerAnalysisDigest: wrongAllocation.documentDigest },
+    });
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration: wrongAllocationPreregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: wrongAllocation,
+    })).toThrow(/fixed repository allocation differs/u);
+
+    const malformed = withDocumentDigest<PowerAnalysisDocument>({
+      ...powerAnalysis,
+      design: {
+        ...powerAnalysis.design,
+        unexpectedOverride: true,
+      } as PowerAnalysisDocument["design"],
+    });
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: malformed,
+    })).toThrow(/unknown property unexpectedOverride/u);
+
+    const invalidRelationships = withDocumentDigest<PowerAnalysisDocument>({
+      ...powerAnalysis,
+      pilot: {
+        ...powerAnalysis.pilot,
+        aggregation: "trial_weighted" as PowerAnalysisDocument["pilot"]["aggregation"],
+      },
+      design: {
+        ...powerAnalysis.design,
+        assumedEffectSizes: [0.2, 0.1],
+      },
+    });
+    const invalidRelationshipsPreregistration = withDocumentDigest<PreregistrationDocument>({
+      ...preregistration,
+      inference: {
+        ...preregistration.inference,
+        powerAnalysisDigest: invalidRelationships.documentDigest,
+      },
+    });
+    expect(() => validateEvaluationPlan({
+      suite,
+      preregistration: invalidRelationshipsPreregistration,
+      holdoutDescriptor: descriptor,
+      powerAnalysis: invalidRelationships,
+    })).toThrow(/fixed constants|sensitivity dimensions/u);
   });
 
   test("rejects a holdout descriptor on a development plan and unknown input fields", () => {

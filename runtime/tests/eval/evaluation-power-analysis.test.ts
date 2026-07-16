@@ -52,13 +52,20 @@ function makeInput(overrides: Partial<PowerAnalysisInput> = {}): PowerAnalysisIn
     createdAt: CREATED_AT,
     primarySystemId: "agenc-primary",
     outcomes: makePilotOutcomes(),
-    candidateTaskCounts: [50, 100],
-    confirmatoryRepositoryCount: 20,
+    confirmatorySuiteId: "competitive-superiority",
+    confirmatorySuiteVersion: "1.0.0",
+    confirmatoryExperimentId: "superiority-v1",
+    candidateRepositoryTaskAllocations: [
+      [...Array.from({ length: 10 }, () => 2), ...Array.from({ length: 10 }, () => 3)],
+      Array.from({ length: 20 }, () => 5),
+    ],
     confirmatoryRepetitionsPerSystemTask: 3,
+    confirmatoryInferenceResamples: 10_000,
+    confirmatoryInferenceRandomSeed: 123_456,
     planningEffectSize: 0.2,
     assumedEffectSizes: [0.1, 0.2],
     heterogeneityMultipliers: [1, 1.5],
-    simulationReplications: 1_000,
+    simulationReplications: 100,
     randomSeed: 0x5eed_1234,
     ...overrides,
   };
@@ -83,7 +90,8 @@ describe("evaluation pilot power analysis", () => {
     const permuted = computePowerAnalysis({
       ...input,
       outcomes: [...input.outcomes].reverse(),
-      candidateTaskCounts: [...input.candidateTaskCounts].reverse(),
+      candidateRepositoryTaskAllocations: input.candidateRepositoryTaskAllocations
+        .map((allocation) => [...allocation].reverse()),
       assumedEffectSizes: [...input.assumedEffectSizes].reverse(),
       heterogeneityMultipliers: [...input.heterogeneityMultipliers].reverse(),
     });
@@ -91,7 +99,7 @@ describe("evaluation pilot power analysis", () => {
     expect(permuted).toEqual(document);
     expect(document.documentDigest).toBe(computeDocumentDigest(document));
     expect(document.documentDigest).toBe(
-      "sha256:26d36ac4828e8be4e96afb04ecacb8b29ceec4fc9fd909cb6039a09299b513c2",
+      "sha256:0a8958e2dd7fb4bbe23f490e97d675dcc242d13bf9151e594d894c40a8d27075",
     );
     expect(document.pilot).toMatchObject({
       taskCount: 30,
@@ -109,11 +117,11 @@ describe("evaluation pilot power analysis", () => {
       targetPower: "0.80",
       minimumEffect: 0.1,
       planningEffectSize: 0.2,
-      confirmatoryRepositoryCount: 20,
       confirmatoryRepetitionsPerSystemTask: 3,
       multipleComparators: "intersection_union",
-      inference: "bias_reduced_linearization_cr2",
-      degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only",
+      inference: "repository_clustered_paired_percentile_bootstrap",
+      interval: "two_sided_percentile",
+      quantileMethod: "linear_type_7",
       optionalStopping: false,
     });
     expect(document.simulation).toMatchObject({
@@ -135,15 +143,20 @@ describe("evaluation pilot power analysis", () => {
     }
     if (document.decision.confirmatoryPlan) {
       expect(document.decision.confirmatoryPlan).toMatchObject({
+        suiteId: "competitive-superiority",
+        experimentId: "superiority-v1",
         repositoryCount: 20,
+        repositoryTaskCounts: expect.any(Array),
         repetitionsPerSystemTask: 3,
+        inferenceResamples: 10_000,
+        inferenceRandomSeed: 123_456,
         stoppingRule: { kind: "fixed", interimLooks: 0, optionalStopping: false },
       });
       expect(document.decision.confirmatoryPlan.taskCount).toBeGreaterThanOrEqual(50);
     } else {
       expect(document.decision.status).toBe("no_candidate_meets_target");
     }
-  });
+  }, 20_000);
 
   test("aggregates unequal repetitions within task before equal task weighting", () => {
     const input = makeInput();
@@ -223,7 +236,7 @@ describe("evaluation pilot power analysis", () => {
       }
     }
     expect(strictRepeatPowerImprovements).toBeGreaterThan(0);
-  });
+  }, 20_000);
 
   test("matches the intercept-only CR2 and Satterthwaite closed forms", () => {
     const clusters = Array.from({ length: 20 }, (_, repositoryIndex) =>
@@ -317,12 +330,12 @@ describe("evaluation pilot power analysis", () => {
   test("rejects designs that weaken confirmatory safeguards or hide unknown data", () => {
     const invalid = {
       ...makeInput(),
-      candidateTaskCounts: [49, 50],
-      confirmatoryRepositoryCount: 19,
+      candidateRepositoryTaskAllocations: [Array.from({ length: 19 }, () => 2)],
       confirmatoryRepetitionsPerSystemTask: 2,
+      confirmatoryInferenceResamples: 9_999,
       assumedEffectSizes: [0.2, 0.3],
       heterogeneityMultipliers: [0.75, 1.25],
-      simulationReplications: 999,
+      simulationReplications: 99,
     } as PowerAnalysisInput;
     let error: unknown;
     try {
@@ -331,7 +344,7 @@ describe("evaluation pilot power analysis", () => {
       error = candidate;
     }
     expect(error).toBeInstanceOf(PowerAnalysisValidationError);
-    expect((error as PowerAnalysisValidationError).issues.join("\n")).toMatch(/at least 1000|from 50|from 20|from 3|include the minimum effect 0\.10|include the unscaled value 1\.0/u);
+    expect((error as PowerAnalysisValidationError).issues.join("\n")).toMatch(/at least 100|total 50|at least 20|from 3|from 10000|include the minimum effect 0\.10|include the unscaled value 1\.0/u);
 
     const outcomeWithUnknownField = {
       ...makePilotOutcomes()[0],
@@ -349,5 +362,25 @@ describe("evaluation pilot power analysis", () => {
         ? { ...outcome, primaryOutcome: 2 as 0 | 1 }
         : outcome),
     }))).toThrow(/primaryOutcome must be binary/u);
+  });
+
+  test("rejects oversized grids and aggregate bootstrap work before simulation", () => {
+    const startedAt = performance.now();
+    expect(() => computePowerAnalysis(makeInput({
+      assumedEffectSizes: [0.1, 0.15, 0.2, 0.25, 0.3],
+      planningEffectSize: 0.2,
+      heterogeneityMultipliers: [0.5, 0.75, 1, 1.25],
+      candidateRepositoryTaskAllocations: [
+        [...Array.from({ length: 10 }, () => 2), ...Array.from({ length: 10 }, () => 3)],
+        Array.from({ length: 20 }, () => 5),
+      ],
+      simulationReplications: 10_000,
+      confirmatoryInferenceResamples: 1_000_000,
+    }))).toThrow(/sensitivity grid cannot exceed|aggregate bootstrap work cannot exceed/u);
+    expect(() => computePowerAnalysis(makeInput({
+      candidateRepositoryTaskAllocations: [Array.from({ length: 20 }, () => 500)],
+      confirmatoryRepetitionsPerSystemTask: 1_000,
+    }))).toThrow(/aggregate synthetic attempt work cannot exceed/u);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
 });

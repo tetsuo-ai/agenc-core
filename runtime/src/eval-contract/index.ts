@@ -80,6 +80,7 @@ export {
   createInfrastructureClassificationStatement,
   createTrustAssessmentStatement,
   computePairedTfrEffect,
+  computeRepositoryClusteredPercentileInterval,
   computePlannedExecutionOrderDigest,
   derivePlannedExecutionOrder,
   deriveExperimentSummary,
@@ -93,6 +94,8 @@ export {
   type InfrastructureClassificationInput,
   type TrustAssessmentAttestationInput,
   type PairedTaskTrials,
+  type RepositoryClusteredBootstrapInference,
+  type RepositoryClusteredBootstrapTaskDifference,
   type ValidatedBundle,
 } from "./experiment-bundle.js";
 export {

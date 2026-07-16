@@ -6,30 +6,30 @@ import { computePlannedExecutionOrderDigest } from "./experiment-bundle.js";
 import type {
   HoldoutDescriptorDocument,
   PreregistrationDocument,
-  Sha256Digest,
   SuiteManifestDocument,
 } from "./types.js";
 import {
   compareUtcTimestamps,
   validateEvalContractDocument,
 } from "./validation.js";
+import {
+  validatePowerAnalysisDocument,
+} from "../eval-power/validation.js";
+import type { PowerAnalysisDocument } from "../eval-power/types.js";
 
 export interface EvaluationPlanInput {
   readonly suite: SuiteManifestDocument;
   readonly preregistration: PreregistrationDocument;
   readonly holdoutDescriptor?: HoldoutDescriptorDocument;
-  /**
-   * A content address supplied independently of the preregistration. Contract
-   * v1 stores only an opaque power-analysis digest, so superiority preflight
-   * must receive the expected digest from the reviewed analysis artifact.
-   */
-  readonly expectedPowerAnalysisDigest?: Sha256Digest;
+  /** The complete independently reviewed, digest-bound power artifact. */
+  readonly powerAnalysis?: PowerAnalysisDocument;
 }
 
 export interface ValidatedEvaluationPlan {
   readonly suite: SuiteManifestDocument;
   readonly preregistration: PreregistrationDocument;
   readonly holdoutDescriptor?: HoldoutDescriptorDocument;
+  readonly powerAnalysis?: PowerAnalysisDocument;
   readonly taskCount: number;
   readonly repositoryCount: number;
   readonly maximumTasksPerRepository: number;
@@ -73,7 +73,7 @@ function assertPlanInput(value: EvaluationPlanInput): void {
     "suite",
     "preregistration",
     "holdoutDescriptor",
-    "expectedPowerAnalysisDigest",
+    "powerAnalysis",
   ]);
   const issues = Object.keys(value).filter((key) => !allowed.has(key)).map(
     (key) => `evaluation plan input contains unknown property ${key}`,
@@ -193,7 +193,7 @@ function assertHoldoutPlan(
   suite: SuiteManifestDocument,
   preregistration: PreregistrationDocument,
   descriptor: HoldoutDescriptorDocument | undefined,
-  expectedPowerAnalysisDigest: Sha256Digest | undefined,
+  powerAnalysis: PowerAnalysisDocument | undefined,
   repositoryCount: number,
   maximumTasksPerRepository: number,
   issues: string[],
@@ -243,15 +243,73 @@ function assertHoldoutPlan(
   }
   if (preregistration.claim === "superiority") {
     requirePlan(
-      expectedPowerAnalysisDigest !== undefined,
-      "superiority plan requires an independently supplied power-analysis digest",
+      powerAnalysis !== undefined,
+      "superiority plan requires the complete independently supplied power-analysis document",
       issues,
     );
-    requirePlan(
-      expectedPowerAnalysisDigest === preregistration.inference.powerAnalysisDigest,
-      "superiority power-analysis digest differs from the reviewed artifact",
-      issues,
-    );
+    if (powerAnalysis) {
+      let validatedPower: PowerAnalysisDocument | undefined;
+      try {
+        validatedPower = validatePowerAnalysisDocument(powerAnalysis);
+      } catch (error) {
+        issues.push(error instanceof Error ? error.message : String(error));
+      }
+      if (validatedPower) {
+        requirePlan(
+          validatedPower.documentDigest === preregistration.inference.powerAnalysisDigest,
+          "superiority power-analysis digest differs from the preregistration",
+          issues,
+        );
+        requirePlan(
+          preregistration.comparisons.every((comparison) =>
+            comparison.primarySystemId === validatedPower.primarySystemId)
+            && canonicalizeJson(validatedPower.pilot.comparisons.map((comparison) => ({
+              comparisonId: comparison.comparisonId,
+              comparatorSystemId: comparison.comparatorSystemId,
+            }))) === canonicalizeJson(preregistration.comparisons.map((comparison) => ({
+              comparisonId: comparison.comparisonId,
+              comparatorSystemId: comparison.comparatorSystemId,
+            })).sort((left, right) => left.comparisonId < right.comparisonId ? -1 : 1)),
+          "power-analysis primary/comparator identities differ from the preregistration",
+          issues,
+        );
+        requirePlan(
+          validatedPower.decision.status === "adequately_powered"
+            && validatedPower.decision.confirmatoryPlan !== null,
+          "superiority power analysis is not adequately powered",
+          issues,
+        );
+        const plan = validatedPower.decision.confirmatoryPlan;
+        if (plan) {
+          const selectedRepositoryVector = [...suite.tasks.reduce((counts, task) => {
+            counts.set(task.repository.cluster, (counts.get(task.repository.cluster) ?? 0) + 1);
+            return counts;
+          }, new Map<string, number>()).values()].sort((left, right) => left - right);
+          requirePlan(
+            plan.suiteId === suite.suiteId
+              && plan.suiteVersion === suite.suiteVersion
+              && plan.experimentId === preregistration.experimentId,
+            "power-analysis suite/version/experiment identity differs from the selected plan",
+            issues,
+          );
+          requirePlan(
+            plan.taskCount === suite.tasks.length
+              && plan.repositoryCount === repositoryCount
+              && canonicalizeJson(plan.repositoryTaskCounts) === canonicalizeJson(selectedRepositoryVector),
+            "power-analysis fixed repository allocation differs from the selected suite",
+            issues,
+          );
+          requirePlan(
+            plan.taskCount === preregistration.samplePlan.stoppingRule.taskCount
+              && plan.repetitionsPerSystemTask === preregistration.trialDesign.repetitionsPerSystemTask
+              && plan.inferenceResamples === preregistration.inference.resamples
+              && plan.inferenceRandomSeed === preregistration.inference.randomSeed,
+            "power-analysis fixed task/repetition/inference allocation differs from the preregistration",
+            issues,
+          );
+        }
+      }
+    }
   }
 }
 
@@ -263,7 +321,7 @@ function assertHoldoutPlan(
 export function validateEvaluationPlan(input: EvaluationPlanInput): ValidatedEvaluationPlan {
   const snapshot = canonicalSnapshot(input, "evaluation plan input");
   assertPlanInput(snapshot);
-  const { suite, preregistration, holdoutDescriptor, expectedPowerAnalysisDigest } = snapshot;
+  const { suite, preregistration, holdoutDescriptor, powerAnalysis } = snapshot;
   validateDocumentKinds(suite, preregistration, holdoutDescriptor);
 
   const issues: string[] = [];
@@ -330,7 +388,7 @@ export function validateEvaluationPlan(input: EvaluationPlanInput): ValidatedEva
     suite,
     preregistration,
     holdoutDescriptor,
-    expectedPowerAnalysisDigest,
+    powerAnalysis,
     repositoryCount,
     maximumTasksPerRepository,
     issues,
@@ -341,6 +399,7 @@ export function validateEvaluationPlan(input: EvaluationPlanInput): ValidatedEva
     suite,
     preregistration,
     ...(holdoutDescriptor ? { holdoutDescriptor } : {}),
+    ...(powerAnalysis ? { powerAnalysis } : {}),
     taskCount,
     repositoryCount,
     maximumTasksPerRepository,

@@ -1399,10 +1399,25 @@ function type7Quantile(sorted: readonly number[], probability: number): number {
   return sorted[lower] + fraction * (sorted[upper] - sorted[lower]);
 }
 
-function bootstrapInterval(
+export interface RepositoryClusteredBootstrapTaskDifference {
+  readonly cluster: string;
+  readonly difference: number;
+}
+
+export interface RepositoryClusteredBootstrapInference {
+  readonly resamples: number;
+  readonly randomSeed: number;
+}
+
+/**
+ * The single production implementation of contract-v1 repository-clustered
+ * percentile bootstrap inference. Power planning calls this same function so
+ * its decision rule cannot drift from result derivation.
+ */
+export function computeRepositoryClusteredPercentileInterval(
   taskDifferences: readonly { readonly cluster: string; readonly difference: number }[],
   comparisonId: string,
-  inference: PreregistrationDocument["inference"],
+  inference: RepositoryClusteredBootstrapInference,
 ): { readonly lower: number; readonly upper: number } {
   const grouped = new Map<string, number[]>();
   for (const task of taskDifferences) {
@@ -1411,15 +1426,24 @@ function bootstrapInterval(
     grouped.set(task.cluster, group);
   }
   const clusters = [...grouped.keys()].sort();
+  const clusterSummaries = clusters.map((cluster) => {
+    const values = grouped.get(cluster) ?? [];
+    return {
+      sum: values.reduce((total, value) => total + value, 0),
+      count: values.length,
+    };
+  });
   const random = randomGenerator(comparisonSeed(inference.randomSeed, comparisonId));
   const samples: number[] = [];
   for (let iteration = 0; iteration < inference.resamples; iteration += 1) {
-    const values: number[] = [];
+    let sum = 0;
+    let count = 0;
     for (let draw = 0; draw < clusters.length; draw += 1) {
-      const cluster = clusters[Math.floor(random() * clusters.length)];
-      values.push(...(grouped.get(cluster) ?? []));
+      const cluster = clusterSummaries[Math.floor(random() * clusterSummaries.length)];
+      sum += cluster.sum;
+      count += cluster.count;
     }
-    samples.push(mean(values));
+    samples.push(sum / count);
   }
   samples.sort((left, right) => left - right);
   return {
@@ -1501,7 +1525,11 @@ export function computePairedTfrEffect(
     difference: mean(task.trialDifferences),
   }));
   const pointEstimate = mean(taskDifferences.map((entry) => entry.difference));
-  const interval = bootstrapInterval(taskDifferences, comparisonId, inference);
+  const interval = computeRepositoryClusteredPercentileInterval(
+    taskDifferences,
+    comparisonId,
+    inference,
+  );
   return {
     pointEstimate,
     confidenceLower: interval.lower,

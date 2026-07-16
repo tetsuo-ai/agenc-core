@@ -109,7 +109,10 @@ hidden verifiers and reference evidence may not.
 `validateEvaluationPlan` then binds a qualified suite to its preregistration
 before the first run: exact suite and family-map digests, fixed task/repository
 counts, reset policy, randomized execution order, holdout descriptor joins,
-and the independently reviewed power-analysis digest.
+and the complete independently reviewed power-analysis document. Superiority
+preflight rejects an opaque digest, an underpowered decision, or any difference
+in the selected suite/experiment identity, sorted repository-size vector,
+repetition count, bootstrap resample count, or bootstrap seed.
 
 ## Power and superiority boundary
 
@@ -119,12 +122,23 @@ superiority holdout.
 
 After paired AgenC/comparator pilot attempts exist, `runtime/src/eval-power/`
 aggregates repetitions within each task, preserves paired outcomes, models
-repository clustering, and simulates the fixed confirmatory design. The final
+repository clustering, and simulates each exact fixed repository allocation
+using the same deterministic repository-clustered percentile bootstrap and
+Type-7 interval implementation used by contract-v1 result scoring. CR2/
+Satterthwaite remains an explicitly labeled diagnostic sensitivity; it cannot
+authorize the confirmatory design. The final
 design must use at least 50 independent tasks, at least 20 repository families,
 at least three fresh repetitions per system/task, alpha `0.05`, and target power
 `0.80`. The decision is the intersection across every preregistered comparator.
 The selected sample size is fixed before the private holdout opens; there are no
 unblinded sample expansions or implicit interim looks.
+
+Power analysis is intentionally bounded before synchronous simulation: at most
+32 sensitivity cells, 500 million nested-bootstrap repository draws, and 100
+million synthetic attempt/comparator operations. Both estimates use `BigInt`
+and are checked before allocating the simulation grid. Operators must narrow an
+oversized grid or split exploratory diagnostics; they cannot bypass the bound
+inside a confirmatory power document.
 
 The private one-use task manifest, prompts, repository identities, verifiers,
 reference patches, and custody logs stay outside this checkout under a separate
@@ -147,10 +161,10 @@ Research refreshed 2026-07-16:
 - [METR HCAST](https://metr.org/hcast.pdf) motivates private problems,
   independent QA, separate scaffold-development data, and repeated attempts.
 - [Pustejovsky and Tipton](https://doi.org/10.1080/07350015.2016.1247004)
-  supports small-cluster CR2/Satterthwaite inference; the
-  [wild cluster bootstrap](https://www.nber.org/papers/t0344) is the planned
-  sensitivity analysis.
+  supports the available small-cluster CR2/Satterthwaite diagnostic; the
+  [wild cluster bootstrap](https://www.nber.org/papers/t0344) is a potential
+  future sensitivity analysis. Neither replaces the preregistered production
+  percentile bootstrap.
 - The FDA's [adaptive-design guidance](https://www.fda.gov/media/78495/download)
   is the basis for rejecting post-hoc sample expansion without a complete
   preregistered sequential design.
-

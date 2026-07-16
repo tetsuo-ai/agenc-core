@@ -3,7 +3,10 @@ import {
   canonicalizeJson,
   digestCanonicalJson,
   withDocumentDigest,
-} from "../eval-contract/index.js";
+} from "../eval-contract/canonical-json.js";
+import {
+  computeRepositoryClusteredPercentileInterval,
+} from "../eval-contract/experiment-bundle.js";
 import {
   EVAL_POWER_ALPHA,
   EVAL_POWER_ANALYSIS_VERSION,
@@ -13,6 +16,8 @@ import {
   EVAL_POWER_MINIMUM_PILOT_REPOSITORIES,
   EVAL_POWER_MINIMUM_PILOT_TASKS,
   EVAL_POWER_MINIMUM_REPETITIONS,
+  EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS,
+  EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS,
   EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS,
   EVAL_POWER_TARGET,
   type FixedConfirmatoryPlan,
@@ -24,11 +29,16 @@ import {
   type PowerEstimate,
   type SensitivityCell,
 } from "./types.js";
+import { validatePowerAnalysisDocument } from "./validation.js";
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const MAX_SAFE_SEED = 0xffff_ffff;
-const MINIMUM_SIMULATION_REPLICATIONS = 1_000;
-const MAXIMUM_SIMULATION_REPLICATIONS = 100_000;
+const MINIMUM_SIMULATION_REPLICATIONS = 100;
+const MAXIMUM_SIMULATION_REPLICATIONS = 10_000;
+const MINIMUM_CONFIRMATORY_INFERENCE_RESAMPLES = 10_000;
+const MAXIMUM_CONFIRMATORY_INFERENCE_RESAMPLES = 1_000_000;
+const MAXIMUM_SENSITIVITY_GRID_CELLS = 32;
+const MAXIMUM_CANDIDATE_DESIGNS = 8;
 const EPSILON = 1e-12;
 const NORMAL_975 = 1.959963984540054;
 
@@ -186,9 +196,13 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     "createdAt",
     "primarySystemId",
     "outcomes",
-    "candidateTaskCounts",
-    "confirmatoryRepositoryCount",
+    "confirmatorySuiteId",
+    "confirmatorySuiteVersion",
+    "confirmatoryExperimentId",
+    "candidateRepositoryTaskAllocations",
     "confirmatoryRepetitionsPerSystemTask",
+    "confirmatoryInferenceResamples",
+    "confirmatoryInferenceRandomSeed",
     "planningEffectSize",
     "assumedEffectSizes",
     "heterogeneityMultipliers",
@@ -198,6 +212,9 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
   assertIdentifier(input.analysisId, "analysisId", issues);
   assertIdentifier(input.pilotId, "pilotId", issues);
   assertIdentifier(input.primarySystemId, "primarySystemId", issues);
+  assertIdentifier(input.confirmatorySuiteId, "confirmatorySuiteId", issues);
+  assertIdentifier(input.confirmatorySuiteVersion, "confirmatorySuiteVersion", issues);
+  assertIdentifier(input.confirmatoryExperimentId, "confirmatoryExperimentId", issues);
   if (!isExactUtcTimestamp(input.createdAt)) {
     issues.push("createdAt must be a real UTC timestamp with millisecond precision");
   }
@@ -216,10 +233,17 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     issues,
   );
   validateInteger(
-    input.confirmatoryRepositoryCount,
-    "confirmatoryRepositoryCount",
-    EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES,
-    10_000,
+    input.confirmatoryInferenceResamples,
+    "confirmatoryInferenceResamples",
+    MINIMUM_CONFIRMATORY_INFERENCE_RESAMPLES,
+    MAXIMUM_CONFIRMATORY_INFERENCE_RESAMPLES,
+    issues,
+  );
+  validateInteger(
+    input.confirmatoryInferenceRandomSeed,
+    "confirmatoryInferenceRandomSeed",
+    1,
+    MAX_SAFE_SEED,
     issues,
   );
   validateInteger(
@@ -230,30 +254,44 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     issues,
   );
 
-  if (!Array.isArray(input.candidateTaskCounts) || input.candidateTaskCounts.length < 2) {
-    issues.push("candidateTaskCounts must contain at least two fixed sample sizes");
+  if (
+    !Array.isArray(input.candidateRepositoryTaskAllocations)
+    || input.candidateRepositoryTaskAllocations.length === 0
+    || input.candidateRepositoryTaskAllocations.length > MAXIMUM_CANDIDATE_DESIGNS
+  ) {
+    issues.push(`candidateRepositoryTaskAllocations must contain 1 through ${MAXIMUM_CANDIDATE_DESIGNS} exact designs`);
   } else {
-    const seen = new Set<number>();
-    for (const [index, taskCount] of input.candidateTaskCounts.entries()) {
-      validateInteger(
-        taskCount,
-        `candidateTaskCounts[${index}]`,
-        EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS,
-        10_000,
-        issues,
-      );
-      if (seen.has(taskCount)) issues.push(`candidateTaskCounts contains duplicate ${taskCount}`);
-      seen.add(taskCount);
-      if (Number.isSafeInteger(taskCount) && input.confirmatoryRepositoryCount > taskCount) {
-        issues.push(`confirmatoryRepositoryCount cannot exceed candidate task count ${taskCount}`);
+    const seen = new Set<string>();
+    let previousTaskCount = 0;
+    for (const [designIndex, allocation] of input.candidateRepositoryTaskAllocations.entries()) {
+      if (!Array.isArray(allocation) || allocation.length < EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES) {
+        issues.push(`candidateRepositoryTaskAllocations[${designIndex}] must contain at least ${EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES} repositories`);
+        continue;
       }
-      if (
-        Number.isSafeInteger(taskCount)
-        && Number.isSafeInteger(input.confirmatoryRepositoryCount)
-        && Math.ceil(taskCount / input.confirmatoryRepositoryCount) * 100 > taskCount * 10
-      ) {
-        issues.push(`candidate task count ${taskCount} cannot satisfy the 10% repository cap`);
+      const normalized = [...allocation].sort((left, right) => left - right);
+      for (const [repositoryIndex, taskCount] of normalized.entries()) {
+        validateInteger(
+          taskCount,
+          `candidateRepositoryTaskAllocations[${designIndex}][${repositoryIndex}]`,
+          1,
+          10_000,
+          issues,
+        );
       }
+      const total = normalized.reduce((sum, count) => sum + count, 0);
+      if (total < EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS || total > 10_000) {
+        issues.push(`candidateRepositoryTaskAllocations[${designIndex}] must total 50 through 10000 tasks`);
+      }
+      if (normalized.some((count) => count * 100 > total * 10)) {
+        issues.push(`candidateRepositoryTaskAllocations[${designIndex}] exceeds the 10% repository cap`);
+      }
+      const key = normalized.join(",");
+      if (seen.has(key)) issues.push(`candidateRepositoryTaskAllocations contains duplicate design ${key}`);
+      seen.add(key);
+      if (total <= previousTaskCount) {
+        issues.push("candidateRepositoryTaskAllocations must be ordered by strictly increasing task count");
+      }
+      previousTaskCount = total;
     }
   }
 
@@ -303,10 +341,22 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
     }
   }
 
+  const candidateCount = Array.isArray(input.candidateRepositoryTaskAllocations)
+    ? input.candidateRepositoryTaskAllocations.length
+    : 0;
+  const effectCount = Array.isArray(input.assumedEffectSizes) ? input.assumedEffectSizes.length : 0;
+  const heterogeneityCount = Array.isArray(input.heterogeneityMultipliers)
+    ? input.heterogeneityMultipliers.length
+    : 0;
+  const gridCells = candidateCount * effectCount * heterogeneityCount;
+  if (gridCells > MAXIMUM_SENSITIVITY_GRID_CELLS) {
+    issues.push(`sensitivity grid cannot exceed ${MAXIMUM_SENSITIVITY_GRID_CELLS} cells`);
+  }
+
   if (!Array.isArray(input.outcomes) || input.outcomes.length === 0) {
     issues.push("outcomes must be a non-empty array");
-  } else if (input.outcomes.length > 1_000_000) {
-    issues.push("outcomes cannot exceed 1000000 paired rows");
+  } else if (input.outcomes.length > 100_000) {
+    issues.push("outcomes cannot exceed 100000 paired rows");
   }
 
   const validOutcomes: PairedPilotBinaryOutcome[] = [];
@@ -480,6 +530,52 @@ function validateAndAggregate(input: PowerAnalysisInput): ValidatedPilot {
       comparatorSystemId: comparisonSystems.get(comparisonId) as string,
       tasks,
     });
+  }
+
+  if (
+    Number.isSafeInteger(input.simulationReplications)
+    && Number.isSafeInteger(input.confirmatoryInferenceResamples)
+    && Array.isArray(input.candidateRepositoryTaskAllocations)
+  ) {
+    const repositoryDrawsPerScenario = input.candidateRepositoryTaskAllocations.reduce(
+      (sum, allocation) => sum + (Array.isArray(allocation) ? allocation.length : 0),
+      0,
+    );
+    const aggregateWork = BigInt(input.simulationReplications)
+      * BigInt(input.confirmatoryInferenceResamples)
+      * BigInt(Math.max(1, comparisonSystems.size))
+      * BigInt(Math.max(1, Array.isArray(input.assumedEffectSizes) ? input.assumedEffectSizes.length : 0))
+      * BigInt(Math.max(1, Array.isArray(input.heterogeneityMultipliers)
+        ? input.heterogeneityMultipliers.length
+        : 0))
+      * BigInt(repositoryDrawsPerScenario);
+    if (aggregateWork > BigInt(EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS)) {
+      issues.push(
+        `aggregate bootstrap work cannot exceed ${EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS} repository draws`,
+      );
+    }
+    if (Number.isSafeInteger(input.confirmatoryRepetitionsPerSystemTask)) {
+      const totalCandidateTasks = input.candidateRepositoryTaskAllocations.reduce(
+        (sum, allocation) => sum + (Array.isArray(allocation)
+          ? allocation.reduce((allocationSum, count) =>
+            allocationSum + (Number.isSafeInteger(count) ? count : 0), 0)
+          : 0),
+        0,
+      );
+      const syntheticWork = BigInt(input.simulationReplications)
+        * BigInt(input.confirmatoryRepetitionsPerSystemTask)
+        * BigInt(Math.max(1, comparisonSystems.size))
+        * BigInt(Math.max(1, Array.isArray(input.assumedEffectSizes) ? input.assumedEffectSizes.length : 0))
+        * BigInt(Math.max(1, Array.isArray(input.heterogeneityMultipliers)
+          ? input.heterogeneityMultipliers.length
+          : 0))
+        * BigInt(totalCandidateTasks);
+      if (syntheticWork > BigInt(EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS)) {
+        issues.push(
+          `aggregate synthetic attempt work cannot exceed ${EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS} attempt-comparisons`,
+        );
+      }
+    }
   }
 
   if (issues.length > 0) throw new PowerAnalysisValidationError([...new Set(issues)]);
@@ -679,18 +775,14 @@ function deriveAttemptSeed(replicationSeed: number, repositoryIndex: number, tas
 
 function sampleSyntheticRepositories(
   pilot: ValidatedPilot,
-  repositoryCount: number,
-  taskCount: number,
+  repositoryTaskCounts: readonly number[],
   repetitions: number,
   replicationSeed: number,
   random: DeterministicRandom,
 ): readonly (readonly SyntheticTaskDraw[])[] {
-  const baseTasks = Math.floor(taskCount / repositoryCount);
-  const repositoriesWithExtraTask = taskCount % repositoryCount;
-  return Array.from({ length: repositoryCount }, (_, repositoryIndex) => {
+  return repositoryTaskCounts.map((count, repositoryIndex) => {
     const sourceRepository = pilot.repositoryIds[random.nextInteger(pilot.repositoryIds.length)];
     const sourceTasks = pilot.taskIdsByRepository.get(sourceRepository) as readonly string[];
-    const count = baseTasks + (repositoryIndex < repositoriesWithExtraTask ? 1 : 0);
     return Array.from({ length: count }, (_, taskIndex): SyntheticTaskDraw => {
       const taskId = sourceTasks[random.nextInteger(sourceTasks.length)];
       const jointAttempts = pilot.jointAttemptsByTask.get(taskId) as readonly JointPilotAttempt[];
@@ -776,9 +868,9 @@ function computeInterceptOnlyCr2Raw(
 }
 
 /**
- * Bias-reduced CR2/Satterthwaite inference for an intercept-only task effect,
- * clustered by repository. The confirmatory design constraints are enforced
- * here as well as in the power-analysis input.
+ * Diagnostic-only bias-reduced CR2/Satterthwaite sensitivity for an
+ * intercept-only task effect clustered by repository. It never drives the
+ * confirmatory power decision, which uses the production percentile bootstrap.
  */
 export function computeInterceptOnlyCr2Inference(
   clusters: readonly (readonly number[])[],
@@ -868,9 +960,25 @@ function simulateClusteredTaskDifferences(
   return clustersByComparison;
 }
 
-function comparisonSucceeds(clusters: readonly (readonly number[])[]): boolean {
-  const inference = computeInterceptOnlyCr2Raw(clusters);
-  return inference.estimate + EPSILON >= EVAL_POWER_MINIMUM_EFFECT && inference.lower95 > 0;
+function comparisonSucceeds(
+  clusters: readonly (readonly number[])[],
+  comparisonId: string,
+  input: PowerAnalysisInput,
+): boolean {
+  const taskDifferences = clusters.flatMap((cluster, repositoryIndex) => cluster.map((difference) => ({
+    cluster: `synthetic-repository-${String(repositoryIndex).padStart(5, "0")}`,
+    difference,
+  })));
+  const pointEstimate = average(taskDifferences.map((entry) => entry.difference));
+  const interval = computeRepositoryClusteredPercentileInterval(
+    taskDifferences,
+    comparisonId,
+    {
+      resamples: input.confirmatoryInferenceResamples,
+      randomSeed: input.confirmatoryInferenceRandomSeed,
+    },
+  );
+  return pointEstimate + EPSILON >= EVAL_POWER_MINIMUM_EFFECT && interval.lower > 0;
 }
 
 function wilsonEstimate(successes: number, replications: number): PowerEstimate {
@@ -897,9 +1005,11 @@ function simulateGrid(
   pilot: ValidatedPilot,
   scenarios: readonly ScenarioModel[],
 ): readonly SensitivityCell[] {
-  const candidateTaskCounts = [...input.candidateTaskCounts].sort((left, right) => left - right);
+  const candidateAllocations = input.candidateRepositoryTaskAllocations.map((allocation) =>
+    [...allocation].sort((left, right) => left - right));
   const cells: SensitivityCell[] = [];
-  for (const taskCount of candidateTaskCounts) {
+  for (const repositoryTaskCounts of candidateAllocations) {
+    const taskCount = repositoryTaskCounts.reduce((sum, count) => sum + count, 0);
     const comparisonSuccesses = scenarios.map(() =>
       new Map(pilot.comparisons.map((comparison) => [comparison.comparisonId, 0])));
     const intersectionSuccesses = scenarios.map(() => 0);
@@ -908,8 +1018,7 @@ function simulateGrid(
       const random = new DeterministicRandom(replicationSeed);
       const sample = sampleSyntheticRepositories(
         pilot,
-        input.confirmatoryRepositoryCount,
-        taskCount,
+        repositoryTaskCounts,
         input.confirmatoryRepetitionsPerSystemTask,
         replicationSeed,
         random,
@@ -920,6 +1029,8 @@ function simulateGrid(
         for (const comparison of pilot.comparisons) {
           const succeeds = comparisonSucceeds(
             clustersByComparison.get(comparison.comparisonId) as readonly (readonly number[])[],
+            comparison.comparisonId,
+            input,
           );
           if (succeeds) {
             const successes = comparisonSuccesses[scenarioIndex];
@@ -936,7 +1047,7 @@ function simulateGrid(
         assumedPairedDifference: round(scenario.assumedEffect),
         heterogeneityMultiplier: round(scenario.heterogeneityMultiplier),
         taskCount,
-        repositoryCount: input.confirmatoryRepositoryCount,
+        repositoryCount: repositoryTaskCounts.length,
         comparisonPower: pilot.comparisons.map((comparison) => ({
           comparisonId: comparison.comparisonId,
           power: wilsonEstimate(
@@ -962,15 +1073,23 @@ function selectFixedPlan(
   sensitivityGrid: readonly SensitivityCell[],
 ): FixedConfirmatoryPlan | null {
   const target = Number(EVAL_POWER_TARGET);
-  for (const taskCount of [...input.candidateTaskCounts].sort((left, right) => left - right)) {
+  for (const repositoryTaskCounts of input.candidateRepositoryTaskAllocations) {
+    const normalizedAllocation = [...repositoryTaskCounts].sort((left, right) => left - right);
+    const taskCount = normalizedAllocation.reduce((sum, count) => sum + count, 0);
     const cells = sensitivityGrid.filter((cell) =>
       cell.taskCount === taskCount
       && Math.abs(cell.assumedPairedDifference - input.planningEffectSize) < EPSILON);
     if (cells.length > 0 && cells.every((cell) => cell.intersectionPower.wilsonLower95 >= target)) {
       return {
+        suiteId: input.confirmatorySuiteId,
+        suiteVersion: input.confirmatorySuiteVersion,
+        experimentId: input.confirmatoryExperimentId,
         taskCount,
-        repositoryCount: input.confirmatoryRepositoryCount,
+        repositoryCount: normalizedAllocation.length,
+        repositoryTaskCounts: normalizedAllocation,
         repetitionsPerSystemTask: input.confirmatoryRepetitionsPerSystemTask,
+        inferenceResamples: input.confirmatoryInferenceResamples,
+        inferenceRandomSeed: input.confirmatoryInferenceRandomSeed,
         stoppingRule: {
           kind: "fixed",
           taskCount,
@@ -993,7 +1112,9 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
   const scenarios = createScenarioModels(input, pilot);
   const sensitivityGrid = simulateGrid(input, pilot, scenarios);
   const confirmatoryPlan = selectFixedPlan(input, sensitivityGrid);
-  const candidateTaskCounts = [...input.candidateTaskCounts].sort((left, right) => left - right);
+  const candidateRepositoryTaskAllocations = input.candidateRepositoryTaskAllocations.map(
+    (allocation) => [...allocation].sort((left, right) => left - right),
+  );
   const repositoryTaskCounts = [...pilot.taskIdsByRepository].map(([repositoryId, taskIds]) => ({
     repositoryId,
     taskCount: taskIds.length,
@@ -1034,16 +1155,23 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       targetPower: EVAL_POWER_TARGET,
       minimumEffect: EVAL_POWER_MINIMUM_EFFECT,
       primaryMetric: "paired_binary_success_rate_difference",
-      inference: "bias_reduced_linearization_cr2",
-      degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only",
+      inference: "repository_clustered_paired_percentile_bootstrap",
+      interval: "two_sided_percentile",
+      quantileMethod: "linear_type_7",
       inferenceUnit: "task_mean_after_repetition_aggregation",
       clusteringUnit: "repository",
       multipleComparators: "intersection_union",
       successRule: "point_at_least_minimum_effect_and_two_sided_lower_bound_above_zero_for_every_comparator",
       planningEffectSize: input.planningEffectSize,
-      candidateTaskCounts,
-      confirmatoryRepositoryCount: input.confirmatoryRepositoryCount,
+      assumedEffectSizes: [...input.assumedEffectSizes].sort((left, right) => left - right),
+      heterogeneityMultipliers: [...input.heterogeneityMultipliers].sort((left, right) => left - right),
+      confirmatorySuiteId: input.confirmatorySuiteId,
+      confirmatorySuiteVersion: input.confirmatorySuiteVersion,
+      confirmatoryExperimentId: input.confirmatoryExperimentId,
+      candidateRepositoryTaskAllocations,
       confirmatoryRepetitionsPerSystemTask: input.confirmatoryRepetitionsPerSystemTask,
+      confirmatoryInferenceResamples: input.confirmatoryInferenceResamples,
+      confirmatoryInferenceRandomSeed: input.confirmatoryInferenceRandomSeed,
       confirmatoryRepositoryCapPercent: 10,
       optionalStopping: false,
     },
@@ -1059,7 +1187,7 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       simulationReplications: input.simulationReplications,
       randomSeed: input.randomSeed,
       randomStream: "sha256_domain_seeded_xorshift32_rejection_sampling_v1",
-      confidenceCriticalValue: "student_t_cornish_fisher_satterthwaite_df",
+      confirmatoryInference: "production_repository_clustered_percentile_bootstrap",
       powerDecisionInterval: "two_sided_wilson_95",
     },
     sensitivityGrid,
@@ -1069,5 +1197,5 @@ export function computePowerAnalysis(input: PowerAnalysisInput): PowerAnalysisDo
       confirmatoryPlan,
     },
   };
-  return withDocumentDigest<PowerAnalysisDocument>(draft);
+  return validatePowerAnalysisDocument(withDocumentDigest<PowerAnalysisDocument>(draft));
 }

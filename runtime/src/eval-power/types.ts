@@ -1,4 +1,4 @@
-import type { Sha256Digest } from "../eval-contract/index.js";
+import type { Sha256Digest } from "../eval-contract/types.js";
 
 export const EVAL_POWER_ANALYSIS_VERSION = "1.0.0" as const;
 export const EVAL_POWER_ALPHA = "0.05" as const;
@@ -10,6 +10,8 @@ export const EVAL_POWER_MINIMUM_CONFIRMATORY_TASKS = 50 as const;
 export const EVAL_POWER_MINIMUM_CONFIRMATORY_REPOSITORIES = 20 as const;
 export const EVAL_POWER_MINIMUM_REPETITIONS = 3 as const;
 export const EVAL_POWER_RECOMMENDED_PILOT_REPETITIONS = 5 as const;
+export const EVAL_POWER_MAXIMUM_BOOTSTRAP_REPOSITORY_DRAWS = 500_000_000 as const;
+export const EVAL_POWER_MAXIMUM_SYNTHETIC_ATTEMPT_COMPARISONS = 100_000_000 as const;
 
 export type BinaryOutcome = 0 | 1;
 
@@ -30,9 +32,14 @@ export interface PowerAnalysisInput {
   readonly createdAt: string;
   readonly primarySystemId: string;
   readonly outcomes: readonly PairedPilotBinaryOutcome[];
-  readonly candidateTaskCounts: readonly number[];
-  readonly confirmatoryRepositoryCount: number;
+  readonly confirmatorySuiteId: string;
+  readonly confirmatorySuiteVersion: string;
+  readonly confirmatoryExperimentId: string;
+  /** Exact anonymous repository-size vectors considered for the sealed suite. */
+  readonly candidateRepositoryTaskAllocations: readonly (readonly number[])[];
   readonly confirmatoryRepetitionsPerSystemTask: number;
+  readonly confirmatoryInferenceResamples: number;
+  readonly confirmatoryInferenceRandomSeed: number;
   /** Explicit alternative used to choose N; sensitivity cells remain diagnostic. */
   readonly planningEffectSize: number;
   readonly assumedEffectSizes: readonly number[];
@@ -84,9 +91,16 @@ export interface SensitivityCell {
 }
 
 export interface FixedConfirmatoryPlan {
+  readonly suiteId: string;
+  readonly suiteVersion: string;
+  readonly experimentId: string;
   readonly taskCount: number;
   readonly repositoryCount: number;
+  /** Sorted task counts; the evaluation preflight matches this exact vector. */
+  readonly repositoryTaskCounts: readonly number[];
   readonly repetitionsPerSystemTask: number;
+  readonly inferenceResamples: number;
+  readonly inferenceRandomSeed: number;
   readonly stoppingRule: {
     readonly kind: "fixed";
     readonly taskCount: number;
@@ -125,16 +139,23 @@ export interface PowerAnalysisDocument {
     readonly targetPower: typeof EVAL_POWER_TARGET;
     readonly minimumEffect: typeof EVAL_POWER_MINIMUM_EFFECT;
     readonly primaryMetric: "paired_binary_success_rate_difference";
-    readonly inference: "bias_reduced_linearization_cr2";
-    readonly degreesOfFreedom: "bell_mccaffrey_satterthwaite_intercept_only";
+    readonly inference: "repository_clustered_paired_percentile_bootstrap";
+    readonly interval: "two_sided_percentile";
+    readonly quantileMethod: "linear_type_7";
     readonly inferenceUnit: "task_mean_after_repetition_aggregation";
     readonly clusteringUnit: "repository";
     readonly multipleComparators: "intersection_union";
     readonly successRule: "point_at_least_minimum_effect_and_two_sided_lower_bound_above_zero_for_every_comparator";
     readonly planningEffectSize: number;
-    readonly candidateTaskCounts: readonly number[];
-    readonly confirmatoryRepositoryCount: number;
+    readonly assumedEffectSizes: readonly number[];
+    readonly heterogeneityMultipliers: readonly number[];
+    readonly confirmatorySuiteId: string;
+    readonly confirmatorySuiteVersion: string;
+    readonly confirmatoryExperimentId: string;
+    readonly candidateRepositoryTaskAllocations: readonly (readonly number[])[];
     readonly confirmatoryRepetitionsPerSystemTask: number;
+    readonly confirmatoryInferenceResamples: number;
+    readonly confirmatoryInferenceRandomSeed: number;
     readonly confirmatoryRepositoryCapPercent: 10;
     readonly optionalStopping: false;
   };
@@ -150,7 +171,7 @@ export interface PowerAnalysisDocument {
     readonly simulationReplications: number;
     readonly randomSeed: number;
     readonly randomStream: "sha256_domain_seeded_xorshift32_rejection_sampling_v1";
-    readonly confidenceCriticalValue: "student_t_cornish_fisher_satterthwaite_df";
+    readonly confirmatoryInference: "production_repository_clustered_percentile_bootstrap";
     readonly powerDecisionInterval: "two_sided_wilson_95";
   };
   readonly sensitivityGrid: readonly SensitivityCell[];

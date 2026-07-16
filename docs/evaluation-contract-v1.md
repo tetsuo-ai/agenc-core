@@ -24,6 +24,8 @@ remain separate M1 deliverables in [`todo.txt`](../todo.txt).
 | `runtime/src/eval-contract/validation.ts` | Schema and semantic validation, safe task projection, holdout preflight |
 | `runtime/src/eval-contract/evidence-ledger.ts` | Locked payload store, append-only journal, freeze/seal/verify lifecycle |
 | `runtime/src/eval-contract/experiment-bundle.ts` | Cross-document pin checks and deterministic summary derivation |
+| `runtime/src/eval-contract/evaluation-plan.ts` | Pre-run suite/preregistration/holdout/power cross-document gate |
+| `runtime/src/eval-power/` | Digest-bound pilot power analysis using the production Type-7 clustered bootstrap |
 
 Validate one or more v1 documents locally:
 
