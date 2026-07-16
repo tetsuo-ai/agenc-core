@@ -2,7 +2,8 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, open, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -123,6 +124,117 @@ function artifactFor(bytes, mediaType) {
     mediaType,
     uri: `cas://sha256/${digest.slice("sha256:".length)}`,
   };
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileSnapshot(left, right) {
+  return sameFileIdentity(left, right)
+    && left.size === right.size
+    && left.ctimeNs === right.ctimeNs
+    && left.mtimeNs === right.mtimeNs;
+}
+
+function existingCasEntryError(file, detail, cause) {
+  return new Error(`existing CAS entry ${detail}: ${file}`, cause === undefined ? undefined : {
+    cause,
+  });
+}
+
+async function readBoundedExact(handle, sizeBytes, file) {
+  const bytes = Buffer.alloc(sizeBytes);
+  let offset = 0;
+  while (offset < sizeBytes) {
+    const { bytesRead } = await handle.read(bytes, offset, sizeBytes - offset, offset);
+    if (bytesRead === 0) {
+      throw existingCasEntryError(file, "was truncated while being verified");
+    }
+    offset += bytesRead;
+  }
+  const trailing = Buffer.allocUnsafe(1);
+  const { bytesRead: trailingBytes } = await handle.read(trailing, 0, 1, sizeBytes);
+  if (trailingBytes !== 0) {
+    throw existingCasEntryError(file, "grew while being verified");
+  }
+  return bytes;
+}
+
+async function verifyExistingCasEntry(file, expectedBytes, artifact) {
+  let pathStat;
+  try {
+    pathStat = await lstat(file, { bigint: true });
+  } catch (error) {
+    throw existingCasEntryError(file, "changed before it could be verified", error);
+  }
+  if (pathStat.isSymbolicLink()) {
+    throw existingCasEntryError(file, "is a symlink");
+  }
+  if (!pathStat.isFile()) {
+    throw existingCasEntryError(file, "is not a regular file");
+  }
+  if (pathStat.size !== BigInt(artifact.sizeBytes)) {
+    throw existingCasEntryError(file, "has an unexpected size");
+  }
+
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  let handle;
+  try {
+    handle = await open(file, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw existingCasEntryError(file, "could not be safely opened without following links", error);
+  }
+  try {
+    const beforeRead = await handle.stat({ bigint: true });
+    if (!beforeRead.isFile() || !sameFileSnapshot(pathStat, beforeRead)) {
+      throw existingCasEntryError(file, "was replaced before it could be read");
+    }
+    if (beforeRead.size !== BigInt(artifact.sizeBytes)) {
+      throw existingCasEntryError(file, "has an unexpected size");
+    }
+
+    const existingBytes = await readBoundedExact(handle, artifact.sizeBytes, file);
+    const afterRead = await handle.stat({ bigint: true });
+    if (!sameFileSnapshot(beforeRead, afterRead)) {
+      throw existingCasEntryError(file, "changed while it was being read");
+    }
+    if (sha256(existingBytes) !== artifact.digest) {
+      throw existingCasEntryError(file, "has an unexpected SHA-256 digest");
+    }
+    if (!existingBytes.equals(expectedBytes)) {
+      throw existingCasEntryError(file, "does not contain the expected bytes");
+    }
+
+    let finalPathStat;
+    try {
+      finalPathStat = await lstat(file, { bigint: true });
+    } catch (error) {
+      throw existingCasEntryError(file, "was removed while it was being verified", error);
+    }
+    if (
+      finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || !sameFileSnapshot(afterRead, finalPathStat)
+    ) {
+      throw existingCasEntryError(file, "was replaced while it was being verified");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function putCas(casRoot, bytes, mediaType) {
+  const expectedBytes = Buffer.from(bytes);
+  const artifact = artifactFor(expectedBytes, mediaType);
+  const file = path.join(casRoot, artifact.digest.slice("sha256:".length));
+  try {
+    await writeFile(file, expectedBytes, { flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    await verifyExistingCasEntry(file, expectedBytes, artifact);
+  }
+  return artifact;
 }
 
 function withDocumentDigest(document) {
@@ -480,14 +592,6 @@ async function main() {
   const root = path.dirname(output);
   const casRoot = path.join(root, "cas", "sha256");
   await mkdir(casRoot, { recursive: true });
-  const putCas = async (bytes, mediaType) => {
-    const artifact = artifactFor(bytes, mediaType);
-    const file = path.join(casRoot, artifact.digest.slice("sha256:".length));
-    await writeFile(file, bytes, { flag: "wx" }).catch((error) => {
-      if (error?.code !== "EEXIST") throw error;
-    });
-    return artifact;
-  };
   const lockedTasks = [];
   for (let index = 0; index < selectedRows.length; index += 1) {
     const selected = selectedRows[index];
@@ -552,13 +656,15 @@ async function main() {
       issueText,
       image: `${source.docker_image}@${imageDigests[index]}`,
       artifacts: {
-        setupPatch: await putCas(setupPatch, "text/x-diff"),
-        referencePatch: await putCas(Buffer.from(source.patch), "text/x-diff"),
+        setupPatch: await putCas(casRoot, setupPatch, "text/x-diff"),
+        referencePatch: await putCas(casRoot, Buffer.from(source.patch), "text/x-diff"),
         verifierBundle: await putCas(
+          casRoot,
           gzipSync(verifierBundle, { level: 9, mtime: 0 }),
           "application/vnd.agenc.eval.verifier+json+gzip",
         ),
         sourceEvidence: await putCas(
+          casRoot,
           validationEvidence,
           "application/vnd.agenc.eval.source-evidence+json",
         ),

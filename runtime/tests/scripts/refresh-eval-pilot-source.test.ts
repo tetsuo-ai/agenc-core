@@ -1,4 +1,7 @@
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { runtimeRootPath } from "../helpers/source-path.ts";
@@ -11,6 +14,10 @@ type RefreshModule = {
   fetchJson(url: string, options?: Record<string, unknown>): Promise<unknown>;
   loadFrozenSplits(options?: Record<string, unknown>): Promise<Map<string, Map<string, unknown>>>;
   loadSplit(split: string, options?: Record<string, unknown>): Promise<Map<string, unknown>>;
+  putCas(casRoot: string, bytes: Uint8Array, mediaType: string): Promise<{
+    readonly digest: string;
+    readonly sizeBytes: number;
+  }>;
   resolveImageDigest(image: string, options?: Record<string, unknown>): Promise<string>;
 };
 
@@ -34,7 +41,86 @@ function rowsPage(instanceIds: string[], total: number, offset = 0): Response {
   });
 }
 
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 describe("evaluation pilot source refresh trust boundary", () => {
+  test("accepts an idempotent matching regular CAS entry", async () => {
+    const refresh = await loadRefreshModule();
+    const root = await mkdtemp(join(tmpdir(), "agenc-eval-cas-match-"));
+    const expected = Buffer.from("expected artifact bytes");
+    try {
+      const created = await refresh.putCas(root, expected, "application/octet-stream");
+      const existing = await refresh.putCas(root, expected, "application/octet-stream");
+
+      expect(existing).toEqual(created);
+      expect(existing).toMatchObject({
+        digest: `sha256:${sha256Hex(expected)}`,
+        sizeBytes: expected.byteLength,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a same-size tampered CAS entry instead of trusting EEXIST", async () => {
+    const refresh = await loadRefreshModule();
+    const root = await mkdtemp(join(tmpdir(), "agenc-eval-cas-tamper-"));
+    const expected = Buffer.from("expected artifact bytes");
+    const tampered = Buffer.from("tampered artifact bytes");
+    const digest = sha256Hex(expected);
+    try {
+      await mkdir(root, { recursive: true });
+      expect(tampered.byteLength).toBe(expected.byteLength);
+      await writeFile(join(root, digest), tampered);
+
+      await expect(refresh.putCas(root, expected, "application/octet-stream")).rejects.toThrow(
+        /existing CAS entry.*SHA-256/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a preexisting CAS directory", async () => {
+    const refresh = await loadRefreshModule();
+    const root = await mkdtemp(join(tmpdir(), "agenc-eval-cas-directory-"));
+    const expected = Buffer.from("expected artifact bytes");
+    try {
+      await mkdir(join(root, sha256Hex(expected)));
+
+      await expect(refresh.putCas(root, expected, "application/octet-stream")).rejects.toThrow(
+        /existing CAS entry.*not a regular file/i,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "rejects a preexisting CAS symlink even when its target has the expected bytes",
+    async () => {
+      const refresh = await loadRefreshModule();
+      const parent = await mkdtemp(join(tmpdir(), "agenc-eval-cas-symlink-"));
+      const root = join(parent, "cas");
+      const target = join(parent, "target");
+      const expected = Buffer.from("expected artifact bytes");
+      const digest = sha256Hex(expected);
+      try {
+        await mkdir(root, { recursive: true });
+        await writeFile(target, expected);
+        await symlink(target, join(root, digest));
+
+        await expect(refresh.putCas(root, expected, "application/octet-stream")).rejects.toThrow(
+          /existing CAS entry.*symlink|too many levels of symbolic links/i,
+        );
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("rejects current-head rows when the canonical head is not the frozen revision", async () => {
     const refresh = await loadRefreshModule();
     const urls: string[] = [];
