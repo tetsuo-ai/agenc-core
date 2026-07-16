@@ -1,8 +1,9 @@
 # Evaluation suites protocol v1
 
 Status: implemented suite protocol, deterministic plan compilers, strict
-attempt/reset/report evidence envelopes, and committed definitions. This is not
-a fault executor, published baseline, or populated pilot.
+attempt/reset/report evidence envelopes, committed definitions, frozen public
+pilot candidates, and a fail-closed qualification/power pipeline. This is not a
+fault executor, qualified/scored pilot, or published baseline.
 
 The evaluation contract in [`evaluation-contract-v1.md`](evaluation-contract-v1.md)
 pins tasks, systems, preregistration, evidence, and score derivation. It is
@@ -269,10 +270,14 @@ Alternatives rejected:
 
 ## Deliberate remaining work
 
-This slice does not fabricate real tasks or results and does not claim that a
-fault executor exists. The following remain their own TODO checkboxes: populate
-the 30-task pilot and powered holdout, build the real-agent and deterministic
-trust executors, implement comparator adapters, derive/publish aggregate reports,
-and turn measured failures into improvements. M3/M4 implementation will make the
-current trust scenarios pass; until then, failures are data rather than contract
-defects.
+The public 30-task source selection, CAS, qualification protocol, pre-run plan
+validator, and pilot-to-confirmatory power analyzer now exist; see
+[`evaluation-pilot-v1.md`](evaluation-pilot-v1.md). No task is relabeled as
+qualified until its cold preflights, independent solve, negative-patch review,
+and stressor mechanism evidence exist. A fault executor and scored results do
+not yet exist. The remaining work is to qualify the pilot, build the real-agent
+and deterministic trust executors, implement comparator adapters, run the paired
+pilot, freeze the powered private holdout under separate custody, publish
+aggregate reports, and turn measured failures into improvements. M3/M4
+implementation will make the current trust scenarios pass; until then, failures
+are data rather than contract defects.

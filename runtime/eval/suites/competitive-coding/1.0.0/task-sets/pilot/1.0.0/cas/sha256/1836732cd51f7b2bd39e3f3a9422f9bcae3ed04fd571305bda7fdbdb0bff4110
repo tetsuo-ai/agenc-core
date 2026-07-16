@@ -1,0 +1,15 @@
+diff --git a/plugins/inputs/nftables/types.go b/plugins/inputs/nftables/types.go
+index d8a2a5d4338f3..f86996b4e31ed 100644
+--- a/plugins/inputs/nftables/types.go
++++ b/plugins/inputs/nftables/types.go
+@@ -110,3 +110,10 @@ type namedSet struct {
+ }
+ 
+ type elem struct{}
++
++// UnmarshalJSON accepts any JSON value type. Statically defined nftables sets
++// use plain strings for elements while dynamically added entries use objects.
++// Since the plugin only counts elements, the content is discarded.
++func (*elem) UnmarshalJSON([]byte) error {
++	return nil
++}

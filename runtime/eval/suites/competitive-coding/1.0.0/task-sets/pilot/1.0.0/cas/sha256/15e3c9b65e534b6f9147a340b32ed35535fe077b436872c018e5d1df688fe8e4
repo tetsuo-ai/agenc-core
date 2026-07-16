@@ -1,0 +1,80 @@
+diff --git a/clients/drcachesim/CMakeLists.txt b/clients/drcachesim/CMakeLists.txt
+index cf0fbf9396b..724998839ff 100644
+--- a/clients/drcachesim/CMakeLists.txt
++++ b/clients/drcachesim/CMakeLists.txt
+@@ -581,7 +581,8 @@ macro(add_drmemtrace name type static_DR no_main)
+     target_link_libraries(${name} atomic)
+   endif ()
+   add_dependencies(${name} api_headers)
+-  install_target(${name} ${INSTALL_CLIENTS_LIB})
++  DR_export_target(${name})
++  install_exported_target(${name} ${INSTALL_CLIENTS_LIB})
+ endmacro()
+ 
+ add_drmemtrace(drmemtrace SHARED OFF OFF)
+diff --git a/ext/drsyms/CMakeLists.txt b/ext/drsyms/CMakeLists.txt
+index 7531ac9e4cf..797500ec871 100644
+--- a/ext/drsyms/CMakeLists.txt
++++ b/ext/drsyms/CMakeLists.txt
+@@ -332,17 +332,20 @@ if (NOT USE_ELFUTILS)
+   set_property(TARGET dwarf PROPERTY IMPORTED_LOCATION "${dwarf_libpath}")
+   target_link_libraries(drsyms_static dwarf)
+   target_link_libraries(drsyms_drstatic dwarf)
++  file(COPY "${dwarf_libpath}" DESTINATION ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+   if (LINUX)
+     add_library(elf STATIC IMPORTED)
+     set_property(TARGET elf PROPERTY IMPORTED_LOCATION "${elf_libpath}")
+     target_link_libraries(drsyms_static elf)
+     target_link_libraries(drsyms_drstatic elf)
++    file(COPY "${elf_libpath}" DESTINATION ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+   endif (LINUX)
+ endif ()
+ add_library(elftc STATIC IMPORTED)
+ set_property(TARGET elftc PROPERTY IMPORTED_LOCATION "${elftc_libpath}")
+ target_link_libraries(drsyms_static elftc)
+ target_link_libraries(drsyms_drstatic elftc)
++file(COPY "${elftc_libpath}" DESTINATION ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
+ if (UNIX)
+   # Avoid missing symbols in static library build from g++ libs when
+   # drsyms_bench is linked with gcc instead of g++ (i#715, happens w/ cmake
+diff --git a/make/DynamoRIOConfig.cmake.in b/make/DynamoRIOConfig.cmake.in
+index 95e0e673247..b04a1983675 100644
+--- a/make/DynamoRIOConfig.cmake.in
++++ b/make/DynamoRIOConfig.cmake.in
+@@ -1,5 +1,5 @@
+ # **********************************************************
+-# Copyright (c) 2010-2021 Google, Inc.    All rights reserved.
++# Copyright (c) 2010-2025 Google, Inc.    All rights reserved.
+ # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
+ # **********************************************************
+ 
+@@ -1182,9 +1182,6 @@ endfunction (get_DynamoRIO_defines)
+ set(DynamoRIO_EXT_drgui_NOLIB ON)
+ set(DynamoRIO_EXT_droption_NOLIB ON)
+ set(DynamoRIO_EXT_droption_INC ${DynamoRIO_cwd}/../ext/include)
+-# Not really an extension, just for including drmemtrace.h
+-# via use_DynamoRIO_extension(target, drmemtrace_static)
+-set(DynamoRIO_EXT_drmemtrace_static_NOLIB ON)
+ 
+ # DynamoRIO Extensions
+ # Failure to call this in your client CMakeLists.txt when using an extension like
+diff --git a/make/utils_exposed.cmake b/make/utils_exposed.cmake
+index cc3ebcb7645..7c09e9c773a 100644
+--- a/make/utils_exposed.cmake
++++ b/make/utils_exposed.cmake
+@@ -1,5 +1,5 @@
+ ## **********************************************************
+-## Copyright (c) 2012-2021 Google, Inc.    All rights reserved.
++## Copyright (c) 2012-2025 Google, Inc.    All rights reserved.
+ ## **********************************************************
+ ##
+ ## Redistribution and use in source and binary forms, with or without
+@@ -290,7 +290,7 @@ function(DynamoRIO_force_static_link target lib)
+     else ()
+       set(incname "_dr_client_main")
+     endif ()
+-    append_property_string(TARGET ${target} LINK_FLAGS "/include:${incname}")
++    _DR_append_property_string(TARGET ${target} LINK_FLAGS "/include:${incname}")
+   endif ()
+ endfunction(DynamoRIO_force_static_link)
+ 

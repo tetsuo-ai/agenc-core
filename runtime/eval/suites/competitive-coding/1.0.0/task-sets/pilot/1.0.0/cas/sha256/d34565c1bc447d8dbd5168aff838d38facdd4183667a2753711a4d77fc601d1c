@@ -1,0 +1,240 @@
+diff --git a/p2p/transport/quicreuse/connmgr.go b/p2p/transport/quicreuse/connmgr.go
+index dedca7488a..6a28a4eb7e 100644
+--- a/p2p/transport/quicreuse/connmgr.go
++++ b/p2p/transport/quicreuse/connmgr.go
+@@ -2,13 +2,13 @@
+ // for reusing QUIC transports for various purposes, like listening & dialing, having
+ // multiple QUIC listeners on the same address with different ALPNs, and sharing the
+ // same address with non QUIC transports like WebRTC.
++
+ package quicreuse
+ 
+ import (
+ 	"context"
+ 	"crypto/tls"
+ 	"errors"
+-	"fmt"
+ 	"io"
+ 	"net"
+ 	"sync"
+@@ -224,7 +224,7 @@ func (c *ConnManager) ListenQUICAndAssociate(association any, addr ma.Multiaddr,
+ 	key := laddr.String()
+ 	entry, ok := c.quicListeners[key]
+ 	if !ok {
+-		tr, err := c.transportForListen(association, netw, laddr)
++		tr, err := c.transportForListen(netw, laddr)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -234,20 +234,15 @@ func (c *ConnManager) ListenQUICAndAssociate(association any, addr ma.Multiaddr,
+ 		}
+ 		key = tr.LocalAddr().String()
+ 		entry = quicListenerEntry{ln: ln}
+-	} else if c.enableReuseport && association != nil {
+-		reuse, err := c.getReuse(netw)
+-		if err != nil {
+-			return nil, fmt.Errorf("reuse error: %w", err)
+-		}
+-		err = reuse.AssertTransportExists(entry.ln.transport)
+-		if err != nil {
+-			return nil, fmt.Errorf("reuse assert transport failed: %w", err)
+-		}
+-		if tr, ok := entry.ln.transport.(*refcountedTransport); ok {
+-			tr.associate(association)
++	}
++	if c.enableReuseport && association != nil {
++		if _, ok := entry.ln.transport.(*refcountedTransport); !ok {
++			log.Warnf("reuseport is enabled, association is non-nil, but the transport is not a refcountedTransport.")
+ 		}
+ 	}
+-	l, err := entry.ln.Add(tlsConf, allowWindowIncrease, func() { c.onListenerClosed(key) })
++	l, err := entry.ln.Add(association, tlsConf, allowWindowIncrease, func() {
++		c.onListenerClosed(key)
++	})
+ 	if err != nil {
+ 		if entry.refCount <= 0 {
+ 			entry.ln.Close()
+@@ -296,7 +291,7 @@ func (c *ConnManager) SharedNonQUICPacketConn(_ string, laddr *net.UDPAddr) (net
+ 	return nil, errors.New("expected to be able to share with a QUIC listener, but the QUIC listener is not using a refcountedTransport. `DisableReuseport` should not be set")
+ }
+ 
+-func (c *ConnManager) transportForListen(association any, network string, laddr *net.UDPAddr) (RefCountedQUICTransport, error) {
++func (c *ConnManager) transportForListen(network string, laddr *net.UDPAddr) (RefCountedQUICTransport, error) {
+ 	if c.enableReuseport {
+ 		reuse, err := c.getReuse(network)
+ 		if err != nil {
+@@ -306,7 +301,6 @@ func (c *ConnManager) transportForListen(association any, network string, laddr
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		tr.associate(association)
+ 		return tr, nil
+ 	}
+ 
+diff --git a/p2p/transport/quicreuse/listener.go b/p2p/transport/quicreuse/listener.go
+index 48c0752035..71a896b773 100644
+--- a/p2p/transport/quicreuse/listener.go
++++ b/p2p/transport/quicreuse/listener.go
+@@ -91,7 +91,7 @@ func (l *quicListener) allowWindowIncrease(conn *quic.Conn, delta uint64) bool {
+ 	return conf.allowWindowIncrease(conn, delta)
+ }
+ 
+-func (l *quicListener) Add(tlsConf *tls.Config, allowWindowIncrease func(conn *quic.Conn, delta uint64) bool, onRemove func()) (Listener, error) {
++func (l *quicListener) Add(association any, tlsConf *tls.Config, allowWindowIncrease func(conn *quic.Conn, delta uint64) bool, onRemove func()) (*listener, error) {
+ 	l.protocolsMu.Lock()
+ 	defer l.protocolsMu.Unlock()
+ 
+@@ -105,14 +105,32 @@ func (l *quicListener) Add(tlsConf *tls.Config, allowWindowIncrease func(conn *q
+ 		}
+ 	}
+ 
+-	ln := newSingleListener(l.l.Addr(), l.addrs, func() {
++	ln := &listener{
++		queue:             make(chan *quic.Conn, queueLen),
++		acceptLoopRunning: l.running,
++		addr:              l.l.Addr(),
++		addrs:             l.addrs,
++	}
++	if association != nil {
++		if tr, ok := l.transport.(*refcountedTransport); ok {
++			tr.associateForListener(association, ln)
++		}
++	}
++
++	ln.remove = func() {
++		if association != nil {
++			if tr, ok := l.transport.(*refcountedTransport); ok {
++				tr.RemoveAssociationsForListener(ln)
++			}
++		}
+ 		l.protocolsMu.Lock()
+ 		for _, proto := range tlsConf.NextProtos {
+ 			delete(l.protocols, proto)
+ 		}
+ 		l.protocolsMu.Unlock()
+ 		onRemove()
+-	}, l.running)
++	}
++
+ 	for _, proto := range tlsConf.NextProtos {
+ 		l.protocols[proto] = protoConf{
+ 			ln:                  ln,
+@@ -167,16 +185,6 @@ type listener struct {
+ 
+ var _ Listener = &listener{}
+ 
+-func newSingleListener(addr net.Addr, addrs []ma.Multiaddr, remove func(), running chan struct{}) *listener {
+-	return &listener{
+-		queue:             make(chan *quic.Conn, queueLen),
+-		acceptLoopRunning: running,
+-		remove:            remove,
+-		addr:              addr,
+-		addrs:             addrs,
+-	}
+-}
+-
+ func (l *listener) add(c *quic.Conn) {
+ 	select {
+ 	case l.queue <- c:
+diff --git a/p2p/transport/quicreuse/reuse.go b/p2p/transport/quicreuse/reuse.go
+index 1593e22666..b13cda208e 100644
+--- a/p2p/transport/quicreuse/reuse.go
++++ b/p2p/transport/quicreuse/reuse.go
+@@ -88,25 +88,44 @@ type refcountedTransport struct {
+ 	// channel to signal to the owner that we are done with it.
+ 	borrowDoneSignal chan struct{}
+ 
+-	assocations map[any]struct{}
++	// Store associations as association -> set of listener objects
++	associations map[any]map[*listener]struct{}
+ }
+ 
+ type connContextFunc = func(context.Context, *quic.ClientInfo) (context.Context, error)
+ 
+-// associate an arbitrary value with this transport.
++// associateForListener associates an arbitrary value with this transport for a specific listener.
+ // This lets us "tag" the refcountedTransport when listening so we can use it
+-// later for dialing. Necessary for holepunching and learning about our own
+-// observed listening address.
+-func (c *refcountedTransport) associate(a any) {
++// later for dialing. The listener parameter allows proper cleanup when the listener closes.
++// Necessary for holepunching and learning about our own observed listening address.
++func (c *refcountedTransport) associateForListener(a any, ln *listener) {
+ 	if a == nil {
+ 		return
+ 	}
+ 	c.mutex.Lock()
+ 	defer c.mutex.Unlock()
+-	if c.assocations == nil {
+-		c.assocations = make(map[any]struct{})
++	if c.associations == nil {
++		c.associations = make(map[any]map[*listener]struct{})
++	}
++	if c.associations[a] == nil {
++		c.associations[a] = make(map[*listener]struct{})
++	}
++	c.associations[a][ln] = struct{}{}
++}
++
++// RemoveAssociationsForListener removes ALL associations added by a specific listener
++func (c *refcountedTransport) RemoveAssociationsForListener(ln *listener) {
++	c.mutex.Lock()
++	defer c.mutex.Unlock()
++
++	// Remove this listener from all associations
++	for association, listeners := range c.associations {
++		delete(listeners, ln)
++		// If no listeners remain for this association, remove the association entirely
++		if len(listeners) == 0 {
++			delete(c.associations, association)
++		}
+ 	}
+-	c.assocations[a] = struct{}{}
+ }
+ 
+ // hasAssociation returns true if the transport has the given association.
+@@ -117,8 +136,8 @@ func (c *refcountedTransport) hasAssociation(a any) bool {
+ 	}
+ 	c.mutex.Lock()
+ 	defer c.mutex.Unlock()
+-	_, ok := c.assocations[a]
+-	return ok
++	listeners, ok := c.associations[a]
++	return ok && len(listeners) > 0
+ }
+ 
+ func (c *refcountedTransport) IncreaseCount() {
+@@ -367,33 +386,6 @@ func (r *reuse) AddTransport(tr *refcountedTransport, laddr *net.UDPAddr) error
+ 	return nil
+ }
+ 
+-func (r *reuse) AssertTransportExists(tr RefCountedQUICTransport) error {
+-	t, ok := tr.(*refcountedTransport)
+-	if !ok {
+-		return fmt.Errorf("invalid transport type: expected: *refcountedTransport, got: %T", tr)
+-	}
+-	laddr := t.LocalAddr().(*net.UDPAddr)
+-	if laddr.IP.IsUnspecified() {
+-		if lt, ok := r.globalListeners[laddr.Port]; ok {
+-			if lt == t {
+-				return nil
+-			}
+-			return errors.New("two global listeners on the same port")
+-		}
+-		return errors.New("transport not found")
+-	}
+-	if m, ok := r.unicast[laddr.IP.String()]; ok {
+-		if lt, ok := m[laddr.Port]; ok {
+-			if lt == t {
+-				return nil
+-			}
+-			return errors.New("two unicast listeners on same ip:port")
+-		}
+-		return errors.New("transport not found")
+-	}
+-	return errors.New("transport not found")
+-}
+-
+ func (r *reuse) TransportForListen(network string, laddr *net.UDPAddr) (*refcountedTransport, error) {
+ 	r.mutex.Lock()
+ 	defer r.mutex.Unlock()

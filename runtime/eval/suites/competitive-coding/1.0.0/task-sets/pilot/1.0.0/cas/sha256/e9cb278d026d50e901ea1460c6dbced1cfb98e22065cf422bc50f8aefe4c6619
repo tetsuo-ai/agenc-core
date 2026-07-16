@@ -1,0 +1,13 @@
+diff --git a/src/request.ts b/src/request.ts
+index e93617c8b..5dc034d3f 100644
+--- a/src/request.ts
++++ b/src/request.ts
+@@ -243,7 +243,7 @@ export class HonoRequest<P extends string = '/', I extends Input['out'] = {}> {
+    * ```
+    */
+   json<T = any>(): Promise<T> {
+-    return this.#cachedBody('json')
++    return this.#cachedBody('text').then((text: string) => JSON.parse(text))
+   }
+ 
+   /**

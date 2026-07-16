@@ -9,9 +9,11 @@ will run before results are visible, keeps private oracle material away from the
 agent, records exact run provenance, stores raw evidence separately from derived
 summaries, and refuses to call an unassessed run a trusted fix.
 
-It completes the contract-definition slice only. It does not claim that the
-pilot task set, paid baseline, comparator adapters, or superiority run already
-exist; those are separate M1 deliverables in [`todo.txt`](../todo.txt).
+It completes the contract-definition slice only. Public pilot candidates and
+their qualification/power protocol now exist in
+[`evaluation-pilot-v1.md`](evaluation-pilot-v1.md), but no qualified/scored
+pilot, paid baseline, comparator run, or superiority result is claimed; those
+remain separate M1 deliverables in [`todo.txt`](../todo.txt).
 
 ## Files and command
 
@@ -22,6 +24,8 @@ exist; those are separate M1 deliverables in [`todo.txt`](../todo.txt).
 | `runtime/src/eval-contract/validation.ts` | Schema and semantic validation, safe task projection, holdout preflight |
 | `runtime/src/eval-contract/evidence-ledger.ts` | Locked payload store, append-only journal, freeze/seal/verify lifecycle |
 | `runtime/src/eval-contract/experiment-bundle.ts` | Cross-document pin checks and deterministic summary derivation |
+| `runtime/src/eval-contract/evaluation-plan.ts` | Pre-run suite/preregistration/holdout/power cross-document gate |
+| `runtime/src/eval-power/` | Digest-bound pilot power analysis using the production Type-7 clustered bootstrap |
 
 Validate one or more v1 documents locally:
 

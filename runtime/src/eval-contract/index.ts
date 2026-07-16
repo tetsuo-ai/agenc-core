@@ -76,10 +76,12 @@ export {
 } from "./evidence-ledger.js";
 export {
   EvaluationBundleValidationError,
+  MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS,
   createHoldoutAccessStatement,
   createInfrastructureClassificationStatement,
   createTrustAssessmentStatement,
   computePairedTfrEffect,
+  computeRepositoryClusteredPercentileInterval,
   computePlannedExecutionOrderDigest,
   derivePlannedExecutionOrder,
   deriveExperimentSummary,
@@ -93,5 +95,13 @@ export {
   type InfrastructureClassificationInput,
   type TrustAssessmentAttestationInput,
   type PairedTaskTrials,
+  type RepositoryClusteredBootstrapInference,
+  type RepositoryClusteredBootstrapTaskDifference,
   type ValidatedBundle,
 } from "./experiment-bundle.js";
+export {
+  EvaluationPlanValidationError,
+  validateEvaluationPlan,
+  type EvaluationPlanInput,
+  type ValidatedEvaluationPlan,
+} from "./evaluation-plan.js";

@@ -1399,11 +1399,150 @@ function type7Quantile(sorted: readonly number[], probability: number): number {
   return sorted[lower] + fraction * (sorted[upper] - sorted[lower]);
 }
 
-function bootstrapInterval(
-  taskDifferences: readonly { readonly cluster: string; readonly difference: number }[],
+export interface RepositoryClusteredBootstrapTaskDifference {
+  readonly cluster: string;
+  readonly difference: number;
+}
+
+export interface RepositoryClusteredBootstrapInference {
+  readonly resamples: number;
+  readonly randomSeed: number;
+}
+
+const MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS = 100_000;
+/** Maximum per-call task additions before the synchronous primitive fails closed. */
+export const MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS = 500_000_000;
+
+function validateRepositoryClusteredBootstrapInput(
+  taskDifferences: readonly RepositoryClusteredBootstrapTaskDifference[],
   comparisonId: string,
-  inference: PreregistrationDocument["inference"],
+  inference: RepositoryClusteredBootstrapInference,
+): void {
+  const issues: string[] = [];
+  const entries: readonly RepositoryClusteredBootstrapTaskDifference[] = Array.isArray(taskDifferences)
+    ? taskDifferences
+    : [];
+  requireBundle(
+    Array.isArray(taskDifferences) && entries.length > 0,
+    "repository-clustered bootstrap requires a non-empty dense task array",
+    issues,
+  );
+  requireBundle(
+    entries.length <= MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS,
+    `repository-clustered bootstrap cannot exceed ${MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS} tasks`,
+    issues,
+  );
+  if (entries.length <= MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS) {
+    requireBundle(
+      isDenseArray(taskDifferences),
+      "repository-clustered bootstrap requires a non-empty dense task array",
+      issues,
+    );
+  }
+  requireBundle(
+    typeof comparisonId === "string" && CONTRACT_ID_PATTERN.test(comparisonId),
+    "repository-clustered bootstrap requires a valid comparison ID",
+    issues,
+  );
+  const inferenceCandidate = inference as Partial<RepositoryClusteredBootstrapInference> | null;
+  const resamplesDescriptor = inferenceCandidate && typeof inferenceCandidate === "object"
+    ? Object.getOwnPropertyDescriptor(inferenceCandidate, "resamples")
+    : undefined;
+  const randomSeedDescriptor = inferenceCandidate && typeof inferenceCandidate === "object"
+    ? Object.getOwnPropertyDescriptor(inferenceCandidate, "randomSeed")
+    : undefined;
+  const resamples = resamplesDescriptor && "value" in resamplesDescriptor && resamplesDescriptor.enumerable
+    ? resamplesDescriptor.value as unknown
+    : undefined;
+  const randomSeed = randomSeedDescriptor && "value" in randomSeedDescriptor && randomSeedDescriptor.enumerable
+    ? randomSeedDescriptor.value as unknown
+    : undefined;
+  requireBundle(
+    inferenceCandidate !== null &&
+      typeof inferenceCandidate === "object" &&
+      !Array.isArray(inferenceCandidate) &&
+      Object.keys(inferenceCandidate).length === 2 &&
+      resamplesDescriptor !== undefined &&
+      "value" in resamplesDescriptor &&
+      resamplesDescriptor.enumerable &&
+      randomSeedDescriptor !== undefined &&
+      "value" in randomSeedDescriptor &&
+      randomSeedDescriptor.enumerable,
+    "repository-clustered bootstrap inference must contain only resamples and randomSeed",
+    issues,
+  );
+  requireBundle(
+    Number.isInteger(resamples) &&
+      (resamples as number) >= 10_000 &&
+      (resamples as number) <= 1_000_000,
+    "repository-clustered bootstrap resamples must be an integer in [10000, 1000000]",
+    issues,
+  );
+  requireBundle(
+    Number.isInteger(randomSeed) &&
+      (randomSeed as number) >= 1 &&
+      (randomSeed as number) <= UINT32_MAX,
+    "repository-clustered bootstrap randomSeed must be an integer in [1, 2^32 - 1]",
+    issues,
+  );
+  if (entries.length <= MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASKS) {
+    for (let index = 0; index < entries.length; index += 1) {
+      if (issues.length >= 100) break;
+      const entryDescriptor = Object.getOwnPropertyDescriptor(entries, String(index));
+      const task = entryDescriptor && "value" in entryDescriptor && entryDescriptor.enumerable
+        ? entryDescriptor.value as RepositoryClusteredBootstrapTaskDifference
+        : undefined;
+      if (!task || typeof task !== "object" || Array.isArray(task)) {
+        issues.push(`repository-clustered bootstrap task ${index} must be an object`);
+        continue;
+      }
+      const clusterDescriptor = Object.getOwnPropertyDescriptor(task, "cluster");
+      const differenceDescriptor = Object.getOwnPropertyDescriptor(task, "difference");
+      const cluster = clusterDescriptor && "value" in clusterDescriptor && clusterDescriptor.enumerable
+        ? clusterDescriptor.value as unknown
+        : undefined;
+      const difference = differenceDescriptor && "value" in differenceDescriptor && differenceDescriptor.enumerable
+        ? differenceDescriptor.value as unknown
+        : undefined;
+      requireBundle(
+        Object.keys(task).length === 2 &&
+          clusterDescriptor !== undefined &&
+          "value" in clusterDescriptor &&
+          clusterDescriptor.enumerable &&
+          differenceDescriptor !== undefined &&
+          "value" in differenceDescriptor &&
+          differenceDescriptor.enumerable,
+        `repository-clustered bootstrap task ${index} must contain only cluster and difference`,
+        issues,
+      );
+      requireBundle(
+        typeof cluster === "string" && CONTRACT_ID_PATTERN.test(cluster),
+        `repository-clustered bootstrap task ${index} requires a valid cluster ID`,
+        issues,
+      );
+      requireBundle(
+        Number.isFinite(difference) &&
+          (difference as number) >= -1 &&
+          (difference as number) <= 1,
+        `repository-clustered bootstrap task ${index} difference must be finite and in [-1, 1]`,
+        issues,
+      );
+    }
+  }
+  if (issues.length > 0) throw new EvaluationBundleValidationError(issues);
+}
+
+/**
+ * The single production implementation of contract-v1 repository-clustered
+ * percentile bootstrap inference. Power planning calls this same function so
+ * its decision rule cannot drift from result derivation.
+ */
+export function computeRepositoryClusteredPercentileInterval(
+  taskDifferences: readonly RepositoryClusteredBootstrapTaskDifference[],
+  comparisonId: string,
+  inference: RepositoryClusteredBootstrapInference,
 ): { readonly lower: number; readonly upper: number } {
+  validateRepositoryClusteredBootstrapInput(taskDifferences, comparisonId, inference);
   const grouped = new Map<string, number[]>();
   for (const task of taskDifferences) {
     const group = grouped.get(task.cluster) ?? [];
@@ -1411,15 +1550,34 @@ function bootstrapInterval(
     grouped.set(task.cluster, group);
   }
   const clusters = [...grouped.keys()].sort();
+  const clusterValues = clusters.map((cluster) => grouped.get(cluster) as readonly number[]);
+  const largestClusterSize = clusterValues.reduce(
+    (maximum, values) => Math.max(maximum, values.length),
+    0,
+  );
+  const maximumTasksPerResample = clusters.length * largestClusterSize;
+  const aggregateTaskAdditions = BigInt(inference.resamples) * BigInt(maximumTasksPerResample);
+  if (aggregateTaskAdditions > BigInt(MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS)) {
+    throw new EvaluationBundleValidationError([
+      `repository-clustered bootstrap cannot exceed ${MAX_REPOSITORY_CLUSTERED_BOOTSTRAP_TASK_ADDITIONS} task additions`,
+    ]);
+  }
   const random = randomGenerator(comparisonSeed(inference.randomSeed, comparisonId));
-  const samples: number[] = [];
+  const samples = new Array<number>(inference.resamples);
   for (let iteration = 0; iteration < inference.resamples; iteration += 1) {
-    const values: number[] = [];
+    let sum = 0;
+    let count = 0;
     for (let draw = 0; draw < clusters.length; draw += 1) {
-      const cluster = clusters[Math.floor(random() * clusters.length)];
-      values.push(...(grouped.get(cluster) ?? []));
+      const values = clusterValues[Math.floor(random() * clusterValues.length)];
+      // Contract v1 appends each sampled cluster's task values, then computes
+      // one left-to-right mean. Do not pre-sum clusters: floating-point
+      // regrouping changes exact, digest-bound interval vectors.
+      for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+        sum += values[valueIndex];
+        count += 1;
+      }
     }
-    samples.push(mean(values));
+    samples[iteration] = sum / count;
   }
   samples.sort((left, right) => left - right);
   return {
@@ -1501,7 +1659,14 @@ export function computePairedTfrEffect(
     difference: mean(task.trialDifferences),
   }));
   const pointEstimate = mean(taskDifferences.map((entry) => entry.difference));
-  const interval = bootstrapInterval(taskDifferences, comparisonId, inference);
+  const interval = computeRepositoryClusteredPercentileInterval(
+    taskDifferences,
+    comparisonId,
+    {
+      resamples: inference.resamples,
+      randomSeed: inference.randomSeed,
+    },
+  );
   return {
     pointEstimate,
     confidenceLower: interval.lower,

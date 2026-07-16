@@ -1,0 +1,27 @@
+diff --git a/pkl-parser/src/main/java/org/pkl/parser/Lexer.java b/pkl-parser/src/main/java/org/pkl/parser/Lexer.java
+index 5b7ee93af..296ecd198 100644
+--- a/pkl-parser/src/main/java/org/pkl/parser/Lexer.java
++++ b/pkl-parser/src/main/java/org/pkl/parser/Lexer.java
+@@ -489,7 +489,7 @@ private Token lexIdentifier() {
+   }
+ 
+   private void lexQuotedIdentifier() {
+-    while (lookahead != '`' && lookahead != '\n' && lookahead != '\r') {
++    while (lookahead != '`' && lookahead != '\n' && lookahead != '\r' && lookahead != EOF) {
+       nextChar();
+     }
+     if (lookahead == '`') {
+@@ -705,6 +705,13 @@ private ParserError lexError(String msg, Span span) {
+   }
+ 
+   private ParserError unexpectedChar(char got, String didYouMean) {
++    if (got == EOF) {
++      return unexpectedChar("EOF", didYouMean);
++    }
++    return lexError("unexpectedCharacter", got, didYouMean);
++  }
++
++  private ParserError unexpectedChar(String got, String didYouMean) {
+     return lexError("unexpectedCharacter", got, didYouMean);
+   }
+ 

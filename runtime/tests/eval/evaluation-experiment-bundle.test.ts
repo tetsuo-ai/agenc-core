@@ -7,6 +7,7 @@ import {
   appendEvidenceEvent,
   canonicalizeJson,
   computePairedTfrEffect,
+  computeRepositoryClusteredPercentileInterval,
   computePlannedExecutionOrderDigest,
   createHoldoutAccessStatement,
   createInfrastructureClassificationStatement,
@@ -1293,6 +1294,92 @@ describe("paired TFR inference", () => {
       "comparison-invalid",
       null as never,
     )).toThrow(/non-empty task trials|resamples must be an integer/u);
+  });
+
+  test("preserves contract-v1 bootstrap arithmetic and rejects invalid direct calls", () => {
+    const arithmeticVector = [
+      { cluster: "repo-a", difference: 1 },
+      { cluster: "repo-a", difference: 1e-16 },
+      { cluster: "repo-a", difference: -1 },
+      { cluster: "repo-b", difference: 1 },
+      { cluster: "repo-b", difference: -1 },
+      { cluster: "repo-b", difference: 2e-16 },
+    ];
+    expect(computeRepositoryClusteredPercentileInterval(
+      arithmeticVector,
+      "arithmetic-regression",
+      { resamples: 10_000, randomSeed: 123_456 },
+    )).toEqual({
+      lower: 0,
+      upper: 7.034076748750522e-17,
+    });
+    // Pre-summing each cluster changes this exact contract vector to
+    // 6.666666666666667e-17 by regrouping floating-point additions.
+    expect(computeRepositoryClusteredPercentileInterval(
+      arithmeticVector,
+      "arithmetic-regression",
+      { resamples: 10_000, randomSeed: 123_456 },
+    ).upper).not.toBe(6.666666666666667e-17);
+
+    const startedAt = performance.now();
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [],
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/non-empty dense task array/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [{ cluster: "repo", difference: Number.POSITIVE_INFINITY }],
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/finite and in \[-1, 1\]/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [{ cluster: "repo", difference: Number.NaN }],
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/finite and in \[-1, 1\]/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [{ cluster: "not portable", difference: 0 }],
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/valid cluster ID/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [{ cluster: "repo", difference: 0 }],
+      "not portable",
+      { resamples: 10_000, randomSeed: 0 },
+    )).toThrow(/valid comparison ID|randomSeed must be an integer/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [{ cluster: "repo", difference: 0 }],
+      "comparison-invalid",
+      { resamples: 1_000_001, randomSeed: 1 },
+    )).toThrow(/resamples must be an integer/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      new Array(100_001).fill({ cluster: "repo", difference: 0 }),
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/cannot exceed 100000 tasks/u);
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      Array.from({ length: 501 }, (_, index) => ({
+        cluster: "repo",
+        difference: index % 2 === 0 ? 0.25 : -0.25,
+      })),
+      "comparison-invalid",
+      { resamples: 1_000_000, randomSeed: 1 },
+    )).toThrow(/cannot exceed 500000000 task additions/u);
+    let getterCalls = 0;
+    const accessorTask = {
+      cluster: "repo",
+      get difference(): number {
+        getterCalls += 1;
+        return 0;
+      },
+    };
+    expect(() => computeRepositoryClusteredPercentileInterval(
+      [accessorTask],
+      "comparison-invalid",
+      { resamples: 10_000, randomSeed: 1 },
+    )).toThrow(/contain only cluster and difference/u);
+    expect(getterCalls).toBe(0);
+    expect(performance.now() - startedAt).toBeLessThan(500);
   });
 });
 
