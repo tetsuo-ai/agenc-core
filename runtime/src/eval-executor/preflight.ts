@@ -170,6 +170,19 @@ async function runPhase(
       lastTestExit = tested.exitCode;
     }
 
+    // Upstream SWE-bench-Live semantics: the log parser consumes the output
+    // of the bundle's print commands (e.g. `cat reports/mocha-results.json`),
+    // not the raw test stdout. Redirect in-container so the host output cap
+    // cannot truncate the parser input.
+    for (const [index, command] of inputs.bundle.printCommands.entries()) {
+      // A failing print command is not fatal by itself; an empty parser
+      // input already surfaces through the taxonomy below.
+      await exec(
+        `print[${index}]`,
+        `( ${command} ) >> ${HELPER_DIR}/parser-input.log`,
+        timeouts.parserMs,
+      );
+    }
     await runner.writeFile(
       handle,
       `${HELPER_DIR}/captured-test-output.log`,
@@ -182,7 +195,7 @@ async function runPhase(
     );
     const parsed = await exec(
       "parse-log",
-      `python3 ${HELPER_DIR}/parse-log.py test-output.log ${HELPER_DIR}/captured-test-output.log`,
+      `python3 ${HELPER_DIR}/parse-log.py ${HELPER_DIR}/parser-input.log test-output.log ${HELPER_DIR}/captured-test-output.log`,
       timeouts.parserMs,
     );
     if (parsed.exitCode !== 0) {
