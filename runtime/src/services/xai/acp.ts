@@ -27,7 +27,7 @@ import {
 } from '../../sandbox/execution-broker.js'
 import { scrubEnvForChildProcess } from '../../unified-exec/scrub-env.js'
 import { asRecord } from '../../utils/record.js'
-import { signalProcessTree } from '../../utils/supervisedProcess.js'
+import { terminateProcessTreeAndWait } from '../../utils/supervisedProcess.js'
 
 export const GROK_ACP_REFERRER_ENV = 'GROK_OAUTH2_REFERRER'
 export const GROK_ACP_REFERRER = 'agenc'
@@ -41,11 +41,11 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 20 * 60 * 1000
 const STDERR_TAIL_LIMIT = 4_096
 const DEFAULT_TERMINATE_GRACE_MS = 500
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000
-const PROCESS_EXIT_POLL_MS = 20
 
 export type XaiAcpErrorCode =
   | 'spawn_failed'
   | 'closed'
+  | 'aborted'
   | 'timeout'
   | 'protocol'
   | 'agent_error'
@@ -334,8 +334,16 @@ export class XaiAcpClient {
     }
     const onAbort = () => {
       this.notify('session/cancel', { sessionId: params.sessionId })
+      const error = new XaiAcpError(
+        'aborted',
+        `ACP prompt aborted${params.signal?.reason === undefined ? '' : `: ${String(params.signal.reason)}`}`,
+      )
+      this.failAll(error)
+      abortTermination ??= this.terminateProcessTree()
     }
-    params.signal?.addEventListener('abort', onAbort, { once: true })
+    let abortTermination: Promise<void> | null = null
+    if (params.signal?.aborted === true) onAbort()
+    else params.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       const result = await this.request(
         'session/prompt',
@@ -350,6 +358,9 @@ export class XaiAcpClient {
       return { stopReason, text }
     } finally {
       params.signal?.removeEventListener('abort', onAbort)
+      // Do not let a caller treat cancellation as complete while the
+      // single-flight ACP process (or one of its descendants) is still live.
+      if (abortTermination !== null) await abortTermination
       this.promptCollector = null
     }
   }
@@ -371,57 +382,29 @@ export class XaiAcpClient {
       // The output stream may already have closed after an early spawn error.
     }
     this.child.stdin.destroy()
-
-    this.closePromise = new Promise((resolve, reject) => {
-      let settled = false
-      let forceTimer: ReturnType<typeof setTimeout> | undefined
-      let backstopTimer: ReturnType<typeof setTimeout> | undefined
-      let pollTimer: ReturnType<typeof setInterval> | undefined
-
-      const finish = (error?: XaiAcpError): void => {
-        if (settled) return
-        settled = true
-        if (forceTimer !== undefined) clearTimeout(forceTimer)
-        if (backstopTimer !== undefined) clearTimeout(backstopTimer)
-        if (pollTimer !== undefined) clearInterval(pollTimer)
-        this.child.removeListener('close', checkForExit)
-        this.child.stdout.destroy()
-        this.child.stderr.destroy()
-        if (error !== undefined) reject(error)
-        else resolve()
-      }
-      const checkForExit = (): void => {
-        if (!acpProcessTreeAlive(this.child)) finish()
-      }
-
-      this.child.once('close', checkForExit)
-      pollTimer = setInterval(checkForExit, PROCESS_EXIT_POLL_MS)
-      signalProcessTree(this.child, 'SIGTERM')
-      forceTimer = setTimeout(() => {
-        signalProcessTree(this.child, 'SIGKILL')
-      }, positiveLifecycleBound(
+    this.closePromise = terminateProcessTreeAndWait(this.child, {
+      terminateGraceMs: positiveLifecycleBound(
         this.options.terminateGraceMs,
         DEFAULT_TERMINATE_GRACE_MS,
-      ))
-      backstopTimer = setTimeout(
-        () => finish(
-          acpProcessTreeAlive(this.child)
-            ? new XaiAcpError(
-                'closed',
-                'ACP process tree did not terminate before the shutdown backstop',
-              )
-            : undefined,
-        ),
-        positiveLifecycleBound(
-          this.options.terminateGraceMs,
-          DEFAULT_TERMINATE_GRACE_MS,
-        ) + positiveLifecycleBound(
-          this.options.settleBackstopMs,
-          DEFAULT_SETTLE_BACKSTOP_MS,
-        ),
-      )
-      checkForExit()
+      ),
+      killGraceMs: positiveLifecycleBound(
+        this.options.settleBackstopMs,
+        DEFAULT_SETTLE_BACKSTOP_MS,
+      ),
+      label: 'ACP process',
     })
+      .catch(error => {
+        throw error instanceof XaiAcpError
+          ? error
+          : new XaiAcpError(
+              'closed',
+              error instanceof Error ? error.message : String(error),
+            )
+      })
+      .finally(() => {
+        this.child.stdout.destroy()
+        this.child.stderr.destroy()
+      })
     return this.closePromise
   }
 
@@ -604,21 +587,4 @@ function positiveLifecycleBound(
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? value
     : fallback
-}
-
-function acpProcessTreeAlive(
-  child: Pick<
-    ChildProcessWithoutNullStreams,
-    'pid' | 'exitCode' | 'signalCode'
-  >,
-): boolean {
-  if (child.pid === undefined || process.platform === 'win32') {
-    return child.exitCode === null && child.signalCode === null
-  }
-  try {
-    process.kill(-child.pid, 0)
-    return true
-  } catch {
-    return false
-  }
 }

@@ -107,6 +107,39 @@ describe('message flattening', () => {
 })
 
 describe('GrokAcpProvider end to end (fake agent)', () => {
+  test('close drains a replacement client created during an earlier disposal', async () => {
+    const provider = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+    let releaseFirst!: () => void
+    const firstClosed = new Promise<void>(resolve => {
+      releaseFirst = resolve
+    })
+    const first = { dispose: vi.fn(() => firstClosed) }
+    const replacement = { dispose: vi.fn(async () => {}) }
+    const state = provider as unknown as {
+      client: { dispose(): Promise<void> } | null
+      closeClient(): Promise<void>
+    }
+
+    try {
+      state.client = first
+      const closing = state.closeClient()
+      await vi.waitFor(() => expect(first.dispose).toHaveBeenCalledOnce())
+      state.client = replacement
+      releaseFirst()
+      await closing
+
+      expect(replacement.dispose).toHaveBeenCalledOnce()
+      expect(state.client).toBeNull()
+    } finally {
+      releaseFirst()
+      await provider.dispose()
+    }
+  })
+
   test('chat selects the model and returns the streamed text', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',

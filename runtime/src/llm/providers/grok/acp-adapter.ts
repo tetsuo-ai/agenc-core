@@ -328,6 +328,16 @@ export class GrokAcpProvider implements LLMProvider {
     try {
       await client.initialize();
       await client.authenticate(resolveAuthMethodId(env));
+      if (this.disposed || this.suspended || this.client !== client) {
+        await client.dispose();
+        if (this.client === client) this.client = null;
+        throw new LLMProviderError(
+          this.name,
+          this.disposed
+            ? "composer provider is disposed"
+            : "composer provider is quiesced for a workspace transition",
+        );
+      }
       return client;
     } catch (error) {
       await client.dispose();
@@ -337,16 +347,44 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   private async closeClient(): Promise<void> {
-    if (this.clientClose !== null) return this.clientClose;
-    const client = this.client;
-    this.client = null;
     this.ready = null;
-    return this.trackClientClose(client);
+    // A close can overlap a previous close and a startup that has already
+    // constructed its replacement client. Drain every client observed during
+    // the close rather than returning an unrelated in-flight disposal.
+    for (;;) {
+      const client = this.client;
+      this.client = null;
+      await this.trackClientClose(client);
+      if (this.client === null) return;
+    }
   }
 
   private trackClientClose(client: XaiAcpClient | null): Promise<void> {
-    if (this.clientClose !== null) return this.clientClose;
-    const closing = client?.dispose() ?? Promise.resolve();
+    const previous = this.clientClose;
+    const closing = (async () => {
+      let previousError: unknown;
+      if (previous !== null) {
+        try {
+          await previous;
+        } catch (error) {
+          previousError = error;
+        }
+      }
+      let clientError: unknown;
+      try {
+        await client?.dispose();
+      } catch (error) {
+        clientError = error;
+      }
+      if (previousError !== undefined && clientError !== undefined) {
+        throw new AggregateError(
+          [previousError, clientError],
+          "multiple ACP clients failed to close",
+        );
+      }
+      if (clientError !== undefined) throw clientError;
+      if (previousError !== undefined) throw previousError;
+    })();
     const tracked = closing.finally(() => {
       if (this.clientClose === tracked) this.clientClose = null;
     });

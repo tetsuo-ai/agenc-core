@@ -163,6 +163,32 @@ describe('XaiAcpClient', () => {
     }
   })
 
+  test('abort closes an ACP agent that ignores session/cancel before rejecting', async () => {
+    const client = makeClient({
+      env: { FAKE_ACP_STALL_PROMPT: '1' },
+      promptTimeoutMs: 10_000,
+    })
+    try {
+      await client.initialize()
+      await client.authenticate('cached_token')
+      const session = await client.newSession()
+      const controller = new AbortController()
+      const startedAt = Date.now()
+      const prompt = client.prompt({
+        sessionId: session.sessionId,
+        text: 'hi',
+        signal: controller.signal,
+      })
+      controller.abort('test cancellation')
+
+      await expect(prompt).rejects.toMatchObject({ code: 'aborted' })
+      expect(Date.now() - startedAt).toBeLessThan(2_000)
+      expect(client.isClosed).toBe(true)
+    } finally {
+      await client.dispose()
+    }
+  })
+
   test('required sandbox failure prevents the ACP executable from starting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agenc-acp-boundary-'))
     const marker = join(root, 'spawned')
@@ -385,7 +411,9 @@ async function isRunningNonZombie(pid: number): Promise<boolean> {
     const closingParen = stat.lastIndexOf(')')
     return stat.slice(closingParen + 2, closingParen + 3) !== 'Z'
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      return false
+    }
     throw error
   }
 }
