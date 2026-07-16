@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 
@@ -10,14 +13,15 @@ describe("connectMCPClientWithCleanup", () => {
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
+    const close = vi.fn(async () => {
+      cleanupStarted.resolve();
+      await cleanupGate;
+    });
     const client = {
       connect: vi.fn(async () => {
         throw connectError;
       }),
-      close: vi.fn(async () => {
-        cleanupStarted.resolve();
-        await cleanupGate;
-      }),
+      close,
     };
 
     const result = connectMCPClientWithCleanup(client, {}, {
@@ -40,20 +44,21 @@ describe("connectMCPClientWithCleanup", () => {
     releaseCleanup?.();
 
     await expect(result).rejects.toBe(connectError);
-    expect(client.close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("aggregates the original connection error with async cleanup failure", async () => {
     const connectError = new Error("connect failed");
     const cleanupError = new Error("close failed asynchronously");
+    const close = vi.fn(async () => {
+      await Promise.resolve();
+      throw cleanupError;
+    });
     const client = {
       connect: vi.fn(async () => {
         throw connectError;
       }),
-      close: vi.fn(async () => {
-        await Promise.resolve();
-        throw cleanupError;
-      }),
+      close,
     };
 
     const result = connectMCPClientWithCleanup(client, {}, {
@@ -69,16 +74,17 @@ describe("connectMCPClientWithCleanup", () => {
       cleanupError,
     ]);
     expect((error as Error).cause).toBe(connectError);
-    expect(client.close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("turns a timeout into the causal error when cleanup also fails", async () => {
     const cleanupError = new Error("timeout cleanup failed");
+    const close = vi.fn(async () => {
+      throw cleanupError;
+    });
     const client = {
       connect: vi.fn(() => new Promise<void>(() => {})),
-      close: vi.fn(async () => {
-        throw cleanupError;
-      }),
+      close,
     };
 
     const result = connectMCPClientWithCleanup(client, {}, {
@@ -94,5 +100,80 @@ describe("connectMCPClientWithCleanup", () => {
       /MCP stdio connect to "slow" timed out after 5ms/,
     );
     expect(aggregate.errors).toEqual([aggregate.cause, cleanupError]);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps close reusable after a successful connection", async () => {
+    const close = vi.fn(async () => {});
+    const client = {
+      connect: vi.fn(async () => {}),
+      close,
+    };
+
+    await connectMCPClientWithCleanup(client, {}, {
+      description: "MCP successful connect",
+      timeoutMs: 10_000,
+    });
+
+    await client.close();
+    await client.close();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("observes the SDK initialization cleanup and preserves its failure", async () => {
+    const cleanupError = new Error("transport close failed");
+    const close = vi.fn(async () => {
+      await Promise.resolve();
+      throw cleanupError;
+    });
+    const transport: Transport = {
+      async start() {},
+      async send(message: JSONRPCMessage) {
+        if (!("id" in message) || !("method" in message)) return;
+        queueMicrotask(() => {
+          transport.onmessage?.({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: "unsupported-test-version",
+              capabilities: {},
+              serverInfo: { name: "rejecting-test-server", version: "1.0.0" },
+            },
+          });
+        });
+      },
+      close,
+    };
+    const client = new Client(
+      { name: "agenc-cleanup-test", version: "1.0.0" },
+      { capabilities: {} },
+    );
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const result = connectMCPClientWithCleanup(client, transport, {
+        description: "MCP installed-SDK connect",
+        timeoutMs: 10_000,
+      });
+      const error: unknown = await result.catch((failure: unknown) => failure);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(unhandledRejections).toEqual([]);
+      expect(error).toBeInstanceOf(AggregateError);
+      const aggregate = error as AggregateError;
+      expect(aggregate.errors).toHaveLength(2);
+      expect(aggregate.errors[0]).toBe(aggregate.cause);
+      expect((aggregate.cause as Error).message).toMatch(
+        /protocol version is not supported/i,
+      );
+      expect(aggregate.errors[1]).toBe(cleanupError);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
   });
 });
