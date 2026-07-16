@@ -40,7 +40,13 @@ import {
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
-const STDOUT_FRAME_MAX_BYTES = 1024 * 1024;
+/**
+ * Maximum complete JSON-RPC frame accepted from an MCP stdio server. Keep this
+ * aligned with AgenC's MCP server-side line limit: tool/resource projection
+ * applies its narrower 5 MiB policy after decoding, while the transport must
+ * still accept valid envelopes and other protocol messages up to 16 MiB.
+ */
+export const AGENC_MCP_STDIO_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * Upper bound on the unflushed stderr buffer. A trusted local child is the
@@ -174,7 +180,8 @@ export class AgenCStdioClientTransport implements Transport {
   readonly server: StdioTransportServerParameters;
 
   private child: ChildProcess | undefined;
-  private stdoutBuffer = Buffer.alloc(0);
+  private stdoutChunks: Buffer[] = [];
+  private stdoutFrameBytes = 0;
   private stderrBuffer = Buffer.alloc(0);
   private closedNotified = false;
   private stdoutProtocolFailed = false;
@@ -218,7 +225,7 @@ export class AgenCStdioClientTransport implements Transport {
       env,
     });
 
-    this.stdoutBuffer = Buffer.alloc(0);
+    this.resetStdoutFrame();
     this.stderrBuffer = Buffer.alloc(0);
     this.stdoutProtocolFailed = false;
     this.closedNotified = false;
@@ -258,7 +265,7 @@ export class AgenCStdioClientTransport implements Transport {
   async close(): Promise<void> {
     const child = this.child ?? this.shutdownState?.child;
     if (child === undefined) {
-      this.stdoutBuffer = Buffer.alloc(0);
+      this.resetStdoutFrame();
       this.notifyClosed();
       return;
     }
@@ -298,20 +305,26 @@ export class AgenCStdioClientTransport implements Transport {
       const newline = chunk.indexOf(0x0a, offset);
       const end = newline === -1 ? chunk.length : newline;
       const segment = chunk.subarray(offset, end);
-      if (this.stdoutBuffer.length + segment.length > STDOUT_FRAME_MAX_BYTES) {
+      if (
+        this.stdoutFrameBytes + segment.length >
+        AGENC_MCP_STDIO_MAX_FRAME_BYTES
+      ) {
         this.failOversizedStdoutFrame();
         return;
       }
       if (segment.length > 0) {
-        this.stdoutBuffer =
-          this.stdoutBuffer.length === 0
-            ? Buffer.from(segment)
-            : Buffer.concat([this.stdoutBuffer, segment]);
+        this.stdoutChunks.push(Buffer.from(segment));
+        this.stdoutFrameBytes += segment.length;
       }
       if (newline === -1) return;
 
-      const line = this.stdoutBuffer.toString("utf8").replace(/\r$/, "");
-      this.stdoutBuffer = Buffer.alloc(0);
+      const line = Buffer.concat(
+        this.stdoutChunks,
+        this.stdoutFrameBytes,
+      )
+        .toString("utf8")
+        .replace(/\r$/, "");
+      this.resetStdoutFrame();
       try {
         this.onmessage?.(deserializeMessage(line));
       } catch (error) {
@@ -324,9 +337,9 @@ export class AgenCStdioClientTransport implements Transport {
   private failOversizedStdoutFrame(): void {
     if (this.stdoutProtocolFailed) return;
     this.stdoutProtocolFailed = true;
-    this.stdoutBuffer = Buffer.alloc(0);
+    this.resetStdoutFrame();
     const error = new Error(
-      `MCP stdio stdout frame exceeded ${STDOUT_FRAME_MAX_BYTES} bytes without a newline`,
+      `MCP stdio stdout frame exceeded ${AGENC_MCP_STDIO_MAX_FRAME_BYTES} bytes`,
     );
     this.onerror?.(error);
     const child = this.child;
@@ -416,9 +429,14 @@ export class AgenCStdioClientTransport implements Transport {
       child.stdout?.destroy();
       child.stderr?.destroy();
       this.flushStderr();
-      this.stdoutBuffer = Buffer.alloc(0);
+      this.resetStdoutFrame();
       this.notifyClosed();
     }
+  }
+
+  private resetStdoutFrame(): void {
+    this.stdoutChunks = [];
+    this.stdoutFrameBytes = 0;
   }
 
   private notifyClosed(): void {

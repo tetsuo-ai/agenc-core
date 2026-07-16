@@ -232,4 +232,46 @@ describe("ResilientMCPBridge", () => {
 
     await bridge.dispose();
   });
+
+  it("awaits and closes an in-flight automatic reconnect during disposal", async () => {
+    vi.useFakeTimers();
+    let resolveClient:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const freshClient = { close: vi.fn().mockResolvedValue(undefined) };
+    const initialBridge = makeBridge(
+      "srv1",
+      vi.fn().mockResolvedValue({
+        content: "transport closed",
+        isError: true,
+      }),
+    );
+    mockCreateMCPConnection.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClient = resolve;
+        }),
+    );
+    const bridge = new ResilientMCPBridge(
+      { name: "srv1", command: "node" },
+      initialBridge,
+    );
+
+    await bridge.tools[0]!.execute({});
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    let disposed = false;
+    const disposal = bridge.dispose().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    resolveClient?.(freshClient);
+    await disposal;
+
+    expect(freshClient.close).toHaveBeenCalledOnce();
+    expect(initialBridge.dispose).toHaveBeenCalledOnce();
+  });
 });

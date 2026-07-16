@@ -95,6 +95,13 @@ const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
 
+class MCPReconnectCleanupError extends AggregateError {
+  constructor(serverName: string, errors: unknown[]) {
+    super(errors, `MCP server "${serverName}" reconnect cleanup failed`);
+    this.name = "MCPReconnectCleanupError";
+  }
+}
+
 interface ResilientMCPBridgeOptions {
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
@@ -156,8 +163,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
   private reconnecting = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTask: Promise<void> | undefined;
+  private reconnectEpoch = 0;
   private backoffMs = 0;
   private disposed = false;
+  private disposal: Promise<void> | undefined;
+  private innerDisposal:
+    | { readonly bridge: MCPToolBridge; readonly promise: Promise<void> }
+    | undefined;
 
   constructor(
     config: MCPServerConfig,
@@ -178,13 +191,35 @@ export class ResilientMCPBridge implements MCPToolBridge {
     );
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
+    this.reconnectEpoch++;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    await this.inner.dispose();
+    const inner = this.inner;
+    const reconnectTask = this.reconnectTask;
+    this.disposal = Promise.allSettled([
+      this.disposeInnerBridge(inner),
+      ...(reconnectTask !== undefined ? [reconnectTask] : []),
+    ]).then((results) => {
+      const errors = results.flatMap((result, index) => {
+        if (result.status !== "rejected") return [];
+        if (index === 0 || result.reason instanceof MCPReconnectCleanupError) {
+          return [result.reason];
+        }
+        return [];
+      });
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          `MCP server "${this.serverName}" resilient bridge shutdown failed`,
+        );
+      }
+    });
+    return this.disposal;
   }
 
   // --------------------------------------------------------------------------
@@ -234,6 +269,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
     if (this.disposed || this.reconnecting) return;
 
     this.reconnecting = true;
+    const epoch = ++this.reconnectEpoch;
     this.backoffMs = this.backoffMs === 0
       ? INITIAL_BACKOFF_MS
       : Math.min(this.backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
@@ -243,18 +279,35 @@ export class ResilientMCPBridge implements MCPToolBridge {
     );
 
     this.reconnectTimer = setTimeout(() => {
-      void this.reconnect();
+      this.reconnectTimer = null;
+      if (this.disposed || epoch !== this.reconnectEpoch) {
+        this.reconnecting = false;
+        return;
+      }
+      const task = this.reconnect(epoch);
+      this.reconnectTask = task;
+      const clear = (): void => {
+        if (this.reconnectTask === task) this.reconnectTask = undefined;
+      };
+      void task.then(clear, clear);
     }, this.backoffMs);
   }
 
-  private async reconnect(): Promise<void> {
-    if (this.disposed) return;
+  private async reconnect(epoch: number): Promise<void> {
+    if (!this.isReconnectCurrent(epoch)) return;
+
+    let client: unknown;
+    let newBridge: MCPToolBridge | undefined;
 
     try {
-      // Dispose old bridge (best-effort)
-      try { await this.inner.dispose(); } catch { /* ignore */ }
-      // dispose() may have run while we awaited the old bridge teardown.
-      if (this.disposed) { this.reconnecting = false; return; }
+      // Do not spawn a replacement until the old connection has actually
+      // closed. A failed close is a fail-closed reconnect, not a reason to run
+      // two server process trees concurrently.
+      await this.disposeInnerBridge(this.inner);
+      if (!this.isReconnectCurrent(epoch)) {
+        this.reconnecting = false;
+        return;
+      }
 
       const { createMCPConnection } = await import("./connection.js");
       const { createToolBridge } = await import("./tools.js");
@@ -263,24 +316,21 @@ export class ResilientMCPBridge implements MCPToolBridge {
       // rebuilt client re-registers its ElicitRequest/ElicitationComplete
       // handlers — otherwise server-initiated elicitation breaks silently
       // after any reconnect.
-      const client = await createMCPConnection(
+      client = await createMCPConnection(
         this.config,
         this.logger,
         this.options.elicitationHandlers,
         this.options.samplingHandlers,
         this.options.sandboxExecutionBroker,
       );
-      // A `dispose()` racing this reconnect already cleared `reconnectTimer`
-      // and disposed `this.inner`, but it cannot see the client we just
-      // spawned. Without this re-check the fresh (detached stdio child)
-      // client would be orphaned — a process leak. Close it ourselves.
-      if (this.disposed) {
-        await closeClientQuietly(client);
+      if (!this.isReconnectCurrent(epoch)) {
+        await closeClientForAbandonedReconnect(client, this.serverName);
+        client = undefined;
         this.reconnecting = false;
         return;
       }
 
-      const newBridge = await createToolBridge(
+      newBridge = await createToolBridge(
         client,
         this.serverName,
         this.logger,
@@ -306,10 +356,10 @@ export class ResilientMCPBridge implements MCPToolBridge {
         },
       );
 
-      // Disposed while building the bridge: tear the new bridge down (its
-      // dispose() closes the client + kills the child) so nothing leaks.
-      if (this.disposed) {
-        try { await newBridge.dispose(); } catch { /* ignore */ }
+      if (!this.isReconnectCurrent(epoch)) {
+        await disposeAbandonedReconnectBridge(newBridge, this.serverName);
+        newBridge = undefined;
+        client = undefined;
         this.reconnecting = false;
         return;
       }
@@ -335,27 +385,89 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {
+      if (error instanceof MCPReconnectCleanupError) {
+        this.reconnecting = false;
+        throw error;
+      }
+      const cleanupErrors: unknown[] = [];
+      if (newBridge !== undefined && this.inner !== newBridge) {
+        const result = await Promise.allSettled([
+          invokeBridgeDisposal(newBridge),
+        ]);
+        if (result[0]?.status === "rejected") {
+          cleanupErrors.push(result[0].reason);
+        }
+        client = undefined;
+      } else if (client !== undefined && this.inner !== newBridge) {
+        const result = await Promise.allSettled([
+          invokeClientClose(client),
+        ]);
+        if (result[0]?.status === "rejected") {
+          cleanupErrors.push(result[0].reason);
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        this.reconnecting = false;
+        throw new MCPReconnectCleanupError(this.serverName, cleanupErrors);
+      }
       this.logger.warn?.(
         `MCP server "${this.serverName}" reconnection failed: ${(error as Error).message}`,
       );
       this.reconnecting = false;
+      if (!this.isReconnectCurrent(epoch)) return;
       // Schedule another attempt with increased backoff
       this.scheduleReconnect();
     }
   }
+
+  private isReconnectCurrent(epoch: number): boolean {
+    return !this.disposed && this.reconnectEpoch === epoch;
+  }
+
+  private disposeInnerBridge(bridge: MCPToolBridge): Promise<void> {
+    if (this.innerDisposal?.bridge === bridge) {
+      return this.innerDisposal.promise;
+    }
+    const promise = invokeBridgeDisposal(bridge);
+    this.innerDisposal = { bridge, promise };
+    return promise;
+  }
 }
 
 /**
- * Best-effort close of a freshly-spawned MCP client that we have to abandon
- * because `dispose()` raced our reconnect. Mirrors the tool bridge's own
- * `client.close()` teardown (tools.ts) — for stdio this terminates the
- * detached child process, preventing a leak.
+ * Close a freshly-spawned MCP client that a newer lifecycle epoch abandoned.
+ * A close failure is propagated as a cleanup failure so strict sandbox
+ * quiesce cannot claim that the old execution authority is empty.
  */
-async function closeClientQuietly(client: unknown): Promise<void> {
+function invokeBridgeDisposal(bridge: MCPToolBridge): Promise<void> {
+  return Promise.resolve().then(() => bridge.dispose());
+}
+
+function invokeClientClose(client: unknown): Promise<void> {
+  return Promise.resolve().then(() =>
+    (client as { close?: () => Promise<void> }).close?.(),
+  );
+}
+
+async function closeClientForAbandonedReconnect(
+  client: unknown,
+  serverName: string,
+): Promise<void> {
   try {
-    await (client as { close?: () => Promise<void> }).close?.();
-  } catch {
-    /* ignore — abandoning anyway */
+    await invokeClientClose(client);
+  } catch (error) {
+    throw new MCPReconnectCleanupError(serverName, [error]);
+  }
+}
+
+async function disposeAbandonedReconnectBridge(
+  bridge: MCPToolBridge,
+  serverName: string,
+): Promise<void> {
+  try {
+    await invokeBridgeDisposal(bridge);
+  } catch (error) {
+    throw new MCPReconnectCleanupError(serverName, [error]);
   }
 }
 

@@ -271,6 +271,57 @@ describe("MCPManager", () => {
     manager.setSandboxExecutionBroker(undefined);
   });
 
+  it("does not finish strict quiesce until an in-flight startup client is closed", async () => {
+    const oldCwd = resolve("pending-start-workspace");
+    const newCwd = resolve("pending-start-rebased");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let resolvePending:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const pendingClient = { close: vi.fn().mockResolvedValue(undefined) };
+    const recoveredBridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePending = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge.mockResolvedValueOnce(recoveredBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    const starting = manager.start();
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    });
+
+    let transitioned = false;
+    const transition = transitionSandboxExecutionBroker(broker, newCwd).then(
+      () => {
+        transitioned = true;
+      },
+    );
+    await expect(starting).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(transitioned).toBe(false);
+    expect(broker.cwd).toBe(oldCwd);
+
+    resolvePending?.(pendingClient);
+    await transition;
+
+    expect(pendingClient.close).toHaveBeenCalledOnce();
+    expect(broker.cwd).toBe(newCwd);
+    expect(manager.isConnected("srv1")).toBe(true);
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
   it("does not start a never-started manager during a sandbox transition", async () => {
     const oldCwd = resolve("old-workspace");
     const newCwd = resolve("new-workspace");
@@ -534,6 +585,60 @@ describe("MCPManager", () => {
       "mcp.srv1.toolB",
       "mcp.srv1.toolC",
     ]);
+  });
+
+  it("strict quiesce waits for an in-flight dynamic reconnect", async () => {
+    const oldCwd = resolve("dynamic-reconnect-old");
+    const newCwd = resolve("dynamic-reconnect-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    let resolveDynamic:
+      | ((client: { close: ReturnType<typeof vi.fn> }) => void)
+      | undefined;
+    const dynamicClient = { close: vi.fn().mockResolvedValue(undefined) };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveDynamic = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["initial"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["recovered"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const reconnecting = manager.reconnectServer("srv1");
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    });
+
+    let transitioned = false;
+    const transition = transitionSandboxExecutionBroker(broker, newCwd).then(
+      () => {
+        transitioned = true;
+      },
+    );
+    await Promise.resolve();
+    expect(transitioned).toBe(false);
+    expect(broker.cwd).toBe(oldCwd);
+
+    resolveDynamic?.(dynamicClient);
+    await expect(reconnecting).resolves.toMatchObject({ success: false });
+    await transition;
+
+    expect(dynamicClient.close).toHaveBeenCalledOnce();
+    expect(broker.cwd).toBe(newCwd);
+    expect(manager.getTools()[0]?.name).toBe("mcp.srv1.recovered");
+
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
   });
 
   it("passes permission options into initial and reconnected tool bridges", async () => {
@@ -845,10 +950,16 @@ describe("MCPManager", () => {
       expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
     });
 
-    await manager.stop();
+    let stopped = false;
+    const stopping = manager.stop().then(() => {
+      stopped = true;
+    });
     await expect(started).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(stopped).toBe(false);
 
     resolveClient?.(lateClient);
+    await stopping;
     await vi.waitFor(() => {
       expect(lateClient.close).toHaveBeenCalledOnce();
     });
@@ -877,9 +988,10 @@ describe("MCPManager", () => {
       expect(mockCreateToolBridge).toHaveBeenCalledOnce();
     });
 
-    await manager.stop();
+    const stopping = manager.stop();
     await expect(started).resolves.toBeUndefined();
     resolveBridge?.(lateBridge);
+    await stopping;
 
     await vi.waitFor(() => {
       expect(client.close).toHaveBeenCalledOnce();
@@ -955,6 +1067,51 @@ describe("MCPManager", () => {
     );
     // prompt bridge should still be built
     expect(mockCreatePromptBridge).toHaveBeenCalledOnce();
+  });
+
+  it("removes closed-client companions when automatic reconnect replacement fails", async () => {
+    vi.useFakeTimers();
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const reconnectedBridge = makeMockBridge("srv1", ["tool"]);
+    const oldResource = makeMockResourceBridge("srv1", [
+      { uri: "file:///stale" },
+    ]);
+    const oldPrompt = makeMockPromptBridge("srv1", [{ name: "stale" }]);
+    const newPrompt = makeMockPromptBridge("srv1", [{ name: "fresh" }]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(reconnectedBridge);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(oldResource)
+      .mockRejectedValueOnce(new Error("resources unavailable after reconnect"));
+    mockCreatePromptBridge
+      .mockResolvedValueOnce(oldPrompt)
+      .mockResolvedValueOnce(newPrompt);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      expect(await manager.getResources()).toEqual([]);
+      expect((await manager.listPrompts()).map((prompt) => prompt.name)).toEqual([
+        "fresh",
+      ]);
+      expect(oldResource.dispose).toHaveBeenCalledOnce();
+      expect(oldPrompt.dispose).toHaveBeenCalledOnce();
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("getResources flattens descriptors across all connected servers", async () => {

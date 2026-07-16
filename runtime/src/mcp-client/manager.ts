@@ -76,6 +76,23 @@ interface RefreshedCompanionBridges {
   readonly promptBridge?: MCPPromptBridge;
 }
 
+interface ManagedConnectionAttempt {
+  readonly serverName: string;
+  readonly gate: StartupGate;
+  readonly promise: Promise<MCPToolBridge>;
+  isCurrent(): boolean;
+}
+
+class MCPConnectionCleanupError extends AggregateError {
+  readonly originalError: unknown;
+
+  constructor(serverName: string, originalError: unknown, errors: unknown[]) {
+    super(errors, `MCP server "${serverName}" connection cleanup failed`);
+    this.name = "MCPConnectionCleanupError";
+    this.originalError = originalError;
+  }
+}
+
 export type MCPConnectionState =
   | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
   | { readonly type: "failed"; readonly error?: string };
@@ -217,6 +234,10 @@ export class MCPManager {
   private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
   private lifecycleGeneration = 0;
   private readonly startupGates = new Set<StartupGate>();
+  private readonly connectionAttempts = new Set<ManagedConnectionAttempt>();
+  private readonly serverEpochs = new Map<string, number>();
+  private readonly companionEpochs = new Map<string, number>();
+  private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -261,7 +282,14 @@ export class MCPManager {
           name: "mcp-manager",
           quiesce: async () => {
             this.restartAfterSandboxTransition = this.running;
-            if (this.running) await this.stopInternal(true);
+            if (
+              this.running ||
+              this.bridges.size > 0 ||
+              this.connectionAttempts.size > 0 ||
+              this.shutdownTask !== undefined
+            ) {
+              await this.stopInternal(true);
+            }
           },
           resume: async () => {
             if (!this.restartAfterSandboxTransition) return;
@@ -294,12 +322,15 @@ export class MCPManager {
    * (I-6 fail-soft) — unless `requireOneReady` / `requiredServers`
    * is set, in which case I-20 aggregate-failure trips.
    *
-   * I-50: the caller may pass `signal` to abort the startup wait;
-   * any servers that connected still stay connected, the rest are
-   * left to resolve/reject in the background under their own
-   * connect-timeout.
+   * I-50: the caller may pass `signal` to abort the startup wait. Any
+   * unfinished connection is revoked immediately; its owned client continues
+   * only long enough to complete verified cleanup. Strict lifecycle quiesce
+   * waits for that cleanup before rebasing sandbox authority.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    if (this.shutdownTask !== undefined) {
+      throw new Error("MCP manager cannot start while shutdown is in progress");
+    }
     this.lastStartOpts = {
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts.requireOneReady !== undefined
@@ -335,22 +366,18 @@ export class MCPManager {
     // I-50: race each per-server connect against the external signal.
     const results = await Promise.all(
       enabledConfigs.map((config) => {
-        const gate = createStartupGate();
-        this.startupGates.add(gate);
+        const attempt = this.beginConnection(config);
         return raceWithSignal(
-          this.connectServer(config, gate),
+          attempt.promise,
           signal,
           timeoutMs,
           `MCP server "${config.name}" connect`,
-          gate,
+          attempt.gate,
         )
           .then(
             (bridge) => ({ status: "fulfilled" as const, value: bridge }),
             (err: unknown) => ({ status: "rejected" as const, reason: err }),
-          )
-          .finally(() => {
-            this.startupGates.delete(gate);
-          });
+          );
       }),
     );
 
@@ -416,14 +443,27 @@ export class MCPManager {
   }
 
   private async stopInternal(strict: boolean): Promise<void> {
+    const errors = await this.beginShutdown();
+    if (strict && errors.length > 0) {
+      throw new AggregateError(errors, "MCP manager strict shutdown failed");
+    }
+  }
+
+  private beginShutdown(): Promise<ReadonlyArray<unknown>> {
+    if (this.shutdownTask !== undefined) return this.shutdownTask;
+
     this.running = false;
     this.lifecycleGeneration++;
     for (const gate of this.startupGates) {
       gate.cancel("MCP manager stopped during startup");
     }
+    for (const name of this.allKnownServerNames()) {
+      this.invalidateServerAuthority(name);
+    }
     const bridges = Array.from(this.bridges.values());
     const resourceBridges = Array.from(this.resourceBridges.values());
     const promptBridges = Array.from(this.promptBridges.values());
+    const attempts = Array.from(this.connectionAttempts);
     // Remove every published surface before awaiting teardown. An in-flight
     // caller can no longer discover a bridge once stop begins.
     this.bridges.clear();
@@ -433,21 +473,36 @@ export class MCPManager {
     this.serverInstructions.clear();
     this.resetConnectionStates();
 
-    const results = await Promise.allSettled([
+    const disposalCount =
+      bridges.length + resourceBridges.length + promptBridges.length;
+    const task = Promise.allSettled([
       ...bridges.map(invokeDisposal),
       ...resourceBridges.map(invokeDisposal),
       ...promptBridges.map(invokeDisposal),
-    ]);
-    const errors = results.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
-    for (const error of errors) {
-      this.logger.warn?.("Error disconnecting MCP server:", error);
-    }
-    this.logger.info("All MCP servers disconnected");
-    if (strict && errors.length > 0) {
-      throw new AggregateError(errors, "MCP manager strict shutdown failed");
-    }
+      ...attempts.map((attempt) => attempt.promise),
+    ]).then((results): ReadonlyArray<unknown> => {
+      const errors: unknown[] = [];
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index];
+        if (result?.status !== "rejected") continue;
+        if (
+          index < disposalCount ||
+          result.reason instanceof MCPConnectionCleanupError
+        ) {
+          errors.push(result.reason);
+        }
+      }
+      for (const error of errors) {
+        this.logger.warn?.("Error disconnecting MCP server:", error);
+      }
+      this.logger.info("All MCP servers disconnected");
+      return errors;
+    });
+    this.shutdownTask = task;
+    void task.finally(() => {
+      if (this.shutdownTask === task) this.shutdownTask = undefined;
+    });
+    return task;
   }
 
   /**
@@ -587,18 +642,23 @@ export class MCPManager {
     await this.disconnectServer(name, "before reconnect");
 
     try {
-      const bridge = await this.connectServer(config);
-      this.connectionStates.set(name, { type: "connected" });
+      const attempt = this.beginConnection(config);
+      const bridge = await attempt.promise;
+      if (attempt.isCurrent()) {
+        this.connectionStates.set(name, { type: "connected" });
+      }
       return {
         serverName: name,
         success: true,
         toolCount: bridge.tools.length,
       };
     } catch (error) {
-      this.connectionStates.set(name, {
-        type: "failed",
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (this.shutdownTask === undefined) {
+        this.connectionStates.set(name, {
+          type: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return {
         serverName: name,
         success: false,
@@ -789,10 +849,11 @@ export class MCPManager {
    *
    * T9-D: resource + prompt bridges are optional on many servers; a failure
    * to build either must not take down the server connection — log and move
-   * on so the tool surface still works. Old bridges are disposed best-effort
-   * before being replaced (the resource/prompt bridge `dispose()` only flips
-   * an internal flag — the tool bridge owns the client lifecycle — so this
-   * never double-closes the client).
+   * on so the tool surface still works. Each refresh has a publication epoch:
+   * only the latest owner may replace the maps, and a missing replacement
+   * removes the old bridge because it points at a client that has already
+   * closed. Companion `dispose()` only flips an internal flag; the tool bridge
+   * owns the client lifecycle.
    */
   private async refreshResourceAndPromptBridges(
     config: MCPServerConfig,
@@ -862,19 +923,17 @@ export class MCPManager {
     }
 
     assertRefreshOpen(config.name, startupGate, isCurrent);
-    const previousResource =
-      createdResourceBridge === undefined
-        ? undefined
-        : this.resourceBridges.get(config.name);
-    const previousPrompt =
-      createdPromptBridge === undefined
-        ? undefined
-        : this.promptBridges.get(config.name);
+    const previousResource = this.resourceBridges.get(config.name);
+    const previousPrompt = this.promptBridges.get(config.name);
     if (createdResourceBridge !== undefined) {
       this.resourceBridges.set(config.name, createdResourceBridge);
+    } else {
+      this.resourceBridges.delete(config.name);
     }
     if (createdPromptBridge !== undefined) {
       this.promptBridges.set(config.name, createdPromptBridge);
+    } else {
+      this.promptBridges.delete(config.name);
     }
     await Promise.allSettled([
       ...(previousResource !== undefined
@@ -894,7 +953,8 @@ export class MCPManager {
 
   private async connectServer(
     config: MCPServerConfig,
-    startupGate?: StartupGate,
+    startupGate: StartupGate,
+    isCurrent: () => boolean,
   ): Promise<MCPToolBridge> {
     const client = await createMCPConnection(
       config,
@@ -906,7 +966,7 @@ export class MCPManager {
     let bridge: ResilientMCPBridge | undefined;
     let companions: RefreshedCompanionBridges | undefined;
     try {
-      assertStartupGateOpen(config.name, startupGate);
+      assertRefreshOpen(config.name, startupGate, isCurrent);
       // Capture the server's `InitializeResult.instructions` blob if any.
       // The MCP SDK stores it after `client.connect()` completes; the
       // value is immutable for the lifetime of the connection.
@@ -929,7 +989,7 @@ export class MCPManager {
             : {}),
         },
       );
-      assertStartupGateOpen(config.name, startupGate);
+      assertRefreshOpen(config.name, startupGate, isCurrent);
       // I-73: reject MCP tools whose namespaced names collide with
       // already-registered tools (from earlier servers). Bail the
       // whole bridge — the caller can re-configure the namespace.
@@ -963,17 +1023,18 @@ export class MCPManager {
         // pointing at the OLD, closed client and `readResource` /
         // `renderPrompt` would talk to a dead connection.
         onReconnect: async (newClient: unknown) => {
-          const reconnectGeneration = this.lifecycleGeneration;
-          const isCurrent = (): boolean =>
-            this.running &&
-            this.lifecycleGeneration === reconnectGeneration &&
-            this.bridges.get(config.name) === bridge;
-          if (!isCurrent()) return;
+          const reconnectIsCurrent = (): boolean =>
+            isCurrent() && this.bridges.get(config.name) === bridge;
+          if (!reconnectIsCurrent()) return;
+          const companionIsCurrent = this.beginCompanionRefresh(
+            config.name,
+            reconnectIsCurrent,
+          );
           await this.refreshResourceAndPromptBridges(
             config,
             newClient,
             undefined,
-            isCurrent,
+            companionIsCurrent,
           );
         },
       });
@@ -981,6 +1042,7 @@ export class MCPManager {
       // concurrently-starting servers observe this namespace for I-73 shadow
       // checks. The startup gate is checked immediately beforehand and stop
       // clears/disposes this identity while companion construction is pending.
+      assertRefreshOpen(config.name, startupGate, isCurrent);
       this.bridges.set(config.name, bridge);
 
       // T9-D: resource + prompt bridges are optional on many servers.
@@ -990,8 +1052,9 @@ export class MCPManager {
         config,
         client,
         startupGate,
+        this.beginCompanionRefresh(config.name, isCurrent),
       );
-      assertStartupGateOpen(config.name, startupGate);
+      assertRefreshOpen(config.name, startupGate, isCurrent);
 
       if (instructions !== undefined) {
         this.serverInstructions.set(config.name, instructions);
@@ -1030,7 +1093,7 @@ export class MCPManager {
       ) {
         this.promptBridges.delete(config.name);
       }
-      await Promise.allSettled([
+      const cleanupResults = await Promise.allSettled([
         ...(bridge !== undefined ? [invokeDisposal(bridge)] : []),
         ...(companions?.resourceBridge !== undefined
           ? [invokeDisposal(companions.resourceBridge)]
@@ -1038,14 +1101,84 @@ export class MCPManager {
         ...(companions?.promptBridge !== undefined
           ? [invokeDisposal(companions.promptBridge)]
           : []),
+        ...(bridge === undefined ? [invokeClientClose(client)] : []),
       ]);
-      try {
-        await client.close();
-      } catch {
-        // best effort
+      const cleanupErrors = cleanupResults.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (cleanupErrors.length > 0) {
+        throw new MCPConnectionCleanupError(
+          config.name,
+          error,
+          cleanupErrors,
+        );
       }
       throw error;
     }
+  }
+
+  private beginConnection(config: MCPServerConfig): ManagedConnectionAttempt {
+    if (this.shutdownTask !== undefined) {
+      throw new Error(
+        `MCP server "${config.name}" cannot connect while shutdown is in progress`,
+      );
+    }
+    const gate = createStartupGate();
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const serverEpoch = this.nextServerEpoch(config.name);
+    const isCurrent = (): boolean =>
+      this.shutdownTask === undefined &&
+      this.lifecycleGeneration === lifecycleGeneration &&
+      this.serverEpochs.get(config.name) === serverEpoch;
+    const promise = this.connectServer(config, gate, isCurrent);
+    const attempt: ManagedConnectionAttempt = {
+      serverName: config.name,
+      gate,
+      promise,
+      isCurrent,
+    };
+    this.startupGates.add(gate);
+    this.connectionAttempts.add(attempt);
+    const remove = (): void => {
+      this.startupGates.delete(gate);
+      this.connectionAttempts.delete(attempt);
+    };
+    void promise.then(remove, remove);
+    return attempt;
+  }
+
+  private beginCompanionRefresh(
+    serverName: string,
+    ownerIsCurrent: () => boolean,
+  ): () => boolean {
+    const epoch = (this.companionEpochs.get(serverName) ?? 0) + 1;
+    this.companionEpochs.set(serverName, epoch);
+    return () =>
+      ownerIsCurrent() && this.companionEpochs.get(serverName) === epoch;
+  }
+
+  private nextServerEpoch(serverName: string): number {
+    const epoch = (this.serverEpochs.get(serverName) ?? 0) + 1;
+    this.serverEpochs.set(serverName, epoch);
+    return epoch;
+  }
+
+  private invalidateServerAuthority(serverName: string): void {
+    this.nextServerEpoch(serverName);
+    this.companionEpochs.set(
+      serverName,
+      (this.companionEpochs.get(serverName) ?? 0) + 1,
+    );
+  }
+
+  private allKnownServerNames(): Set<string> {
+    return new Set([
+      ...this.configs.map((config) => config.name),
+      ...this.bridges.keys(),
+      ...this.resourceBridges.keys(),
+      ...this.promptBridges.keys(),
+      ...Array.from(this.connectionAttempts, (attempt) => attempt.serverName),
+    ]);
   }
 
   private assertNoNameShadowing(
@@ -1068,43 +1201,44 @@ export class MCPManager {
   }
 
   private async disconnectServer(name: string, reason: string): Promise<void> {
+    this.invalidateServerAuthority(name);
+    const attempts = Array.from(this.connectionAttempts).filter(
+      (attempt) => attempt.serverName === name,
+    );
+    for (const attempt of attempts) {
+      attempt.gate.cancel(`MCP server "${name}" disconnected ${reason}`);
+    }
     const existing = this.bridges.get(name);
+    const existingResource = this.resourceBridges.get(name);
+    const existingPrompt = this.promptBridges.get(name);
     this.connectedConnections.delete(name);
-    if (existing) {
-      this.bridges.delete(name);
-      this.serverInstructions.delete(name);
-      try {
-        await existing.dispose();
-      } catch (error) {
+    this.bridges.delete(name);
+    this.resourceBridges.delete(name);
+    this.promptBridges.delete(name);
+    this.serverInstructions.delete(name);
+
+    const disposalCount =
+      (existing === undefined ? 0 : 1) +
+      (existingResource === undefined ? 0 : 1) +
+      (existingPrompt === undefined ? 0 : 1);
+    const results = await Promise.allSettled([
+      ...(existing !== undefined ? [invokeDisposal(existing)] : []),
+      ...(existingResource !== undefined
+        ? [invokeDisposal(existingResource)]
+        : []),
+      ...(existingPrompt !== undefined ? [invokeDisposal(existingPrompt)] : []),
+      ...attempts.map((attempt) => attempt.promise),
+    ]);
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      if (result?.status !== "rejected") continue;
+      if (
+        index < disposalCount ||
+        result.reason instanceof MCPConnectionCleanupError
+      ) {
         this.logger.warn?.(
           `Error disposing MCP server "${name}" ${reason}:`,
-          error,
-        );
-      }
-    } else {
-      this.serverInstructions.delete(name);
-    }
-    const existingResource = this.resourceBridges.get(name);
-    if (existingResource) {
-      this.resourceBridges.delete(name);
-      try {
-        await existingResource.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP resource bridge for "${name}" ${reason}:`,
-          error,
-        );
-      }
-    }
-    const existingPrompt = this.promptBridges.get(name);
-    if (existingPrompt) {
-      this.promptBridges.delete(name);
-      try {
-        await existingPrompt.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP prompt bridge for "${name}" ${reason}:`,
-          error,
+          result.reason,
         );
       }
     }
@@ -1205,6 +1339,10 @@ function createStartupGate(): StartupGate {
   const cancellation = new Promise<never>((_, reject) => {
     rejectCancellation = reject;
   });
+  // Dynamic connection attempts use the same gate without racing the
+  // cancellation promise directly. Keep cancellation observed here; callers
+  // that do wait on it still receive the original rejection.
+  void cancellation.catch(() => undefined);
   return {
     cancel(reason: string) {
       if (cancelled) return;
@@ -1248,4 +1386,10 @@ function invokeDisposal(disposable: {
   dispose(): Promise<void>;
 }): Promise<void> {
   return Promise.resolve().then(() => disposable.dispose());
+}
+
+function invokeClientClose(client: unknown): Promise<void> {
+  return Promise.resolve().then(() =>
+    (client as { close(): Promise<void> }).close(),
+  );
 }

@@ -35,6 +35,33 @@ function permissionContext(): ToolEvaluatorContext {
 }
 
 describe("createToolBridge — T6 gap #119 observer wiring", () => {
+  test("logs and propagates production client close failures", async () => {
+    const closeError = new Error("process tree survived forced shutdown");
+    const close = vi.fn().mockRejectedValue(closeError);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({ tools: [] }),
+        close,
+      },
+      "strict-close",
+      logger,
+    );
+
+    await expect(bridge.dispose()).rejects.toBe(closeError);
+    await expect(bridge.dispose()).rejects.toBe(closeError);
+    expect(close).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("strict-close"),
+      closeError,
+    );
+  });
+
   test("describes encoded model-facing MCP tool names next to canonical names", async () => {
     const bridge = await createToolBridge(
       {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Logger } from "../../_deps/logger.js";
 import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
 import {
+  AGENC_MCP_STDIO_MAX_FRAME_BYTES,
   AgenCStdioClientTransport,
   DEFAULT_STDIO_ENV_VARS,
   createStdioMCPEnvironment,
@@ -149,6 +150,39 @@ describe("AgenCStdioClientTransport", () => {
     await transport.close();
   });
 
+  it("accepts a valid JSON-RPC frame larger than one MiB", async () => {
+    const payloadBytes = 2 * 1024 * 1024;
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: [
+          "-e",
+          `process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'server/large',params:{data:'x'.repeat(${payloadBytes})}})+'\\n'); setTimeout(() => {}, 1000);`,
+        ],
+        env: createStdioMCPEnvironment(undefined, undefined),
+      },
+      undefined,
+      explicitDangerBroker,
+    );
+    const message = new Promise<unknown>((resolve) => {
+      transport.onmessage = resolve;
+    });
+
+    try {
+      await transport.start();
+      await expect(message).resolves.toMatchObject({
+        method: "server/large",
+        params: { data: expect.stringMatching(/^x+$/) },
+      });
+      const received = await message;
+      expect(
+        (received as { params: { data: string } }).params.data.length,
+      ).toBe(payloadBytes);
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("keeps stderrBuffer bounded under a newline-less flood", async () => {
     // Defense-in-depth: a child emitting a long stderr run with no newline
     // must not grow stderrBuffer without bound. The oversized prefix is
@@ -270,7 +304,7 @@ describe("AgenCStdioClientTransport", () => {
           command: process.execPath,
           args: [
             "-e",
-            "require('node:fs').writeFileSync(process.env.PID_FILE, String(process.pid)); process.stdout.write(Buffer.alloc(1024 * 1024 + 1, 0x61)); setInterval(() => {}, 1000);",
+            `require('node:fs').writeFileSync(process.env.PID_FILE, String(process.pid)); process.stdout.write(Buffer.alloc(${AGENC_MCP_STDIO_MAX_FRAME_BYTES} + 1, 0x61)); setInterval(() => {}, 1000);`,
           ],
           env: createStdioMCPEnvironment({ PID_FILE: pidFile }, undefined),
         },
