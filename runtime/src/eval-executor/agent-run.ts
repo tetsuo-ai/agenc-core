@@ -35,6 +35,7 @@ import {
   AGENT_RUNTIME_ENTRY,
   OVERLAY_AGENT_ENTRY_SUBPATH,
   OVERLAY_CONTAINER_PATH,
+  OVERLAY_NODE_COMPAT_LIB,
   OVERLAY_PROXY_PRELOAD,
 } from "./overlay-paths.js";
 
@@ -113,6 +114,10 @@ export async function assertOverlayLayout(
 ): Promise<void> {
   const required = [
     path.join(overlay.hostDir, "node", "bin", "node"),
+    // Shim for task images that lack libatomic.so.1 (portable Node needs
+    // it); missing staging fails fast here instead of as an opaque loader
+    // error inside the container.
+    path.join(overlay.hostDir, "node", "compat", "libatomic.so.1"),
     path.join(overlay.hostDir, OVERLAY_AGENT_ENTRY_SUBPATH),
     path.join(overlay.hostDir, "mock", "serve.mjs"),
     // The real-model lane also needs the proxy sidecar, the containment
@@ -167,6 +172,9 @@ function buildAgentScript(): string {
   return [
     `set -u`,
     `export PATH=${OVERLAY_CONTAINER_PATH}/node/bin:$PATH`,
+    // libatomic shim for images that lack it; the image's own paths still
+    // win for every other library via loader fallback.
+    `export LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}`,
     `mkdir -p ${AGENT_HOME}`,
     // .git hygiene (drop remotes/unreachable objects) + post-setup baseline
     // commit + tag, so the candidate diff is exactly the agent's net change
@@ -526,6 +534,9 @@ export function buildRealProviderAgentScript(config: {
   return [
     `set -u`,
     `export PATH=${OVERLAY_CONTAINER_PATH}/node/bin:$PATH`,
+    // libatomic shim for images that lack it; the image's own paths still
+    // win for every other library via loader fallback.
+    `export LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}`,
     `mkdir -p ${AGENT_HOME}`,
     buildBaselineGitScript(),
     `export HTTPS_PROXY=${proxyUrl} HTTP_PROXY=${proxyUrl} NO_PROXY=`,

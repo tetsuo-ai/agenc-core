@@ -3,7 +3,12 @@
 // parser, the containment decision, and the patch key-scan. The docker
 // lifecycle that runs these lives in container-runner.ts; the lane wiring in
 // agent-run.ts. See docs/design/eval-pilot-executor-phase2b-egress.md.
-import { OVERLAY_CONTAINER_PATH, OVERLAY_NODE, OVERLAY_PROXY_ENTRY } from "./overlay-paths.js";
+import {
+  OVERLAY_CONTAINER_PATH,
+  OVERLAY_NODE,
+  OVERLAY_NODE_COMPAT_LIB,
+  OVERLAY_PROXY_ENTRY,
+} from "./overlay-paths.js";
 import type { ContainerHandle, EgressContainmentProbes } from "./types.js";
 
 export const DEFAULT_PROXY_LISTEN_PORT = 8080;
@@ -93,6 +98,9 @@ export function buildSidecarCreateArgs(plan: SidecarPlan): readonly string[] {
     "-e", `AGENC_PROXY_ALLOW_PORT=${plan.allowPort}`,
     "-e", `AGENC_PROXY_PIN_IPS=${plan.pinIps.join(",")}`,
     "-e", `AGENC_PROXY_LISTEN_PORT=${plan.listenPort}`,
+    // Some task images lack libatomic.so.1, which the portable Node dist
+    // needs; the overlay ships a shim dir the loader checks first.
+    "-e", `LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB}`,
     "-v", `${plan.overlayHostDir}:${OVERLAY_CONTAINER_PATH}:ro`,
     "--entrypoint", OVERLAY_NODE,
     plan.dockerImageRef,

@@ -124,8 +124,14 @@ docker create --name agenc-eval-proxy-<run> \
   --user 65534:65534 --pids-limit 128 --memory 128m \
   -e AGENC_PROXY_ALLOW_HOST -e AGENC_PROXY_ALLOW_PORT -e AGENC_PROXY_PIN_IPS \
   -v <overlay>:/agenc-overlay:ro \
+  -e LD_LIBRARY_PATH=/agenc-overlay/node/compat \
   --entrypoint /agenc-overlay/node/bin/node \
   <pinned-image@sha256> /agenc-overlay/proxy/allowlist-proxy.mjs
+# Overlay staging must include node/compat/libatomic.so.1 (copied from a
+# glibc host): the portable Node dist needs libatomic and some task images
+# (sonarqube's Ubuntu 24.04) do not ship it. Every overlay-node exec site
+# (sidecar, containment probe, both agent lanes) puts node/compat on
+# LD_LIBRARY_PATH; the loader falls back to image paths for everything else.
 docker network connect agenc-eval-upstream-<run> agenc-eval-proxy-<run>
 docker start agenc-eval-proxy-<run>          # + loopback CONNECT self-probe
 docker create --network agenc-eval-egress-<run> --dns 127.0.0.1 \

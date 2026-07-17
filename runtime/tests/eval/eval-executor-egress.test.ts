@@ -69,6 +69,8 @@ describe("egress pure builders", () => {
     expect(args).toContain("AGENC_PROXY_ALLOW_HOST=api.x.ai");
     expect(args).toContain("AGENC_PROXY_PIN_IPS=1.2.3.4,5.6.7.8");
     expect(args).toContain("/ov:/agenc-overlay:ro");
+    // The sidecar's node needs the libatomic shim on images that lack it.
+    expect(args).toContain("LD_LIBRARY_PATH=/agenc-overlay/node/compat");
     // No provider key anywhere near the sidecar.
     expect(args.join(" ")).not.toContain("API_KEY");
   });
@@ -144,6 +146,11 @@ describe("real-provider agent script", () => {
     // The daemon proxy preload is installed so headless model calls route
     // through the egress proxy.
     expect(script).toContain('NODE_OPTIONS="--require /agenc-overlay/proxy/eval-proxy-preload.cjs"');
+    // libatomic shim for images that lack it (sonarqube), preserving any
+    // LD_LIBRARY_PATH the image itself sets.
+    expect(script).toContain(
+      "export LD_LIBRARY_PATH=/agenc-overlay/node/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}",
+    );
   });
 });
 
@@ -221,6 +228,8 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     overlayDir = await mkdtemp(path.join(tmpdir(), "agenc-egress-overlay-"));
     await mkdir(path.join(overlayDir, "node", "bin"), { recursive: true });
     await writeFile(path.join(overlayDir, "node", "bin", "node"), "");
+    await mkdir(path.join(overlayDir, "node", "compat"), { recursive: true });
+    await writeFile(path.join(overlayDir, "node", "compat", "libatomic.so.1"), "");
     const bin = path.join(overlayDir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "bin");
     await mkdir(bin, { recursive: true });
     await writeFile(path.join(bin, "agenc.js"), "");
