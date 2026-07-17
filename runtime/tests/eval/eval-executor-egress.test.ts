@@ -141,6 +141,9 @@ describe("real-provider agent script", () => {
     expect(script).not.toContain("OPENAI_COMPATIBLE_API_KEY=");
     // No mock provider in the real lane.
     expect(script).not.toContain("mock/serve.mjs");
+    // The daemon proxy preload is installed so headless model calls route
+    // through the egress proxy.
+    expect(script).toContain('NODE_OPTIONS="--require /agenc-overlay/proxy/eval-proxy-preload.cjs"');
   });
 });
 
@@ -223,6 +226,10 @@ describe("real-provider lane gating (fake lane, no docker)", () => {
     await writeFile(path.join(bin, "agenc.js"), "");
     await mkdir(path.join(overlayDir, "mock"), { recursive: true });
     await writeFile(path.join(overlayDir, "mock", "serve.mjs"), "");
+    await mkdir(path.join(overlayDir, "proxy"), { recursive: true });
+    for (const f of ["allowlist-proxy.mjs", "eval-egress-probe.mjs", "eval-proxy-preload.cjs"]) {
+      await writeFile(path.join(overlayDir, "proxy", f), "");
+    }
     process.env[KEY_VAR] = SECRET;
   });
 
