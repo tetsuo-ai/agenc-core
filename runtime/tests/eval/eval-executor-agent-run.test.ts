@@ -178,6 +178,8 @@ async function makeOverlay(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "agenc-agent-overlay-"));
   await mkdir(path.join(dir, "node", "bin"), { recursive: true });
   await writeFile(path.join(dir, "node", "bin", "node"), "");
+  await mkdir(path.join(dir, "node", "compat"), { recursive: true });
+  await writeFile(path.join(dir, "node", "compat", "libatomic.so.1"), "");
   const runtimeBin = path.join(
     dir, "runtime", "node_modules", "@tetsuo-ai", "runtime", "dist", "bin",
   );

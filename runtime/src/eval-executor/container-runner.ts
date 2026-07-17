@@ -8,7 +8,7 @@ import {
   type EgressLane,
   type EgressLaneRequest,
 } from "./egress.js";
-import { OVERLAY_NODE, OVERLAY_PROBE_ENTRY } from "./overlay-paths.js";
+import { OVERLAY_NODE, OVERLAY_NODE_COMPAT_LIB, OVERLAY_PROBE_ENTRY } from "./overlay-paths.js";
 import { EvalExecutorError } from "./source-lock.js";
 import {
   EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES,
@@ -376,6 +376,7 @@ export class DockerContainerRunner implements ContainerRunner {
             script:
               `AGENC_PROBE_PROXY=${proxyIp}:${proxyListenPort} AGENC_PROBE_GATEWAY=${gatewayIp} ` +
               `AGENC_PROBE_ALLOW_HOST=${allowHost} AGENC_PROBE_ALLOW_PORT=${allowPort} ` +
+              `LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB} ` +
               `${OVERLAY_NODE} ${OVERLAY_PROBE_ENTRY}`,
             timeoutMs: EGRESS_PROBE_EXEC_TIMEOUT_MS,
           });
