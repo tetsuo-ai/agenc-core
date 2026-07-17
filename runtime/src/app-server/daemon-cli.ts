@@ -138,6 +138,7 @@ import {
   createSizeCappedFileLogSink,
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
+import { configureGlobalAgents } from "../utils/proxy.js";
 import { isRecord } from "../utils/record.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 
@@ -1267,6 +1268,12 @@ async function runAgenCDaemonForeground(
   } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  // Install the process-wide proxy/mTLS dispatcher before any daemon service
+  // (including a possibly-remote-HTTP auth backend) issues a request. The TUI
+  // does this via applyConfigEnvironmentVariables; the headless daemon never
+  // runs that path, so a bare fetch()/global-axios call would otherwise ignore
+  // HTTPS_PROXY. No-op when no proxy/mTLS/CA env is present.
+  configureGlobalAgents();
   const authStartup = await tryResolveAgenCDaemonAuthStartup(host, io);
   if (authStartup === null) {
     return 1;
