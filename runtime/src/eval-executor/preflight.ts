@@ -423,6 +423,75 @@ export async function runTriplePreflight(
   return { taskId: inputs.task.instanceId, qualified, runs };
 }
 
+export interface CandidatePatchInputs {
+  readonly task: PilotSourceLockTask;
+  readonly bundle: VerifierBundle;
+  readonly setupPatch: Uint8Array;
+  readonly candidatePatch: Uint8Array;
+}
+
+export interface CandidateVerification {
+  readonly transcript: PreflightPhaseTranscript;
+  readonly passed: boolean;
+  /** Environment/taxonomy failure (timeout, rebuild, parser, ...). */
+  readonly infrastructureFailure: {
+    readonly reason: PreflightFailureReason;
+    readonly detail: string;
+  } | null;
+  /** First target or regression check the candidate does not pass. */
+  readonly failedCheck: { readonly name: string; readonly evidence: string } | null;
+}
+
+/**
+ * Verify an agent-produced candidate patch exactly the way the pinned
+ * reference solution is verified: fresh offline container, setup + candidate
+ * + test patches, cold rebuild, tests, parsed results, and every target and
+ * regression check must pass. Reuses the preflight phase machinery so the
+ * failure taxonomy and evidence shape stay unified.
+ */
+export async function verifyCandidatePatch(
+  runner: ContainerRunner,
+  inputs: CandidatePatchInputs,
+  timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
+  options: PreflightExecutionOptions = {},
+): Promise<CandidateVerification> {
+  const phase = await runPhase(
+    runner,
+    {
+      task: inputs.task,
+      bundle: inputs.bundle,
+      setupPatch: inputs.setupPatch,
+      referencePatch: inputs.candidatePatch,
+    },
+    "reference",
+    timeouts,
+    options,
+  );
+  if (phase.failure || !phase.results) {
+    return {
+      transcript: phase.transcript,
+      passed: false,
+      infrastructureFailure: phase.failure ?? {
+        reason: "infrastructure_error",
+        detail: "verification produced no parsed results",
+      },
+      failedCheck: null,
+    };
+  }
+  const failing = firstFailing(phase.results, [
+    ...inputs.bundle.failToPass,
+    ...inputs.bundle.passToPass,
+  ]);
+  return {
+    transcript: phase.transcript,
+    passed: failing === null,
+    infrastructureFailure: null,
+    failedCheck: failing === null
+      ? null
+      : { name: failing, evidence: statusEvidence(phase.results, failing) },
+  };
+}
+
 /**
  * Mint the typed qualification evidence the pilot curation catalog consumes.
  * This exists only for a fully qualified triple; anything else throws, so a

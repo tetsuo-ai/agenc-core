@@ -102,13 +102,26 @@ export interface ContainerExecResult {
   readonly durationMs: number;
 }
 
+export interface ContainerMount {
+  readonly hostPath: string;
+  readonly containerPath: string;
+}
+
+export interface CreateTaskContainerOptions {
+  /** Read-only bind mounts (the agent overlay). Never used for verification. */
+  readonly readOnlyMounts?: readonly ContainerMount[];
+}
+
 /**
  * Minimal container surface the preflight orchestration needs. The docker
  * implementation always creates task containers with `--network none`; fakes
  * exist only for hermetic tests.
  */
 export interface ContainerRunner {
-  createTaskContainer(imageReference: string): Promise<ContainerHandle>;
+  createTaskContainer(
+    imageReference: string,
+    options?: CreateTaskContainerOptions,
+  ): Promise<ContainerHandle>;
   /**
    * Executor-owned tooling container (also `--network none`), e.g. to run
    * the frozen log parser when a task image ships no python3. Never used
@@ -195,4 +208,37 @@ export interface TriplePreflightResult {
   readonly taskId: string;
   readonly qualified: boolean;
   readonly runs: readonly PreflightRunReport[];
+}
+
+export type AgentRunOutcome =
+  | "verified_fix"
+  | "verification_failure"
+  | "empty_patch"
+  | "agent_error"
+  | "agent_timeout"
+  | "infrastructure_error";
+
+export interface AgentRunReport {
+  readonly taskId: string;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly promptDigest: Sha256Digest;
+  readonly agent: {
+    readonly exitCode: number | null;
+    readonly timedOut: boolean;
+    readonly resultTruncated: boolean;
+    readonly sessionId: string | null;
+    readonly finalMessageDigest: Sha256Digest | null;
+    readonly tokenUsage: Readonly<Record<string, number>> | null;
+  };
+  readonly patch: {
+    readonly digest: Sha256Digest;
+    readonly sizeBytes: number;
+    readonly truncated: boolean;
+  } | null;
+  readonly verification: PreflightPhaseTranscript | null;
+  readonly outcome: AgentRunOutcome;
+  readonly failureDetail: string | null;
+  readonly environmentDigest: Sha256Digest;
+  readonly reportDigest: Sha256Digest;
 }

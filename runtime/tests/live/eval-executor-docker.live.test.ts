@@ -11,12 +11,21 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   DockerContainerRunner,
   mintUpstreamPreflightEvidence,
+  runAgentOnTask,
   runTriplePreflight,
   type PilotSourceLockTask,
   type PreflightTaskInputs,
   type PreflightTimeouts,
   type VerifierBundle,
 } from "../../src/eval-executor/index.js";
+
+/**
+ * Directory holding an agent overlay (`node/`, `runtime/`, `mock/`) prepared
+ * per docs/design/eval-pilot-executor.md. The agent-run e2e is skipped when
+ * unset because the overlay is hundreds of megabytes of operator-staged
+ * artifacts, not repository content.
+ */
+const AGENT_OVERLAY = process.env.AGENC_EVAL_AGENT_OVERLAY;
 
 const BASE_IMAGE = process.env.AGENC_EVAL_E2E_BASE_IMAGE ?? "node:25.9.0-bookworm";
 const HOOK_TIMEOUT_MS = 900_000;
@@ -248,6 +257,27 @@ describe("eval executor docker live e2e", () => {
     expect(result.qualified).toBe(false);
     expect(result.runs[0]!.failure).toMatchObject({ reason: "base_unexpectedly_passes" });
   }, TEST_TIMEOUT_MS);
+
+  test.skipIf(!AGENT_OVERLAY)(
+    "runs the real AgenC runtime in-container against the mock provider",
+    async () => {
+      const runner = new DockerContainerRunner({ allowLocalImageId: true });
+      const { report } = await runAgentOnTask(
+        runner,
+        { task: makeTask(imageId), bundle: makeBundle({}), setupPatch: new Uint8Array(0) },
+        { overlay: { hostDir: AGENT_OVERLAY! }, agentTimeoutMs: 300_000 },
+        TIMEOUTS,
+      );
+      // The mock provider only returns canned text, so the agent completes
+      // without editing the repository: the pipeline itself is what passes.
+      expect(report.agent.exitCode).toBe(0);
+      expect(report.agent.sessionId).toMatch(/^session_/u);
+      expect(report.agent.tokenUsage).not.toBeNull();
+      expect(report.outcome).toBe("empty_patch");
+      expect(report.verification).toBeNull();
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   test("task containers really have no network: egress fails as network_required", async () => {
     const runner = new DockerContainerRunner({ allowLocalImageId: true });

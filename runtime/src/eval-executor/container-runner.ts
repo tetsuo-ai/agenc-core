@@ -8,6 +8,7 @@ import {
   type ContainerExecResult,
   type ContainerHandle,
   type ContainerRunner,
+  type CreateTaskContainerOptions,
 } from "./types.js";
 
 interface SpawnResult {
@@ -128,7 +129,10 @@ export class DockerContainerRunner implements ContainerRunner {
     };
   }
 
-  async createTaskContainer(imageReference: string): Promise<ContainerHandle> {
+  async createTaskContainer(
+    imageReference: string,
+    options: CreateTaskContainerOptions = {},
+  ): Promise<ContainerHandle> {
     const isLocalImageId = LOCAL_IMAGE_ID_PATTERN.test(imageReference);
     const digestIndex = imageReference.lastIndexOf("@sha256:");
     if (isLocalImageId && this.options.allowLocalImageId !== true) {
@@ -144,12 +148,27 @@ export class DockerContainerRunner implements ContainerRunner {
     const dockerReference = isLocalImageId
       ? imageReference.slice("sha256:".length)
       : imageReference;
+    const mountArguments: string[] = [];
+    for (const mount of options.readOnlyMounts ?? []) {
+      if (!mount.hostPath.startsWith("/") || !mount.containerPath.startsWith("/") ||
+          mount.hostPath.includes(",") || mount.containerPath.includes(",") ||
+          mount.hostPath.includes(":") || mount.containerPath.includes(":")) {
+        throw new EvalExecutorError([
+          `invalid mount ${mount.hostPath} -> ${mount.containerPath}`,
+        ]);
+      }
+      mountArguments.push("-v", `${mount.hostPath}:${mount.containerPath}:ro`);
+    }
     const created = await spawnBounded(
       "docker",
       [
         "create",
+        // Task containers are always network-isolated. A real-model agent
+        // lane would need deliberate egress control (a proxy sidecar), never
+        // a raw bridge switch here.
         "--network",
         "none",
+        ...mountArguments,
         "--entrypoint",
         "sleep",
         dockerReference,
