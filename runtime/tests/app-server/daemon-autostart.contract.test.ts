@@ -245,6 +245,57 @@ port = 0
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("fails fast with the exit diagnosis when the spawned daemon dies before ready", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    // The child dies immediately after spawn: the pid was handed out but is
+    // no longer running. Pre-fix the autostart burned the entire readiness
+    // timeout polling a corpse, then reported a misleading "did not become
+    // ready before timeout". With a generous timeout the fast-fail is only
+    // observable because "exited" short-circuits the wait.
+    host.spawnDetachedDaemon = () => {
+      host.spawnedPids.push(9301);
+      return 9301; // never added to runningPids
+    };
+    await writeFile(
+      join(agencHome, "daemon-spawn-stderr.log"),
+      "node: error while loading shared libraries: libatomic.so.1\n",
+    );
+    const startedAt = Date.now();
+    await expect(
+      ensureAgenCDaemonAutostart({
+        host,
+        waitTimeoutMs: 60_000,
+        isReady: () => false,
+      }),
+    ).rejects.toThrow(
+      /exited before becoming ready \(pid 9301\).*libatomic\.so\.1/,
+    );
+    // Far below the 60s readiness window: the dead pid short-circuits.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    // The dead child's pid file must not poison the next autostart.
+    await expect(
+      readAgenCDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome)),
+    ).resolves.toBeNull();
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("still reports a timeout when the daemon is alive but slow", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    await expect(
+      ensureAgenCDaemonAutostart({
+        host,
+        waitTimeoutMs: 50,
+        pollMs: 5,
+        isReady: () => false, // alive (runningPids has it) but never ready
+      }),
+    ).rejects.toThrow(/did not become ready before timeout/);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("adopts a pidless daemon when its socket is present", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

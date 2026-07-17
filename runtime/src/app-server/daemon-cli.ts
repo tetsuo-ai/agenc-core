@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
@@ -478,6 +478,49 @@ export function resolveAgenCDaemonCookiePath(
   );
 }
 
+/**
+ * Raw stderr of the most recent detached daemon spawn, captured until the
+ * foreground daemon installs its rotating log sink. This is the only place a
+ * pre-sink crash (loader failure, V8 fatal, top-level throw) leaves evidence:
+ * `stdio: "ignore"` used to drop it, which made "daemon exited before ready"
+ * undiagnosable without rebuilding the runtime.
+ */
+export const AGENC_DAEMON_SPAWN_STDERR_FILENAME = "daemon-spawn-stderr.log";
+
+export function resolveAgenCDaemonSpawnStderrPath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(
+    resolveAgenCDaemonHome(env, userHome),
+    AGENC_DAEMON_SPAWN_STDERR_FILENAME,
+  );
+}
+
+const DAEMON_SPAWN_STDERR_TAIL_BYTES = 2_048;
+
+/**
+ * Bounded, single-line tail of the spawn stderr capture for embedding in
+ * failure messages. Empty string when the file is missing or empty.
+ */
+export function readAgenCDaemonSpawnStderrTail(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  try {
+    const raw = readFileSync(resolveAgenCDaemonSpawnStderrPath(env, userHome));
+    const tail = raw
+      .subarray(Math.max(0, raw.byteLength - DAEMON_SPAWN_STDERR_TAIL_BYTES))
+      .toString("utf8")
+      .trim();
+    if (tail.length === 0) return "";
+    const lines = tail.split("\n").map((line) => line.trim()).filter(Boolean);
+    return lines.slice(-4).join(" | ");
+  } catch {
+    return "";
+  }
+}
+
 export function resolveAgenCDaemonSnapshotPath(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
@@ -806,9 +849,15 @@ async function startAgenCDaemon(
       );
     } else {
       await removeAgenCDaemonPid(pidPath, childPid);
+      const stderrTail = readAgenCDaemonSpawnStderrTail(
+        host.env,
+        host.userHome,
+      );
       io.stderr.write(
         `agenc: daemon process (pid ${childPid}) exited before its control ` +
-          `socket became ready\n`,
+          `socket became ready` +
+          (stderrTail.length > 0 ? `: ${stderrTail}` : "") +
+          `\n`,
       );
     }
     return 1;
@@ -3148,18 +3197,39 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
           mode: 0o700,
         });
       }
-      const child = spawn(
-        process.execPath,
-        buildAgenCDaemonChildNodeArgs(entrypointPath, env, userHome),
-        {
-          detached: true,
-          env,
-          // stdout/stderr stay detached from this short-lived parent; the
-          // foreground daemon installs its own size-capped rotating log sink
-          // (see installAgenCDaemonLogSink) so daemon.log cannot grow unbounded.
-          stdio: "ignore",
-        },
-      );
+      // Capture the child's raw stderr until its log sink takes over: a
+      // crash before the sink installs (loader failure, fatal V8 error,
+      // top-level throw) is otherwise unobservable. A plain file fd keeps
+      // this short-lived parent decoupled (no pipe); truncated per spawn so
+      // it only ever holds the latest attempt's early stderr.
+      let stderrFd: number | "ignore" = "ignore";
+      try {
+        stderrFd = openSync(
+          resolveAgenCDaemonSpawnStderrPath(env, userHome),
+          "w",
+          0o600,
+        );
+      } catch {
+        /* capture is best-effort; spawn proceeds without it */
+      }
+      let child;
+      try {
+        child = spawn(
+          process.execPath,
+          buildAgenCDaemonChildNodeArgs(entrypointPath, env, userHome),
+          {
+            detached: true,
+            env,
+            // stdout stays detached from this short-lived parent; the
+            // foreground daemon installs its own size-capped rotating log sink
+            // (see installAgenCDaemonLogSink) so daemon.log cannot grow
+            // unbounded.
+            stdio: ["ignore", "ignore", stderrFd],
+          },
+        );
+      } finally {
+        if (stderrFd !== "ignore") closeSync(stderrFd);
+      }
       child.unref();
       if (child.pid === undefined) {
         throw new Error("AgenC daemon child process did not expose a pid");

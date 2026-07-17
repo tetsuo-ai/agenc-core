@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   createNodeDaemonCliHost,
   readAgenCDaemonPid,
+  readAgenCDaemonSpawnStderrTail,
   removeAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
@@ -228,7 +229,18 @@ export async function ensureAgenCDaemonAutostart(
 
   const target = { pid, pidPath };
   const ready = await waitForAgenCDaemonReady(target, host, options);
-  if (!ready) {
+  if (ready === "exited") {
+    // The daemon process died before becoming ready. Waiting longer cannot
+    // help, and calling this a timeout sends the operator debugging the
+    // wrong thing — surface the captured early-crash stderr instead.
+    await removeAgenCDaemonPid(pidPath, pid);
+    const stderrTail = readAgenCDaemonSpawnStderrTail(host.env, host.userHome);
+    throw new AgenCDaemonAutostartError(
+      `AgenC daemon exited before becoming ready (pid ${pid})` +
+        (stderrTail.length > 0 ? `: ${stderrTail}` : ""),
+    );
+  }
+  if (ready !== "ready") {
     throw new AgenCDaemonAutostartError(
       `AgenC daemon did not become ready before timeout (pid ${pid})`,
     );
@@ -399,11 +411,13 @@ async function readProcEnv(path: string): Promise<Record<string, string>> {
   return env;
 }
 
+type DaemonReadyWaitOutcome = "ready" | "exited" | "timeout";
+
 async function waitForAgenCDaemonReady(
   target: AgenCDaemonConnectionTarget,
   host: AgenCDaemonCliHost,
   options: AgenCDaemonAutostartOptions,
-): Promise<boolean> {
+): Promise<DaemonReadyWaitOutcome> {
   const timeoutMs =
     options.waitTimeoutMs ?? resolveAgenCDaemonReadyTimeoutMs(host.env);
   const pollMs = options.pollMs ?? 25;
@@ -414,10 +428,16 @@ async function waitForAgenCDaemonReady(
       isAgenCDaemonPidAndCookieReady(readyTarget, host));
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (await Promise.resolve(isReady(target))) return true;
+    if (await Promise.resolve(isReady(target))) return "ready";
+    // A dead daemon can never become ready — bail out with the accurate
+    // diagnosis instead of burning the whole timeout on a foregone result.
+    // (Checked after isReady so a custom isReady that ignores the pid still
+    // gets one evaluation per poll.)
+    if (!host.isPidRunning(target.pid)) return "exited";
     await host.sleep(pollMs);
   }
-  return Promise.resolve(isReady(target));
+  if (await Promise.resolve(isReady(target))) return "ready";
+  return host.isPidRunning(target.pid) ? "timeout" : "exited";
 }
 
 async function isAgenCDaemonPidAndCookieReady(

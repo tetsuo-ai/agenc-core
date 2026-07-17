@@ -6,6 +6,7 @@ import {
   notificationFromDaemonEvent,
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
+  managedTokenUsage,
 } from "./background-agent-runner.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
@@ -1335,5 +1336,43 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(stub.thread.shutdown).toHaveBeenCalledWith("user_stopped");
     expect(control.shutdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("managedTokenUsage shape bridging", () => {
+  it("reads the daemon session accumulator's promptTokens/completionTokens shape", () => {
+    // The cross-turn accumulator (stream-model.ts TokenUsageInfo port) uses
+    // promptTokens/completionTokens. Reading only inputTokens/outputTokens
+    // shipped {0, 0, N} in every session.snapshot — input/output zeroed while
+    // totalTokens matched — so cost-per-fix was unreportable.
+    expect(
+      managedTokenUsage({
+        totalTokenUsage: () => ({
+          promptTokens: 64,
+          completionTokens: 1,
+          totalTokens: 65,
+        }),
+      }),
+    ).toEqual({ inputTokens: 64, outputTokens: 1, totalTokens: 65 });
+  });
+
+  it("still reads the live-agent inputTokens/outputTokens shape", () => {
+    expect(
+      managedTokenUsage({
+        totalTokenUsage: () => ({
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+        }),
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  });
+
+  it("derives totalTokens when the shape omits it", () => {
+    expect(
+      managedTokenUsage({
+        totalTokenUsage: () => ({ promptTokens: 7, completionTokens: 3 }),
+      }),
+    ).toEqual({ inputTokens: 7, outputTokens: 3, totalTokens: 10 });
   });
 });
