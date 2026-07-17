@@ -23,6 +23,7 @@ interface SpawnResult {
 interface SpawnBoundedOptions {
   readonly timeoutMs: number;
   readonly stdin?: Uint8Array;
+  readonly maxOutputBytes?: number;
 }
 
 function spawnBounded(
@@ -39,8 +40,9 @@ function spawnBounded(
     let stderr: Buffer = Buffer.alloc(0);
     let truncated = false;
     let timedOut = false;
+    const maxOutputBytes = options.maxOutputBytes ?? EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES;
     const capture = (existing: Buffer, chunk: Buffer): Buffer => {
-      const remaining = EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES - existing.byteLength;
+      const remaining = maxOutputBytes - existing.byteLength;
       if (remaining <= 0) {
         truncated = true;
         return existing;
@@ -234,7 +236,7 @@ export class DockerContainerRunner implements ContainerRunner {
     return spawnBounded(
       "docker",
       ["exec", "-w", handle.workdir, handle.id, "bash", "-c", request.script],
-      { timeoutMs: request.timeoutMs },
+      { timeoutMs: request.timeoutMs, maxOutputBytes: request.maxOutputBytes },
     );
   }
 

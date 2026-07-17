@@ -13,6 +13,15 @@ export const EVAL_EXECUTOR_MAXIMUM_LOCK_BYTES = 16_777_216;
 /** Host-side cap on captured container command output. */
 export const EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES = 1_048_576;
 
+/**
+ * Larger cap for the log-parser step: its output is a JSON map of every test
+ * the parser found, which for big suites (e.g. pinot's ~thousands of surefire
+ * results) legitimately exceeds 1 MiB. Truncating it here corrupts the JSON
+ * and produces a false infrastructure_error, so this step gets the artifact
+ * bound instead.
+ */
+export const EVAL_EXECUTOR_MAXIMUM_PARSER_OUTPUT_BYTES = 67_108_864;
+
 export interface CasArtifactReference {
   readonly digest: Sha256Digest;
   readonly sizeBytes: number;
@@ -91,6 +100,12 @@ export interface ContainerExecRequest {
   /** POSIX shell script executed with `bash -c` inside the workdir. */
   readonly script: string;
   readonly timeoutMs: number;
+  /**
+   * Per-call host capture cap. Defaults to
+   * `EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES`; raised only for the
+   * log-parser step, whose JSON output can exceed the default for big suites.
+   */
+  readonly maxOutputBytes?: number;
 }
 
 export interface ContainerExecResult {
