@@ -3927,16 +3927,34 @@ interface ManagedTokenUsageShape {
   readonly totalTokens: number;
 }
 
-function managedTokenUsage(thread: ManagedThread): ManagedTokenUsageShape {
+export function managedTokenUsage(
+  thread: Pick<ManagedThread, "totalTokenUsage">,
+): ManagedTokenUsageShape {
   const usage = thread.totalTokenUsage?.();
   if (typeof usage !== "object" || usage === null) {
     return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   }
   const u = usage as Record<string, unknown>;
+  // Two shapes reach this seam: run-agent's live counter uses
+  // inputTokens/outputTokens, while a daemon session's cross-turn
+  // accumulator (stream-model.ts, the TokenUsageInfo port) uses
+  // promptTokens/completionTokens. Reading only the former zeroed
+  // input/output in every session.snapshot (totalTokens matched both
+  // shapes, which is why the bug shipped as {0, 0, N}).
+  const field = (...names: readonly string[]): number => {
+    for (const name of names) {
+      const value = u[name];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+  const inputTokens = field("inputTokens", "promptTokens");
+  const outputTokens = field("outputTokens", "completionTokens");
+  const totalTokens = field("totalTokens");
   return {
-    inputTokens: typeof u.inputTokens === "number" ? u.inputTokens : 0,
-    outputTokens: typeof u.outputTokens === "number" ? u.outputTokens : 0,
-    totalTokens: typeof u.totalTokens === "number" ? u.totalTokens : 0,
+    inputTokens,
+    outputTokens,
+    totalTokens: totalTokens > 0 ? totalTokens : inputTokens + outputTokens,
   };
 }
 
