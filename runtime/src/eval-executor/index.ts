@@ -6,10 +6,12 @@ export {
   testPassed,
 } from "./log-parser.js";
 export {
+  DEFAULT_PARSER_FALLBACK_IMAGE,
   DEFAULT_PREFLIGHT_TIMEOUTS,
   mintUpstreamPreflightEvidence,
   runSinglePreflight,
   runTriplePreflight,
+  type PreflightExecutionOptions,
   type PreflightTaskInputs,
   type PreflightTimeouts,
 } from "./preflight.js";
