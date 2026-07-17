@@ -2,6 +2,7 @@ import { digestCanonicalJson, sha256Digest } from "../eval-contract/index.js";
 import type { EvaluationPilotUpstreamPreflightEvidence } from "../eval-pilot/types.js";
 import { buildParserProgram, extractParserResults, testPassed } from "./log-parser.js";
 import { EvalExecutorError } from "./source-lock.js";
+import { EVAL_EXECUTOR_MAXIMUM_PARSER_OUTPUT_BYTES } from "./types.js";
 import type {
   ContainerExecResult,
   ContainerHandle,
@@ -122,8 +123,9 @@ async function runPhase(
       script: string,
       timeoutMs: number,
       target: ContainerHandle = handle,
+      maxOutputBytes?: number,
     ): Promise<ContainerExecResult> => {
-      const result = await runner.exec(target, { script, timeoutMs });
+      const result = await runner.exec(target, { script, timeoutMs, maxOutputBytes });
       commands.push(record(label, script, result));
       if (result.timedOut) {
         throw new PreflightPhaseFailure("timeout", `${label} exceeded ${timeoutMs}ms`);
@@ -210,7 +212,9 @@ async function runPhase(
     let parsed: ContainerExecResult;
     if (probe.exitCode === 0) {
       await runner.writeFile(handle, `${HELPER_DIR}/parse-log.py`, parserProgram);
-      parsed = await exec("parse-log", parserScript, timeouts.parserMs);
+      parsed = await exec(
+        "parse-log", parserScript, timeouts.parserMs, handle, EVAL_EXECUTOR_MAXIMUM_PARSER_OUTPUT_BYTES,
+      );
     } else {
       // The task image ships no python3 (the .NET candidates). Run the
       // frozen parser in an offline auxiliary container instead — still
@@ -229,7 +233,10 @@ async function runPhase(
             // readable candidate.
           }
         }
-        parsed = await exec("parse-log[fallback]", parserScript, timeouts.parserMs, aux);
+        parsed = await exec(
+          "parse-log[fallback]", parserScript, timeouts.parserMs, aux,
+          EVAL_EXECUTOR_MAXIMUM_PARSER_OUTPUT_BYTES,
+        );
       } finally {
         await runner.remove(aux);
       }

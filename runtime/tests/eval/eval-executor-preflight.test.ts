@@ -107,6 +107,7 @@ interface PhasePlan {
 class FakeContainerRunner implements ContainerRunner {
   readonly writtenFiles: string[] = [];
   readonly executedScripts: string[] = [];
+  readonly execCaps: Array<{ script: string; maxOutputBytes?: number }> = [];
   readonly auxiliaryImages: string[] = [];
   readonly copiedFiles: string[] = [];
   readonly removedIds: string[] = [];
@@ -148,6 +149,7 @@ class FakeContainerRunner implements ContainerRunner {
   async exec(_handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult> {
     const plan = this.phases[this.phaseIndex]!;
     this.executedScripts.push(request.script);
+    this.execCaps.push({ script: request.script, maxOutputBytes: request.maxOutputBytes });
     if (request.script.includes(" apply ")) {
       return { ...OK, exitCode: plan.applyExitCode ?? 0, stderr: "apply output" };
     }
@@ -226,6 +228,14 @@ describe("eval executor triple preflight", () => {
         script.includes("/agenc-eval/parser-input.log ")
       ),
     ).toBe(true);
+    // The parse-log step must carry the raised output cap so a big suite's
+    // JSON result is not truncated into a false infrastructure_error (pinot).
+    const parseCaps = runner.execCaps.filter((c) => c.script.includes("parse-log.py"));
+    expect(parseCaps).toHaveLength(6);
+    expect(parseCaps.every((c) => (c.maxOutputBytes ?? 0) >= 64 * 1024 * 1024)).toBe(true);
+    // Non-parser steps keep the default (undefined) cap.
+    const rebuildCaps = runner.execCaps.filter((c) => c.script === "make rebuild");
+    expect(rebuildCaps.every((c) => c.maxOutputBytes === undefined)).toBe(true);
   });
 
   test("a target check passing on base disqualifies the candidate", async () => {
