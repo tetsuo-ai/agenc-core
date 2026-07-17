@@ -151,6 +151,12 @@ describe("real-provider agent script", () => {
     expect(script).toContain(
       "export LD_LIBRARY_PATH=/agenc-overlay/node/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}",
     );
+    // The runtime scrubs LD_* from child env, so when the overlay node cannot
+    // start bare, the shim must be installed into the system lib dir too.
+    expect(script).toContain(
+      "env -u LD_LIBRARY_PATH /agenc-overlay/node/bin/node --version >/dev/null 2>&1 || {",
+    );
+    expect(script).toContain("cp /agenc-overlay/node/compat/libatomic.so.1 /usr/lib/x86_64-linux-gnu/");
   });
 });
 

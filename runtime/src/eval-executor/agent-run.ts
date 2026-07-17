@@ -35,6 +35,7 @@ import {
   AGENT_RUNTIME_ENTRY,
   OVERLAY_AGENT_ENTRY_SUBPATH,
   OVERLAY_CONTAINER_PATH,
+  OVERLAY_NODE,
   OVERLAY_NODE_COMPAT_LIB,
   OVERLAY_PROXY_PRELOAD,
 } from "./overlay-paths.js";
@@ -175,6 +176,15 @@ function buildAgentScript(): string {
     // libatomic shim for images that lack it; the image's own paths still
     // win for every other library via loader fallback.
     `export LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}`,
+    // The env var alone is not enough for the agent lane: the runtime scrubs
+    // LD_* from child env (managedEnv DANGEROUS_ENV_PREFIXES), so the daemon
+    // it spawns would die on the loader. When the overlay node cannot start
+    // without the shim, install it into the container's system lib dir,
+    // which no env scrubbing can undo.
+    `env -u LD_LIBRARY_PATH ${OVERLAY_NODE} --version >/dev/null 2>&1 || { ` +
+      `cp ${OVERLAY_NODE_COMPAT_LIB}/libatomic.so.1 /usr/lib/x86_64-linux-gnu/ 2>/dev/null || ` +
+      `cp ${OVERLAY_NODE_COMPAT_LIB}/libatomic.so.1 /usr/lib/ 2>/dev/null || true; ` +
+      `ldconfig 2>/dev/null || true; }`,
     `mkdir -p ${AGENT_HOME}`,
     // .git hygiene (drop remotes/unreachable objects) + post-setup baseline
     // commit + tag, so the candidate diff is exactly the agent's net change
@@ -537,6 +547,15 @@ export function buildRealProviderAgentScript(config: {
     // libatomic shim for images that lack it; the image's own paths still
     // win for every other library via loader fallback.
     `export LD_LIBRARY_PATH=${OVERLAY_NODE_COMPAT_LIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}`,
+    // The env var alone is not enough for the agent lane: the runtime scrubs
+    // LD_* from child env (managedEnv DANGEROUS_ENV_PREFIXES), so the daemon
+    // it spawns would die on the loader. When the overlay node cannot start
+    // without the shim, install it into the container's system lib dir,
+    // which no env scrubbing can undo.
+    `env -u LD_LIBRARY_PATH ${OVERLAY_NODE} --version >/dev/null 2>&1 || { ` +
+      `cp ${OVERLAY_NODE_COMPAT_LIB}/libatomic.so.1 /usr/lib/x86_64-linux-gnu/ 2>/dev/null || ` +
+      `cp ${OVERLAY_NODE_COMPAT_LIB}/libatomic.so.1 /usr/lib/ 2>/dev/null || true; ` +
+      `ldconfig 2>/dev/null || true; }`,
     `mkdir -p ${AGENT_HOME}`,
     buildBaselineGitScript(),
     `export HTTPS_PROXY=${proxyUrl} HTTP_PROXY=${proxyUrl} NO_PROXY=`,
