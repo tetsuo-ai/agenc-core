@@ -135,7 +135,57 @@ patch does not pass — broken verifier or patch), `patch_apply_failed`,
 say something about the *task*; the rest say something about the
 *environment* and are retryable.
 
-## Phase 2 — real-agent run (designed, not yet implemented)
+## Phase 2a — offline agent run (implemented)
+
+Module `runtime/src/eval-executor/agent-run.ts`, CLI
+`eval:executor run-agent --task <id> --overlay <dir>`. Runs the real AgenC
+runtime inside a pinned task container, collects its patch, and verifies it
+with the hidden verifier — all offline.
+
+- **Overlay:** the operator stages a directory with `node/` (official Node 25
+  linux-x64), `runtime/` (extracted `agenc-runtime-*-linux-x64` release
+  tarball), and `mock/serve.mjs` (the bundled offline provider). It is
+  bind-mounted read-only at `/agenc-overlay`. `assertOverlayLayout` checks the
+  three required entrypoints; `computeOverlayDigest` records which `agenc.js`
+  build was evaluated in the run report.
+- **Provider:** always the in-container offline mock (`--network none`). There
+  are no secrets in any container and no egress. This lane validates the
+  pipeline mechanically; it does not yet measure a real model.
+- **Oracle isolation (structural):** the agent container receives only the
+  setup patch, issue text, and read-only overlay — never the test patch,
+  reference solution, or verifier bundle. Before the agent runs, `.git`
+  remotes and reflog are pruned as defence-in-depth. Verification runs
+  afterwards in a fresh `--network none` container via the shared
+  `verifyCandidatePatch` (reusing the preflight phase machinery, so the
+  taxonomy stays unified).
+- **Patch collection:** after applying the setup patch, a baseline commit is
+  tagged (`agenc-eval-baseline`); the candidate is `git diff <baseline> HEAD`
+  after committing any work the agent left uncommitted, transported as base64.
+  This makes collection correct in three ways the first draft was not: the
+  setup patch is excluded from the candidate, an agent that commits its work
+  is still captured, and non-UTF-8 patch bytes survive intact.
+- **Outcomes:** `verified_fix | verification_failure | empty_patch |
+  agent_error | agent_timeout | infrastructure_error`. A truncated patch is
+  never verified; a failed in-container mock is `infrastructure_error`, not
+  `agent_error`.
+
+## Phase 2b — real-model lane (deferred; requires egress control)
+
+A lane that runs a real provider needs container egress to reach the model
+API, which reintroduces an oracle-leak surface: a `--yolo` agent with open
+egress could fetch the upstream fix (the tasks are cut from merged public
+GitHub PRs) or exfiltrate provider keys under prompt injection from the
+untrusted issue text. This lane is therefore NOT part of 2a. It requires:
+
+- an egress-allowlist proxy sidecar that permits only the configured provider
+  host, not raw bridge networking;
+- full `.git` oracle hygiene (remove all non-HEAD refs/branches, not only
+  remotes and reflog) so the fix commit is unrecoverable offline;
+- provider secrets passed via `docker exec -e`, never inlined into an argv
+  script visible in host process listings;
+- a contamination marker in the run report until the above are proven.
+
+## Phase 2 — evidence-ledger binding (designed, not yet implemented)
 
 - **Agent placement:** the agent runs *inside* the task container so it can
   build and test with the image toolchain. There is no standalone agenc

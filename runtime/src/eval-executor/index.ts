@@ -1,3 +1,16 @@
+export {
+  AGENT_PROMPT_PREAMBLE_V1,
+  assertOverlayLayout,
+  buildBaselineGitScript,
+  buildCandidateCollectionScript,
+  DEFAULT_AGENT_TIMEOUT_MS,
+  EVAL_BASELINE_TAG,
+  runAgentOnTask,
+  type AgentOverlay,
+  type AgentRunArtifacts,
+  type AgentRunConfig,
+  type AgentRunInputs,
+} from "./agent-run.js";
 export { DockerContainerRunner } from "./container-runner.js";
 export {
   buildParserProgram,
@@ -11,6 +24,9 @@ export {
   mintUpstreamPreflightEvidence,
   runSinglePreflight,
   runTriplePreflight,
+  verifyCandidatePatch,
+  type CandidatePatchInputs,
+  type CandidateVerification,
   type PreflightExecutionOptions,
   type PreflightTaskInputs,
   type PreflightTimeouts,
