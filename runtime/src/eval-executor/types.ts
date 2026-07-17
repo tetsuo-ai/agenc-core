@@ -106,6 +106,14 @@ export interface ContainerExecRequest {
    * log-parser step, whose JSON output can exceed the default for big suites.
    */
   readonly maxOutputBytes?: number;
+  /**
+   * Environment variable NAMES (never values) to forward into the container
+   * via `docker exec -e NAME`. The docker CLI reads each value from the
+   * executor's own process.env, so a secret (the provider key) is on no
+   * command line anywhere — not in the script argv, not in `docker create
+   * --env`, not visible in host `ps`.
+   */
+  readonly envPassthrough?: readonly string[];
 }
 
 export interface ContainerExecResult {
@@ -231,7 +239,39 @@ export type AgentRunOutcome =
   | "empty_patch"
   | "agent_error"
   | "agent_timeout"
+  | "oracle_containment_unverified"
   | "infrastructure_error";
+
+/**
+ * Pre-agent deny-probe results for the real-provider lane. Every field must
+ * be true for a run to be trusted; any false (or unrun) probe leaves the run
+ * `oracle_containment_unverified` and the agent is never started.
+ */
+export interface EgressContainmentProbes {
+  /** A raw route to a non-provider public IP fails (no route off the net). */
+  readonly noRouteOffNet: boolean;
+  /** github.com is unreachable through the proxy (403) and by name. */
+  readonly githubBlocked: boolean;
+  /** The agent resolver is a blackhole: `getent hosts github.com` fails. */
+  readonly dnsBlackholed: boolean;
+  /** The agent has no IPv6 default route. */
+  readonly ipv6Absent: boolean;
+  /** An IP-literal CONNECT through the proxy is refused. */
+  readonly ipLiteralRejected: boolean;
+  /** A mismatched-SNI / wrong-host tunnel is refused (allowlist enforced). */
+  readonly sniPinned: boolean;
+}
+
+export interface EgressReport {
+  readonly mode: "real-provider";
+  readonly allowHost: string;
+  readonly keyExposure: "agent-env" | "sidecar-only";
+  readonly sidecarOverlayDigest: Sha256Digest;
+  /** Starts "unverified"; flips to "contained" only when every probe passes. */
+  readonly oracleContainment: "unverified" | "contained";
+  readonly denyProbes: EgressContainmentProbes;
+  readonly patchKeyScan: "clean" | "key-substring-found" | "not-run";
+}
 
 export interface AgentRunReport {
   readonly taskId: string;
@@ -254,6 +294,8 @@ export interface AgentRunReport {
   readonly verification: PreflightPhaseTranscript | null;
   readonly outcome: AgentRunOutcome;
   readonly failureDetail: string | null;
+  /** Present only for the real-provider lane; null for the offline mock lane. */
+  readonly egress: EgressReport | null;
   readonly environmentDigest: Sha256Digest;
   readonly reportDigest: Sha256Digest;
 }

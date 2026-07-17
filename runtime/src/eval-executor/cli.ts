@@ -1,8 +1,10 @@
+import { randomBytes, randomInt } from "node:crypto";
+import { resolve4 } from "node:dns/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
-import { runAgentOnTask } from "./agent-run.js";
+import { runAgentOnTask, runRealProviderAgentOnTask } from "./agent-run.js";
 import { DockerContainerRunner } from "./container-runner.js";
 import {
   DEFAULT_PREFLIGHT_TIMEOUTS,
@@ -27,6 +29,10 @@ const USAGE = `Usage:
                           [--operator-task-digest <sha256:...>]
   eval:executor run-agent --task <instanceId> --overlay <dir> [--lock <path>]
                           [--output <dir>] [--agent-timeout-ms <n>]
+  eval:executor run-agent-real --task <instanceId> --overlay <dir>
+                          --provider-host <host> --provider-base-url <url>
+                          --provider-model <model> [--key-env-var <NAME>]
+                          [--lock <path>] [--output <dir>] [--agent-timeout-ms <n>]
 
 verify-lock  Load the frozen pilot source lock, re-hash every CAS artifact,
              and decode every verifier bundle. Hermetic and offline.
@@ -35,8 +41,13 @@ preflight    Run the pilot triple preflight for one task inside its pinned
 run-agent    Run the real AgenC agent against one pinned task fully offline
              (--network none, bundled in-container mock provider), collect
              its patch, and verify it with the hidden verifier in a fresh
-             offline container. This is the pipeline-validation lane; the
-             real-model lane requires an egress-controlled follow-up.`;
+             offline container. Pipeline-validation lane.
+run-agent-real  Run the real AgenC agent against a REAL model provider inside a
+             topologically network-isolated egress lane (internal net +
+             allowlist proxy sidecar). The agent runs only after every
+             containment probe passes; the provider key is read from
+             --key-env-var in the executor env and injected via docker exec
+             (never on any argv). Requires docker.`;
 
 async function verifyLock(lockPath: string): Promise<number> {
   const loaded = await loadPilotSourceLock(lockPath);
@@ -175,6 +186,80 @@ async function runAgent(options: {
   return report.outcome === "verified_fix" ? 0 : 1;
 }
 
+async function runRealProviderAgent(options: {
+  readonly lockPath: string;
+  readonly taskId: string;
+  readonly overlayDir: string;
+  readonly outputDir: string;
+  readonly allowHost: string;
+  readonly baseUrl: string;
+  readonly model: string;
+  readonly keyEnvVar: string;
+  readonly agentTimeoutMs?: number;
+  readonly parserFallbackImage?: string;
+}): Promise<number> {
+  const loaded = await loadPilotSourceLock(options.lockPath);
+  const task = findPilotTask(loaded.lock, options.taskId);
+  const runner = new DockerContainerRunner();
+  await runner.environment();
+  // Resolve the provider host once, on the host, to a set of pinned IPs the
+  // sidecar dials — so a mid-run DNS flip cannot redirect egress.
+  const pinIps = await resolve4(options.allowHost);
+  if (pinIps.length === 0) {
+    throw new EvalExecutorError([`could not resolve any IP for ${options.allowHost}`]);
+  }
+  const { report, patchBytes, rawAgentResult } = await runRealProviderAgentOnTask(
+    runner,
+    (request) => runner.createEgressLane(request),
+    {
+      task,
+      bundle: decodeVerifierBundle(
+        await readPilotArtifact(loaded, task.artifacts.verifierBundle),
+        task.instanceId,
+      ),
+      setupPatch: await readPilotArtifact(loaded, task.artifacts.setupPatch),
+    },
+    {
+      overlay: { hostDir: options.overlayDir },
+      agentTimeoutMs: options.agentTimeoutMs,
+      allowHost: options.allowHost,
+      allowPort: 443,
+      pinIps,
+      model: options.model,
+      baseUrl: options.baseUrl,
+      keyEnvVar: options.keyEnvVar,
+      runId: randomBytes(5).toString("hex"),
+      subnetOctet: randomInt(1, 255),
+    },
+    DEFAULT_PREFLIGHT_TIMEOUTS,
+    { parserFallbackImage: options.parserFallbackImage },
+  );
+  const taskDir = path.join(options.outputDir, task.instanceId);
+  await mkdir(taskDir, { recursive: true });
+  await writeFile(
+    path.join(taskDir, "agent-run-report.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+    { flag: "wx" },
+  );
+  if (patchBytes !== null) {
+    await writeFile(path.join(taskDir, "agent-patch.diff"), patchBytes, { flag: "wx" });
+  }
+  if (rawAgentResult !== null && rawAgentResult.length > 0) {
+    await writeFile(path.join(taskDir, "agent-result.json"), rawAgentResult, { flag: "wx" });
+  }
+  process.stdout.write(`${JSON.stringify({
+    taskId: report.taskId,
+    outcome: report.outcome,
+    oracleContainment: report.egress?.oracleContainment,
+    denyProbes: report.egress?.denyProbes,
+    patchKeyScan: report.egress?.patchKeyScan,
+    failureDetail: report.failureDetail,
+    tokenUsage: report.agent.tokenUsage,
+    outputDir: taskDir,
+  }, null, 2)}\n`);
+  return report.outcome === "verified_fix" ? 0 : 1;
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (!command || command === "--help" || command === "-h") {
@@ -191,6 +276,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       "agent-timeout-ms": { type: "string" },
       "operator-task-digest": { type: "string" },
       "parser-fallback-image": { type: "string" },
+      "provider-host": { type: "string" },
+      "provider-base-url": { type: "string" },
+      "provider-model": { type: "string" },
+      "key-env-var": { type: "string" },
     },
     strict: true,
   });
@@ -228,6 +317,36 @@ export async function main(argv: readonly string[]): Promise<number> {
       taskId: values.task,
       overlayDir: values.overlay,
       outputDir: values.output ?? "eval-executor-output",
+      agentTimeoutMs,
+      parserFallbackImage: values["parser-fallback-image"],
+    });
+  }
+  if (command === "run-agent-real") {
+    if (!values.task || !values.overlay) {
+      throw new EvalExecutorError(["run-agent-real requires --task <instanceId> and --overlay <dir>"]);
+    }
+    const host = values["provider-host"];
+    const baseUrl = values["provider-base-url"];
+    const model = values["provider-model"];
+    if (!host || !baseUrl || !model) {
+      throw new EvalExecutorError([
+        "run-agent-real requires --provider-host, --provider-base-url, and --provider-model",
+      ]);
+    }
+    const timeoutRaw = values["agent-timeout-ms"];
+    const agentTimeoutMs = timeoutRaw === undefined ? undefined : Number(timeoutRaw);
+    if (agentTimeoutMs !== undefined && (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0)) {
+      throw new EvalExecutorError(["--agent-timeout-ms must be a positive integer"]);
+    }
+    return runRealProviderAgent({
+      lockPath,
+      taskId: values.task,
+      overlayDir: values.overlay,
+      outputDir: values.output ?? "eval-executor-output",
+      allowHost: host,
+      baseUrl,
+      model,
+      keyEnvVar: values["key-env-var"] ?? "OPENAI_COMPATIBLE_API_KEY",
       agentTimeoutMs,
       parserFallbackImage: values["parser-fallback-image"],
     });

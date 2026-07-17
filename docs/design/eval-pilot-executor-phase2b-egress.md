@@ -1,7 +1,29 @@
 # Eval pilot executor — phase 2b egress control
 
-Status: design accepted (multi-agent design review, unanimous); not yet
-implemented.
+Status: implemented (offline Tier-1/2 + hermetic Tier-3 docker tests green;
+adversarially reviewed). A live smoke against a real provider is the only
+remaining step before the lane is trusted for scored runs.
+
+Implementation notes / deviations from the original design, all made during
+the adversarial review:
+
+- **Sidecar uid.** The sidecar runs as the executor's own uid:gid, not
+  `65534:65534`. A dedicated nobody uid cannot traverse an operator's private
+  scratch overlay dir; the executor uid can. All other hardening
+  (`--cap-drop ALL`, `no-new-privileges`, `--read-only`, pid/memory limits,
+  no docker socket) is retained. For maximum isolation an operator can stage a
+  world-readable overlay and revert to a nobody uid.
+- **Containment probes** run in the agent container via the overlay's node
+  (tool-independent) and fail closed. `noRouteOffNet` was strengthened beyond
+  a single public-IP reachability test to also require no IPv4 default route
+  (`/proc/net/route`) and that the bridge gateway is unreachable on common
+  host-service ports — closing the one "reach host-bound services" path the
+  probe otherwise could not see. `ipv6Absent` uses a public-v6 reachability
+  test (a `/proc/net/ipv6_route` parse proved fragile across kernels).
+- **Key redaction.** Beyond scanning the patch, the provider key is scanned in
+  the agent's stdout result and stderr and redacted from every persisted /
+  digested text artifact; a hit quarantines the run. A too-short key and a
+  model / base URL containing shell metacharacters are rejected up front.
 
 Phase 2a ships the offline agent-run lane (`--network none`, bundled
 in-container mock provider). Phase 2b lets the agent reach a **real** model
