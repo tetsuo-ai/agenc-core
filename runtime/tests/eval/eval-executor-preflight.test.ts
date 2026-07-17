@@ -236,6 +236,16 @@ describe("eval executor triple preflight", () => {
     // Non-parser steps keep the default (undefined) cap.
     const rebuildCaps = runner.execCaps.filter((c) => c.script === "make rebuild");
     expect(rebuildCaps.every((c) => c.maxOutputBytes === undefined)).toBe(true);
+    // The HIDDEN test patch resets its target files to base before applying,
+    // so a candidate that touched test-adjacent files cannot block it. Source
+    // patches (reference/setup) apply plainly, with no reset.
+    const testPatchApplies = runner.executedScripts.filter(
+      (s) => s.includes("/agenc-eval/test.patch") && s.includes("git -c core.fileMode=false apply --verbose"),
+    );
+    expect(testPatchApplies.length).toBeGreaterThan(0);
+    expect(testPatchApplies.every((s) => s.includes("--numstat") && s.includes("git checkout HEAD --"))).toBe(true);
+    const refPatchApplies = runner.executedScripts.filter((s) => s.includes("/agenc-eval/reference.patch"));
+    expect(refPatchApplies.every((s) => !s.includes("--numstat") && !s.includes("git checkout HEAD"))).toBe(true);
   });
 
   test("a target check passing on base disqualifies the candidate", async () => {

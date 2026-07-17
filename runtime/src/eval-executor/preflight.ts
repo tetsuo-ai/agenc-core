@@ -152,11 +152,17 @@ async function runPhase(
       if (patch.bytes.byteLength === 0) continue;
       const target = `${HELPER_DIR}/${patch.name}`;
       await runner.writeFile(handle, target, patch.bytes);
-      const applied = await exec(
-        `apply ${patch.name}`,
-        `git -c core.fileMode=false apply --verbose '${target}'`,
-        timeouts.patchMs,
-      );
+      // SWE-bench-faithful: reset the HIDDEN test patch's target files to base
+      // (and drop any agent-created versions) before applying it, so a
+      // candidate that touched test-adjacent files (snapshots, test context)
+      // cannot block the tests from applying. Source fixes are untouched — the
+      // test patch only targets test files.
+      const applyScript = patch.name === "test.patch"
+        ? `git -c core.fileMode=false apply --numstat '${target}' | awk '{print $NF}' | ` +
+          `while IFS= read -r f; do [ -n "$f" ] && { git checkout HEAD -- "$f" 2>/dev/null || rm -f "$f"; }; done; ` +
+          `git -c core.fileMode=false apply --verbose '${target}'`
+        : `git -c core.fileMode=false apply --verbose '${target}'`;
+      const applied = await exec(`apply ${patch.name}`, applyScript, timeouts.patchMs);
       if (applied.exitCode !== 0) {
         throw new PreflightPhaseFailure(
           "patch_apply_failed",
