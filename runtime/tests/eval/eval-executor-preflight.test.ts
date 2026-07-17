@@ -280,6 +280,9 @@ describe("eval executor triple preflight", () => {
     const result = await runTriplePreflight(runner, INPUTS);
     expect(result.runs[0]!.failure).toMatchObject({ reason: "reference_solution_failed" });
     expect(result.runs[0]!.failure!.detail).toContain("regression-1");
+    // Absent-from-results must be distinguishable from an explicit failure
+    // (the redis candidate's timing-suffixed names made this ambiguity real).
+    expect(result.runs[0]!.failure!.detail).toContain("absent from parsed results");
   });
 
   test("classifies patch, rebuild, network, timeout, and parser failures", async () => {
@@ -373,6 +376,15 @@ describe("eval executor triple preflight", () => {
 });
 
 describe("eval executor parser-result extraction", () => {
+  test("the parser harness strips ANSI color sequences before parsing", async () => {
+    const { buildParserProgram } = await import("../../src/eval-executor/log-parser.js");
+    // redis/valkey tcl suites colorize even piped output; the frozen parsers
+    // were generated against color-free logs and match nothing otherwise.
+    expect(buildParserProgram("def parser(log):\n    return {}\n")).toContain(
+      "_agenc_re.sub('\\\\x1b\\\\[[0-9;]*[A-Za-z]', '', _agenc_log)",
+    );
+  });
+
   test("reads the sentinel line and rejects non-string statuses", () => {
     expect(
       extractParserResults(`noise\n${PARSE_RESULT_SENTINEL}{"a":"PASSED"}\n`),

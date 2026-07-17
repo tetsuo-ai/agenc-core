@@ -37,11 +37,14 @@ def sub(a, b):
     return a - b
 `;
 
+// Statuses are ANSI-colorized like the redis/valkey tcl suites colorize even
+// piped output; the harness must strip escapes or the parser matches nothing.
 const RUN_TESTS_PY = `import app
 
 
 def run(name, ok):
-    print(f"TEST {name} {'PASSED' if ok else 'FAILED'}")
+    status = "\\x1b[32mPASSED\\x1b[0m" if ok else "\\x1b[31mFAILED\\x1b[0m"
+    print(f"TEST {name} {status}")
 
 
 run("test_sub", app.sub(5, 3) == 2)

@@ -281,6 +281,13 @@ function firstFailing(
   return null;
 }
 
+function statusEvidence(results: Readonly<Record<string, string>>, name: string): string {
+  const status = results[name];
+  return status === undefined
+    ? "absent from parsed results"
+    : `status ${JSON.stringify(status)}`;
+}
+
 function firstPassing(
   results: Readonly<Record<string, string>>,
   names: readonly string[],
@@ -333,7 +340,8 @@ export async function runSinglePreflight(
     } else if (!basePassesRegressionChecks) {
       failure = {
         reason: "regression_check_failed",
-        detail: `regression check ${regressionFailing} does not pass on the pinned base`,
+        detail: `regression check ${regressionFailing} does not pass on the pinned base ` +
+          `(${statusEvidence(base.results, regressionFailing!)})`,
       };
     }
   }
@@ -352,7 +360,8 @@ export async function runSinglePreflight(
       if (!referencePassesAllChecks) {
         failure = {
           reason: "reference_solution_failed",
-          detail: `${failing} does not pass with the pinned reference solution`,
+          detail: `${failing} does not pass with the pinned reference solution ` +
+            `(${statusEvidence(reference.results, failing!)})`,
         };
       }
     }
