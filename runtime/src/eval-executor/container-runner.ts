@@ -187,12 +187,66 @@ export class DockerContainerRunner implements ContainerRunner {
     };
   }
 
+  async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    const created = await spawnBounded(
+      "docker",
+      ["create", "--network", "none", "--entrypoint", "sleep", imageReference, "infinity"],
+      { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS },
+    );
+    if (created.exitCode !== 0 || created.stdout.trim().length === 0) {
+      throw new EvalExecutorError([
+        `docker create failed for auxiliary image ${imageReference}: ${created.stderr.trim()}`,
+      ]);
+    }
+    const id = created.stdout.trim();
+    const started = await spawnBounded("docker", ["start", id], {
+      timeoutMs: DOCKER_COMMAND_TIMEOUT_MS,
+    });
+    if (started.exitCode !== 0) {
+      await spawnBounded("docker", ["rm", "-f", id], { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS });
+      throw new EvalExecutorError([
+        `docker start failed for auxiliary image ${imageReference}: ${started.stderr.trim()}`,
+      ]);
+    }
+    return { id, imageDigest: imageReference, workdir: "/" };
+  }
+
   async exec(handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult> {
     return spawnBounded(
       "docker",
       ["exec", "-w", handle.workdir, handle.id, "bash", "-c", request.script],
       { timeoutMs: request.timeoutMs },
     );
+  }
+
+  async copyFile(
+    source: ContainerHandle,
+    sourcePath: string,
+    target: ContainerHandle,
+    targetPath: string,
+  ): Promise<void> {
+    for (const candidate of [sourcePath, targetPath]) {
+      if (!candidate.startsWith("/") || candidate.includes("'")) {
+        throw new EvalExecutorError([`invalid container path ${candidate}`]);
+      }
+    }
+    const pipeline =
+      `set -o pipefail; docker exec ${source.id} cat '${sourcePath}' | ` +
+      `docker exec -i ${target.id} bash -c "mkdir -p \\"\\$(dirname '${targetPath}')\\" && cat > '${targetPath}'"`;
+    const result = await spawnBounded("bash", ["-c", pipeline], {
+      timeoutMs: DOCKER_COMMAND_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0) {
+      // Do not leave a truncated/empty target behind for fallback readers.
+      await spawnBounded(
+        "docker",
+        ["exec", target.id, "rm", "-f", targetPath],
+        { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS },
+      );
+      throw new EvalExecutorError([
+        `failed to copy ${sourcePath} between containers: ${result.stderr.trim()}`,
+      ]);
+    }
   }
 
   async writeFile(handle: ContainerHandle, containerPath: string, bytes: Uint8Array): Promise<void> {

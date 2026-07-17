@@ -37,6 +37,19 @@ export const DEFAULT_PREFLIGHT_TIMEOUTS: PreflightTimeouts = {
   parserMs: 300_000,
 };
 
+/**
+ * Some task images (the .NET pilot candidates) ship no python3, so the
+ * frozen log parser cannot run inside them. It then runs in this auxiliary
+ * offline container instead — never on the host. The node bookworm image is
+ * already an executor dependency (phase-2 agent overlay) and carries
+ * python3; operators may override per environment.
+ */
+export const DEFAULT_PARSER_FALLBACK_IMAGE = "node:25.9.0-bookworm";
+
+export interface PreflightExecutionOptions {
+  readonly parserFallbackImage?: string;
+}
+
 export interface PreflightTaskInputs {
   readonly task: PilotSourceLockTask;
   readonly bundle: VerifierBundle;
@@ -84,6 +97,7 @@ async function runPhase(
   inputs: PreflightTaskInputs,
   phase: "base" | "reference",
   timeouts: PreflightTimeouts,
+  options: PreflightExecutionOptions,
 ): Promise<PhaseOutcome> {
   const commands: PreflightCommandRecord[] = [];
   const appliedPatches: string[] = [];
@@ -107,8 +121,9 @@ async function runPhase(
       label: string,
       script: string,
       timeoutMs: number,
+      target: ContainerHandle = handle,
     ): Promise<ContainerExecResult> => {
-      const result = await runner.exec(handle, { script, timeoutMs });
+      const result = await runner.exec(target, { script, timeoutMs });
       commands.push(record(label, script, result));
       if (result.timedOut) {
         throw new PreflightPhaseFailure("timeout", `${label} exceeded ${timeoutMs}ms`);
@@ -188,16 +203,37 @@ async function runPhase(
       `${HELPER_DIR}/captured-test-output.log`,
       new TextEncoder().encode(capturedTestOutput),
     );
-    await runner.writeFile(
-      handle,
-      `${HELPER_DIR}/parse-log.py`,
-      new TextEncoder().encode(buildParserProgram(inputs.bundle.logParser)),
-    );
-    const parsed = await exec(
-      "parse-log",
-      `python3 ${HELPER_DIR}/parse-log.py ${HELPER_DIR}/parser-input.log test-output.log ${HELPER_DIR}/captured-test-output.log`,
-      timeouts.parserMs,
-    );
+    const parserProgram = new TextEncoder().encode(buildParserProgram(inputs.bundle.logParser));
+    const parserScript =
+      `python3 ${HELPER_DIR}/parse-log.py ${HELPER_DIR}/parser-input.log test-output.log ${HELPER_DIR}/captured-test-output.log`;
+    const probe = await exec("probe-python3", "command -v python3", timeouts.patchMs);
+    let parsed: ContainerExecResult;
+    if (probe.exitCode === 0) {
+      await runner.writeFile(handle, `${HELPER_DIR}/parse-log.py`, parserProgram);
+      parsed = await exec("parse-log", parserScript, timeouts.parserMs);
+    } else {
+      // The task image ships no python3 (the .NET candidates). Run the
+      // frozen parser in an offline auxiliary container instead — still
+      // never on the host. test-output.log is workdir-relative and is not
+      // copied; the printed parser input and the captured output cover it.
+      const aux = await runner.createAuxiliaryContainer(
+        options.parserFallbackImage ?? DEFAULT_PARSER_FALLBACK_IMAGE,
+      );
+      try {
+        await runner.writeFile(aux, `${HELPER_DIR}/parse-log.py`, parserProgram);
+        for (const file of ["parser-input.log", "captured-test-output.log"]) {
+          try {
+            await runner.copyFile(handle, `${HELPER_DIR}/${file}`, aux, `${HELPER_DIR}/${file}`);
+          } catch {
+            // An absent candidate file is fine; the harness reads the first
+            // readable candidate.
+          }
+        }
+        parsed = await exec("parse-log[fallback]", parserScript, timeouts.parserMs, aux);
+      } finally {
+        await runner.remove(aux);
+      }
+    }
     if (parsed.exitCode !== 0) {
       throw new PreflightPhaseFailure(
         "parser_failed",
@@ -265,6 +301,7 @@ export async function runSinglePreflight(
   inputs: PreflightTaskInputs,
   runIndex: 1 | 2 | 3,
   timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
+  options: PreflightExecutionOptions = {},
 ): Promise<PreflightRunReport> {
   const startedAt = new Date().toISOString();
   const environment = await runner.environment();
@@ -279,7 +316,7 @@ export async function runSinglePreflight(
   let referencePassesAllChecks = false;
   let failure: PreflightRunReport["failure"] = null;
 
-  const base = await runPhase(runner, inputs, "base", timeouts);
+  const base = await runPhase(runner, inputs, "base", timeouts, options);
   phases.push(base.transcript);
   if (base.failure) {
     failure = base.failure;
@@ -302,7 +339,7 @@ export async function runSinglePreflight(
   }
 
   if (!failure) {
-    const reference = await runPhase(runner, inputs, "reference", timeouts);
+    const reference = await runPhase(runner, inputs, "reference", timeouts, options);
     phases.push(reference.transcript);
     if (reference.failure) {
       failure = reference.failure;
@@ -360,10 +397,11 @@ export async function runTriplePreflight(
   runner: ContainerRunner,
   inputs: PreflightTaskInputs,
   timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
+  options: PreflightExecutionOptions = {},
 ): Promise<TriplePreflightResult> {
   const runs: PreflightRunReport[] = [];
   for (const runIndex of [1, 2, 3] as const) {
-    const report = await runSinglePreflight(runner, inputs, runIndex, timeouts);
+    const report = await runSinglePreflight(runner, inputs, runIndex, timeouts, options);
     runs.push(report);
     if (report.failure) break;
   }

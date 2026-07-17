@@ -4,6 +4,7 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 import { DockerContainerRunner } from "./container-runner.js";
 import {
+  DEFAULT_PREFLIGHT_TIMEOUTS,
   mintUpstreamPreflightEvidence,
   runTriplePreflight,
   type PreflightTaskInputs,
@@ -52,6 +53,7 @@ async function preflight(options: {
   readonly taskId: string;
   readonly outputDir: string;
   readonly operatorTaskDigest?: string;
+  readonly parserFallbackImage?: string;
 }): Promise<number> {
   const loaded = await loadPilotSourceLock(options.lockPath);
   const task = findPilotTask(loaded.lock, options.taskId);
@@ -67,7 +69,9 @@ async function preflight(options: {
   const runner = new DockerContainerRunner();
   await runner.environment();
 
-  const result = await runTriplePreflight(runner, inputs);
+  const result = await runTriplePreflight(runner, inputs, DEFAULT_PREFLIGHT_TIMEOUTS, {
+    parserFallbackImage: options.parserFallbackImage,
+  });
   const taskDir = path.join(options.outputDir, task.instanceId);
   await mkdir(taskDir, { recursive: true });
   for (const run of result.runs) {
@@ -124,6 +128,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       task: { type: "string" },
       output: { type: "string" },
       "operator-task-digest": { type: "string" },
+      "parser-fallback-image": { type: "string" },
     },
     strict: true,
   });
@@ -144,6 +149,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       taskId: values.task,
       outputDir: values.output ?? "eval-executor-output",
       operatorTaskDigest: digest,
+      parserFallbackImage: values["parser-fallback-image"],
     });
   }
   process.stderr.write(`Unknown command ${command}\n${USAGE}\n`);

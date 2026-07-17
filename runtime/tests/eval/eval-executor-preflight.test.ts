@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  DEFAULT_PARSER_FALLBACK_IMAGE,
   DockerContainerRunner,
   EvalExecutorError,
   extractParserResults,
@@ -100,14 +101,32 @@ interface PhasePlan {
   readonly testTimedOut?: boolean;
   readonly parserExitCode?: number;
   readonly parserResults?: Record<string, string>;
+  readonly pythonMissing?: boolean;
 }
 
 class FakeContainerRunner implements ContainerRunner {
   readonly writtenFiles: string[] = [];
   readonly executedScripts: string[] = [];
+  readonly auxiliaryImages: string[] = [];
+  readonly copiedFiles: string[] = [];
+  readonly removedIds: string[] = [];
   private phaseIndex = -1;
 
   constructor(private readonly phases: readonly PhasePlan[]) {}
+
+  async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    this.auxiliaryImages.push(imageReference);
+    return { id: `aux-${this.auxiliaryImages.length}`, imageDigest: imageReference, workdir: "/" };
+  }
+
+  async copyFile(
+    _source: ContainerHandle,
+    sourcePath: string,
+    _target: ContainerHandle,
+    targetPath: string,
+  ): Promise<void> {
+    this.copiedFiles.push(`${sourcePath} -> ${targetPath}`);
+  }
 
   async environment(): Promise<ContainerEnvironment> {
     return { engine: "docker", serverVersion: "0.0.0-fake", platform: "linux", arch: "x64" };
@@ -135,6 +154,9 @@ class FakeContainerRunner implements ContainerRunner {
     if (request.script.endsWith(">> /agenc-eval/parser-input.log")) {
       return OK;
     }
+    if (request.script === "command -v python3") {
+      return { ...OK, exitCode: plan.pythonMissing ? 1 : 0 };
+    }
     if (request.script === "make rebuild") {
       return {
         ...OK,
@@ -159,7 +181,9 @@ class FakeContainerRunner implements ContainerRunner {
     this.writtenFiles.push(containerPath);
   }
 
-  async remove(): Promise<void> {}
+  async remove(handle: ContainerHandle): Promise<void> {
+    this.removedIds.push(handle.id);
+  }
 }
 
 const BASE_OK: PhasePlan = {
@@ -281,6 +305,43 @@ describe("eval executor triple preflight", () => {
     }
   });
 
+  test("runs the parser in an auxiliary container when the task image has no python3", async () => {
+    // Regression for the .NET pilot candidates (spectre.console, MudBlazor):
+    // their images ship no python3, and the parser step previously failed as
+    // parser_failed, falsely disqualifying healthy candidates.
+    const runner = new FakeContainerRunner([
+      { ...BASE_OK, pythonMissing: true },
+      { ...REFERENCE_OK, pythonMissing: true },
+      { ...BASE_OK, pythonMissing: true },
+      { ...REFERENCE_OK, pythonMissing: true },
+      { ...BASE_OK, pythonMissing: true },
+      { ...REFERENCE_OK, pythonMissing: true },
+    ]);
+    const result = await runTriplePreflight(runner, INPUTS);
+    expect(result.runs[0]!.failure).toBeNull();
+    expect(result.qualified).toBe(true);
+    expect(runner.auxiliaryImages).toHaveLength(6);
+    expect(new Set(runner.auxiliaryImages)).toEqual(new Set([DEFAULT_PARSER_FALLBACK_IMAGE]));
+    expect(
+      runner.copiedFiles.filter((copy) => copy.startsWith("/agenc-eval/parser-input.log")),
+    ).toHaveLength(6);
+    // Every auxiliary container is removed alongside the six phase containers.
+    expect(runner.removedIds.filter((id) => id.startsWith("aux-"))).toHaveLength(6);
+    expect(runner.removedIds.filter((id) => id.startsWith("fake-"))).toHaveLength(6);
+    const fallbackParses = runner.executedScripts.filter((script) =>
+      script.includes("parse-log.py")
+    );
+    expect(fallbackParses).toHaveLength(6);
+  });
+
+  test("a custom parser fallback image is honored", async () => {
+    const runner = new FakeContainerRunner([{ ...BASE_OK, pythonMissing: true }]);
+    await runTriplePreflight(runner, INPUTS, undefined, {
+      parserFallbackImage: "python:3.12-slim",
+    });
+    expect(new Set(runner.auxiliaryImages)).toEqual(new Set(["python:3.12-slim"]));
+  });
+
   test("mints upstream preflight evidence only for a fully qualified triple", async () => {
     const runner = new FakeContainerRunner([
       BASE_OK, REFERENCE_OK, BASE_OK, REFERENCE_OK, BASE_OK, REFERENCE_OK,
@@ -376,6 +437,12 @@ describe("docker runner hermetic guards", () => {
     ).rejects.toThrow(/invalid container path/u);
     await expect(
       runner.writeFile(handle, "relative/path", new Uint8Array(1)),
+    ).rejects.toThrow(/invalid container path/u);
+    await expect(
+      runner.copyFile(handle, "/ok/source", handle, "relative/target"),
+    ).rejects.toThrow(/invalid container path/u);
+    await expect(
+      runner.copyFile(handle, "/it's-a-trap", handle, "/ok/target"),
     ).rejects.toThrow(/invalid container path/u);
   });
 });

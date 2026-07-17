@@ -109,8 +109,22 @@ export interface ContainerExecResult {
  */
 export interface ContainerRunner {
   createTaskContainer(imageReference: string): Promise<ContainerHandle>;
+  /**
+   * Executor-owned tooling container (also `--network none`), e.g. to run
+   * the frozen log parser when a task image ships no python3. Never used
+   * for task material, so the image is operator configuration and may be a
+   * tag instead of a digest pin.
+   */
+  createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle>;
   exec(handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult>;
   writeFile(handle: ContainerHandle, containerPath: string, bytes: Uint8Array): Promise<void>;
+  /** Copy one file between containers without staging it on the host. */
+  copyFile(
+    source: ContainerHandle,
+    sourcePath: string,
+    target: ContainerHandle,
+    targetPath: string,
+  ): Promise<void>;
   remove(handle: ContainerHandle): Promise<void>;
   environment(): Promise<ContainerEnvironment>;
 }
