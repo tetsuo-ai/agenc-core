@@ -35,6 +35,7 @@ import {
   AGENT_RUNTIME_ENTRY,
   OVERLAY_AGENT_ENTRY_SUBPATH,
   OVERLAY_CONTAINER_PATH,
+  OVERLAY_PROXY_PRELOAD,
 } from "./overlay-paths.js";
 
 export const EVAL_BASELINE_TAG = "agenc-eval-baseline";
@@ -106,11 +107,23 @@ export interface AgentRunConfig {
 export const DEFAULT_AGENT_TIMEOUT_MS = 1_800_000;
 
 
-export async function assertOverlayLayout(overlay: AgentOverlay): Promise<void> {
+export async function assertOverlayLayout(
+  overlay: AgentOverlay,
+  options: { readonly egress?: boolean } = {},
+): Promise<void> {
   const required = [
     path.join(overlay.hostDir, "node", "bin", "node"),
     path.join(overlay.hostDir, OVERLAY_AGENT_ENTRY_SUBPATH),
     path.join(overlay.hostDir, "mock", "serve.mjs"),
+    // The real-model lane also needs the proxy sidecar, the containment
+    // probe, and the daemon proxy preload staged in the overlay.
+    ...(options.egress
+      ? [
+        path.join(overlay.hostDir, "proxy", "allowlist-proxy.mjs"),
+        path.join(overlay.hostDir, "proxy", "eval-egress-probe.mjs"),
+        path.join(overlay.hostDir, "proxy", "eval-proxy-preload.cjs"),
+      ]
+      : []),
   ];
   for (const file of required) {
     try {
@@ -517,6 +530,10 @@ export function buildRealProviderAgentScript(config: {
     buildBaselineGitScript(),
     `export HTTPS_PROXY=${proxyUrl} HTTP_PROXY=${proxyUrl} NO_PROXY=`,
     `export AGENC_PROXY_RESOLVES_HOSTS=1`,
+    // Install the undici proxy dispatcher in the CLI AND the daemon it spawns
+    // (NODE_OPTIONS is inherited): the runtime only configures the proxy in
+    // TUI mode, so a headless agent would otherwise ignore HTTPS_PROXY.
+    `export NODE_OPTIONS="--require ${OVERLAY_PROXY_PRELOAD}"`,
     `export AGENC_PROVIDER=openai-compatible AGENC_MODEL=${config.model}`,
     `export OPENAI_COMPATIBLE_MODEL=${config.model}`,
     `export OPENAI_COMPATIBLE_BASE_URL="${config.baseUrl}" API_TIMEOUT_MS=600000`,
@@ -557,7 +574,7 @@ export async function runRealProviderAgentOnTask(
   timeouts: PreflightTimeouts = DEFAULT_PREFLIGHT_TIMEOUTS,
   options: PreflightExecutionOptions = {},
 ): Promise<AgentRunArtifacts> {
-  await assertOverlayLayout(config.overlay);
+  await assertOverlayLayout(config.overlay, { egress: true });
   const secret = process.env[config.keyEnvVar];
   if (secret === undefined || secret.length === 0) {
     throw new EvalExecutorError([`${config.keyEnvVar} is not set in the executor environment`]);

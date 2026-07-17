@@ -1,8 +1,18 @@
 # Eval pilot executor — phase 2b egress control
 
-Status: implemented (offline Tier-1/2 + hermetic Tier-3 docker tests green;
-adversarially reviewed). A live smoke against a real provider is the only
-remaining step before the lane is trusted for scored runs.
+Status: implemented and **proven end to end against a real provider**. The
+first real-model run (grok-4.5 on the adm-zip pilot task) produced a
+hidden-verifier-passing patch inside a fully contained lane
+(`oracleContainment: contained`, all probes true, `patchKeyScan: clean`).
+
+Live-run note — headless proxy: the runtime installs its undici proxy
+dispatcher (`configureGlobalAgents`) only on the interactive TUI path, so the
+daemon behind `agenc -p` ignored `HTTPS_PROXY` and attempted a direct model
+call, which the egress lane's blackholed resolver correctly refused. The lane
+now injects `NODE_OPTIONS=--require .../proxy/eval-proxy-preload.cjs` into the
+agent (inherited by the daemon), which installs the dispatcher from
+`HTTPS_PROXY`. The proper fix is to have the runtime configure the proxy in
+headless mode too (a separate follow-up); the preload can then be dropped.
 
 Implementation notes / deviations from the original design, all made during
 the adversarial review:
