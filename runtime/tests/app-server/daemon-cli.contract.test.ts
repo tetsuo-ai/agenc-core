@@ -12,7 +12,7 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgenCShutdownSignal } from "../lifecycle/signal-handlers.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
@@ -54,6 +54,9 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import { EnvHttpProxyAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
+import { clearProxyCache } from "../utils/proxy.js";
+import { clearMTLSCache } from "../utils/mtls.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   buildRealtimeSessionConfig,
@@ -3881,3 +3884,67 @@ function latestSnapshotToolState(
     driver.close();
   }
 }
+
+describe("daemon startup proxy configuration", () => {
+  // getProxyUrl reads process.env (not host.env), matching production where the
+  // spawned daemon's process.env IS the inherited parent CLI env.
+  const PROXY_ENV = [
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+    "AGENC_CLIENT_CERT", "AGENC_CLIENT_KEY", "NODE_EXTRA_CA_CERTS",
+  ];
+  let stashed: Record<string, string | undefined>;
+  let originalDispatcher: ReturnType<typeof getGlobalDispatcher>;
+
+  beforeEach(() => {
+    stashed = Object.fromEntries(PROXY_ENV.map((k) => [k, process.env[k]]));
+    originalDispatcher = getGlobalDispatcher();
+    for (const k of PROXY_ENV) delete process.env[k];
+    clearProxyCache();
+    clearMTLSCache();
+  });
+
+  afterEach(() => {
+    for (const k of PROXY_ENV) {
+      if (stashed[k] === undefined) delete process.env[k];
+      else process.env[k] = stashed[k];
+    }
+    setGlobalDispatcher(originalDispatcher);
+    clearProxyCache();
+    clearMTLSCache();
+  });
+
+  async function bootDaemonAndStop(): Promise<void> {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    delete host.env[AGENC_DAEMON_WEBSOCKET_PORT_ENV];
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    try {
+      await waitForDaemonWebSocketUrl(io);
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await Promise.allSettled([running]);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  }
+
+  it("installs the env-proxy global dispatcher when HTTPS_PROXY is set", async () => {
+    process.env.HTTPS_PROXY = "http://127.0.0.1:9"; // unroutable; nothing connects
+    clearProxyCache();
+    await bootDaemonAndStop();
+    // REVERT-SENSITIVE: without the configureGlobalAgents() call in
+    // runAgenCDaemonForeground, the global dispatcher stays undici's default
+    // Agent and this fails.
+    expect(getGlobalDispatcher()).toBeInstanceOf(EnvHttpProxyAgent);
+  });
+
+  it("leaves the default dispatcher untouched without any proxy/mTLS env", async () => {
+    const before = getGlobalDispatcher();
+    await bootDaemonAndStop();
+    expect(getGlobalDispatcher()).toBe(before); // no-op path: same reference
+  });
+});
