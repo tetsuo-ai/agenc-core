@@ -158,6 +158,18 @@ export function importAgentState(
   );
 
   driver.transaction(() => {
+    // The run-row write goes first and is checked: if the existing row is
+    // cancel-locked (cancelled/unknown_outcome) the upsert is a sticky
+    // no-op, and silently replacing the session state under it would be a
+    // half-applied import. Fail the whole transaction loudly instead.
+    const outcome = upsertAgentRun(driver, normalized.agentRun);
+    if (!outcome.applied) {
+      throw new AgenCStateExportImportError(
+        `state import refused: existing run ${normalized.agentRun.id} is ` +
+          `${outcome.existingStatus ?? "cancel-locked"} and its status is ` +
+          `review-locked; resolve or delete the run before importing over it`,
+      );
+    }
     for (const sessionId of sessionIdsToReplace) {
       driver
         .prepareState<[string]>(
@@ -170,7 +182,6 @@ export function importAgentState(
         )
         .run(sessionId);
     }
-    upsertAgentRun(driver, normalized.agentRun);
     insertSnapshots(driver, normalized.sessionStateSnapshots);
     insertToolCalls(driver, normalized.inFlightToolCalls, {
       agentId: normalized.agentRun.id,

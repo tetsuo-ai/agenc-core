@@ -47,6 +47,7 @@ export const AGENC_DAEMON_METHODS = [
   "agent.attach",
   "agent.stop",
   "agent.logs",
+  "run.cancel",
   "session.create",
   "session.list",
   "session.attach",
@@ -239,6 +240,15 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Read the full local log and transcript for a daemon agent.",
+  },
+  "run.cancel": {
+    method: "run.cancel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Tree-scoped cancel: the run plus its queued and running descendants " +
+      "(frozen Wave-B contract). Durable cascade first, live interrupt second.",
   },
   "session.create": {
     method: "session.create",
@@ -796,6 +806,12 @@ export interface AgentStopParams extends JsonObject {
 
 export interface AgentLogsParams extends JsonObject {
   readonly agentId: string;
+}
+
+export interface RunCancelParams extends JsonObject {
+  /** Root run id (= root agent id, the agent_runs primary key). */
+  readonly runId: string;
+  readonly reason?: string;
 }
 
 export interface SessionCreateParams extends JsonObject {
@@ -1408,6 +1424,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
   | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams>
   | AgenCDaemonRequestWithParams<"agent.logs", AgentLogsParams>
+  | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
   | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams>
   | AgenCDaemonRequestWithParams<"session.list", SessionListParams>
   | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
@@ -1523,6 +1540,20 @@ export interface AgentAttachResult extends JsonObject {
 export interface AgentStopResult extends JsonObject {
   readonly agentId: string;
   readonly stopped: boolean;
+}
+
+export interface RunCancelResult extends JsonObject {
+  readonly runId: string;
+  /** True when the run was already terminal; nothing was written. */
+  readonly alreadyTerminal: boolean;
+  /** Runs moved to `cancelled` by this call (root included). */
+  readonly cancelledRunIds: readonly string[];
+  /** Open spawn edges closed by this call (child thread ids). */
+  readonly closedEdgeChildIds: readonly string[];
+  /** Live agents interrupted as the second, in-memory step. */
+  readonly interruptedLiveAgentIds: readonly string[];
+  /** Open budget holds voided across the cancelled subtree. */
+  readonly voidedHolds: number;
 }
 
 export interface AgentLogSession extends JsonObject {
@@ -1898,6 +1929,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "agent.attach": AgentAttachResult;
   readonly "agent.stop": AgentStopResult;
   readonly "agent.logs": AgentLogsResult;
+  readonly "run.cancel": RunCancelResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;

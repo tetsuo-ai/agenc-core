@@ -66,6 +66,7 @@ const expectedMethods = [
   "agent.attach",
   "agent.stop",
   "agent.logs",
+  "run.cancel",
   "session.create",
   "session.list",
   "session.attach",

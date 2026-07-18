@@ -1,4 +1,10 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -83,35 +89,28 @@ describe("trust-conformance executor", () => {
     // markers, 5/7 -> 6/7 with the M4 unknown-outcome gate (a session with
     // an unresolved poisoned effect refuses new side-effecting mutations
     // until explicit review resolution, so dependent_mutations_stopped
-    // genuinely passes).
+    // genuinely passes), 6/7 -> 7/7 with the M3 tree-scoped cancel cascade
+    // + spawn admission gate (cancelAgentRunTree cancels queued AND running
+    // descendants durably; a new spawn edge under the cancelled parent is
+    // refused with the typed SpawnAdmissionBlockedError; the cancelled
+    // parent cannot be revived by an upsert).
     expect(summary.faultFamilyResults).toEqual({
       budget: "passed",
-      cancellation: "failed",
+      cancellation: "passed",
       event_loss: "passed",
       permission: "passed",
       reconnect: "passed",
       restart: "passed",
       uncertain_effect: "passed",
     });
-    expect(summary.passed).toBe(6);
-    expect(summary.failed).toBe(1);
-    expect(summary.trustRecoveryRate).toBeCloseTo(6 / 7, 10);
+    expect(summary.passed).toBe(7);
+    expect(summary.failed).toBe(0);
+    expect(summary.trustRecoveryRate).toBeCloseTo(7 / 7, 10);
   }, 120_000);
 
-  it("reports exactly the known capability-gap invariants as failed", async () => {
+  it("reports zero failed invariants now that every capability gap is closed", async () => {
     const { summary } = await runSuiteOnce();
-    const sortedFailures = [...summary.failedInvariants].sort((a, b) =>
-      `${a.scenarioId}:${a.invariant}`.localeCompare(`${b.scenarioId}:${b.invariant}`));
-    expect(sortedFailures).toEqual([
-      {
-        scenarioId: "cancel-parent-after-child-admission",
-        invariant: "descendant_admission_stopped",
-      },
-      {
-        scenarioId: "cancel-parent-after-child-admission",
-        invariant: "queued_and_running_descendants_cancelled",
-      },
-    ]);
+    expect(summary.failedInvariants).toEqual([]);
     expect(summary.zeroTolerance).toEqual({
       policyEscapeCount: 0,
       duplicatedUncertainMutationCount: 0,
@@ -171,11 +170,9 @@ describe("trust-conformance executor", () => {
     expect(summaryDoc.documentDigest).toMatch(/^sha256:/);
     expect(summaryDoc.summary?.total).toBe(7);
     // Failed attempts keep their forensic state (SQLite DBs, ledger, audit);
-    // passing attempts are cleaned. Only cancellation still fails.
-    const preserved = readdirSync(path.join(outputDir, "attempts"));
-    expect(preserved).toEqual([
-      "trust-cancel-parent-after-child-admission-slot0",
-    ]);
+    // passing attempts are cleaned. With 7/7 passing, no attempt dir is
+    // preserved — the attempts directory is never created.
+    expect(existsSync(path.join(outputDir, "attempts"))).toBe(false);
     // wx flags: a rerun into the same output dir must refuse to clobber.
     await expect(
       runTrustSuiteFromFiles({

@@ -287,7 +287,8 @@ export class RolloutStore {
     for (const edge of this.readLegacyThreadSpawnEdges()) {
       if (persistedChildIds.has(edge.childThreadId)) continue;
       try {
-        this.threadSpawnEdgeRepo.create(edge);
+        // Historical topology, not a new admission — bypass the gate.
+        this.threadSpawnEdgeRepo.create(edge, { admissionGate: "import" });
         persistedChildIds.add(edge.childThreadId);
       } catch (error) {
         // Another process can win the create between list() and legacy import.

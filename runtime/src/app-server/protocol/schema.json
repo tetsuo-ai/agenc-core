@@ -15,6 +15,7 @@
     "agent.attach",
     "agent.stop",
     "agent.logs",
+    "run.cancel",
     "session.create",
     "session.list",
     "session.attach",
@@ -289,6 +290,20 @@
         }
       },
       "required": ["agentId"]
+    },
+    "RunCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["runId"]
     },
     "SessionCreateParams": {
       "type": "object",
@@ -1612,6 +1627,9 @@
           "$ref": "#/definitions/AgentLogsRequest"
         },
         {
+          "$ref": "#/definitions/RunCancelRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCreateRequest"
         },
         {
@@ -2152,6 +2170,25 @@
         },
         "params": {
           "$ref": "#/definitions/AgentLogsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RunCancelParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

@@ -65,8 +65,12 @@ import { BudgetLedger } from "../budget/ledger.js";
 import type { BudgetHold, BudgetPolicy } from "../budget/types.js";
 import { StateSqliteDriver } from "../state/sqlite-driver.js";
 import { recoverDaemonStateOnStartup } from "../state/recovery.js";
-import { upsertAgentRun, updateAgentRunStatus } from "../state/agent-runs.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
 import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
+import {
+  cancelAgentRunTree,
+  SpawnAdmissionBlockedError,
+} from "../state/run-cancellation.js";
 import { recordInFlightToolCallStart } from "../state/tool-output-rotation.js";
 import {
   resolveUnknownOutcomeEffect,
@@ -741,6 +745,19 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
       },
       status: "open",
     });
+    // The queued (pending) child is part of the durable spawn tree too —
+    // the cascade walks edges, and a queued production spawn has one.
+    edges.create({
+      childThreadId: queuedChildId,
+      parentThreadId: parentId,
+      parentPath: "/root",
+      metadata: {
+        agentId: queuedChildId,
+        agentPath: `/root/${queuedChildId}`,
+        depth: 1,
+      },
+      status: "open",
+    });
     recordInFlightToolCallStart(driver, {
       sessionId: "trust-cancel-session",
       agentId: runningChildId,
@@ -761,18 +778,22 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
       toolCallId: "trust-cancel-tool-1",
     });
 
-    // cancel_parent: out-of-band fault injection — a direct terminal status
-    // write. (No production code path can write agent_runs.status
-    // 'cancelled' today; the FAIL verdicts below are insensitive to the
-    // specific terminal string because nothing cascades regardless.)
+    // cancel_parent through the REAL tree-scoped primitive (the durable
+    // half of run.cancel): one transaction cancels the parent plus every
+    // non-terminal descendant found via spawn edges and closes open edges.
     clock.advance(5);
     const injectedAtVirtualMs = clock.now();
-    updateAgentRunStatus(driver, {
-      id: parentId,
-      status: "cancelled",
-      lastActiveAt: nowIso(),
+    const cancelReport = cancelAgentRunTree(driver, {
+      runId: parentId,
+      reason: "trust-cancel-parent",
+      cancelledAt: nowIso(),
     });
-    const faultEvidenceDigest = evidence.record("run.cancelled", { parentId });
+    const faultEvidenceDigest = evidence.record("run.cancelled", {
+      parentId,
+      cancelledRunIds: [...cancelReport.cancelledRunIds],
+      priorStatusById: { ...cancelReport.priorStatusById },
+      closedEdgeChildIds: [...cancelReport.closedEdgeChildIds],
+    });
 
     // drain_descendants: observe what the durable layer actually does today.
     clock.advance(5);
@@ -786,28 +807,43 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
       runningChildStatus === "cancelled" && queuedChildStatus === "cancelled";
 
     // Probe: is a NEW child admission under a cancelled parent refused?
-    // Probed at BOTH durable admission seams (agent_runs upsert and the
-    // spawn-edge commit point). There is no admission kernel and no typed
-    // admission-denial error today, so a success means "not refused" and
-    // any throw is an unexpected infrastructure error (rethrown) — never
-    // counted as a refusal. Honest failure until M3 lands.
+    // The durable admission commit point is the spawn-edge create — an
+    // orphan agent_runs row is not tree membership. Refusal counts ONLY as
+    // the typed SpawnAdmissionBlockedError from the in-repo gate; any
+    // other throw is an unexpected infrastructure error (rethrown). The
+    // probe also demands the refused edge is truly absent AND that the
+    // cancelled parent cannot be revived by an upsert (status laundering).
     const lateChildId = "trust_cancel_child_late";
     upsertAgentRun(driver, {
       id: lateChildId, objective: "late child",
       status: "running", startedAt, lastActiveAt: startedAt,
     });
-    edges.create({
-      childThreadId: lateChildId,
-      parentThreadId: parentId,
-      parentPath: "/root",
-      metadata: {
-        agentId: lateChildId,
-        agentPath: `/root/${lateChildId}`,
-        depth: 1,
-      },
-      status: "open",
+    let admissionBlockedTyped = false;
+    try {
+      edges.create({
+        childThreadId: lateChildId,
+        parentThreadId: parentId,
+        parentPath: "/root",
+        metadata: {
+          agentId: lateChildId,
+          agentPath: `/root/${lateChildId}`,
+          depth: 1,
+        },
+        status: "open",
+      });
+    } catch (error) {
+      if (!(error instanceof SpawnAdmissionBlockedError)) throw error;
+      admissionBlockedTyped = true;
+    }
+    const lateEdgeAbsent = edges.get(lateChildId) === undefined;
+    const reviveOutcome = upsertAgentRun(driver, {
+      id: parentId, objective: "parent", status: "running",
+      startedAt, lastActiveAt: nowIso(),
     });
-    const newAdmissionRefused = false;
+    const reviveRejected =
+      reviveOutcome.applied === false && statusOf(parentId) === "cancelled";
+    const newAdmissionRefused =
+      admissionBlockedTyped && lateEdgeAbsent && reviveRejected;
 
     const evidenceRow = driver
       .prepareState<[string], { status?: string }>(
@@ -838,7 +874,14 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
       faultEvidenceDigest,
       invariantResults: [
         invariant(evidence, "descendant_admission_stopped", newAdmissionRefused, {
-          probes: ["post-cancel agent_runs upsert", "post-cancel spawn-edge create"],
+          probes: [
+            "post-cancel spawn-edge create (typed SpawnAdmissionBlockedError)",
+            "refused edge absent from thread_spawn_edges",
+            "post-cancel parent revive upsert rejected (cancel-lock sticky)",
+          ],
+          admissionBlockedTyped,
+          lateEdgeAbsent,
+          reviveRejected,
         }),
         invariant(
           evidence,
