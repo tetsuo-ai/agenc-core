@@ -23,11 +23,14 @@ import {
   loadPilotSourceLock,
   readPilotArtifact,
 } from "./source-lock.js";
+import { runTrustSuiteFromFiles } from "./trust-run.js";
 import type { LoadedPilotSourceLock } from "./types.js";
 import { decodeVerifierBundle } from "./verifier-bundle.js";
 
 const DEFAULT_LOCK_PATH =
   "eval/suites/competitive-coding/1.0.0/task-sets/pilot/1.0.0/source-lock.json";
+
+const DEFAULT_TRUST_SUITE_DIR = "eval/suites/trust-conformance/1.0.0";
 
 const USAGE = `Usage:
   eval:executor verify-lock [--lock <source-lock.json>]
@@ -44,6 +47,8 @@ const USAGE = `Usage:
                           --provider-model <model> [--tasks <id,id,...>]
                           [--key-env-var <NAME>] [--key-command <exe>]
                           [--lock <path>] [--output <dir>] [--agent-timeout-ms <n>]
+  eval:executor trust-run --repository-commit <sha>
+                          [--suite-dir <dir>] [--seed-slot <n>] [--output <dir>]
 
 verify-lock  Load the frozen pilot source lock, re-hash every CAS artifact,
              and decode every verifier bundle. Hermetic and offline.
@@ -66,7 +71,15 @@ run-agent-real-batch  Run run-agent-real across every lock task (or --tasks, in
              stdout becomes the key — no shell). Writes batch-progress.log
              and batch-summary.json under --output. Exit 0 only when every
              task ends with a report. This is the documented reproduction
-             path for the real-agent baseline report.`;
+             path for the real-agent baseline report.
+trust-run    Run the deterministic trust-conformance suite offline against the
+             real runtime seams (budget ledger, SQLite recovery, client
+             multiplexer replay, permission evaluator + audit log). Honest
+             invariant failures are M3/M4 gap DATA, not command failures:
+             exit 0 whenever every attempt was evaluated, 1 only on
+             infrastructure-invalid attempts. Writes per-scenario reports,
+             raw evidence, preserved failed-attempt state, and a
+             content-addressed summary under --output.`;
 
 async function verifyLock(lockPath: string): Promise<number> {
   const loaded = await loadPilotSourceLock(lockPath);
@@ -358,6 +371,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       "key-env-var": { type: "string" },
       "key-command": { type: "string" },
       tasks: { type: "string" },
+      "suite-dir": { type: "string" },
+      "seed-slot": { type: "string" },
+      "repository-commit": { type: "string" },
     },
     strict: true,
   });
@@ -465,6 +481,29 @@ export async function main(argv: readonly string[]): Promise<number> {
       agentTimeoutMs,
       parserFallbackImage: values["parser-fallback-image"],
     });
+  }
+  if (command === "trust-run") {
+    const repositoryCommit = values["repository-commit"];
+    if (!repositoryCommit || !/^[0-9a-f]{40,64}$/u.test(repositoryCommit)) {
+      throw new EvalExecutorError([
+        "trust-run requires --repository-commit <40-64 hex chars> (explicit pin, e.g. `git rev-parse HEAD`)",
+      ]);
+    }
+    const seedSlotRaw = values["seed-slot"];
+    const seedSlot = seedSlotRaw === undefined ? 0 : Number(seedSlotRaw);
+    if (!Number.isSafeInteger(seedSlot) || seedSlot < 0) {
+      throw new EvalExecutorError(["--seed-slot must be a non-negative integer"]);
+    }
+    const summary = await runTrustSuiteFromFiles({
+      suiteDir: values["suite-dir"] ?? DEFAULT_TRUST_SUITE_DIR,
+      seedSlot,
+      outputDir: values.output ?? "eval-executor-output/trust",
+      repositoryCommit,
+    });
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    // Honest invariant failures are the suite's product (M3/M4 gap data);
+    // only attempts the harness could not evaluate fail the command.
+    return summary.infrastructureInvalid === 0 ? 0 : 1;
   }
   process.stderr.write(`Unknown command ${command}\n${USAGE}\n`);
   return 2;
