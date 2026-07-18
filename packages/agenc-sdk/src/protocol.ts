@@ -35,6 +35,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "agent.attach",
   "agent.stop",
   "agent.logs",
+  "run.cancel",
   "session.create",
   "session.list",
   "session.attach",
@@ -170,6 +171,11 @@ export interface AgentStopParams extends JsonObject {
 
 export interface AgentLogsParams extends JsonObject {
   readonly agentId: string;
+}
+
+export interface RunCancelParams extends JsonObject {
+  readonly runId: string;
+  readonly reason?: string;
 }
 
 export interface SessionCreateParams extends JsonObject {
@@ -383,6 +389,7 @@ export interface AgencParamsByMethod {
   readonly "agent.attach": AgentAttachParams;
   readonly "agent.stop": AgentStopParams;
   readonly "agent.logs": AgentLogsParams;
+  readonly "run.cancel": RunCancelParams;
   readonly "session.create": SessionCreateParams;
   readonly "session.list": SessionListParams;
   readonly "session.attach": SessionAttachParams;
@@ -506,6 +513,15 @@ export interface AgentLogsResult extends JsonObject {
   readonly transcript: string;
   readonly sessions: readonly AgentLogSession[];
   readonly toolOutputs?: readonly JsonObject[];
+}
+
+export interface RunCancelResult extends JsonObject {
+  readonly runId: string;
+  readonly alreadyTerminal: boolean;
+  readonly cancelledRunIds: readonly string[];
+  readonly closedEdgeChildIds: readonly string[];
+  readonly interruptedLiveAgentIds: readonly string[];
+  readonly voidedHolds: number;
 }
 
 export interface SessionCreateResult extends SessionSummary {}
@@ -682,6 +698,7 @@ export interface AgencResultByMethod {
   readonly "agent.attach": AgentAttachResult;
   readonly "agent.stop": AgentStopResult;
   readonly "agent.logs": AgentLogsResult;
+  readonly "run.cancel": RunCancelResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;
