@@ -104,14 +104,57 @@ export type AdmitResult =
       readonly message: string;
     };
 
-/** A reserved worst-case debit, reconciled after the call returns. */
+/**
+ * A reserved worst-case debit, reconciled after the call returns.
+ *
+ * `holdId` is the durable reservation id required by the frozen Wave-B
+ * contract (`BudgetReservation.reservationId`, run-contracts.ts): it is the
+ * idempotency key for reconciliation. Non-zero holds are persisted in the
+ * ledger file atomically with their debit, so a crash between reserve and
+ * reconcile leaves a visible open hold (held_unknown semantics: the full
+ * reservation stays consumed), never a silently stranded or refunded debit.
+ */
 export interface BudgetHold {
+  readonly holdId: string;
   readonly agentId: string;
   readonly model: string;
   readonly estimatedUsd: number;
   readonly estimatedTokens: number;
   readonly dayKey: string;
   readonly monthKey: string;
+}
+
+/** A hold as persisted in the ledger file while it remains open. */
+export interface PersistedBudgetHold {
+  readonly holdId: string;
+  readonly agentId: string;
+  readonly model: string;
+  readonly estimatedUsd: number;
+  readonly estimatedTokens: number;
+  readonly dayKey: string;
+  readonly monthKey: string;
+  readonly reservedAt: string;
+}
+
+/**
+ * Outcome of a reconcile attempt. Exactly one call per hold `applied`s the
+ * (actual − estimated) delta; every later call is a mechanical no-op.
+ */
+export interface ReconcileResult {
+  readonly applied: boolean;
+  readonly reason:
+    /** Delta applied; the hold is now resolved (contract: "reconciled"). */
+    | "reconciled"
+    /** The hold was already resolved — duplicate call, ledger untouched. */
+    | "duplicate"
+    /**
+     * The hold's day window rolled before reconciliation. Its debit was
+     * zeroed by the roll, so no refund is applied (unknown usage is never
+     * refunded as if the call were free); the stale hold is discarded.
+     */
+    | "window_rolled"
+    /** Zero hold (enforcement off / out of scope): nothing was ever held. */
+    | "zero_hold";
 }
 
 /** Emitted when a budget event happens; wired to the notification surface. */

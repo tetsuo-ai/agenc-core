@@ -89,17 +89,30 @@ A self-contained subsystem, `runtime/src/budget/`, exposing a
   spend, persisted to `<agencHome>/budget/ledger.json` (0600), atomic writes.
   Windows roll by date key so "daily/monthly budget" means what a user expects.
 - **Admission gate** — `admit({ agentId, model, estInputTokens, maxOutputTokens })`
-  computes the worst-case debit at the model's price and checks it against
-  BOTH remaining daily and monthly budget (both must pass — fail closed).
-  Returns a hold on success, or a typed `BUDGET_EXCEEDED` refusal.
-- **Reconcile** — `reconcile(hold, actualUsage)` replaces the held estimate with
-  the real spend and refunds the delta. The real `usage` from the provider
-  response is authoritative (pre-flight estimates drift; §4). After a successful
-  admit, call sites **always** reconcile exactly once via exclusive
-  `try`/`finally` on **hooks, cron, and heartbeat**:
-  success uses returned usage (or zeros if missing); throw uses zeros → full
-  hold refund. Unknown usage may under-book real spend; it must not leave a
-  sticky worst-case hold. `reconcile` is **not** idempotent — call once only.
+  transactionally reserves the worst-case debit at the model's price under the
+  ledger's cross-process disk lock: the cap check (BOTH remaining daily and
+  monthly budget — fail closed) runs against the locked, freshly-loaded state,
+  and the debit plus a durable, uniquely-identified open hold land in ONE
+  atomic save. Two concurrent reservers serialize on the lock; the second sees
+  the first's debit. Returns a hold on success, or a typed `BUDGET_EXCEEDED`
+  refusal.
+- **Reservations** — every non-zero hold carries a `holdId` (the frozen
+  `BudgetReservation.reservationId` from `contracts/run-contracts.ts`) and is
+  persisted in the ledger file while open (`listOpenHolds()`). A crash between
+  admit and reconcile leaves a visible open hold whose FULL reservation stays
+  consumed (`held_unknown` semantics) — unknown usage is never refunded as if
+  the call were free. A hold whose day window rolls before reconciliation is
+  discarded without refund. Operator `reset` clears the agent's open holds.
+- **Reconcile** — `reconcile(hold, actualUsage)` consumes the persisted hold
+  **exactly once**: it replaces the held estimate with the real spend and
+  refunds the delta in one locked transaction. The real `usage` from the
+  provider response is authoritative (pre-flight estimates drift; §4).
+  Duplicate calls find no open hold and are mechanical no-ops
+  (`{ applied: false, reason: "duplicate" }`) — `holdId` is the idempotency
+  key, so retry/recovery paths can safely call it again. Call sites reconcile
+  via exclusive `try`/`finally` on **hooks, cron, and heartbeat**: success
+  uses returned usage (or zeros if missing); throw uses zeros → full hold
+  refund (the contract's `voided` resolution).
 - **Enforcement policy** — on refusal: pause the agent's autonomy
   (`paused` state), emit a notification once, and surface the typed error; the
   operator raises the cap or resets to resume. Crossing the soft threshold

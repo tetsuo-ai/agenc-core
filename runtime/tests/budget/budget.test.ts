@@ -134,6 +134,19 @@ describe("BudgetLedger", () => {
     const l2 = new BudgetLedger({ agencHome: home, now });
     expect(l2.snapshot("a1").day.usd).toBe(0);
   });
+
+  test("pre-reservation ledger files (no holds field) load cleanly", () => {
+    const now = () => new Date("2026-07-09T10:00:00Z");
+    const l1 = new BudgetLedger({ agencHome: home, now });
+    l1.addSpend("a1", 4, 500);
+    const path = join(home, "budget", "ledger.json");
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    delete raw.holds;
+    require("node:fs").writeFileSync(path, JSON.stringify(raw));
+    const l2 = new BudgetLedger({ agencHome: home, now });
+    expect(l2.snapshot("a1").day.usd).toBeCloseTo(4);
+    expect(l2.listOpenHolds()).toEqual([]);
+  });
 });
 
 describe("BudgetEnforcer", () => {
@@ -193,7 +206,7 @@ describe("BudgetEnforcer", () => {
     if (r.ok) expect(r.hold.estimatedUsd).toBe(0);
   });
 
-  test("reconcile is NOT idempotent: second call over-refunds the hold", () => {
+  test("reconcile is exactly-once: a duplicate call cannot re-apply the delta", () => {
     const enf = make({ caps: { dailyTokens: 1_000_000 } });
     // Token-only path: unpriced model still holds est tokens.
     const r = enf.admit(
@@ -202,11 +215,96 @@ describe("BudgetEnforcer", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(sharedLedger.snapshot("a1").day.tokens).toBe(200);
-    enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    const first = enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    expect(first).toEqual({ applied: true, reason: "reconciled" });
     expect(sharedLedger.snapshot("a1").day.tokens).toBe(0);
-    // Second call applies (0 − 200) again → negative residual (footgun).
-    enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
-    expect(sharedLedger.snapshot("a1").day.tokens).toBe(-200);
+    // The holdId is the durable idempotency key: the second call finds no
+    // open hold and MUST leave the ledger untouched (was: −200 footgun).
+    const second = enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    expect(second).toEqual({ applied: false, reason: "duplicate" });
+    expect(sharedLedger.snapshot("a1").day.tokens).toBe(0);
+  });
+
+  test("admit persists a durable open hold; reconcile consumes it across instances", () => {
+    const enf = make({ caps: { dailyUsd: 100 } });
+    const r = enf.admit(autoReq());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // A FRESH ledger instance (new process semantics) sees the open hold.
+    const fresh = new BudgetLedger({ agencHome: home, now });
+    const open = fresh.listOpenHolds("a1");
+    expect(open).toHaveLength(1);
+    expect(open[0]!.holdId).toBe(r.hold.holdId);
+    expect(open[0]!.estimatedUsd).toBeCloseTo(0.004, 6);
+    enf.reconcile(r.hold, { inputTokens: 1000, outputTokens: 200 });
+    expect(new BudgetLedger({ agencHome: home, now }).listOpenHolds("a1")).toHaveLength(0);
+  });
+
+  test("a crash-stranded hold keeps its full reservation (held_unknown)", () => {
+    const enf = make({ caps: { dailyUsd: 100 } });
+    const r = enf.admit(autoReq());
+    expect(r.ok).toBe(true);
+    // No reconcile (simulated crash): a fresh instance still sees the full
+    // worst-case debit AND the open hold — never a silent refund.
+    const fresh = new BudgetLedger({ agencHome: home, now });
+    expect(fresh.snapshot("a1").day.usd).toBeCloseTo(0.004, 6);
+    expect(fresh.listOpenHolds("a1")).toHaveLength(1);
+  });
+
+  test("reconcile after the day window rolled discards the hold without refund", () => {
+    let clock = new Date("2026-07-09T10:00:00Z");
+    sharedLedger = new BudgetLedger({ agencHome: home, now: () => clock });
+    const enf = new BudgetEnforcer({
+      policy: {
+        enabled: true,
+        softThreshold: 0.8,
+        enforceInteractive: false,
+        caps: { dailyUsd: 100 },
+      },
+      ledger: sharedLedger,
+      priceOf,
+      notify: (e) => notes.push(e),
+    });
+    const r = enf.admit(autoReq());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    clock = new Date("2026-07-10T10:00:00Z"); // day rolls, same month
+    const result = enf.reconcile(r.hold, { inputTokens: 0, outputTokens: 0 });
+    expect(result).toEqual({ applied: false, reason: "window_rolled" });
+    const s = sharedLedger.snapshot("a1");
+    expect(s.day.usd).toBe(0); // no negative refund into the new day
+    expect(s.month.usd).toBeCloseTo(0.004, 6); // month keeps the reservation
+    expect(sharedLedger.listOpenHolds("a1")).toHaveLength(0); // discarded
+  });
+
+  test("concurrent reservers cannot both pass the same headroom (locked check)", () => {
+    // Two enforcers over two ledger INSTANCES of the same file, both built
+    // before either admits — the second's cap check must see the first's
+    // debit via the locked reload, not its own stale in-memory copy.
+    const policy: BudgetPolicy = {
+      enabled: true,
+      softThreshold: 0.8,
+      enforceInteractive: false,
+      caps: { dailyUsd: 0.006 }, // fits ONE 0.004 worst-case, not two
+    };
+    const ledgerA = new BudgetLedger({ agencHome: home, now });
+    const ledgerB = new BudgetLedger({ agencHome: home, now });
+    const enfA = new BudgetEnforcer({ policy, ledger: ledgerA, priceOf });
+    const enfB = new BudgetEnforcer({ policy, ledger: ledgerB, priceOf });
+    const a = enfA.admit(autoReq());
+    expect(a.ok).toBe(true);
+    const b = enfB.admit(autoReq());
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.reason).toBe("daily_usd");
+  });
+
+  test("reset clears the agent's open holds", () => {
+    const enf = make({ caps: { dailyUsd: 100 } });
+    const r = enf.admit(autoReq());
+    expect(r.ok).toBe(true);
+    sharedLedger.reset("a1");
+    expect(sharedLedger.listOpenHolds("a1")).toHaveLength(0);
+    expect(sharedLedger.snapshot("a1").day.usd).toBe(0);
   });
 
   test("admit debits worst-case; reconcile refunds the delta to actual", () => {
