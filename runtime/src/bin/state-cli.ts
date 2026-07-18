@@ -16,10 +16,19 @@ import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+  resolveUnknownOutcomeEffect,
+} from "../state/unknown-outcome-gate.js";
 
 export type AgenCStateCliCommand =
   | { readonly kind: "export"; readonly agentId: string }
   | { readonly kind: "import" }
+  | {
+      readonly kind: "resolve-tool-call";
+      readonly sessionId: string;
+      readonly toolCallId: string;
+    }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -42,14 +51,21 @@ export function formatAgenCStateCliHelpText(): string {
   return [
     "Usage: agenc state export <agent-id>",
     "       agenc state import",
+    "       agenc state resolve-tool-call <session-id> <tool-call-id>",
     "",
     "Commands:",
     "  export <agent-id>    Print a JSON state export for one agent",
     "  import               Read a JSON state export from stdin and import it",
+    "  resolve-tool-call <session-id> <tool-call-id>",
+    "                       Review-resolve one unknown-outcome (poisoned) tool",
+    "                       call so the session's side-effecting mutation gate",
+    "                       lifts. Resolution asserts a human verified whether",
+    "                       the effect happened; it never re-runs the tool.",
     "",
     "Examples:",
     "  agenc state export agent_123 > state.json",
     "  agenc state import < state.json",
+    "  agenc state resolve-tool-call session_abc call_42",
   ].join("\n");
 }
 
@@ -87,6 +103,30 @@ export function parseAgenCStateCliArgs(
     }
     return { kind: "import" };
   }
+  if (action === "resolve-tool-call") {
+    const sessionId = argv[2]?.trim();
+    const toolCallId = argv[3]?.trim();
+    if (
+      sessionId === undefined ||
+      sessionId.length === 0 ||
+      toolCallId === undefined ||
+      toolCallId.length === 0
+    ) {
+      return {
+        kind: "error",
+        message:
+          "state resolve-tool-call requires <session-id> and <tool-call-id>",
+      };
+    }
+    if (argv.length > 4) {
+      return {
+        kind: "error",
+        message:
+          "state resolve-tool-call accepts exactly <session-id> <tool-call-id>",
+      };
+    }
+    return { kind: "resolve-tool-call", sessionId, toolCallId };
+  }
   return {
     kind: "error",
     message: `unknown state command: ${action}`,
@@ -110,6 +150,47 @@ export async function runAgenCStateCli(
       return runStateExport(command.agentId, io, options);
     case "import":
       return runStateImport(io, options);
+    case "resolve-tool-call":
+      return runStateResolveToolCall(command, io, options);
+  }
+}
+
+function runStateResolveToolCall(
+  command: { readonly sessionId: string; readonly toolCallId: string },
+  io: AgenCStateCliIo,
+  options: AgenCStateCliOptions,
+): number {
+  try {
+    return withStateDriver(options, (driver) => {
+      const resolved = resolveUnknownOutcomeEffect(driver, {
+        sessionId: command.sessionId,
+        toolCallId: command.toolCallId,
+      });
+      if (!resolved) {
+        const unresolved = listUnresolvedUnknownOutcomeEffects(
+          driver,
+          command.sessionId,
+        );
+        io.stderr.write(
+          `agenc: no unresolved unknown-outcome tool call ${command.toolCallId} in session ${command.sessionId}` +
+            (unresolved.length > 0
+              ? `; unresolved: ${unresolved
+                  .map((effect) => `${effect.toolCallId} (${effect.toolName})`)
+                  .join(", ")}\n`
+              : ` (state databases are project-scoped — run this from the session's project directory)\n`),
+        );
+        return 1;
+      }
+      io.stdout.write(
+        `Resolved unknown-outcome tool call ${command.toolCallId} in session ${command.sessionId}; the side-effecting mutation gate lifts once no unresolved effects remain.\n`,
+      );
+      return 0;
+    });
+  } catch (error) {
+    io.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
   }
 }
 
