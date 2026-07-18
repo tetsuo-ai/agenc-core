@@ -212,11 +212,16 @@ mock-oriented toy baseline.
       80% power at alpha 0.05; never use fewer than 50 independent tasks or three
       fresh trials per system/task for the superiority claim.
 
-[ ] Run the actual AgenC agent, not a mock executor.
+[x] Run the actual AgenC agent, not a mock executor.
     - Keep a small deterministic offline suite for PRs.
     - Run the paid/full matrix explicitly or on a scheduled worker with secrets.
     - Publish a sanitized baseline report from real runs; never commit secrets or
       private prompts/artifacts.
+    - DONE 2026-07-17: real grok-4.5 seed baseline across all 10 qualified pilot
+      tasks (VFR 7/10, 0 infra-invalid, contained, clean key scans); sanitized
+      report at docs/eval/seed-baseline-2026-07-17.md (#1533); offline eval suite
+      runs hermetically in PR gates; harness fixes #1530-#1532, usage/cost
+      capture #1534.
 
 [ ] Add fair comparator runs.
     - Pin comparator versions and document unavoidable capability differences.
