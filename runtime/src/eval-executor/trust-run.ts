@@ -68,6 +68,10 @@ import { recoverDaemonStateOnStartup } from "../state/recovery.js";
 import { upsertAgentRun, updateAgentRunStatus } from "../state/agent-runs.js";
 import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 import { recordInFlightToolCallStart } from "../state/tool-output-rotation.js";
+import {
+  resolveUnknownOutcomeEffect,
+  UnknownOutcomeMutationBlockedError,
+} from "../state/unknown-outcome-gate.js";
 import { AgenCDaemonClientMultiplexer } from "../app-server/client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "../app-server/session-lifecycle.js";
 import { SessionStore } from "../session/session-store.js";
@@ -1157,26 +1161,69 @@ async function runUncertainEffectLostAcknowledgement(
       resurfaced: secondRecovered?.statusAfter ?? null,
     });
 
-    // dependent_mutations_stopped: drive the seam the frozen contract names
-    // — with an unresolved unknown-outcome effect for this run, a DEPENDENT
-    // mutation must be refused or flagged. No such gate exists today (the
-    // insert succeeds unimpeded), so this invariant honestly FAILS; the
-    // re-surfacing above is recorded as evidence but deliberately NOT
-    // accepted as a substitute for stopping dependent mutations.
-    recordInFlightToolCallStart(driver, {
+    // dependent_mutations_stopped: drive the REAL M4 unknown-outcome gate.
+    // While the poisoned effect is unresolved, recording a NEW
+    // side-effecting mutation in the session must be refused with a typed
+    // error naming the blocking effect; explicit review resolution
+    // (resolveUnknownOutcomeEffect — the `agenc state resolve-tool-call`
+    // seam) must lift the gate. All four legs are required: a gate that
+    // blocks without naming the blocker, or that cannot be lifted by
+    // review, fails the invariant.
+    let blockedWhileUnresolved = false;
+    let blockerNamed = false;
+    try {
+      recordInFlightToolCallStart(driver, {
+        sessionId: "trust-effect-session",
+        agentId: "trust_effect_run",
+        toolCallId: "trust-effect-dependent-1",
+        toolName: "Bash",
+        args: { command: "curl -X POST https://example.invalid/charge-again" },
+        startedAt: nowIso(),
+        recoveryCategory: "side-effecting",
+        agencHome: attemptDir,
+      });
+    } catch (error) {
+      if (error instanceof UnknownOutcomeMutationBlockedError) {
+        blockedWhileUnresolved = true;
+        blockerNamed = error.blocking.some(
+          (effect) => effect.toolCallId === "trust-effect-tool-1",
+        );
+      } else {
+        throw error;
+      }
+    }
+    const resolvedByReview = resolveUnknownOutcomeEffect(driver, {
       sessionId: "trust-effect-session",
-      agentId: "trust_effect_run",
-      toolCallId: "trust-effect-dependent-1",
-      toolName: "Bash",
-      args: { command: "curl -X POST https://example.invalid/charge-again" },
-      startedAt: nowIso(),
-      recoveryCategory: "side-effecting",
-      agencHome: attemptDir,
+      toolCallId: "trust-effect-tool-1",
     });
-    const dependentsStopped = false;
+    let allowedAfterResolve = false;
+    try {
+      recordInFlightToolCallStart(driver, {
+        sessionId: "trust-effect-session",
+        agentId: "trust_effect_run",
+        toolCallId: "trust-effect-dependent-2",
+        toolName: "Bash",
+        args: { command: "echo post-review mutation" },
+        startedAt: nowIso(),
+        recoveryCategory: "side-effecting",
+        agencHome: attemptDir,
+      });
+      allowedAfterResolve = true;
+    } catch {
+      allowedAfterResolve = false;
+    }
+    const dependentsStopped =
+      blockedWhileUnresolved &&
+      blockerNamed &&
+      resolvedByReview &&
+      allowedAfterResolve;
     evidence.record("risk.recorded", {
       toolCallId: "trust-effect-tool-1",
-      risk: "unknown_outcome_unresolved_no_dependent_gate",
+      risk: "unknown_outcome_blocks_dependent_mutations_until_reviewed",
+      blockedWhileUnresolved,
+      blockerNamed,
+      resolvedByReview,
+      allowedAfterResolve,
       resurfacedUntilResolved,
     });
     evidence.record("recovery.assessed", {

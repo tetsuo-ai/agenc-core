@@ -6,8 +6,10 @@ import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 import {
   readRotatedToolOutputLog,
+  recordInFlightToolCallStart,
   resolveToolOutputLogPath,
 } from "./tool-output-rotation.js";
+import { recoverDaemonStateOnStartup } from "./recovery.js";
 
 let home = "";
 let cwd = "";
@@ -741,6 +743,56 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(runLastSnapshotAt("run-retention")).toBe(
       "2026-05-01T00:00:02.000Z",
     );
+  });
+});
+
+describe("unknown-outcome gate violations in snapshots", () => {
+  it("persists (and round-trips) the flag-mode violation for a poisoned session", () => {
+    seedRun("run-gate", "session-gate");
+    // Crash-poison a side-effecting call through real recovery.
+    recordInFlightToolCallStart(driver, {
+      sessionId: "session-gate",
+      agentId: "run-gate",
+      toolCallId: "tool-poisoned",
+      toolName: "Bash",
+      args: { command: "curl -X POST https://example.invalid/charge" },
+      startedAt: "2026-05-01T00:00:00.000Z",
+      recoveryCategory: "side-effecting",
+      agencHome: home,
+    });
+    recoverDaemonStateOnStartup(driver);
+    // The observer records a NEW already-dispatched side-effecting call:
+    // flag mode must record it AND persist the violation into the snapshot.
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: () => "2026-05-01T00:00:01.000Z",
+      agencHome: home,
+    });
+    policy.recordSessionEvent("session-gate", {
+      method: "event.tool_request",
+      params: {
+        eventId: "event-gate-1",
+        requestId: "tool-dependent",
+        toolName: "Bash",
+        recoveryCategory: "side-effecting",
+        input: { command: "echo dependent" },
+      },
+    });
+    const inFlight = latestSnapshot("session-gate").toolState as {
+      inFlight: Record<string, Record<string, unknown>>;
+    };
+    expect(
+      inFlight.inFlight["tool-dependent"]?.unknownOutcomeGateViolation,
+    ).toEqual({
+      blockedBy: [{ toolCallId: "tool-poisoned", toolName: "Bash" }],
+    });
+    // The dependent call itself was still recorded (observer never loses
+    // bookkeeping).
+    const row = driver
+      .prepareState<[string], { status?: string }>(
+        "SELECT status FROM in_flight_tool_calls WHERE tool_call_id = ?",
+      )
+      .get("tool-dependent");
+    expect(row).toEqual({ status: "running" });
   });
 });
 

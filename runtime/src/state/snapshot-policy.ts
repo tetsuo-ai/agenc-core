@@ -446,7 +446,12 @@ export class AgenCSessionSnapshotPolicy {
           status: "running",
         };
         this.#boundInFlightToolCalls(state);
-        recordInFlightToolCallStart(this.#driver, {
+        // "flag" mode: this observer runs AFTER dispatch (it reacts to the
+        // tool_call event), so it cannot refuse the mutation — but a gate
+        // violation must not vanish. It is persisted into the session
+        // snapshot alongside the in-flight entry. Pre-dispatch refusal is
+        // the admission kernel's job (M3), via checkUnknownOutcomeMutationGate.
+        const startOutcome = recordInFlightToolCallStart(this.#driver, {
           sessionId,
           agentId,
           toolCallId: requestId,
@@ -456,7 +461,19 @@ export class AgenCSessionSnapshotPolicy {
           recoveryCategory: toolRecoveryCategoryField(params, "recoveryCategory"),
           agencHome: this.#agencHome,
           outputRotation: this.#outputRotation,
+          unknownOutcomeGate: "flag",
         });
+        if (startOutcome.gateViolation !== undefined) {
+          state.toolState.inFlight[requestId] = {
+            ...state.toolState.inFlight[requestId],
+            unknownOutcomeGateViolation: {
+              blockedBy: startOutcome.gateViolation.blocking.map((effect) => ({
+                toolCallId: effect.toolCallId,
+                toolName: effect.toolName,
+              })),
+            },
+          };
+        }
       }
       return this.#writeSnapshot(state, "tool_call");
     }

@@ -80,8 +80,10 @@ describe("trust-conformance executor", () => {
     // family to passed. Either way this assertion goes red.
     // Baseline history: 3/7 -> 4/7 with the M3 budget reservation kernel
     // (reconciliation_exactly_once), 4/7 -> 5/7 with the M4 event-gap
-    // markers (the multiplexer replay buffer now announces eviction, so
-    // retention_gap_explicit and hidden_event_loss_zero genuinely pass).
+    // markers, 5/7 -> 6/7 with the M4 unknown-outcome gate (a session with
+    // an unresolved poisoned effect refuses new side-effecting mutations
+    // until explicit review resolution, so dependent_mutations_stopped
+    // genuinely passes).
     expect(summary.faultFamilyResults).toEqual({
       budget: "passed",
       cancellation: "failed",
@@ -89,11 +91,11 @@ describe("trust-conformance executor", () => {
       permission: "passed",
       reconnect: "passed",
       restart: "passed",
-      uncertain_effect: "failed",
+      uncertain_effect: "passed",
     });
-    expect(summary.passed).toBe(5);
-    expect(summary.failed).toBe(2);
-    expect(summary.trustRecoveryRate).toBeCloseTo(5 / 7, 10);
+    expect(summary.passed).toBe(6);
+    expect(summary.failed).toBe(1);
+    expect(summary.trustRecoveryRate).toBeCloseTo(6 / 7, 10);
   }, 120_000);
 
   it("reports exactly the known capability-gap invariants as failed", async () => {
@@ -108,10 +110,6 @@ describe("trust-conformance executor", () => {
       {
         scenarioId: "cancel-parent-after-child-admission",
         invariant: "queued_and_running_descendants_cancelled",
-      },
-      {
-        scenarioId: "uncertain-effect-lost-acknowledgement",
-        invariant: "dependent_mutations_stopped",
       },
     ]);
     expect(summary.zeroTolerance).toEqual({
@@ -173,18 +171,11 @@ describe("trust-conformance executor", () => {
     expect(summaryDoc.documentDigest).toMatch(/^sha256:/);
     expect(summaryDoc.summary?.total).toBe(7);
     // Failed attempts keep their forensic state (SQLite DBs, ledger, audit);
-    // passing attempts (budget, since the reservation kernel) are cleaned.
+    // passing attempts are cleaned. Only cancellation still fails.
     const preserved = readdirSync(path.join(outputDir, "attempts"));
-    expect(preserved).toContain("trust-cancel-parent-after-child-admission-slot0");
-    expect(preserved).toContain(
-      "trust-uncertain-effect-lost-acknowledgement-slot0",
-    );
-    expect(preserved).not.toContain(
-      "trust-budget-sibling-reservation-race-slot0",
-    );
-    expect(preserved).not.toContain(
-      "trust-event-loss-explicit-retention-gap-slot0",
-    );
+    expect(preserved).toEqual([
+      "trust-cancel-parent-after-child-admission-slot0",
+    ]);
     // wx flags: a rerun into the same output dir must refuse to clobber.
     await expect(
       runTrustSuiteFromFiles({

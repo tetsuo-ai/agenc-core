@@ -20,6 +20,11 @@ const TERMINAL_TOOL_CALL_STATUSES = [
   "cancelled",
   "poisoned",
   "recovery_cancelled",
+  // Written by explicit review of an unknown-outcome effect
+  // (resolveUnknownOutcomeEffect): terminal AND deliberately absent from
+  // RECOVERY_SURFACE_TOOL_CALL_STATUSES — a resolved effect stops
+  // re-surfacing and the mutation gate lifts.
+  "unknown_resolved",
 ] as const;
 
 const RECOVERY_SURFACE_TOOL_CALL_STATUSES = [
