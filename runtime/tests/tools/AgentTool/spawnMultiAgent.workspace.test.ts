@@ -120,7 +120,7 @@ function sessionFor(
 ): Session {
   return {
     roleWorkspace: createAgentRoleWorkspace(workspace),
-    services: { sandboxExecutionBroker },
+    services: { admissionRequired: false, sandboxExecutionBroker },
   } as unknown as Session
 }
 
@@ -149,6 +149,41 @@ function successfulBackend(
 
 describe('teammate role workspace preflight', () => {
   const workspaceA = createAgentRoleWorkspace('/workspace/a')
+
+  it.each([
+    { label: 'in-process', mode: 'in-process' as const },
+    { label: 'pane', mode: 'tmux' as const },
+  ])(
+    'fails closed before the retired $label spawn backend under required admission',
+    async ({ mode }) => {
+      const workspace = tempWorkspace(`teammate-admission-${mode}`)
+      setCliTeammateModeOverride(mode)
+      captureTeammateModeSnapshot()
+      const backend = vi.fn(successfulBackend(() => {
+        throw new Error('legacy teammate backend must not run under admission')
+      }))
+      __setSpawnTeammateBackendForTesting(backend)
+      const session = sessionFor(workspace)
+      Object.assign(session.services, {
+        admissionRequired: true,
+        executionAdmission: {},
+      })
+
+      await expect(
+        runWithCurrentRuntimeSession(session, () =>
+          spawnTeammate(
+            configFor(workspace, 'general-purpose'),
+            contextFor(workspace),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        code: 'ADMISSION_DENIED',
+        decision: 'deny',
+        reason: 'legacy_team_spawn_admission_unsupported',
+      })
+      expect(backend).not.toHaveBeenCalled()
+    },
+  )
 
   it('rejects a pane teammate before spawn when execution cwd changes authority', () => {
     expect(() =>

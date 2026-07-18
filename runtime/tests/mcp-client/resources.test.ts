@@ -109,6 +109,100 @@ describe("createResourceBridge", () => {
     expect(content.bytesReturned).toBe(5);
   });
 
+  it("forwards caller cancellation and waits for the raw read RPC to settle", async () => {
+    const rawResult = Promise.withResolvers<{
+      contents: Array<{ uri: string; text: string }>;
+    }>();
+    let rpcSignal: AbortSignal | undefined;
+    const client = makeClient({
+      readResource: vi.fn(
+        async (
+          _params: unknown,
+          options?: { readonly signal?: AbortSignal },
+        ) => {
+          rpcSignal = options?.signal;
+          return rawResult.promise;
+        },
+      ),
+    });
+    const bridge = await createResourceBridge(client, "srv");
+    const caller = new AbortController();
+    const reason = new Error("admission cancelled MCP resource read");
+    let settled = false;
+
+    const running = bridge.readResource("file://slow", caller.signal);
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(rpcSignal).toBeInstanceOf(AbortSignal));
+    caller.abort(reason);
+
+    expect(rpcSignal?.aborted).toBe(true);
+    expect(rpcSignal?.reason).toBe(reason);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    rawResult.resolve({
+      contents: [{ uri: "file://slow", text: "late result" }],
+    });
+    await expect(running).rejects.toBe(reason);
+  });
+
+  it("actively aborts on timeout without settling before the raw RPC", async () => {
+    vi.useFakeTimers();
+    try {
+      const rawResult = Promise.withResolvers<{
+        contents: Array<{ uri: string; text: string }>;
+      }>();
+      let rpcSignal: AbortSignal | undefined;
+      const client = makeClient({
+        readResource: vi.fn(
+          async (
+            _params: unknown,
+            options?: { readonly signal?: AbortSignal },
+          ) => {
+            rpcSignal = options?.signal;
+            return rawResult.promise;
+          },
+        ),
+      });
+      const bridge = await createResourceBridge(client, "srv", undefined, {
+        rpcTimeoutMs: 25,
+      });
+      let settled = false;
+      const running = bridge.readResource("file://timeout");
+      void running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(rpcSignal?.aborted).toBe(true);
+      expect(rpcSignal?.reason).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("timed out after 25ms"),
+        }),
+      );
+      expect(settled).toBe(false);
+
+      rawResult.resolve({
+        contents: [{ uri: "file://timeout", text: "late result" }],
+      });
+      await expect(running).rejects.toThrow("timed out after 25ms");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips malformed resource content entries and guards content metadata", async () => {
     const client = makeClient({
       readResource: vi.fn().mockResolvedValue({

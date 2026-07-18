@@ -21,9 +21,9 @@
  *    (task-11 machinery) before it ever reaches `session.prompt`, exactly
  *    like channel text. It can never change permission mode or tool policy;
  *    hook turns DENY permission requests (autonomous, nobody watching).
- *  - Hook turns are autonomous spend: every request passes the task-15
- *    budget envelope (admit → turn → reconcile); a refusal is a 429, never
- *    a silent skip or silent spend.
+ *  - Hook turns are autonomous spend. The daemon-owned execution admission
+ *    kernel gates the model/tool boundaries; a refusal is a 429, never a
+ *    silent skip or silent spend.
  *
  * Request:  POST /hooks/agent
  *           Authorization: Bearer <token>
@@ -33,8 +33,8 @@
  *             "sessionKey": "deploys",     optional continuity key — same key
  *                                          = same daemon session
  *             "deliver": { "channel": "telegram", "to": "<chat>" } }
- * Response: with `deliver` → 202 immediately; the turn runs async and the
- *           final message streams to that channel (edit-in-place capable).
+ * Response: with `deliver` → 202 after daemon admission and turn completion;
+ *           the final message streams to that channel (edit-in-place capable).
  *           without `deliver` → waits for the turn, 200 with
  *           { ok, sessionKey, finalMessage, stopReason }.
  */
@@ -50,11 +50,9 @@ import { isIP, type AddressInfo } from "node:net";
 
 import type { AgenCConfig } from "../config/schema.js";
 import {
-  BudgetEnforcer,
-  BudgetLedger,
-  createModelPriceResolver,
-  resolveBudgetPolicy,
-} from "../budget/index.js";
+  executionAdmissionErrorMessage,
+  isExecutionAdmissionDenied,
+} from "./admission-errors.js";
 import { SessionRouter } from "./session-router.js";
 import { frameChannelMessage } from "./untrusted.js";
 import type { ChannelAdapter, GatewayDaemonClient } from "./types.js";
@@ -68,7 +66,6 @@ export const HOOKS_DEFAULT_PORT = 8377;
 const MAX_BODY_BYTES = 64 * 1024;
 /** Post-parse message cap (chars). */
 const MAX_MESSAGE_CHARS = 32 * 1024;
-const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 
 /** Identifier fields (name/agent/sessionKey) share one conservative shape. */
 const IDENTIFIER_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -102,11 +99,6 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-/** Deterministic ~chars/4 token estimate (mirrors heartbeat/cron). */
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
-}
-
 /** Swallows channel output for no-deliver turns. */
 const NULL_ADAPTER: ChannelAdapter = {
   id: "hooks-null",
@@ -124,7 +116,7 @@ export interface HooksServerOptions {
   readonly client: GatewayDaemonClient;
   /** Channel adapters available as `deliver` targets. */
   readonly adapters: readonly ChannelAdapter[];
-  /** Main config (budget envelope). */
+  /** Main config retained on the gateway construction contract. */
   readonly config: AgenCConfig;
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Session-scope label when the request has no `agent`. */
@@ -150,10 +142,7 @@ export class HooksServer {
   readonly #log: (line: string) => void;
   readonly #router: SessionRouter;
   readonly #adaptersById: Map<string, ChannelAdapter>;
-  readonly #enforcer: BudgetEnforcer;
   readonly #defaultAgent: string;
-  /** Model id used for budget admit pricing (operator config default). */
-  readonly #admitModel: string;
   #server: Server | null = null;
   #boundPort = 0;
 
@@ -163,11 +152,6 @@ export class HooksServer {
     this.#port = options.port ?? HOOKS_DEFAULT_PORT;
     this.#log = options.log ?? (() => {});
     this.#defaultAgent = options.defaultAgent ?? "default";
-    this.#admitModel =
-      typeof options.config.model === "string" &&
-      options.config.model.trim().length > 0
-        ? options.config.model.trim()
-        : "grok-4.5";
     if (!isLoopbackHost(this.#host) && options.allowNonLoopback !== true) {
       throw new Error(
         `hooks: refusing non-loopback host '${this.#host}' without allowNonLoopback (prefer a tailnet/SSH tunnel)`,
@@ -181,13 +165,6 @@ export class HooksServer {
       client: options.client,
     });
     this.#adaptersById = new Map(options.adapters.map((a) => [a.id, a]));
-    const { policy } = resolveBudgetPolicy(options.config.budget, options.env ?? {});
-    this.#enforcer = new BudgetEnforcer({
-      policy,
-      ledger: new BudgetLedger({ agencHome: options.agencHome }),
-      priceOf: createModelPriceResolver(),
-      notify: (e) => this.#log(`hooks/budget: ${e.message}`),
-    });
   }
 
   get port(): number {
@@ -284,25 +261,9 @@ export class HooksServer {
       return;
     }
 
-    // Budget pre-flight: hook turns are autonomous spend. A refusal is a
-    // visible 429, never a silent skip.
-    // Use the operator default model so USD caps can price (todo-104).
-    const admit = this.#enforcer.admit({
-      agentId: `hook:${parsed.name}`,
-      model: this.#admitModel,
-      autonomous: true,
-      estInputTokens: estimateTokens(parsed.message),
-      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-    });
-    if (!admit.ok) {
-      this.#json(res, 429, { error: `budget: ${admit.message}` });
-      return;
-    }
-
-    // After successful admit: exactly one reconcile in `finally` (parity with
-    // cron/heartbeat). All post-admit work lives inside try so framing /
-    // turn / response throws cannot leave a sticky hold or double-refund.
-    let usage = { inputTokens: 0, outputTokens: 0 };
+    // The daemon session owns admission, reservation, and reconciliation at
+    // the actual model/tool boundaries. This gateway must not keep a second
+    // surface ledger around the outer turn.
     try {
       // Untrusted work data: sanitize + frame (task 11) before session.prompt.
       const framedText = frameChannelMessage({
@@ -329,17 +290,18 @@ export class HooksServer {
         });
 
       if (deliverAdapter !== undefined) {
-        // Fire-and-deliver: 202 first, then await the turn (finally after).
-        this.#json(res, 202, { ok: true, sessionKey: parsed.sessionKey });
+        // Do not acknowledge accepted work before the daemon's admission
+        // boundary has run. Until the gateway has a durable two-phase enqueue
+        // receipt, waiting is the only honest way to return admission refusal
+        // as 429 instead of hiding it behind an already-sent 202.
         const result = await runTurn();
-        usage = result.usage ?? usage;
+        this.#json(res, 202, { ok: true, sessionKey: parsed.sessionKey });
         this.#log(`hooks: '${parsed.name}' delivered (${result.stopReason})`);
         return;
       }
 
       // Synchronous mode: wait for the turn, then respond.
       const result = await runTurn();
-      usage = result.usage ?? usage;
       this.#json(res, 200, {
         ok: true,
         sessionKey: parsed.sessionKey,
@@ -347,14 +309,16 @@ export class HooksServer {
         stopReason: result.stopReason,
       });
     } catch (error) {
-      // Do not reconcile here — exclusive finally owns money accounting.
+      const admissionDenied = isExecutionAdmissionDenied(error);
       if (!res.headersSent) {
-        this.#json(res, 500, { error: `turn failed: ${String(error)}` });
+        this.#json(res, admissionDenied ? 429 : 500, {
+          error: admissionDenied
+            ? `admission: ${executionAdmissionErrorMessage(error)}`
+            : `turn failed: ${String(error)}`,
+        });
       } else {
         this.#log(`hooks: '${parsed.name}' turn failed: ${String(error)}`);
       }
-    } finally {
-      this.#enforcer.reconcile(admit.hold, usage);
     }
   }
 

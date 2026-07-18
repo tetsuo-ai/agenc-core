@@ -5,6 +5,7 @@
 
 import React from 'react'
 import { getSessionId } from '../../bootstrap/state.js'
+import { AdmissionDeniedError } from '../../budget/admission-client.js'
 import {
   assertAgentRoleWorkspaceMatches,
   createAgentRoleWorkspace,
@@ -1084,6 +1085,15 @@ export async function spawnTeammate(
   let effectiveContext = context
   let effectiveConfig = config
   const parentSession = requireCurrentRuntimeSession('teammate spawn')
+  // This retired team adapter can publish an in-process task before runAgent
+  // acquires its per-turn spawn lease, while pane teammates start a separate
+  // process that cannot inherit the parent's in-memory admission hierarchy.
+  // Production admission therefore fails closed before either backend can
+  // create child state. Re-enable only with one pre-publication spawn lease,
+  // a child-scoped client, and cancellation/settlement carried end to end.
+  if (parentSession.services.admissionRequired !== false) {
+    throw new AdmissionDeniedError('legacy_team_spawn_admission_unsupported')
+  }
   let inProcess = isInProcessEnabled()
   const sandboxExecutionBroker = parentSession.services.sandboxExecutionBroker
   if (sandboxExecutionBroker === undefined) {

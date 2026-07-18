@@ -1,11 +1,5 @@
-import {
-  TRANSACTION_GUARD_DENIED,
-  TRANSACTION_GUARD_UNAVAILABLE,
-} from "./errors.js";
-import {
-  buildTransactionGuardDocket,
-  hashTransactionGuardInput,
-} from "./docket.js";
+import { TRANSACTION_GUARD_UNAVAILABLE } from "./errors.js";
+import { hashTransactionGuardInput } from "./docket.js";
 import type {
   TransactionGuard,
   TransactionGuardDecision,
@@ -13,30 +7,7 @@ import type {
   TransactionGuardPolicy,
   TransactionGuardVerdict,
 } from "./types.js";
-import { asRecord } from "../utils/record.js";
-
-interface OllamaGenerateResponse {
-  readonly response?: string;
-  readonly message?: {
-    readonly content?: string;
-  };
-}
-
-function normalizeOllamaGenerateResponse(
-  value: unknown,
-): OllamaGenerateResponse {
-  const record = asRecord(value);
-  if (record === null) return {};
-  const messageRecord = asRecord(record.message);
-  return {
-    ...(typeof record.response === "string"
-      ? { response: record.response }
-      : {}),
-    ...(typeof messageRecord?.content === "string"
-      ? { message: { content: messageRecord.content } }
-      : {}),
-  };
-}
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 
 // gaphunt3 #23: Untrusted, attacker-influenced content (the docket and the
 // intermediate defense/prosecution/judge model outputs) is interpolated into
@@ -95,92 +66,23 @@ export class OllamaCourtGuard implements TransactionGuard {
 
   async evaluate(input: TransactionGuardInput): Promise<TransactionGuardDecision> {
     const inputHash = hashTransactionGuardInput(input);
-    const docket = buildTransactionGuardDocket(input, this.policy.maxDocketBytes);
-    try {
-      const [benign, adversarial] = await Promise.all([
-        this.generate(getPrompt("defense", { docket })),
-        this.generate(getPrompt("prosecution", { docket })),
-      ]);
-      const judgement = await this.generate(
-        getPrompt("judge", { docket, benign, adversarial }),
-      );
-      const verdictText = await this.generate(
-        getPrompt("verdict", { judgement }),
-      );
-      const verdict = parseTransactionGuardVerdict(verdictText);
-      if (!verdict) {
-        return {
-          // Fail-closed (default) blocks on malformed verdicts; an
-          // explicit fail_mode="open" policy lets the call proceed.
-          allowed: !this.policy.failClosed,
-          verdict: "unavailable",
-          code: TRANSACTION_GUARD_UNAVAILABLE,
-          reason: `Guard returned malformed verdict: ${verdictText}`,
-          provider: this.policy.provider,
-          model: this.policy.model,
-          inputHash,
-          raw: { benign, adversarial, judgement, verdict: verdictText },
-        };
-      }
-      return {
-        allowed: verdict === "benign",
-        verdict,
-        code: verdict === "adversarial" ? TRANSACTION_GUARD_DENIED : undefined,
-        reason:
-          verdict === "adversarial"
-            ? "CourtGuard classified the transaction intent as adversarial"
-            : undefined,
-        provider: this.policy.provider,
-        model: this.policy.model,
-        inputHash,
-        raw: { benign, adversarial, judgement, verdict: verdictText },
-      };
-    } catch (error) {
-      return {
-        // Fail-closed (default) blocks on guard errors/timeouts; an
-        // explicit fail_mode="open" policy lets the call proceed.
-        allowed: !this.policy.failClosed,
-        verdict: "unavailable",
-        code: TRANSACTION_GUARD_UNAVAILABLE,
-        reason: error instanceof Error ? error.message : String(error),
-        provider: this.policy.provider,
-        model: this.policy.model,
-        inputHash,
-      };
-    }
-  }
-
-  private async generate(prompt: string): Promise<string> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.policy.timeoutMs);
-    try {
-      const url = new URL("/api/chat", this.policy.ollamaUrl);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: this.policy.model,
-          messages: [{ role: "user", content: prompt }],
-          stream: false,
-          think: false,
-          options: { temperature: 0, num_predict: 192 },
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`Ollama guard request failed with HTTP ${response.status}`);
-      }
-      const payload = normalizeOllamaGenerateResponse(await response.json());
-      const text =
-        typeof payload.message?.content === "string"
-          ? payload.message.content
-          : payload.response;
-      if (typeof text !== "string" || text.trim().length === 0) {
-        throw new Error("Ollama guard returned an empty response");
-      }
-      return text;
-    } finally {
-      clearTimeout(timeout);
-    }
+    const denial = new AdmissionDeniedError(
+      "legacy_ollama_courtguard_model_path_disabled",
+    );
+    return {
+      // An unavailable admission kernel is stronger than the guard's optional
+      // provider fail-open mode: no transaction may proceed by bypassing M3.
+      allowed: false,
+      verdict: "unavailable",
+      code: TRANSACTION_GUARD_UNAVAILABLE,
+      reason: JSON.stringify({
+        code: denial.code,
+        decision: denial.decision,
+        reason: denial.reason,
+      }),
+      provider: this.policy.provider,
+      model: this.policy.model,
+      inputHash,
+    };
   }
 }

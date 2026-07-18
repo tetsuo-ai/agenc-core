@@ -24,6 +24,7 @@ import { RolloutStore } from "../session/rollout-store.js";
 import { ThreadManager } from "./thread-manager.js";
 import { SimpleMailbox, type InterAgentCommunication } from "../session/session.js";
 import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -36,6 +37,10 @@ function stubSession(opts: {
     message: string,
     opts?: { displayUserMessage?: string | null },
   ) => Promise<void>;
+  services?: {
+    readonly executionAdmission?: ExecutionAdmissionClient;
+    readonly admissionRequired?: boolean;
+  };
 } = {}) {
   const emitted: unknown[] = [];
   const mailbox = new SimpleMailbox<InterAgentCommunication & { seq: number }>();
@@ -58,6 +63,7 @@ function stubSession(opts: {
     conversationId: opts.conversationId ?? "session-test",
     roleWorkspace: createAgentRoleWorkspace(cwd),
     sessionConfiguration: { cwd },
+    services: opts.services ?? { admissionRequired: false },
     _emitted: emitted,
   } as unknown as ConstructorParameters<typeof AgentControl>[0]["session"];
 }
@@ -365,6 +371,198 @@ describe("AgentControl", () => {
         (session as unknown as { childInboxes: Map<string, unknown> })
           .childInboxes.size,
       ).toBe(0);
+    } finally {
+      raw.close();
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the committed child and releases capacity when admission reconciliation fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-reconcile-failure-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "spawn-reconcile-failure",
+    });
+    const acquire = vi.fn(
+      async (input: Parameters<ExecutionAdmissionClient["acquire"]>[0]) => ({
+        decision: "allow" as const,
+        reservation: {
+          reservationId: "spawn-reconcile-reservation",
+          step: { runId: "reconcile-root", stepId: input.stepId },
+          kind: input.kind,
+          estimate: {
+            maxInputTokens: input.maxInputTokens,
+            maxOutputTokens: input.maxOutputTokens,
+            maxCostUsd: input.maxCostUsd,
+          },
+        },
+        request: {},
+        signal: new AbortController().signal,
+      }),
+    );
+    const markDispatched = vi.fn();
+    const reconcile = vi.fn(() => {
+      throw new Error("forced reconciliation journal failure");
+    });
+    const holdUnknown = vi.fn();
+    const acknowledgeCompletion = vi.fn();
+    const admission = {
+      scope: {
+        runId: "reconcile-root",
+        workspaceId: cwd,
+        sessionId: "reconcile-root",
+        autonomous: false,
+      },
+      acquire,
+      markDispatched,
+      reconcile,
+      holdUnknown,
+      acknowledgeCompletion,
+      cancelRun: vi.fn(),
+      void: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    } as unknown as ExecutionAdmissionClient;
+    try {
+      const session = stubSession({
+        cwd,
+        conversationId: "reconcile-root",
+        rolloutStore,
+        services: { executionAdmission: admission, admissionRequired: true },
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("reconcile-root");
+
+      const child = await control.spawn({
+        parentPath: "/root",
+        threadId: "committed-reconcile-child",
+        agentName: "committed_child",
+      });
+
+      expect(child.agentId).toBe("committed-reconcile-child");
+      expect(control.getLive(child.agentId)).toBe(child);
+      expect(registry.agentIdForPath("/root/committed_child")).toBe(child.agentId);
+      expect(
+        rolloutStore.getThreadSpawnEdge(child.agentId)?.status,
+      ).toBe("open");
+      expect(reconcile).toHaveBeenCalledWith(
+        "spawn-reconcile-reservation",
+        { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      );
+      expect(holdUnknown).toHaveBeenCalledWith(
+        "spawn-reconcile-reservation",
+        "spawn_reconciliation_failed_after_commit",
+      );
+      expect(acknowledgeCompletion).toHaveBeenCalledWith(
+        "spawn-reconcile-reservation",
+      );
+      expect(
+        (
+          session as unknown as {
+            _emitted: Array<{
+              msg?: { type?: string; payload?: { cause?: string } };
+            }>;
+          }
+        )._emitted.some(
+          (event) =>
+            event.msg?.type === "warning" &&
+            event.msg.payload?.cause ===
+              "spawn_admission_reconciliation_failed",
+        ),
+      ).toBe(true);
+
+      await expect(
+        control.spawn({
+          parentPath: "/root",
+          threadId: "committed-reconcile-child",
+          agentName: "duplicate_child",
+        }),
+      ).rejects.toThrow("agent thread id already exists");
+      expect(acquire).toHaveBeenCalledTimes(1);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("releases admission capacity when durable-edge failure journaling also fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-settlement-failure-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "spawn-settlement-failure",
+    });
+    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const holdUnknown = vi.fn(() => {
+      throw new Error("forced unknown-hold journal failure");
+    });
+    const acknowledgeCompletion = vi.fn();
+    const admission = {
+      scope: {
+        runId: "settlement-root",
+        workspaceId: cwd,
+        sessionId: "settlement-root",
+        autonomous: false,
+      },
+      acquire: vi.fn(
+        async (input: Parameters<ExecutionAdmissionClient["acquire"]>[0]) => ({
+          decision: "allow" as const,
+          reservation: {
+            reservationId: "spawn-settlement-reservation",
+            step: { runId: "settlement-root", stepId: input.stepId },
+          },
+          request: {},
+          signal: new AbortController().signal,
+        }),
+      ),
+      markDispatched: vi.fn(),
+      reconcile: vi.fn(),
+      holdUnknown,
+      acknowledgeCompletion,
+      cancelRun: vi.fn(),
+      void: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    } as unknown as ExecutionAdmissionClient;
+    try {
+      raw.exec(`
+        CREATE TRIGGER reject_admitted_control_spawn
+        BEFORE INSERT ON thread_spawn_edges
+        BEGIN
+          SELECT RAISE(ABORT, 'forced admitted spawn persistence failure');
+        END;
+      `);
+      const session = stubSession({
+        cwd,
+        conversationId: "settlement-root",
+        rolloutStore,
+        services: { executionAdmission: admission, admissionRequired: true },
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("settlement-root");
+
+      await expect(
+        control.spawn({
+          parentPath: "/root",
+          threadId: "settlement-failure-child",
+          agentName: "settlement_failure",
+        }),
+      ).rejects.toThrow("forced admitted spawn persistence failure");
+
+      expect(holdUnknown).toHaveBeenCalledWith(
+        "spawn-settlement-reservation",
+        "spawn_commit_outcome_unknown",
+      );
+      expect(acknowledgeCompletion).toHaveBeenCalledOnce();
+      expect(acknowledgeCompletion).toHaveBeenCalledWith(
+        "spawn-settlement-reservation",
+      );
+      expect(control.getLive("settlement-failure-child")).toBeUndefined();
+      expect(registry.activeCount).toBe(0);
     } finally {
       raw.close();
       rolloutStore.close();

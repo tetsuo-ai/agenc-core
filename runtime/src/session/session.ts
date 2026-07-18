@@ -168,6 +168,7 @@ import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type {
   SessionStartHookInput,
@@ -508,9 +509,15 @@ export interface McpManager {
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;
-  getResources?(): Promise<ReadonlyArray<unknown>>;
-  getResourcesByServer?(name: string): Promise<ReadonlyArray<unknown>>;
-  readResource?(namespacedName: string): Promise<unknown | null>;
+  getResources?(signal?: AbortSignal): Promise<ReadonlyArray<unknown>>;
+  getResourcesByServer?(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<unknown>>;
+  readResource?(
+    namespacedName: string,
+    signal?: AbortSignal,
+  ): Promise<unknown | null>;
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the
@@ -635,7 +642,10 @@ export interface SkillsManager {
     readonly agentId?: string;
     readonly sessionId?: string;
   }): void;
-  getInvokedSkillsForAgent?(agentId?: string, sessionId?: string): ReadonlyMap<
+  getInvokedSkillsForAgent?(
+    agentId?: string,
+    sessionId?: string,
+  ): ReadonlyMap<
     string,
     {
       readonly skillName: string;
@@ -810,6 +820,10 @@ export interface SessionServices {
   // T-future: AgenC-specific additions
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  /** Daemon-owned M3 execution authority shared by model/tool/spawn paths. */
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  /** Production sessions set this so a missing kernel is a typed hard stop. */
+  readonly admissionRequired?: boolean;
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
@@ -896,9 +910,7 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "openrouter",
-]);
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["openrouter"]);
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
@@ -985,10 +997,10 @@ async function vendManagedProviderKey(params: {
   readonly model: string;
 }): Promise<
   | {
-    readonly apiKey: string;
-    readonly baseURL?: string;
-    readonly model?: string;
-  }
+      readonly apiKey: string;
+      readonly baseURL?: string;
+      readonly model?: string;
+    }
   | undefined
 > {
   if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
@@ -1001,9 +1013,10 @@ async function vendManagedProviderKey(params: {
   const apiKey = firstNonEmpty(key.apiKey);
   if (apiKey === undefined) return undefined;
   const baseURL = firstNonEmpty(key.baseUrl);
-  const model = baseURL !== undefined
-    ? normalizeManagedGatewayModel(params.provider, params.model)
-    : params.model;
+  const model =
+    baseURL !== undefined
+      ? normalizeManagedGatewayModel(params.provider, params.model)
+      : params.model;
   return {
     apiKey,
     ...(baseURL !== undefined ? { baseURL } : {}),
@@ -1020,6 +1033,7 @@ async function providerFactoryOptionsFromSettings(params: {
   readonly managedKeysEnabled: boolean;
   readonly sessionId: string;
   readonly reusableApiKey?: string;
+  readonly executionAdmissionRequired?: boolean;
 }): Promise<ProviderFactoryOptions> {
   const extra: Record<string, unknown> = {};
   if (params.settings?.contextWindowTokens !== undefined) {
@@ -1028,9 +1042,13 @@ async function providerFactoryOptionsFromSettings(params: {
   if (params.settings?.maxOutputTokens !== undefined) {
     extra.maxTokens = params.settings.maxOutputTokens;
   }
-  const providerFallback = buildProviderFallbackLadderOptions(params);
-  if (providerFallback !== undefined) {
-    extra.providerFallback = providerFallback;
+  if (params.executionAdmissionRequired === true) {
+    extra.maxRetries = 0;
+  } else {
+    const providerFallback = buildProviderFallbackLadderOptions(params);
+    if (providerFallback !== undefined) {
+      extra.providerFallback = providerFallback;
+    }
   }
   const normalizedProvider = normalizeProviderName(params.provider);
   if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
@@ -1094,7 +1112,8 @@ async function providerFactoryOptionsFromSettings(params: {
     ...(managedCredential?.baseURL !== undefined
       ? { extra: { ...extra, managedGateway: true } }
       : {}),
-    ...(managedCredential?.baseURL === undefined && Object.keys(extra).length > 0
+    ...(managedCredential?.baseURL === undefined &&
+    Object.keys(extra).length > 0
       ? { extra }
       : {}),
   };
@@ -1129,6 +1148,7 @@ export type AbortReason =
   | "signal_received"
   | "stream_idle"
   | "token_budget_exceeded"
+  | "provider_overrun"
   | "process_killed";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1188,9 +1208,7 @@ export interface SessionFileRewindParams {
 }
 
 export type SessionFileRewindErrorCode =
-  | "ACTIVE_TURN"
-  | "MESSAGE_NOT_FOUND"
-  | "NO_FILE_HISTORY";
+  "ACTIVE_TURN" | "MESSAGE_NOT_FOUND" | "NO_FILE_HISTORY";
 
 export type SessionPreviewFileRewindResult =
   | {
@@ -1643,9 +1661,7 @@ function activeAgentDefinitionsFromRoles(
     if (definition === undefined) return [];
     const configured = {
       ...definition,
-      ...(role.description.length > 0
-        ? { whenToUse: role.description }
-        : {}),
+      ...(role.description.length > 0 ? { whenToUse: role.description } : {}),
     };
     return [
       {
@@ -2047,9 +2063,7 @@ export class Session {
    */
   listMcpClients(): readonly MCPServerConnection[] {
     const manager = this.services.mcpManager as unknown as
-      | McpManagerLike
-      | null
-      | undefined;
+      McpManagerLike | null | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -2063,9 +2077,7 @@ export class Session {
 
   listMcpTools(): readonly unknown[] {
     const manager = this.services.mcpManager as unknown as
-      | Pick<McpManager, "getTools">
-      | null
-      | undefined;
+      Pick<McpManager, "getTools"> | null | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -2291,6 +2303,8 @@ export class Session {
                 : false,
               sessionId: this.conversationId,
               reusableApiKey: reusableLiveProviderOptions?.apiKey,
+              executionAdmissionRequired:
+                this.services.admissionRequired !== false,
             })
           : {};
       preparedSwitch = prepareProviderSwitch(resolvedProvider, {
@@ -2446,7 +2460,9 @@ export class Session {
     let completed = false;
     try {
       while (true) {
-        const next = await runWithCurrentRuntimeSession(this, () => iter.next());
+        const next = await runWithCurrentRuntimeSession(this, () =>
+          iter.next(),
+        );
         if (next.done) {
           completed = true;
           return next.value;
@@ -2806,7 +2822,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "MESSAGE_NOT_FOUND",
-        message: "The selected message is no longer in the active conversation.",
+        message:
+          "The selected message is no longer in the active conversation.",
       };
     }
     const fileHistory = this.attachedFileHistory;
@@ -2859,7 +2876,8 @@ export class Session {
           ok: false,
           sessionId: this.conversationId,
           code: "ACTIVE_TURN",
-          message: "Cannot restore files right now: a turn is currently in flight.",
+          message:
+            "Cannot restore files right now: a turn is currently in flight.",
         };
       }
       throw error;
@@ -2963,6 +2981,7 @@ export class Session {
     return {
       abortController,
       provider: this.services.provider,
+      admissionSession: this,
       setStreamMode: surface.setStreamMode,
       setResponseLength: surface.setResponseLength,
       onCompactProgress: surface.onCompactProgress,
@@ -3763,8 +3782,7 @@ export class Session {
       }
     }
     let resolveResponse:
-      | ((response: RequestUserInputResponse | null) => void)
-      | undefined;
+      ((response: RequestUserInputResponse | null) => void) | undefined;
     const responsePromise = new Promise<RequestUserInputResponse | null>(
       (resolve) => {
         resolveResponse = resolve;
@@ -3873,8 +3891,7 @@ export class Session {
       }
     }
     let resolveResponse:
-      | ((response: McpElicitationResponse) => void)
-      | undefined;
+      ((response: McpElicitationResponse) => void) | undefined;
     const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
       resolveResponse = resolve;
     });
@@ -3988,9 +4005,7 @@ export class Session {
     // cleanup/telemetry automations observe every shutdown while the
     // session state is still intact.
     try {
-      const { dispatchSessionEnd } = await import(
-        "../llm/hooks/dispatcher.js"
-      );
+      const { dispatchSessionEnd } = await import("../llm/hooks/dispatcher.js");
       const hookTimeout = new Promise<void>((resolveTimeout) => {
         setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
       });

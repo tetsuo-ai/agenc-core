@@ -10,7 +10,8 @@ Node **>=25.9 <26** · ESM only · plain `tsc` build · no runtime dependencies.
 | --- | --- |
 | `connect()` | Attach to (or CLI-start) the local daemon over `~/.agenc/daemon.sock`. Typed `createSession()` / `prompt()` event streams, permission + elicitation callbacks, background-agent spawn/attach/stop/logs. |
 | `promptViaSubprocess()` | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process. |
-| `client.request(method, params)` | Raw typed JSON-RPC for all **41** public daemon methods (mirrored in `./protocol`). |
+| `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, page admission evidence, or cancel a run tree. |
+| `client.request(method, params)` | Raw typed JSON-RPC for all **45** public daemon methods (mirrored in `./protocol`). |
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,

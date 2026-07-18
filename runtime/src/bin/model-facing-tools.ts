@@ -34,11 +34,15 @@ import {
   supportsProviderNativeXSearch,
 } from "../llm/provider-native-search.js";
 import type {
+  LLMChatOptions,
+  LLMMessage,
   LLMProvider,
   LLMResponse,
   LLMWebSearchConfig,
   LLMXSearchConfig,
 } from "../llm/types.js";
+import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { LlmXaiConfig } from "../config/schema.js";
 import {
   hasXaiCredentials,
@@ -515,11 +519,35 @@ export function __resetLiveWebFetchSsrfDispatcherForTests(): void {
  */
 export async function assertLiveWebFetchHostAllowed(
   hostname: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const settleResolve = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const settleReject = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      settleReject(
+        signal?.reason ?? new Error("web fetch host validation cancelled"),
+      );
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     liveWebFetchSsrfLookup(hostname, { all: true }, (err) => {
-      if (err) reject(err);
-      else resolve();
+      if (err) settleReject(err);
+      else settleResolve();
     });
   });
 }
@@ -531,67 +559,72 @@ async function fetchWithTimeout(
     readonly validateWebFetchUrls?: boolean;
     readonly allowWebFetchRedirect?: (nextUrl: string) => boolean;
     readonly headers?: Readonly<Record<string, string>>;
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    if (opts.validateWebFetchUrls !== true) {
-      return await fetch(url, {
-        signal: controller.signal,
-        redirect: "follow",
-        headers: {
-          "user-agent": "agenc-runtime/0.2",
-          accept: "text/html,text/plain,application/json,*/*",
-          ...(opts.headers ?? {}),
-        },
-      });
+  const timeoutSignal = AbortSignal.timeout(
+    Math.max(1, Math.floor(timeoutMs)),
+  );
+  const requestSignal = opts.signal
+    ? AbortSignal.any([opts.signal, timeoutSignal])
+    : timeoutSignal;
+  if (opts.validateWebFetchUrls !== true) {
+    return await fetch(url, {
+      signal: requestSignal,
+      redirect: "follow",
+      headers: {
+        "user-agent": "agenc-runtime/0.2",
+        accept: "text/html,text/plain,application/json,*/*",
+        ...(opts.headers ?? {}),
+      },
+    });
+  }
+
+  let currentUrl = validateWebFetchFinalUrl(url);
+  let redirects = 0;
+  while (true) {
+    // Fail closed on DNS before dial, then pin via undici lookup so the
+    // validated address is the one connected (no rebinding window).
+    await assertLiveWebFetchHostAllowed(
+      new URL(currentUrl).hostname,
+      requestSignal,
+    );
+    requestSignal.throwIfAborted();
+    const response = await fetch(currentUrl, {
+      signal: requestSignal,
+      redirect: "manual",
+      // Node's fetch is undici; dispatcher pins DNS through our lookup.
+      // @ts-expect-error dispatcher is undici-specific
+      dispatcher: getLiveWebFetchSsrfDispatcher(),
+      headers: {
+        "user-agent": "agenc-runtime/0.2",
+        accept: "text/html,text/plain,application/json,*/*",
+      },
+    });
+    if (!isRedirectStatus(response.status)) {
+      validateWebFetchFinalUrl(response.url || currentUrl);
+      return response;
     }
 
-    let currentUrl = validateWebFetchFinalUrl(url);
-    let redirects = 0;
-    while (true) {
-      // Fail closed on DNS before dial, then pin via undici lookup so the
-      // validated address is the one connected (no rebinding window).
-      await assertLiveWebFetchHostAllowed(new URL(currentUrl).hostname);
-      const response = await fetch(currentUrl, {
-        signal: controller.signal,
-        redirect: "manual",
-        // Node's fetch is undici; dispatcher pins DNS through our lookup.
-        // @ts-expect-error dispatcher is undici-specific
-        dispatcher: getLiveWebFetchSsrfDispatcher(),
-        headers: {
-          "user-agent": "agenc-runtime/0.2",
-          accept: "text/html,text/plain,application/json,*/*",
-        },
-      });
-      if (!isRedirectStatus(response.status)) {
-        validateWebFetchFinalUrl(response.url || currentUrl);
-        return response;
-      }
-
-      if (redirects >= MAX_FETCH_REDIRECTS) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
-      }
-      const location = response.headers.get("location");
-      if (!location) {
-        validateWebFetchFinalUrl(response.url || currentUrl);
-        return response;
-      }
+    if (redirects >= MAX_FETCH_REDIRECTS) {
       await response.body?.cancel().catch(() => undefined);
-      const nextUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
-      if (
-        opts.allowWebFetchRedirect !== undefined &&
-        !opts.allowWebFetchRedirect(nextUrl)
-      ) {
-        throw new Error("redirect target is outside the preapproved URL scope");
-      }
-      currentUrl = nextUrl;
-      redirects += 1;
+      throw new Error(`too many redirects; limit is ${MAX_FETCH_REDIRECTS}`);
     }
-  } finally {
-    clearTimeout(timer);
+    const location = response.headers.get("location");
+    if (!location) {
+      validateWebFetchFinalUrl(response.url || currentUrl);
+      return response;
+    }
+    await response.body?.cancel().catch(() => undefined);
+    const nextUrl = normalizeWebFetchRedirectUrl(currentUrl, location);
+    if (
+      opts.allowWebFetchRedirect !== undefined &&
+      !opts.allowWebFetchRedirect(nextUrl)
+    ) {
+      throw new Error("redirect target is outside the preapproved URL scope");
+    }
+    currentUrl = nextUrl;
+    redirects += 1;
   }
 }
 
@@ -845,6 +878,35 @@ function currentSessionProvider(
     ?.provider;
 }
 
+async function runAdmittedModelFacingCall(
+  opts: ModelFacingToolOptions,
+  provider: LLMProvider,
+  messages: LLMMessage[],
+  options: LLMChatOptions,
+  purpose: "web_search" | "x_search" | "web_fetch_extraction",
+): Promise<LLMResponse> {
+  const session = opts.getSession();
+  if (session === null) {
+    throw new AdmissionDeniedError("model_facing_session_unavailable");
+  }
+  return runAdmittedModelCall({
+    session,
+    provider,
+    messages,
+    options,
+    stepId: `${purpose}:${session.nextInternalSubId()}`,
+    sessionId: session.conversationId,
+    model:
+      options.model ??
+      readProviderFactoryOptions(provider).model ??
+      session.modelInfo?.slug ??
+      "unknown",
+    providerName: readProviderIdentity(provider) ?? provider.name,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+  });
+}
+
 function buildGrokNativeWebSearchProvider(
   opts: ModelFacingToolOptions,
   filters: WebSearchFilters,
@@ -929,12 +991,13 @@ async function runGrokNativeWebSearch(
   const provider = buildGrokNativeWebSearchProvider(opts, filters);
   if (!provider) return undefined;
   try {
-    const response = await provider.chat(
+    const response = await runAdmittedModelFacingCall(
+      opts,
+      provider,
       [
         {
           role: "user",
-          content:
-            `Search the web for this query and return concise findings with source URLs.\n\nQuery: ${query}`,
+          content: `Search the web for this query and return concise findings with source URLs.\n\nQuery: ${query}`,
         },
       ],
       {
@@ -947,6 +1010,7 @@ async function runGrokNativeWebSearch(
         },
         signal: abortSignalFromArgs(args),
       },
+      "web_search",
     );
     if (
       response.finishReason === "error" ||
@@ -972,7 +1036,9 @@ async function runGrokNativeWebSearch(
       citations,
       web_search_requests: response.usage.webSearchRequests ?? 0,
     });
-  } catch {
+  } catch (error) {
+    abortSignalFromArgs(args)?.throwIfAborted();
+    if (error instanceof AdmissionDeniedError) throw error;
     return undefined;
   }
 }
@@ -1161,12 +1227,13 @@ async function runGrokNativeXSearch(
     );
   }
   try {
-    const response = await provider.chat(
+    const response = await runAdmittedModelFacingCall(
+      opts,
+      provider,
       [
         {
           role: "user",
-          content:
-            `Search X (Twitter) for this query and return concise findings with direct x.com citations.\n\nQuery: ${query}`,
+          content: `Search X (Twitter) for this query and return concise findings with direct x.com citations.\n\nQuery: ${query}`,
         },
       ],
       {
@@ -1179,6 +1246,7 @@ async function runGrokNativeXSearch(
         },
         signal: abortSignalFromArgs(args),
       },
+      "x_search",
     );
     if (response.finishReason === "error") {
       return json(
@@ -1209,6 +1277,7 @@ async function runGrokNativeXSearch(
       citations,
     });
   } catch (error) {
+    abortSignalFromArgs(args)?.throwIfAborted();
     return json(
       {
         error:
@@ -1792,10 +1861,14 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const sessionOrError = getSessionOrError(opts);
         if (!("conversationId" in sessionOrError)) return sessionOrError;
         const server = stringValue(args.server);
+        const signal = abortSignalFromArgs(args);
         const resources =
           server !== undefined
-            ? await sessionOrError.services.mcpManager.getResourcesByServer?.(server)
-            : await sessionOrError.services.mcpManager.getResources?.();
+            ? await sessionOrError.services.mcpManager.getResourcesByServer?.(
+                server,
+                signal,
+              )
+            : await sessionOrError.services.mcpManager.getResources?.(signal);
         if (resources === undefined) {
           return json({ error: "MCP resource listing is not available" }, true);
         }
@@ -1828,8 +1901,10 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (!server || !uri) {
           return json({ error: "server and uri are required" }, true);
         }
+        const signal = abortSignalFromArgs(args);
         const resource = await sessionOrError.services.mcpManager.readResource?.(
           `mcp.${server}.${uri}`,
+          signal,
         );
         if (resource === undefined) {
           return json({ error: "MCP resource reading is not available" }, true);
@@ -2257,7 +2332,9 @@ async function runWebFetchExtraction(
       input.content.length > WEB_FETCH_EXTRACTION_INPUT_CHARS
         ? `${input.content.slice(0, WEB_FETCH_EXTRACTION_INPUT_CHARS)}\n\n[content truncated for extraction]`
         : input.content;
-    const response = await provider.chat(
+    const response = await runAdmittedModelFacingCall(
+      opts,
+      provider,
       [
         {
           role: "user",
@@ -2271,12 +2348,15 @@ async function runWebFetchExtraction(
         tools: [],
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
       },
+      "web_fetch_extraction",
     );
     const text = response.content.trim();
     return text.length > 0 && response.finishReason !== "error"
       ? text
       : undefined;
-  } catch {
+  } catch (error) {
+    input.signal?.throwIfAborted();
+    if (error instanceof AdmissionDeniedError) throw error;
     return undefined;
   }
 }
@@ -2312,6 +2392,8 @@ function createWebFetchTool(
     checkPermissions: (input, context) =>
       checkWebFetchPermissions(input, context, toolName),
     execute: async (args) => {
+      const effectSignal = abortSignalFromArgs(args);
+      effectSignal?.throwIfAborted();
       const url = stringValue(args.url);
       if (!url) return json({ error: "url is required" }, true);
       let normalized: string;
@@ -2338,6 +2420,7 @@ function createWebFetchTool(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
           {
+            ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
             validateWebFetchUrls: true,
             allowWebFetchRedirect: (nextUrl) => {
               if (!initialPreapproved) return true;
@@ -2360,6 +2443,7 @@ function createWebFetchTool(
         }
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await readResponseTextBounded(response, maxBytes);
+        effectSignal?.throwIfAborted();
         const isHtml = contentType.toLowerCase().includes("html");
         let body: string;
         let renderedAs: "markdown" | "text" | "passthrough";
@@ -2397,6 +2481,7 @@ function createWebFetchTool(
             url: finalUrl,
             content: textBody,
             prompt,
+            ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
           });
           if (extracted !== undefined) {
             let fullContentPath: string | undefined;
@@ -2448,6 +2533,7 @@ function createWebFetchTool(
           content: textBody,
         }, response.ok ? undefined : true);
       } catch (error) {
+        effectSignal?.throwIfAborted();
         return json({ error: `fetch failed: ${errorMessage(error)}` }, true);
       }
     },
@@ -2483,6 +2569,7 @@ async function runConfiguredEndpointSearch(
   kind: WebSearchEndpointKind,
   env: NodeJS.ProcessEnv | undefined,
   query: string,
+  signal?: AbortSignal,
 ): Promise<{
   readonly results: WebSearchResultEntry[];
   readonly answer?: string;
@@ -2500,6 +2587,7 @@ async function runConfiguredEndpointSearch(
       : { Accept: "application/json" };
   const response = await fetchWithTimeout(searchUrl, DEFAULT_TIMEOUT_MS, {
     headers,
+    ...(signal !== undefined ? { signal } : {}),
   });
   const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
   if (kind === "searxng") {
@@ -2624,12 +2712,14 @@ function resolveDdgResultUrl(href: string): string | null {
  */
 async function runDuckDuckGoHtmlSearch(
   query: string,
+  signal?: AbortSignal,
 ): Promise<WebSearchResultEntry[]> {
   try {
     const response = await fetchWithTimeout(
       `${DDG_HTML_SEARCH_URL}?q=${encodeURIComponent(query)}`,
       DEFAULT_TIMEOUT_MS,
       {
+        ...(signal !== undefined ? { signal } : {}),
         headers: {
           Accept: "text/html",
           "User-Agent": "Mozilla/5.0 (compatible; agenc-cli)",
@@ -2662,6 +2752,7 @@ async function runDuckDuckGoHtmlSearch(
     }
     return results;
   } catch {
+    signal?.throwIfAborted();
     return [];
   }
 }
@@ -2680,6 +2771,15 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
       isReadOnly: true,
       concurrencyClass: { kind: "shared_read" },
       recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd:
+          stringValue(opts.env?.AGENC_WEB_SEARCH_ENDPOINT) !== undefined ||
+          stringValue(opts.toolsConfig?.web_search_endpoint) !== undefined
+            ? null
+            : 0,
+      }),
       inputSchema: {
         type: "object",
         properties: {
@@ -2692,6 +2792,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         additionalProperties: false,
       },
       execute: async (args) => {
+        const effectSignal = abortSignalFromArgs(args);
+        effectSignal?.throwIfAborted();
         const query = stringValue(args.query);
         if (!query) return json({ error: "query is required" }, true);
         const filters = webSearchFilters(args);
@@ -2720,6 +2822,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
             kind,
             opts.env,
             query,
+            effectSignal,
           );
           const results = filterWebSearchResults(
             configured.results,
@@ -2740,7 +2843,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         }
         // 2. Keyless real-SERP default: DuckDuckGo HTML.
         const htmlResults = filterWebSearchResults(
-          await runDuckDuckGoHtmlSearch(query),
+          await runDuckDuckGoHtmlSearch(query, effectSignal),
           filters,
         ).slice(0, maxResults);
         if (htmlResults.length > 0) {
@@ -2754,6 +2857,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         // abstracts only — near-empty for most real queries).
         const response = await fetchWithTimeout(
           `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
+          DEFAULT_TIMEOUT_MS,
+          effectSignal === undefined ? {} : { signal: effectSignal },
         );
         const raw = recordValue(await response.json().catch(() => undefined)) ?? {};
         const results = filterWebSearchResults(

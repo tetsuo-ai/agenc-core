@@ -30,6 +30,12 @@ export interface XaiResponsesInputBuildResult {
   readonly hasImages: boolean;
 }
 
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
 function normalizeXaiResponsesToolChoice(
   toolChoice: LLMToolChoice | undefined,
 ): string | Record<string, unknown> | undefined {
@@ -134,6 +140,7 @@ export function buildXaiResponsesRequest(input: {
   readonly options?: Pick<
     LLMChatOptions,
     | "promptCacheKey"
+    | "maxOutputTokens"
     | "reasoningEffort"
     | "includeEncryptedReasoning"
     | "toolChoice"
@@ -156,6 +163,10 @@ export function buildXaiResponsesRequest(input: {
   }
   if (input.options?.temperature !== undefined) {
     params.temperature = input.options.temperature;
+  }
+  const maxOutputTokens = positiveInteger(input.options?.maxOutputTokens);
+  if (maxOutputTokens !== undefined) {
+    params.max_output_tokens = maxOutputTokens;
   }
   if (
     typeof input.options?.maxTurns === "number" &&

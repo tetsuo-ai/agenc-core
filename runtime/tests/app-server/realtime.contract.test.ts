@@ -15,7 +15,11 @@ import {
   JSON_RPC_VERSION,
   type JsonObject,
 } from "./protocol/index.js";
-import { AgenCRealtimeRpcService } from "./realtime.js";
+import {
+  AgenCRealtimeRpcService,
+  REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC,
+  TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+} from "./realtime.js";
 import {
   AGENC_REALTIME_CALL_MULTIPART_BOUNDARY,
   AgenCRealtimeCallClient,
@@ -30,8 +34,38 @@ import {
 } from "./realtime-transport.js";
 
 describe("AgenC daemon realtime JSON-RPC surface", () => {
-  test("dispatches realtime start, append, stop, and listVoices", async () => {
+  test("fails realtime start closed without a durable execution admission contract", async () => {
     const realtime = new AgenCRealtimeRpcService();
+    const binding = createRealtimeBinding();
+    realtime.registerThread(binding.thread);
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: createAgentManagerStub(),
+      realtime,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "unadmitted-realtime",
+        method: "thread/realtime/start",
+        params: { threadId: "thread_1", outputModality: "audio" },
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC,
+        data: { code: "EXECUTION_ADMISSION_REQUIRED" },
+      },
+    });
+    expect(binding.transportRequests).toHaveLength(0);
+  });
+
+  test("dispatches realtime start, append, stop, and listVoices", async () => {
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     const binding = createRealtimeBinding({
       callClient: createCallClient({
         body: "answer-sdp",
@@ -255,7 +289,9 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
   });
 
   test("fans realtime conversation events out as server notifications", async () => {
-    const realtime = new AgenCRealtimeRpcService();
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     const binding = createRealtimeBinding();
     realtime.registerThread(binding.thread);
     const notifications: JsonObject[] = [];
@@ -386,7 +422,9 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
   });
 
   test("cleans up started realtime conversation when notification delivery fails", async () => {
-    const realtime = new AgenCRealtimeRpcService();
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     const binding = createRealtimeBinding();
     realtime.registerThread(binding.thread);
 
@@ -418,7 +456,9 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
   });
 
   test("surfaces async WebRTC startup failures as realtime error notifications", async () => {
-    const realtime = new AgenCRealtimeRpcService();
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     const binding = createRealtimeBinding({
       callClient: new AgenCRealtimeCallClient({
         baseUrl: "https://api.openai.com/v1",

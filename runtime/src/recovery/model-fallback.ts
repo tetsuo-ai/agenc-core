@@ -116,6 +116,17 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
       session.services.provider.name,
     model: error.toModel,
   };
+  state.pendingAdmissionFallback = {
+    fromModel: error.fromModel,
+    toModel: error.toModel,
+    ...(error.fromProvider !== undefined
+      ? { fromProvider: error.fromProvider }
+      : {}),
+    ...(error.toProvider !== undefined
+      ? { toProvider: error.toProvider }
+      : {}),
+    reason: error.reason ?? "provider_fallback_ladder",
+  };
 
   state.transition = { reason: "model_fallback" };
 

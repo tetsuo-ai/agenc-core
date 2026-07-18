@@ -28,7 +28,9 @@ export function buildBootstrapToolRegistry(
 ): ToolRegistry {
   const modelFacingTools = createModelFacingTools({
     workspaceRoot: options.workspaceRoot,
-    ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+    ...(options.agencHome !== undefined
+      ? { agencHome: options.agencHome }
+      : {}),
     getSession: options.getSession,
     ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
       ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
@@ -53,10 +55,14 @@ export function buildBootstrapToolRegistry(
   });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
+    getSession: options.getSession,
+    requireAdmission: true,
     mcpToolsProvider: options.mcpManager,
     workflowController: buildWorkflowToolController({
       getSession: options.getSession,
-      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+      ...(options.agencHome !== undefined
+        ? { agencHome: options.agencHome }
+        : {}),
       emitWarning: options.emitWarning,
     }),
     ...(options.toolRegistryOptions ?? {}),

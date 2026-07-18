@@ -47,9 +47,10 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   attach|stop|logs`), attachable and resumable, independent of the foreground UI.
 - **Channel gateway** — Telegram, Discord, Slack, WebChat, and stdio channels;
   pairing, bindings, in-channel approvals. See [`docs/gateway.md`](docs/gateway.md).
-- **Budget-bounded autonomy** — per-agent spend ledger and caps for heartbeat /
-  cron / hooks turns (`agenc budget`, `agenc gateway run --heartbeat|--hooks`).
-  Design: [`docs/design/budget-enforcement.md`](docs/design/budget-enforcement.md).
+- **Budget-bounded execution** — daemon-owned reservations, hierarchical caps,
+  concurrency, cancellation, and evidence across interactive/background work,
+  including heartbeat / cron / hooks. Design:
+  [`docs/design/execution-admission-kernel.md`](docs/design/execution-admission-kernel.md).
 - **Guided onboarding** — `agenc onboard` plus acts: `identity`, `channel`,
   `autonomy`, `recap` (personas, channels, budget/heartbeat/webhooks).
 - **Remote control** — pair iOS or Android with `agenc remote on|off|status`;

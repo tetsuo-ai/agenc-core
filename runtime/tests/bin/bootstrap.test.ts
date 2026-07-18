@@ -1323,6 +1323,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,
@@ -1509,6 +1515,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,
@@ -1615,6 +1627,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,

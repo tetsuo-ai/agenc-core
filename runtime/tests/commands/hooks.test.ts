@@ -13,6 +13,7 @@ function runtime(): ConfiguredHooksRuntime {
     agencHome: "/tmp/agenc-test",
     shellPath: process.env.SHELL ?? "/bin/sh",
     sandboxExecutionBroker: explicitDangerBroker,
+    admissionRequired: false,
     // These tests exercise hook diagnostics/dispatch; treat the workspace as
     // trusted (production establishes trust before command hooks run).
     isWorkspaceTrusted: () => true,
@@ -35,7 +36,7 @@ function ctx(
 ): SlashCommandContext {
   return {
     session: {
-      services: { hooksRuntime },
+      services: { admissionRequired: false, hooksRuntime },
     } as unknown as Session,
     argsRaw,
     cwd: process.cwd(),

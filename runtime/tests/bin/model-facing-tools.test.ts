@@ -118,6 +118,7 @@ function fakeSession(cwd = process.cwd()): Session {
       send: () => 1,
     },
     services: {
+      admissionRequired: false,
       modelsManager: {
         tryListModels: () => [modelInfo],
         listModels: async () => [modelInfo],
@@ -184,6 +185,60 @@ async function writeTestSkill(
 function withProvider(session: Session, provider: LLMProvider): Session {
   (session.services as { provider?: LLMProvider }).provider = provider;
   return session;
+}
+
+function installAdmissionClient(session: Session) {
+  const acquire = vi.fn(
+    async (input: {
+      readonly stepId: string;
+      readonly kind: string;
+      readonly maxInputTokens: number;
+      readonly maxOutputTokens: number;
+      readonly maxCostUsd: number | null;
+    }) => ({
+      decision: "allow" as const,
+      reservation: {
+        reservationId: `reservation:${input.stepId}`,
+        step: { runId: "run-test", stepId: input.stepId },
+        reservedCostUsd: input.maxCostUsd ?? 0,
+        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+        reservedAt: new Date(0).toISOString(),
+      },
+      request: {
+        step: { runId: "run-test", stepId: input.stepId },
+        kind: input.kind,
+        estimate: {
+          maxInputTokens: input.maxInputTokens,
+          maxOutputTokens: input.maxOutputTokens,
+          maxCostUsd: input.maxCostUsd,
+        },
+        workspaceId: "workspace-test",
+        sessionId: session.conversationId,
+        autonomous: false,
+      },
+      signal: new AbortController().signal,
+    }),
+  );
+  const client = {
+    scope: {
+      runId: "run-test",
+      workspaceId: "workspace-test",
+      sessionId: session.conversationId,
+      autonomous: false,
+    },
+    acquire,
+    markDispatched: vi.fn(),
+    reconcile: vi.fn(() => ({ applied: true, outcome: "reconciled" })),
+    holdUnknown: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  };
+  (session.services as { executionAdmission?: unknown }).executionAdmission =
+    client;
+  return client;
 }
 
 function fakeProvider(
@@ -513,6 +568,9 @@ describe("model-facing tools", () => {
       getSession: () => null,
       emitWarning: () => {},
       toolRegistryOptions: {
+        // This is a schema/dispatch unit test without a runtime Session. The
+        // production bootstrap keeps admission required.
+        requireAdmission: false,
         outputSchema: {
           type: "object",
           properties: { verdict: { type: "string" } },
@@ -1485,6 +1543,73 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("web_fetch aborts its live request from the admitted hidden signal", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener(
+            "abort",
+            () => reject(requestSignal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tool = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      }).find((candidate) => candidate.name === "web_fetch")!;
+      const admittedAbort = new AbortController();
+      const reason = new Error("kernel cancelled web fetch");
+      const running = tool.execute({
+        url: "https://agenc.tech/slow",
+        __abortSignal: admittedAbort.signal,
+      });
+
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      admittedAbort.abort(reason);
+
+      await expect(running).rejects.toBe(reason);
+      expect(requestSignal?.aborted).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("web_fetch stops waiting for DNS when its admitted signal aborts", async () => {
+    const dnsLookup = vi.fn(
+      (_hostname: string, _callback: (...args: never[]) => void) => undefined,
+    );
+    __setLiveWebFetchDnsAllLookupForTests(dnsLookup);
+    const fetchMock = vi.fn();
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tool = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      }).find((candidate) => candidate.name === "web_fetch")!;
+      const admittedAbort = new AbortController();
+      const reason = new Error("kernel cancelled web fetch DNS");
+      const running = tool.execute({
+        url: "https://agenc.tech/slow-dns",
+        __abortSignal: admittedAbort.signal,
+      });
+
+      await vi.waitFor(() => expect(dnsLookup).toHaveBeenCalledOnce());
+      admittedAbort.abort(reason);
+
+      await expect(running).rejects.toBe(reason);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("web_fetch denies hostnames that DNS-resolve to private or metadata addresses", async () => {
     // Mixed public + private must fail closed (any blocked address).
     __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
@@ -1804,6 +1929,8 @@ describe("model-facing tools", () => {
         promptTokens: 10,
         completionTokens: 12,
         totalTokens: 22,
+        availability: "reported",
+        provenance: "provider",
         webSearchRequests: 1,
       },
       model: "grok-4-fast",
@@ -1836,13 +1963,20 @@ describe("model-facing tools", () => {
     };
     const nativeChat = vi.fn().mockResolvedValue(nativeResponse);
     let factoryOptions: ProviderFactoryOptions | undefined;
-    const providerFactory = vi.fn((
-      _provider: string,
-      options: ProviderFactoryOptions,
-    ) => {
-      factoryOptions = options;
-      return fakeProvider({}, nativeChat);
-    });
+    const providerFactory = vi.fn(
+      (_provider: string, options: ProviderFactoryOptions) => {
+        factoryOptions = options;
+        return {
+          ...fakeProvider({ model: options.model }, nativeChat),
+          getExecutionProfile: vi.fn(async () => ({
+            provider: "grok",
+            model: options.model ?? "grok-4-fast",
+            usageReporting: "authoritative" as const,
+            supportsMaxOutputTokens: true,
+          })),
+        } as LLMProvider;
+      },
+    );
     const session = withProvider(
       fakeSession(),
       fakeProvider({
@@ -1850,6 +1984,7 @@ describe("model-facing tools", () => {
         model: "grok-4-fast",
       }),
     );
+    const admission = installAdmissionClient(session);
     const fetchMock = vi.fn();
     const previousFetch = globalThis.fetch;
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -1898,6 +2033,21 @@ describe("model-facing tools", () => {
           allowedToolNames: ["web_search"],
         },
       }),
+    );
+    expect(admission.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "model_turn",
+        stepId: "web_search:event-1",
+        model: "grok-4-fast",
+        provider: "grok",
+        maxOutputTokens: 1_200,
+      }),
+      undefined,
+    );
+    expect(admission.markDispatched).toHaveBeenCalledOnce();
+    expect(admission.reconcile).toHaveBeenCalledWith(
+      "reservation:web_search:event-1",
+      expect.objectContaining({ inputTokens: 10, outputTokens: 12 }),
     );
   });
 
@@ -2074,6 +2224,53 @@ describe("model-facing tools", () => {
       uri: "resource://one",
     });
     expect(JSON.parse(read.content).resource.text).toBe("resource body");
+  });
+
+  it("forwards the admitted tool signal to MCP resource list and read RPCs", async () => {
+    const getResources = vi.fn(async () => []);
+    const getResourcesByServer = vi.fn(async () => []);
+    const readResource = vi.fn(async () => ({
+      uri: "resource://one",
+      text: "resource body",
+      truncated: false,
+      bytesReturned: 13,
+    }));
+    const session = fakeSession();
+    session.services.mcpManager.getResources = getResources;
+    session.services.mcpManager.getResourcesByServer = getResourcesByServer;
+    session.services.mcpManager.readResource = readResource;
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    const controller = new AbortController();
+    const listArgs: Record<string, unknown> = {};
+    const serverListArgs: Record<string, unknown> = { server: "demo" };
+    const readArgs: Record<string, unknown> = {
+      server: "demo",
+      uri: "resource://one",
+    };
+    for (const args of [listArgs, serverListArgs, readArgs]) {
+      Object.defineProperty(args, "__abortSignal", {
+        value: controller.signal,
+        enumerable: false,
+      });
+    }
+
+    await byName.get("ListMcpResourcesTool")!.execute(listArgs);
+    await byName.get("ListMcpResourcesTool")!.execute(serverListArgs);
+    await byName.get("ReadMcpResourceTool")!.execute(readArgs);
+
+    expect(getResources).toHaveBeenCalledWith(controller.signal);
+    expect(getResourcesByServer).toHaveBeenCalledWith(
+      "demo",
+      controller.signal,
+    );
+    expect(readResource).toHaveBeenCalledWith(
+      "mcp.demo.resource://one",
+      controller.signal,
+    );
   });
 
   it("loads skills through the Skill tool and records invocations", async () => {
@@ -4545,6 +4742,7 @@ describe("model-facing tools", () => {
         mcpManager: fakeMcpManager() as never,
         getSession: () => null,
         emitWarning: () => {},
+        toolRegistryOptions: { requireAdmission: false },
       });
 
       const result = await registry.dispatch({
@@ -4581,6 +4779,7 @@ describe("model-facing tools", () => {
         mcpManager: fakeMcpManager() as never,
         getSession: () => null,
         emitWarning: () => {},
+        toolRegistryOptions: { requireAdmission: false },
       });
 
       const result = await registry.dispatch({
@@ -4902,6 +5101,43 @@ describe("WebSearch real backends (task 4)", () => {
         "https://cfg.local/search?q=cfg",
       );
       expect(parsed.results[0].url).toBe("https://cfg.example");
+    });
+  });
+
+  it("aborts a configured search request from the admitted hidden signal", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener(
+            "abort",
+            () => reject(requestSignal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    await withFetchMock(fetchMock, async () => {
+      const tool = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+        env: {
+          AGENC_WEB_SEARCH_ENDPOINT: "https://search.example/query",
+          AGENC_WEB_SEARCH_KIND: "json",
+        } as NodeJS.ProcessEnv,
+      }).find((candidate) => candidate.name === "WebSearch")!;
+      const admittedAbort = new AbortController();
+      const reason = new Error("kernel cancelled web search");
+      const running = tool.execute({
+        query: "slow query",
+        __abortSignal: admittedAbort.signal,
+      });
+
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      admittedAbort.abort(reason);
+
+      await expect(running).rejects.toBe(reason);
+      expect(requestSignal?.aborted).toBe(true);
     });
   });
 });

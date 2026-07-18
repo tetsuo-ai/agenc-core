@@ -205,6 +205,7 @@ function buildSession(
   } = {},
 ): Session {
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

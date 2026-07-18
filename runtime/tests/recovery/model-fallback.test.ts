@@ -314,5 +314,12 @@ describe("runModelFallback — T8 hardening", () => {
       provider: "openai",
       model: "gpt-5",
     });
+    expect(state.pendingAdmissionFallback).toEqual({
+      fromModel: "grok-4-fast",
+      toModel: "gpt-5",
+      fromProvider: "grok",
+      toProvider: "openai",
+      reason: "provider_fallback_ladder",
+    });
   });
 });

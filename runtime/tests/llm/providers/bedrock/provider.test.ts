@@ -130,6 +130,7 @@ describe("providers/bedrock", () => {
         toolChoice: { type: "function", name: "lookup" },
         temperature: 0.4,
         stopSequences: ["END"],
+        singleWireAttempt: true,
       },
     );
 

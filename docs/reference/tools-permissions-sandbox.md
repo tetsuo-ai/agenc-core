@@ -387,11 +387,11 @@ agent; `apply_patch` plans in memory, commits, and rolls back on any failure.
 
 ## Autonomous spend
 
-Heartbeat, cron delivery, and hooks are gated by the budget layer when enabled
-— see [`autonomy.md`](autonomy.md) and
-[`../design/budget-enforcement.md`](../design/budget-enforcement.md). Budget is
-orthogonal to permission modes: a turn can be permission-approved and still
-refused as `BUDGET_EXCEEDED`.
+Model and charged-tool boundaries traverse the daemon execution-admission
+kernel — see [`autonomy.md`](autonomy.md) and
+[`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md).
+Budget is orthogonal to permission modes: a turn can be permission-approved
+and still be denied before dispatch.
 
 ## Multi-agent tools
 

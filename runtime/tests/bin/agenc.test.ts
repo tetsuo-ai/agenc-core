@@ -72,8 +72,9 @@ function stubSession() {
   return {
     eventLog: {},
     nextInternalSubId: () => "sub-1",
-    services: {},
+    services: { admissionRequired: false },
     conversationId: "conv-stub-1",
+    config: {},
     sessionConfiguration: { cwd: process.cwd() },
   } as unknown as Session;
 }

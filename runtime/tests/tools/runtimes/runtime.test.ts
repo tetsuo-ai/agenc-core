@@ -1115,7 +1115,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-exec-read-outside",
@@ -1142,7 +1142,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-exec-generated-write",
@@ -1184,7 +1184,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-exec-root-scoped-read",
@@ -1238,7 +1238,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-stdin-no-helper",
@@ -1281,7 +1281,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-stdin-read-only",
@@ -1318,7 +1318,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-stdin-continue",
@@ -1355,7 +1355,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-stdin-full-access",
@@ -1406,7 +1406,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-real-exec-no-helper",
@@ -1474,7 +1474,7 @@ describe("tools/runtimes", () => {
           {
             session: {
               eventLog: new EventLog(),
-              services: {},
+              services: { admissionRequired: false },
             } as never,
             turn: {
               subId: "turn-helper-check",
@@ -1538,7 +1538,7 @@ describe("tools/runtimes", () => {
     const baseOpts = {
       session: {
         eventLog: new EventLog(),
-        services: {},
+        services: { admissionRequired: false },
       } as never,
       turn: {
         subId: "turn-shell-envelope",
@@ -1587,7 +1587,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: "runtime-write-session",
       eventLog: new EventLog(),
-      services: {},
+      services: { admissionRequired: false },
     } as never;
 
     const blocked = await router.dispatchModelToolCall(
@@ -1660,7 +1660,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: sessionId,
       eventLog: new EventLog(),
-      services: {},
+      services: { admissionRequired: false },
     } as never;
     const dispatch = (
       call: LLMToolCall,
@@ -1826,7 +1826,7 @@ describe("tools/runtimes", () => {
     const session = {
       conversationId: "runtime-patch-session",
       eventLog: new EventLog(),
-      services: {},
+      services: { admissionRequired: false },
     } as never;
     const insidePatch = [
       "*** Begin Patch",
@@ -1953,7 +1953,7 @@ describe("tools/runtimes", () => {
     const result = await router.dispatchModelToolCall(call, {
       session: {
         eventLog: new EventLog(),
-        services: {},
+        services: { admissionRequired: false },
       } as never,
       turn: {
         subId: "turn-runtime-probe",
@@ -2018,7 +2018,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-runtime-escalation",
@@ -2069,7 +2069,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-direct-runtime",
@@ -2118,7 +2118,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-rich-runtime",
@@ -2161,7 +2161,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-bigint-runtime",
@@ -2216,7 +2216,7 @@ describe("tools/runtimes", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-code-mode-runtime",

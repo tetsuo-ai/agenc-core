@@ -188,6 +188,7 @@ function mkSession(opts?: {
   provider?: LLMProvider;
 }): Session {
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

@@ -432,6 +432,7 @@ interface AgenCToolUseContext {
   readonly clearProviderResponseId: () => void;
   readonly rolloutStore?: unknown;
   readonly session?: { readonly rolloutStore?: unknown };
+  readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
 }
@@ -520,6 +521,7 @@ function buildAgenCToolUseContext(
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
+    admissionSession: session,
     provider: session.services.provider,
     cwd,
   };

@@ -77,6 +77,7 @@ function makeParentSession() {
     snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd: "/repo" },
     config: { cwd: "/repo" },
+    services: { admissionRequired: false },
   };
 }
 
@@ -121,7 +122,7 @@ function makeRealDelegateHarness(label: string) {
     rolloutStore,
     childInboxes: new Map(),
     mailbox: { send: vi.fn() },
-    services: {},
+    services: { admissionRequired: false },
   };
   const registry = new AgentRegistry();
   const control = new AgentControl({

@@ -9,7 +9,7 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 | [`reference/daemon.md`](reference/daemon.md) | Daemon process, socket, protocol, lifecycle |
 | [`reference/providers.md`](reference/providers.md) | Built-in providers, defaults, credentials |
 | [`reference/autonomy.md`](reference/autonomy.md) | Budget, heartbeat, cron delivery, hooks HTTP |
-| [`design/budget-enforcement.md`](design/budget-enforcement.md) | Budget design + live wire-up |
+| [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md) | Live durable budget/admission design |
 | [`gateway.md`](gateway.md) | Channel gateway operator guide |
 | [`sdk.md`](sdk.md) | `@tetsuo-ai/agenc-sdk` embedding API |
 
@@ -78,7 +78,7 @@ Everything past the launcher lives in the single runtime workspace
 | `mcp-client/` / `mcp-server/` / `mcp/` | Outbound MCP client, server framework, and serve bootstrap |
 | `gateway/` | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
 | `heartbeat/` | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md). |
-| `budget/` | Cumulative daily/monthly spend ledger + `BudgetEnforcer` admit/reconcile. See [`design/budget-enforcement.md`](design/budget-enforcement.md). |
+| `budget/` | Daemon-owned execution admission, hierarchical budgets, concurrency, cancellation, and durable reconciliation. See [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md). |
 | `phases/` | Turn phases: stream model, execute tools, commit, stop hooks, post-sample recovery, continuation nudge |
 | `hooks/` | Configured lifecycle hooks (PreToolUse / PostToolUse / Stop / …) and hook engine |
 | `elicitation/` | Structured user-input / MCP elicitation request-response |
@@ -127,11 +127,10 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `daemon-snapshot.json` / runtime info files | Restart/recovery metadata |
 | `config.toml` | Operator config (`[budget]`, `[heartbeat]`, providers, …) |
 | `auth.json` | Stored credentials / auth backend state |
-| `budget/ledger.json` | Cumulative spend ledger (0600, atomic writes) |
 | `runtime/<version>/<artifact-key>-sha256-<digest>/` | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable |
 | `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry |
 | `gateway/` | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane |
-| `projects/<slug>/` | Per-project SQLite state + `sessions/<id>/` rollouts |
+| `projects/<slug>/` | Per-project SQLite state (including execution-admission queue, allocations, reservations, cancellation, journal) + `sessions/<id>/` rollouts |
 | `sessions/` (project-scoped) | Append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename) |
 | logs / state DBs | SQLite state + logs databases under project/home layout |
 
@@ -293,16 +292,16 @@ There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 
 Autonomous surfaces share one design: **fail closed, never silent spend**.
 
-| Surface | Module | Cumulative `BudgetEnforcer`? |
+| Surface | Module | Daemon execution admission? |
 | --- | --- | --- |
-| Heartbeat ticks | `heartbeat/` (wired from gateway run) | **Yes** (`wire.ts` + `runner.ts`) |
-| Cron delivery | `gateway/cron-delivery.ts` | **Yes** (agent id `cron:<taskId>`) |
-| Hooks HTTP | `gateway/hooks.ts` | **Yes** (agent id `hook:<name>`; 429 on refuse) |
-| Interactive TUI / print turns | `session/` | **No** (`enforce_interactive` is reserved; path not admit-wired) |
-| Background agent runs | `app-server/background-agent-runner.ts` | **No** — **per-run** `[agent.budget]` only |
+| Heartbeat ticks | `heartbeat/` (wired from gateway run) | **Yes**, inside its daemon-owned background session |
+| Cron delivery | `gateway/cron-delivery.ts` | **Yes**, inside its daemon-owned background session |
+| Hooks HTTP | `gateway/hooks.ts` | **Yes**, inside its daemon-owned background session; denial is HTTP 429 |
+| Interactive TUI / print turns | `session/` | **Yes** at model/tool boundaries; `[budget]` windows require `enforce_interactive` |
+| Background agent runs | `app-server/background-agent-runner.ts` | **Yes**; unattended admission policy without enabling keepalive ticks |
 
-Budget primitive: `runtime/src/budget/`. Defaults **disabled**. Ledger:
-`$AGENC_HOME/budget/ledger.json`. CLI: `agenc budget status|reset`.
+Budget caps default **disabled**, but admission and concurrency remain active.
+Inspect durable accounting with `agenc run status|replay|evidence`.
 
 Heartbeat: **disabled by default**, interval **1800s**, env
 `AGENC_HEARTBEAT*`. Full operator guide: [`reference/autonomy.md`](reference/autonomy.md).

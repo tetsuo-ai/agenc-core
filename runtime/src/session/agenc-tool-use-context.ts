@@ -83,6 +83,8 @@ export interface AgenCToolUseContext {
   readonly clearProviderResponseId: () => void;
   readonly rolloutStore?: unknown;
   readonly session?: { readonly rolloutStore?: unknown };
+  /** Live owner for provider-call admission during compaction. */
+  readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
 }
@@ -240,6 +242,7 @@ export function buildAgenCToolUseContext(
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
+    admissionSession: session,
     provider: session.services.provider,
     cwd,
   };

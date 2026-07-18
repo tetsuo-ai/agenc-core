@@ -32,6 +32,13 @@ import {
   type JsonObject,
   type MessageContent,
   type RequestId,
+  type RunCancelResult,
+  type RunEvidenceParams,
+  type RunEvidenceResult,
+  type RunReplayParams,
+  type RunReplayResult,
+  type RunResultResult,
+  type RunStatusResult,
   type SessionCreateParams,
   type SessionSnapshotResult,
   type SessionTranscriptResult,
@@ -458,6 +465,34 @@ export class AgencClient {
 
   agentLogs(agentId: string): Promise<AgentLogsResult> {
     return this.request("agent.logs", { agentId });
+  }
+
+  /** Read durable run state and its aggregate M3 admission state. */
+  runStatus(runId: string): Promise<RunStatusResult> {
+    return this.request("run.status", { runId });
+  }
+
+  /** Read a terminal outcome. Nonterminal runs reject with RUN_NOT_TERMINAL. */
+  runResult(runId: string): Promise<RunResultResult> {
+    return this.request("run.result", { runId });
+  }
+
+  /** Replay a bounded page of the existing execution-admission journal. */
+  replayRun(params: RunReplayParams): Promise<RunReplayResult> {
+    return this.request("run.replay", params);
+  }
+
+  /** Export a bounded, hashed M3 admission evidence page. */
+  runEvidence(params: RunEvidenceParams): Promise<RunEvidenceResult> {
+    return this.request("run.evidence", params);
+  }
+
+  /** Tree-scoped durable run cancellation. */
+  cancelRun(runId: string, reason?: string): Promise<RunCancelResult> {
+    return this.request("run.cancel", {
+      runId,
+      ...(reason !== undefined ? { reason } : {}),
+    });
   }
 
   /**

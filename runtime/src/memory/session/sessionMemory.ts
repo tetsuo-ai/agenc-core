@@ -23,6 +23,8 @@ import type {
   RunAgentParams,
 } from "../../agents/run-agent.js";
 import type { LLMMessage } from "../../llm/types.js";
+import { AdmissionDeniedError } from "../../budget/admission-client.js";
+import { runAdmittedToolCall } from "../../budget/admitted-tool-call.js";
 import {
   cloneLlmMessageSnapshot as cloneMessage,
 } from "../../llm/content-conversion.js";
@@ -64,8 +66,31 @@ import {
 } from "./sessionMemoryUtils.js";
 
 const SESSION_MEMORY_QUERY_SOURCE = "session_memory";
+const SESSION_MEMORY_SETUP_TOOL_NAME = "internal.session-memory.setup";
 const DEFAULT_MAX_AGENT_TURNS = 2;
 const ONE_MEBIBYTE = 1024 * 1024;
+
+const SESSION_MEMORY_SETUP_TOOL = {
+  name: SESSION_MEMORY_SETUP_TOOL_NAME,
+  description: "Initialize and read the session-scoped memory file.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      memory_path: { type: "string" },
+    },
+    required: ["memory_path"],
+    additionalProperties: false,
+  },
+  recoveryCategory: "side-effecting",
+  admissionEstimate: () => ({
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: 0,
+  }),
+  execute: async () => {
+    throw new Error(`${SESSION_MEMORY_SETUP_TOOL_NAME} is an internal boundary`);
+  },
+} satisfies Tool;
 
 export interface SessionMemoryPostSamplingContext {
   readonly messages: readonly LLMMessage[];
@@ -161,12 +186,15 @@ function tokenCountWithEstimation(messages: readonly LLMMessage[]): number {
 
 async function readSessionMemoryFileWithinLimit(
   memoryPath: string,
+  signal: AbortSignal,
 ): Promise<{
   readonly currentMemory: string;
   readonly currentMemoryMtimeMs: number;
 }> {
+  signal.throwIfAborted();
   const handle = await open(memoryPath, "r");
   try {
+    signal.throwIfAborted();
     const currentStats = await handle.stat();
     if (currentStats.size > ONE_MEBIBYTE) {
       throw new Error(
@@ -174,10 +202,15 @@ async function readSessionMemoryFileWithinLimit(
       );
     }
 
-    const buffer = Buffer.alloc(currentStats.size);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const buffer = await handle.readFile({ signal });
+    if (buffer.byteLength > ONE_MEBIBYTE) {
+      throw new Error(
+        `Session memory file exceeds maximum size (${ONE_MEBIBYTE} bytes): ${memoryPath}`,
+      );
+    }
+    signal.throwIfAborted();
     return {
-      currentMemory: buffer.toString("utf8", 0, bytesRead),
+      currentMemory: buffer.toString("utf8"),
       currentMemoryMtimeMs:
         typeof currentStats.mtimeMs === "number" &&
         Number.isFinite(currentStats.mtimeMs)
@@ -266,11 +299,11 @@ function cwdForSession(session: Session | undefined): string {
 
 function pathOptionsForContext(
   context: SessionMemoryPostSamplingContext,
-): SessionMemoryPathOptions {
+): SessionMemorySetupOptions {
   return {
     cwd: context.cwd ?? cwdForSession(context.session),
-    sessionId: context.session?.conversationId ?? context.sessionId ?? "default",
     ...(context.env !== undefined ? { env: context.env } : {}),
+    ...(context.signal !== undefined ? { signal: context.signal } : {}),
   };
 }
 
@@ -306,50 +339,101 @@ export function createSessionMemoryEditPolicy(
   };
 }
 
+export interface SessionMemorySetupOptions
+  extends Omit<SessionMemoryPathOptions, "sessionId"> {
+  readonly signal?: AbortSignal;
+}
+
 export async function setupSessionMemoryFile(
-  options: SessionMemoryPathOptions,
+  session: Session,
+  options: SessionMemorySetupOptions,
 ): Promise<{
   readonly memoryDir: string;
   readonly memoryPath: string;
   readonly currentMemory: string;
   readonly currentMemoryMtimeMs: number;
 }> {
-  const memoryDir = resolveSessionMemoryDirectory(options);
-  await mkdir(memoryDir, { recursive: true, mode: 0o700 });
-  const memoryPath = resolveSessionMemoryPath(options);
-
-  try {
-    await writeFile(memoryPath, await loadSessionMemoryTemplate(), {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
-  } catch (error) {
-    if (errnoCode(error) !== "EEXIST") throw error;
+  if (session === undefined || session === null) {
+    throw new AdmissionDeniedError("session_memory_admission_session_unavailable");
   }
+  const pathOptions: SessionMemoryPathOptions = {
+    ...options,
+    sessionId: session.conversationId,
+  };
+  const memoryDir = resolveSessionMemoryDirectory(pathOptions);
+  const memoryPath = resolveSessionMemoryPath(pathOptions);
+  let setup:
+    | {
+        readonly currentMemory: string;
+        readonly currentMemoryMtimeMs: number;
+      }
+    | undefined;
+  const activeTurn = session.activeTurn?.unsafePeek?.();
+  const turnId =
+    activeTurn && typeof activeTurn.turnId === "string"
+      ? activeTurn.turnId
+      : `session-memory:${session.conversationId}`;
+  const callId = session.nextInternalSubId();
 
-  const { currentMemory, currentMemoryMtimeMs } =
-    await readSessionMemoryFileWithinLimit(memoryPath);
-  const readTool = createFileReadTool({
-    allowedPaths: [memoryDir],
-    maxTokens: 50_000,
-    maxTextBytes: ONE_MEBIBYTE,
+  await runAdmittedToolCall({
+    session,
+    turnId,
+    callId,
+    tool: SESSION_MEMORY_SETUP_TOOL,
+    args: { memory_path: memoryPath },
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    invoke: async ({ signal }) => {
+      signal.throwIfAborted();
+      await mkdir(memoryDir, { recursive: true, mode: 0o700 });
+      signal.throwIfAborted();
+
+      try {
+        await writeFile(memoryPath, await loadSessionMemoryTemplate(signal), {
+          encoding: "utf8",
+          mode: 0o600,
+          flag: "wx",
+          signal,
+        });
+      } catch (error) {
+        if (errnoCode(error) !== "EEXIST") throw error;
+      }
+      signal.throwIfAborted();
+
+      setup = await readSessionMemoryFileWithinLimit(memoryPath, signal);
+      const readTool = createFileReadTool({
+        allowedPaths: [memoryDir],
+        maxTokens: 50_000,
+        maxTextBytes: ONE_MEBIBYTE,
+      });
+      const readArgs = withSignedAllowedRoots(
+        withSignedSessionId(
+          { file_path: memoryPath },
+          session.conversationId,
+        ),
+        [memoryDir],
+      );
+      Object.defineProperty(readArgs, "__abortSignal", {
+        value: signal,
+        enumerable: false,
+        configurable: true,
+      });
+      const readResult = await readTool.execute(readArgs);
+      signal.throwIfAborted();
+      if (readResult.isError === true) {
+        throw new Error(readResult.content);
+      }
+      return { content: "session memory setup complete" };
+    },
   });
-  const readResult = await readTool.execute(
-    withSignedAllowedRoots(
-      withSignedSessionId({ file_path: memoryPath }, options.sessionId),
-      [memoryDir],
-    ),
-  );
-  if (readResult.isError === true) {
-    throw new Error(readResult.content);
+  if (setup === undefined) {
+    throw new AdmissionDeniedError("session_memory_setup_result_missing");
   }
 
   return {
     memoryDir,
     memoryPath,
-    currentMemory,
-    currentMemoryMtimeMs,
+    currentMemory: setup.currentMemory,
+    currentMemoryMtimeMs: setup.currentMemoryMtimeMs,
   };
 }
 
@@ -475,7 +559,10 @@ async function extractSessionMemory(
 
   markExtractionStarted(lane.state);
   try {
-    const setup = await setupSessionMemoryFile(pathOptionsForContext(context));
+    const setup = await setupSessionMemoryFile(
+      context.session,
+      pathOptionsForContext(context),
+    );
     const prompt = await buildSessionMemoryUpdatePrompt(
       setup.currentMemory,
       setup.memoryPath,

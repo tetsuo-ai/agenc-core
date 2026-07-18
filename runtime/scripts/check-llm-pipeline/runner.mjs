@@ -105,6 +105,16 @@ async function ensureProjectTrusted(projectPath) {
 async function preparePipelineWorkspace() {
   const cwd = await mkdtemp(path.join(tmpdir(), "agenc-llm-pipeline-"));
   await writeFile(path.join(cwd, "README.md"), "llm pipeline cwd\n", "utf8");
+  // Pin project-root discovery to this isolated workspace. A developer's
+  // machine may contain a marker such as /tmp/package.json; without a local
+  // marker the trust preflight resolves that ancestor while this harness only
+  // trusts `cwd`, causing every non-interactive scenario to fail before the
+  // pipeline is exercised.
+  await writeFile(
+    path.join(cwd, "package.json"),
+    '{"name":"agenc-llm-pipeline-fixture","private":true}\n',
+    "utf8",
+  );
   await ensureProjectTrusted(cwd);
   return cwd;
 }

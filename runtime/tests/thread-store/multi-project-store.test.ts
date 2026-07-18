@@ -71,6 +71,25 @@ describe("MultiProjectFileThreadStore (DAE-03) — behavioral", () => {
       const ids = page.items.map((t) => t.threadId).sort();
       expect(ids).toEqual(["thread-a", "thread-b"]);
 
+      const boundedFirst = multi.listThreads({
+        pageSize: 1,
+        archived: false,
+        useStateDbOnly: true,
+      });
+      expect(boundedFirst.items).toHaveLength(1);
+      expect(boundedFirst.nextCursor).toMatch(/^mp:bounded-v1:/);
+      const boundedSecond = multi.listThreads({
+        pageSize: 1,
+        archived: false,
+        useStateDbOnly: true,
+        cursor: boundedFirst.nextCursor!,
+      });
+      expect(
+        [...boundedFirst.items, ...boundedSecond.items]
+          .map((thread) => thread.threadId)
+          .sort(),
+      ).toEqual(["thread-a", "thread-b"]);
+
       const readB = multi.readThread({
         threadId: "thread-b",
         includeArchived: false,

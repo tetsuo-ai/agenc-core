@@ -6,6 +6,7 @@ import {
   emit,
   getSessionOrError,
   json,
+  localZeroAdmissionEstimate,
   receiverMetadataFor,
   resolveAgentId,
   strictArgs,
@@ -102,6 +103,7 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     }),
     requiresApproval: true,
     recoveryCategory: "side-effecting",
+    admissionEstimate: localZeroAdmissionEstimate,
     inputSchema: {
       type: "object",
       properties: {

@@ -432,6 +432,7 @@ export function registerAsyncAgent({
   selectedAgent,
   setAppState,
   parentAbortController,
+  abortController: suppliedAbortController,
   toolUseId
 }: {
   agentId: string;
@@ -440,12 +441,15 @@ export function registerAsyncAgent({
   selectedAgent: AgentDefinition;
   setAppState: SetAppState;
   parentAbortController?: AbortController;
+  /** Existing admitted child controller. When supplied it is the task's
+   * authoritative cancellation controller and no replacement is created. */
+  abortController?: AbortController;
   toolUseId?: string;
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
   // Create abort controller - if parent provided, create child that auto-aborts with parent
-  const abortController = parentAbortController ? createChildAbortController(parentAbortController) : createAbortController();
+  const abortController = suppliedAbortController ?? (parentAbortController ? createChildAbortController(parentAbortController) : createAbortController());
   const taskState: LocalAgentTaskState = {
     ...createTaskStateBase(agentId, 'local_agent', description, toolUseId),
     type: 'local_agent',
@@ -491,6 +495,7 @@ export function registerAgentForeground({
   prompt,
   selectedAgent,
   setAppState,
+  abortController: suppliedAbortController,
   autoBackgroundMs,
   toolUseId
 }: {
@@ -499,6 +504,8 @@ export function registerAgentForeground({
   prompt: string;
   selectedAgent: AgentDefinition;
   setAppState: SetAppState;
+  /** Existing admitted child controller shared across foreground→background. */
+  abortController?: AbortController;
   autoBackgroundMs?: number;
   toolUseId?: string;
 }): {
@@ -507,7 +514,7 @@ export function registerAgentForeground({
   cancelAutoBackground?: () => void;
 } {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
-  const abortController = createAbortController();
+  const abortController = suppliedAbortController ?? createAbortController();
   const unregisterCleanup = registerCleanup(async () => {
     killAsyncAgent(agentId, setAppState);
   });

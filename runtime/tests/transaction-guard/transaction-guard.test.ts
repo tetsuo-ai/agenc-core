@@ -1,5 +1,3 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
@@ -56,8 +54,6 @@ const policy: TransactionGuardPolicy = {
   failClosed: true,
   maxDocketBytes: 48 * 1024,
 };
-
-const originalFetch = globalThis.fetch;
 
 function decision(verdict: TransactionGuardDecision["verdict"]): TransactionGuardDecision {
   return {
@@ -528,20 +524,8 @@ describe("transaction guard config and docket", () => {
 });
 
 describe("OllamaCourtGuard", () => {
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  test("fails closed predictably for malformed Ollama response payloads", async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response("null", {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      }),
-    ) as unknown as typeof fetch;
-
+  test("fails closed before issuing a legacy direct model request", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const guard = new OllamaCourtGuard(policy);
     const result = await guard.evaluate({
       source: "tool-dispatch",
@@ -554,8 +538,14 @@ describe("OllamaCourtGuard", () => {
       allowed: false,
       verdict: "unavailable",
       code: TRANSACTION_GUARD_UNAVAILABLE,
-      reason: "Ollama guard returned an empty response",
     });
+    expect(JSON.parse(result.reason ?? "{}")).toEqual({
+      code: "ADMISSION_DENIED",
+      decision: "deny",
+      reason: "legacy_ollama_courtguard_model_path_disabled",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
 
@@ -735,131 +725,20 @@ describe("Ollama CourtGuard client", () => {
     expect(parseTransactionGuardVerdict('{"verdict":"benign"}')).toBeNull();
   });
 
-  test("treats malformed Ollama verdicts as unavailable", async () => {
-    const server = await startFakeOllama((_req, res, body) => {
-      res.setHeader("content-type", "application/json");
-      const payload = JSON.parse(body) as {
-        messages?: ReadonlyArray<{ readonly content?: string }>;
-      };
-      const prompt = payload.messages?.map((message) => message.content ?? "").join("\n") ?? "";
-      const response = prompt.includes("strict classifier")
-        ? "probably benign"
-        : "argument";
-      res.end(JSON.stringify({ message: { role: "assistant", content: response } }));
+  test("admission denial overrides the legacy guard fail-open setting", async () => {
+    const guard = new OllamaCourtGuard({ ...policy, failClosed: false });
+    await expect(
+      guard.evaluate({
+        source: "tool-dispatch",
+        kind: "solana_tool_invocation",
+        toolName: "exec_command",
+        command: "solana transfer recipient 0.001 --url devnet",
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      verdict: "unavailable",
+      code: TRANSACTION_GUARD_UNAVAILABLE,
     });
-    try {
-      const guard = new OllamaCourtGuard({
-        ...policy,
-        ollamaUrl: server.url,
-      });
-      const result = await guard.evaluate({
-        source: "tool-dispatch",
-        kind: "solana_tool_invocation",
-        toolName: "exec_command",
-        command: "solana transfer recipient 0.001 --url devnet",
-      });
-      expect(result.allowed).toBe(false);
-      expect(result.verdict).toBe("unavailable");
-      expect(result.code).toBe(TRANSACTION_GUARD_UNAVAILABLE);
-    } finally {
-      await server.close();
-    }
-  });
-
-  test("fails closed when Ollama is unavailable", async () => {
-    const server = await startFakeOllama((_req, res) => {
-      res.statusCode = 503;
-      res.end("nope");
-    });
-    try {
-      const guard = new OllamaCourtGuard({
-        ...policy,
-        ollamaUrl: server.url,
-      });
-      const result = await guard.evaluate({
-        source: "tool-dispatch",
-        kind: "solana_tool_invocation",
-        toolName: "exec_command",
-        command: "solana transfer recipient 0.001 --url devnet",
-      });
-      expect(result.allowed).toBe(false);
-      expect(result.verdict).toBe("unavailable");
-      expect(result.code).toBe(TRANSACTION_GUARD_UNAVAILABLE);
-    } finally {
-      await server.close();
-    }
-  });
-
-  test("allows strict benign Ollama verdicts", async () => {
-    const server = await startFakeOllama((_req, res, body) => {
-      const payload = JSON.parse(body) as {
-        messages?: ReadonlyArray<{ readonly content?: string }>;
-      };
-      const prompt = payload.messages?.map((message) => message.content ?? "").join("\n") ?? "";
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({
-        message: {
-          role: "assistant",
-          content: prompt.includes("strict classifier") ? "benign" : "argument",
-        },
-      }));
-    });
-    try {
-      const guard = new OllamaCourtGuard({ ...policy, ollamaUrl: server.url });
-      await expect(guard.evaluate({
-        source: "tool-dispatch",
-        kind: "solana_tool_invocation",
-        toolName: "exec_command",
-        command: "solana transfer recipient 0.001 --url devnet",
-      })).resolves.toMatchObject({
-        allowed: true,
-        verdict: "benign",
-        code: undefined,
-        reason: undefined,
-      });
-    } finally {
-      await server.close();
-    }
-  });
-
-  test("fails closed on empty and non-Error Ollama failures", async () => {
-    const emptyServer = await startFakeOllama((_req, res) => {
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ response: "" }));
-    });
-    try {
-      const guard = new OllamaCourtGuard({ ...policy, ollamaUrl: emptyServer.url });
-      await expect(guard.evaluate({
-        source: "tool-dispatch",
-        kind: "solana_tool_invocation",
-        toolName: "exec_command",
-        command: "solana transfer recipient 0.001 --url devnet",
-      })).resolves.toMatchObject({
-        allowed: false,
-        verdict: "unavailable",
-        reason: "Ollama guard returned an empty response",
-      });
-    } finally {
-      await emptyServer.close();
-    }
-
-    const originalFetch = globalThis.fetch;
-    try {
-      globalThis.fetch = vi.fn().mockRejectedValue("plain failure") as never;
-      const guard = new OllamaCourtGuard(policy);
-      await expect(guard.evaluate({
-        source: "tool-dispatch",
-        kind: "solana_tool_invocation",
-        toolName: "exec_command",
-        command: "solana transfer recipient 0.001 --url devnet",
-      })).resolves.toMatchObject({
-        allowed: false,
-        verdict: "unavailable",
-        reason: "plain failure",
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
   });
 });
 
@@ -1034,27 +913,3 @@ describe("transaction guard prompt-injection edge corpus", () => {
     },
   );
 });
-
-async function startFakeOllama(
-  handler: (req: IncomingMessage, res: ServerResponse, body: string) => void,
-): Promise<{ readonly url: string; readonly close: () => Promise<void> }> {
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => handler(req, res, body));
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      }),
-  };
-}

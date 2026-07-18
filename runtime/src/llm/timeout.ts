@@ -48,40 +48,58 @@ export async function withTimeout<T>(
     const controller = new AbortController();
     return fn(controller.signal);
   }
+  if (externalSignal?.aborted) {
+    throw createExternalAbortError(providerName, externalSignal);
+  }
 
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortHandler: (() => void) | undefined;
-  const guardPromises: Promise<never>[] = [];
+  let terminalError: Error | undefined;
+
+  const abortPhysicalCall = (error: Error, reason: unknown): void => {
+    if (terminalError !== undefined) return;
+    terminalError = error;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
 
   if (timeoutMs && timeoutMs > 0) {
-    guardPromises.push(new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        reject(createAbortTimeoutError(providerName, timeoutMs));
-      }, timeoutMs);
-    }));
+    timer = setTimeout(() => {
+      const error = createAbortTimeoutError(providerName, timeoutMs);
+      abortPhysicalCall(error, error);
+    }, timeoutMs);
   }
 
   if (externalSignal) {
-    guardPromises.push(new Promise<never>((_, reject) => {
-      abortHandler = () => {
-        controller.abort();
-        // gaphunt3 #42: preserve the external signal's real abort reason
-        // instead of fabricating a "<provider> request aborted after 0ms"
-        // timeout error.
-        reject(createExternalAbortError(providerName, externalSignal));
-      };
-      if (externalSignal.aborted) {
-        abortHandler();
-        return;
-      }
-      externalSignal.addEventListener("abort", abortHandler, { once: true });
-    }));
+    abortHandler = () => {
+      // gaphunt3 #42: preserve the external signal's real abort reason
+      // instead of fabricating a "<provider> request aborted after 0ms"
+      // timeout error.
+      abortPhysicalCall(
+        createExternalAbortError(providerName, externalSignal),
+        externalSignal.reason,
+      );
+    };
+    externalSignal.addEventListener("abort", abortHandler, { once: true });
   }
 
   try {
-    return await Promise.race([fn(controller.signal), ...guardPromises]);
+    // Signal timeout/cancellation to the provider immediately, but keep the
+    // logical call pending until its physical promise settles. The enclosing
+    // execution-admission lease must retain capacity while an abort-ignoring
+    // provider request is still live.
+    try {
+      const result = await fn(controller.signal);
+      if (terminalError !== undefined) throw terminalError;
+      return result;
+    } catch (error) {
+      if (terminalError !== undefined) throw terminalError;
+      throw error;
+    }
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);

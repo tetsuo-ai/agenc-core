@@ -690,6 +690,48 @@ describe("FileThreadStore.listThreads sort order", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("uses a keyset cursor for bounded state-only pages", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollouts = ["k-a", "k-b", "k-c"].map((sessionId) =>
+      openStore({ cwd, sessionId }),
+    );
+    try {
+      const store = new FileThreadStore({ cwd });
+      for (const [index, rollout] of rollouts.entries()) {
+        store.createThread({
+          threadId: `k-${String.fromCharCode(97 + index)}`,
+          rolloutStore: rollout,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = store.listThreads({
+          pageSize: 1,
+          archived: false,
+          useStateDbOnly: true,
+          ...(cursor !== undefined ? { cursor } : {}),
+        });
+        ids.push(...page.items.map((item) => item.threadId));
+        if (page.nextCursor !== undefined) {
+          expect(
+            JSON.parse(
+              Buffer.from(page.nextCursor, "base64url").toString("utf8"),
+            ),
+          ).toMatchObject({ v: 2 });
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
+
+      expect(ids).toEqual(["k-c", "k-b", "k-a"]);
+    } finally {
+      for (const rollout of rollouts) rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("FileThreadStore registry durability", () => {

@@ -66,6 +66,9 @@ import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
 import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
 import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
+import { AdmissionDeniedError } from '../../budget/admission-client.js'
+import { runWithCurrentRuntimeSession } from '../../session/current-session.js'
+import type { Session } from '../../session/session.js'
 import { isRepositoryControlledSkillSource } from '../../skills/repository-skill-boundary.js'
 import {
   isRestrictedToPluginOnly,
@@ -378,7 +381,13 @@ export async function loadDollarSkillCommandForTurn(
   model?: string
   effort?: EffortValue
 }> {
-  const blocks = await command.getPromptForCommand(parsed.args, context)
+  const loadPrompt = () => command.getPromptForCommand(parsed.args, context)
+  const blocks = isMcpPromptCommand(command)
+    ? await runWithCurrentRuntimeSession(
+        requireMcpPromptSession(context),
+        loadPrompt,
+      )
+    : await loadPrompt()
   const skillContent = blocks
     .filter((block): block is Extract<ContentBlockParam, { type: 'text' }> => block.type === 'text')
     .map(block => block.text)
@@ -418,6 +427,31 @@ export async function loadDollarSkillCommandForTurn(
       ? undefined
       : command.effort,
   }
+}
+
+function isMcpPromptCommand(
+  command: Extract<Command, { type: 'prompt' }>,
+): boolean {
+  return (
+    command.source === 'mcp' ||
+    command.loadedFrom === 'mcp' ||
+    command.isMcp === true
+  )
+}
+
+function requireMcpPromptSession(context: PromptInputContext): Session {
+  const candidate = context.session
+  if (
+    candidate === null ||
+    typeof candidate !== 'object' ||
+    typeof (candidate as { conversationId?: unknown }).conversationId !==
+      'string' ||
+    (candidate as { services?: unknown }).services === null ||
+    typeof (candidate as { services?: unknown }).services !== 'object'
+  ) {
+    throw new AdmissionDeniedError('mcp_prompt_admission_identity_unavailable')
+  }
+  return candidate as Session
 }
 
 async function processDollarSkillInput(

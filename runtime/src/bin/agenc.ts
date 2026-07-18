@@ -178,6 +178,11 @@ import {
   runAgenCBudgetCli,
 } from "./budget-cli.js";
 import {
+  formatAgenCRunCliHelpText,
+  parseAgenCRunCliArgs,
+  runAgenCRunCli,
+} from "./run-cli.js";
+import {
   formatAgenCInitCliHelpText,
   parseAgenCInitCliArgs,
   runAgenCInitCli,
@@ -336,6 +341,7 @@ export function formatCliHelpText(): string {
     "       agenc security audit [--json] [--fix]",
     "       agenc gateway <status|pairing> [args]",
     "       agenc budget <status|reset> [args]",
+    "       agenc run <status|result|replay|evidence|cancel> <run-id> [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
     "       agenc providers [--json] [--no-local-check]",
@@ -360,6 +366,7 @@ export function formatCliHelpText(): string {
     "  security                                Audit local exposure; --fix applies safe fixes",
     "  gateway                                 Inspect/operate the channel gateway (pairing)",
     "  budget                                  Inspect/operate cost-bounded autonomy",
+    "  run                                     Inspect, replay, export, or cancel a durable run",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
@@ -444,6 +451,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCGatewayCliHelpText();
     case "budget":
       return formatAgenCBudgetCliHelpText();
+    case "run":
+      return formatAgenCRunCliHelpText();
     case "permissions":
       return formatAgenCPermissionsCliHelpText();
     case "plugin":
@@ -1428,11 +1437,13 @@ async function prepareOneShotPromptForDaemon(params: {
     agencHome: params.agencHome,
     shellPath: params.env.SHELL ?? "/bin/sh",
     sandboxExecutionBroker,
+    admissionRequired: true,
   });
   hooksRuntime.attachTarget(target);
   hooksRuntime.load(params.configStore.current().hooks);
 
   const additionalContexts: string[] = [];
+  let hookExecutionFailure: string | undefined;
   for await (const hookResult of executeUserPromptSubmitHooks(
     params.prompt,
     "default",
@@ -1443,10 +1454,11 @@ async function prepareOneShotPromptForDaemon(params: {
     },
     undefined,
     (err, idx) => {
+      const message = err instanceof Error ? err.message : String(err);
+      hookExecutionFailure ??=
+        `UserPromptSubmit hook ${idx} could not cross the required execution admission boundary: ${message}`;
       params.stderr.write(
-        `agenc: UserPromptSubmit hook ${idx} threw: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
+        `agenc: UserPromptSubmit hook ${idx} threw: ${message}\n`,
       );
     },
   )) {
@@ -1481,6 +1493,15 @@ async function prepareOneShotPromptForDaemon(params: {
     ) {
       additionalContexts.push(attachment.content);
     }
+  }
+  if (hookExecutionFailure !== undefined) {
+    return {
+      blocked: true,
+      blockMessage: appendUserPromptSubmitContextsToMessage(
+        hookExecutionFailure,
+        additionalContexts,
+      ),
+    };
   }
 
   const expandedPrompt = await expandOneShotPromptFileMentions({
@@ -4151,6 +4172,10 @@ export async function main(): Promise<number> {
   const budgetCommand = parseAgenCBudgetCliArgs(argv);
   if (budgetCommand !== null) {
     return runAgenCBudgetCli(budgetCommand);
+  }
+  const runCommand = parseAgenCRunCliArgs(argv);
+  if (runCommand !== null) {
+    return runAgenCRunCli(runCommand);
   }
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {

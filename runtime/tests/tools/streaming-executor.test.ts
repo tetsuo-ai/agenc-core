@@ -484,7 +484,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
         options: {
           session: {
             eventLog: new EventLog(),
-            services: {},
+            services: { admissionRequired: false },
           } as never,
           turn: { subId: "turn-read-alias" } as never,
           tracker: {

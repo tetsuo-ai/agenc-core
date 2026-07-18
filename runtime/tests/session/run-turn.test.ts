@@ -423,6 +423,7 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    admissionRequired: false,
     sandboxExecutionBroker: explicitDangerBroker,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -1268,6 +1269,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     session.rolloutStore = {
       append,
       appendRollout,
+      assertToolAdmissionAllowed: () => {},
     } as unknown as Session["rolloutStore"];
 
     const yielded: PhaseEvent[] = [];

@@ -34,8 +34,10 @@ the merge serializer spends its life reconciling them. This freeze is the
 
 ## 2. Admission + budget reservations (M3)
 
-Attaches to the EXISTING `runtime/src/budget` engine (`BudgetEnforcer.admit`
-/ `reconcile`, `BudgetLedger`), not a new one:
+Converges the existing `runtime/src/budget` policy/pricing machinery into one
+daemon-owned `ExecutionAdmissionKernel`; the surface `BudgetEnforcer` /
+`BudgetLedger` gates are retired from production rather than kept as a second
+engine:
 
 - `AdmissionRequest`/`AdmissionDecision` generalize today's
   `AdmitRequest`/`AdmitResult` with: step identity, `kind`
@@ -49,12 +51,11 @@ Attaches to the EXISTING `runtime/src/budget` engine (`BudgetEnforcer.admit`
   fail-open path is retired in the same change.
 - Resolution vocabulary: `reconciled | voided | held_unknown`. Unknown usage
   consumes its full reservation until recorded policy releases it.
-- One shared enforcer instance is constructed at daemon bootstrap and
-  injected into the three existing consumers (`gateway/hooks.ts`,
-  `gateway/cron-delivery.ts`, `heartbeat/wire.ts`) and the two missing
-  surfaces: the per-LLM-call site in `agents/run-agent.ts` (the merged
-  AbortController seam) and tool execution (`ToolUseContext` already carries
-  `maxBudgetUsd`).
+- One shared kernel instance is constructed at daemon bootstrap and injected
+  into daemon-owned sessions. Gateway hooks, cron, and heartbeat reach it
+  through those sessions and do not estimate/debit outer turns. Model and
+  tool execution acquire from the session-bound client at their exact dispatch
+  boundaries.
 - Hierarchy keys off the durable spawn tree
   (`runtime/src/state/spawn-edges.ts` + `agents/control.ts`
   parent/descendant walks). Child reservations are conserved within the

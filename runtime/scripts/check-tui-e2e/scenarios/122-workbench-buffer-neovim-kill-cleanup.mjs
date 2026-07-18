@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  anchorWorkbenchProjectRoot,
   listDescendantNeovimPids,
   waitForPidsGone,
   waitForFrameText,
@@ -24,6 +25,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-buffer-neovim-kill-e2e-"));
   try {
+    await anchorWorkbenchProjectRoot(cwd);
     await writeFile(join(cwd, "target.txt"), "kill-cleanup\n", "utf8");
     session.cwd = cwd;
     await session.start();

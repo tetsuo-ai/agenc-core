@@ -113,6 +113,7 @@ import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
   | "BACKGROUND_RUNNER_UNAVAILABLE"
+  | "EXECUTION_ADMISSION_REQUIRED"
   | "INVALID_ARGUMENT"
   | "INVALID_CURSOR"
   | "RUN_NOT_FOUND"
@@ -1000,15 +1001,18 @@ export class AgenCDaemonAgentManager {
       }
     }
 
-    // Void over the FULL subtree, and also when alreadyTerminal: a crash
-    // between a prior cancel's durable cascade and its hold voiding leaves
-    // stranded holds that only a retry can release (voiding is idempotent
-    // — an agent with no open holds voids zero).
-    let voidedHolds = 0;
+    // The production durable callback settles admission reservations in the
+    // same SQLite transaction as the run-tree cascade. The follow-up callback
+    // remains responsible for releasing/aborting live in-memory leases and is
+    // idempotent; older injected adapters may still report settlement here.
+    let voidedHolds = report.admissionVoidedReservations ?? 0;
     const voidHolds = this.#voidBudgetHoldsForAgents;
     if (voidHolds !== undefined && report.subtreeRunIds.length > 0) {
       try {
-        voidedHolds = await voidHolds(report.subtreeRunIds);
+        const followupVoids = await voidHolds(report.subtreeRunIds);
+        if (report.admissionVoidedReservations === undefined) {
+          voidedHolds = followupVoids;
+        }
       } catch (error) {
         this.#onSnapshotError(error);
       }

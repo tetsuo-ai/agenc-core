@@ -1,5 +1,10 @@
 import type { Tool } from "../../tools/types.js";
-import { strictArgs, toolMetadata, type MultiAgentV2Options } from "./common.js";
+import {
+  localZeroAdmissionEstimate,
+  strictArgs,
+  toolMetadata,
+  type MultiAgentV2Options,
+} from "./common.js";
 import { handleMessageStringTool } from "./message-tool.js";
 
 export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
@@ -12,6 +17,7 @@ export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
       keywords: ["agent", "message", "mailbox"],
     }),
     recoveryCategory: "side-effecting",
+    admissionEstimate: localZeroAdmissionEstimate,
     inputSchema: {
       type: "object",
       properties: {

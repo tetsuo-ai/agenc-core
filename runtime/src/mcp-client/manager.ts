@@ -888,12 +888,16 @@ export class MCPManager {
    * so the aggregate result only contains servers that successfully
    * listed resources.
    */
-  async getResources(): Promise<ReadonlyArray<MCPResourceDescriptor>> {
+  async getResources(
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
+    signal?.throwIfAborted();
     const bridges = Array.from(this.resourceBridges.values());
     if (bridges.length === 0) return [];
     const results = await Promise.allSettled(
-      bridges.map((bridge) => bridge.listResources()),
+      bridges.map((bridge) => bridge.listResources(signal)),
     );
+    signal?.throwIfAborted();
     const flattened: MCPResourceDescriptor[] = [];
     for (const result of results) {
       if (result.status === "fulfilled") {
@@ -909,10 +913,14 @@ export class MCPManager {
    */
   async getResourcesByServer(
     name: string,
+    signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
+    signal?.throwIfAborted();
     const bridge = this.resourceBridges.get(name);
     if (!bridge) return [];
-    return bridge.listResources();
+    return signal === undefined
+      ? bridge.listResources()
+      : bridge.listResources(signal);
   }
 
   /**
@@ -921,12 +929,16 @@ export class MCPManager {
    */
   async readResource(
     namespacedName: string,
+    signal?: AbortSignal,
   ): Promise<MCPResourceContent | null> {
+    signal?.throwIfAborted();
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.resourceBridges.get(parsed.serverName);
     if (!bridge) return null;
-    return bridge.readResource(parsed.rest);
+    return signal === undefined
+      ? bridge.readResource(parsed.rest)
+      : bridge.readResource(parsed.rest, signal);
   }
 
   /**
@@ -965,12 +977,15 @@ export class MCPManager {
   async renderPrompt(
     namespacedName: string,
     args?: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<MCPPromptRendered | null> {
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.promptBridges.get(parsed.serverName);
     if (!bridge) return null;
-    return bridge.renderPrompt(parsed.rest, args);
+    return signal === undefined
+      ? bridge.renderPrompt(parsed.rest, args)
+      : bridge.renderPrompt(parsed.rest, args, signal);
   }
 
   /**

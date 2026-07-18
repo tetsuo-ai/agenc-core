@@ -5,6 +5,7 @@ import {
   currentAgentContext,
   getSessionOrError,
   json,
+  localZeroAdmissionEstimate,
   strictArgs,
   stringValue,
   toListedAgentJson,
@@ -56,6 +57,7 @@ export function createListAgentsTool(opts: MultiAgentV2Options): Tool {
     metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
     isReadOnly: true,
     recoveryCategory: "idempotent",
+    admissionEstimate: localZeroAdmissionEstimate,
     inputSchema: {
       type: "object",
       properties: {

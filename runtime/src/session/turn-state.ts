@@ -227,6 +227,15 @@ export type TokenBudgetDecision =
       readonly boundary?: BoundaryTokenBudgetDecision;
     };
 
+/** Cross-model/provider routing decision awaiting admission journaling. */
+export interface PendingAdmissionFallback {
+  readonly fromModel: string;
+  readonly toModel: string;
+  readonly fromProvider?: string;
+  readonly toProvider?: string;
+  readonly reason: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // TurnState — the mutable working set carried across phase iterations.
 // ─────────────────────────────────────────────────────────────────────
@@ -353,6 +362,9 @@ export interface TurnState {
    *  re-entry cap). Wired in T8 — incremented at each recovery
    *  continue site, checked before re-entering stream. */
   recoveryReentryCount: number;
+
+  /** Durable routing evidence consumed by the next admitted model attempt. */
+  pendingAdmissionFallback: PendingAdmissionFallback | undefined;
 
   // ── Phase 4 — continuation nudge (AgenC query.ts:1300-1465) ──
   /** Consecutive continuation-nudge count. Cap at MAX_CONTINUATION_NUDGES=3
@@ -484,6 +496,7 @@ export function buildInitialTurnState(
     skipCacheWrite: opts?.initialSkipCacheWrite,
     maxOutputTokensRecoveryCount: 0,
     recoveryReentryCount: 0,
+    pendingAdmissionFallback: undefined,
     // Phase 4
     continuationNudgeCount: 0,
     // Phase 5
@@ -531,6 +544,7 @@ export interface TurnCheckpointSlice {
   readonly continuationNudgeCount: number;
   readonly stopHookBlockingCount: number;
   readonly planToolRequiredRetryCount?: number;
+  readonly pendingAdmissionFallback?: PendingAdmissionFallback;
   readonly taskBudgetRemaining?: number;
   readonly autoCompactTracking?: AutoCompactTrackingState;
   readonly transition?: { readonly reason: ContinueReason };
@@ -551,6 +565,7 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     continuationNudgeCount: number;
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
+    pendingAdmissionFallback?: PendingAdmissionFallback;
     taskBudgetRemaining?: number;
     autoCompactTracking?: AutoCompactTrackingState;
     transition?: { readonly reason: ContinueReason };
@@ -565,6 +580,9 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     stopHookBlockingCount: state.stopHookBlockingCount,
     planToolRequiredRetryCount: state.planToolRequiredRetryCount,
   };
+  if (state.pendingAdmissionFallback !== undefined) {
+    slice.pendingAdmissionFallback = { ...state.pendingAdmissionFallback };
+  }
   if (typeof state.taskBudgetRemaining === "number") {
     slice.taskBudgetRemaining = state.taskBudgetRemaining;
   }
@@ -630,6 +648,19 @@ export function restoreFromCheckpoint(
     Number.isFinite(slice.planToolRequiredRetryCount)
   ) {
     state.planToolRequiredRetryCount = slice.planToolRequiredRetryCount;
+  }
+  if (
+    slice.pendingAdmissionFallback !== undefined &&
+    typeof slice.pendingAdmissionFallback.fromModel === "string" &&
+    slice.pendingAdmissionFallback.fromModel.length > 0 &&
+    typeof slice.pendingAdmissionFallback.toModel === "string" &&
+    slice.pendingAdmissionFallback.toModel.length > 0 &&
+    typeof slice.pendingAdmissionFallback.reason === "string" &&
+    slice.pendingAdmissionFallback.reason.length > 0
+  ) {
+    state.pendingAdmissionFallback = {
+      ...slice.pendingAdmissionFallback,
+    };
   }
   if (
     slice.taskBudgetRemaining !== undefined &&

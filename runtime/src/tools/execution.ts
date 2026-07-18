@@ -289,6 +289,10 @@ const RICH_OUTPUT_CONTENT_ITEMS = new WeakMap<
 >();
 const STRUCTURED_CODE_MODE_RESULTS = new WeakMap<ToolOutput, unknown>();
 const PREVENT_CONTINUATION_OUTPUTS = new WeakSet<ToolOutput>();
+const ADMISSION_USAGE_OUTPUTS = new WeakMap<
+  ToolOutput,
+  NonNullable<ToolDispatchResult["admissionUsage"]>
+>();
 
 /** Appended marker when a result is truncated. */
 const TRUNCATION_MARKER_TEMPLATE =
@@ -621,9 +625,15 @@ export async function withTimeoutAndAbort<T>(
     readonly abortController?: AbortController;
   },
 ): Promise<T> {
+  if (opts.signal?.aborted) {
+    throw makeAbortError(opts.signal.reason);
+  }
+
   let timer: ReturnType<typeof setTimeout> | null = null;
   let onAbort: (() => void) | null = null;
-  let settled = false;
+  let timedOut = false;
+  let callerAborted = false;
+  let callerAbortReason: unknown;
 
   const cleanup = () => {
     if (timer) {
@@ -635,64 +645,61 @@ export async function withTimeoutAndAbort<T>(
       onAbort = null;
     }
   };
-
-  return new Promise<T>((resolve, reject) => {
-    const timeoutMs = opts.timeoutMs;
-    if (timeoutMs !== null) {
-      timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (
-          opts.abortController &&
-          !opts.abortController.signal.aborted
-        ) {
-          try {
-            opts.abortController.abort(
-              `tool timeout: ${opts.toolName} exceeded ${timeoutMs}ms`,
-            );
-          } catch {
-            // already aborted
-          }
-        }
-        reject(new ToolTimeoutError(opts.toolName, timeoutMs));
-      }, timeoutMs);
-      if (typeof (timer as { unref?: () => void }).unref === "function") {
-        (timer as { unref: () => void }).unref();
+  const timeoutMs = opts.timeoutMs;
+  if (opts.signal) {
+    onAbort = () => {
+      callerAborted = true;
+      callerAbortReason = opts.signal?.reason;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
       }
-    }
-
-    if (opts.signal) {
-      if (opts.signal.aborted) {
-        settled = true;
-        cleanup();
-        reject(makeAbortError(opts.signal.reason));
-        return;
+      if (
+        opts.abortController !== undefined &&
+        !opts.abortController.signal.aborted
+      ) {
+        opts.abortController.abort(callerAbortReason);
       }
-      onAbort = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(makeAbortError(opts.signal?.reason));
-      };
-      opts.signal.addEventListener("abort", onAbort, { once: true });
+    };
+    opts.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  if (timeoutMs !== null) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      if (
+        opts.abortController !== undefined &&
+        !opts.abortController.signal.aborted
+      ) {
+        opts.abortController.abort(
+          `tool timeout: ${opts.toolName} exceeded ${timeoutMs}ms`,
+        );
+      }
+    }, timeoutMs);
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
     }
+  }
 
-    fn().then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(value);
-      },
-      (err) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(err);
-      },
-    );
-  });
+  try {
+    // Cancellation and deadlines actively abort cooperative tools, but this
+    // boundary intentionally remains pending until the physical tool promise
+    // settles. The enclosing execution-admission lease must not release a
+    // concurrency slot while an abort-ignoring effect is still live.
+    const value = await fn();
+    if (timedOut && timeoutMs !== null) {
+      throw new ToolTimeoutError(opts.toolName, timeoutMs);
+    }
+    if (callerAborted) throw makeAbortError(callerAbortReason);
+    return value;
+  } catch (error) {
+    if (timedOut && timeoutMs !== null) {
+      throw new ToolTimeoutError(opts.toolName, timeoutMs);
+    }
+    if (callerAborted) throw makeAbortError(callerAbortReason);
+    throw error;
+  } finally {
+    cleanup();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2010,6 +2017,7 @@ export async function runToolUse(
             ? { codeModeResult: result.codeModeResult }
             : {}),
           metadata: result.metadata,
+          admissionUsage: result.admissionUsage,
         } satisfies ToolDispatchResult;
       },
       {
@@ -2139,6 +2147,7 @@ export async function runToolUse(
   // Step 6: PostToolUse hooks.
   const postHooks = opts.postHooks ?? [];
   let finalDispatch = dispatch;
+  const admissionUsage = dispatch.admissionUsage;
   if (postHooks.length > 0) {
     const postDecision = await runPostToolUseHooks(
       postHooks,
@@ -2285,6 +2294,9 @@ export async function runToolUse(
     if (shouldPreventContinuation) {
       PREVENT_CONTINUATION_OUTPUTS.add(output);
     }
+    if (admissionUsage !== undefined) {
+      ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
+    }
     return output;
   }
   const output = functionToolOutput({
@@ -2303,6 +2315,9 @@ export async function runToolUse(
   }
   if (shouldPreventContinuation) {
     PREVENT_CONTINUATION_OUTPUTS.add(output);
+  }
+  if (admissionUsage !== undefined) {
+    ADMISSION_USAGE_OUTPUTS.set(output, admissionUsage);
   }
   return output;
 }
@@ -2336,6 +2351,9 @@ export async function executeToolDispatch(
       : {}),
     ...(PREVENT_CONTINUATION_OUTPUTS.has(output)
       ? { preventContinuation: true }
+      : {}),
+    ...(ADMISSION_USAGE_OUTPUTS.get(output) !== undefined
+      ? { admissionUsage: ADMISSION_USAGE_OUTPUTS.get(output)! }
       : {}),
     metadata: output.metadata ? { ...output.metadata } : undefined,
   };

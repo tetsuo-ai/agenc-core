@@ -75,6 +75,7 @@ import {
   maybePrewarmAgentTaskRegistration,
 } from "./agent-task-lifecycle.js";
 import { scheduleProviderStartupPrewarm } from "./startup-prewarm.js";
+import { runWithCurrentRuntimeSession } from "./current-session.js";
 import {
   Session,
   type SessionOpts,
@@ -523,20 +524,22 @@ async function dispatchBootstrapSessionStart(
       readonly permissionContext?: { readonly mode?: string };
     }
   ).permissionContext?.mode ?? "default";
-  const messages = await processSessionStart(
-    {
-      hook_event_name: "SessionStart",
-      source: opts.source,
-      session_id: session.conversationId,
-      transcript_path: opts.sessionConfigured?.rolloutPath ?? null,
-      cwd: opts.sessionConfigured?.cwd ?? session.sessionConfiguration.cwd,
-      model:
-        opts.sessionConfigured?.model ??
-        session.sessionConfiguration.collaborationMode?.model ??
-        "unknown",
-      permission_mode: permissionMode,
-    },
-    { signal: opts.signal },
+  const messages = await runWithCurrentRuntimeSession(session, () =>
+    processSessionStart(
+      {
+        hook_event_name: "SessionStart",
+        source: opts.source,
+        session_id: session.conversationId,
+        transcript_path: opts.sessionConfigured?.rolloutPath ?? null,
+        cwd: opts.sessionConfigured?.cwd ?? session.sessionConfiguration.cwd,
+        model:
+          opts.sessionConfigured?.model ??
+          session.sessionConfiguration.collaborationMode?.model ??
+          "unknown",
+        permission_mode: permissionMode,
+      },
+      { signal: opts.signal },
+    ),
   );
   for (const msg of messages) {
     session.emit({

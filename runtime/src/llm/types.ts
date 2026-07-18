@@ -215,10 +215,24 @@ function wrapPlainStringToolArguments(
 /**
  * Token usage statistics
  */
+export type LLMUsageAvailability = "reported" | "unknown";
+export type LLMUsageProvenance = "provider" | "synthetic";
+
 export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * Whether the token counts came from an actual provider usage payload.
+   *
+   * This is intentionally separate from the numeric values: a provider may
+   * authoritatively report zero tokens, while an adapter may also need to
+   * synthesize zeroes when no usage payload was available. Admission and
+   * billing code must not treat those two cases as equivalent.
+   */
+  readonly availability?: LLMUsageAvailability;
+  /** Origin of the normalized token counts when known. */
+  readonly provenance?: LLMUsageProvenance;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
@@ -325,6 +339,17 @@ export interface LLMProviderExecutionProfile {
   readonly contextWindowSource?: LLMContextWindowSource;
   /** Effective max output tokens configured for the provider, if any. */
   readonly maxOutputTokens?: number;
+  /** Whether completed calls provide authoritative token usage. */
+  readonly usageReporting: "authoritative" | "unavailable";
+  /** Whether request-scoped output-token limits reach the provider wire. */
+  readonly supportsMaxOutputTokens: boolean;
+  /**
+   * Opaque provider-owned handle that pins this exact routed execution for the
+   * admitted wire attempt. The admission boundary copies it to
+   * `LLMChatOptions.providerExecutionHandle`; callers must not inspect or
+   * synthesize handles.
+   */
+  readonly providerExecutionHandle?: object;
 }
 
 
@@ -558,6 +583,22 @@ export type LLMToolChoice =
  * Optional provider call options.
  */
 export interface LLMChatOptions {
+  /**
+   * Runtime admission boundary: one provider wire attempt is permitted for
+   * this logical call. Provider adapters must not perform continuation,
+   * transport, authentication, or configured-fallback retries while set;
+   * the caller must acquire a fresh reservation before another attempt.
+   *
+   * This is injected by the execution-admission kernel and is not intended
+   * as a user-facing retry control.
+   */
+  readonly singleWireAttempt?: boolean;
+  /**
+   * @internal Opaque handle returned by `getExecutionProfile(options)`. It
+   * prevents a managed provider from resolving a different route between
+   * budget reservation and the single admitted wire attempt.
+   */
+  readonly providerExecutionHandle?: object;
   /**
    * Request-scoped model override. Providers default to their constructor
    * model, but delegated turns such as reviewer/guardian sessions must be
@@ -855,8 +896,10 @@ export interface LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse>;
   healthCheck(): Promise<boolean>;
-  /** Report the effective model/context profile used for prompt budgeting. */
-  getExecutionProfile?(): Promise<LLMProviderExecutionProfile>;
+  /** Report and, when supported, pin the profile for these request options. */
+  getExecutionProfile?(
+    options?: LLMChatOptions,
+  ): Promise<LLMProviderExecutionProfile>;
   /** Optional startup hook for providers with session/socket prewarm support. */
   prewarmStartup?(
     params: LLMProviderStartupPrewarmParams,

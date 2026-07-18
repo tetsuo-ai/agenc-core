@@ -1,5 +1,6 @@
 import type { Tool } from "../../tools/types.js";
 import {
+  localZeroAdmissionEstimate,
   strictArgs,
   toolMetadata,
   type MultiAgentV2Options,
@@ -24,6 +25,7 @@ export function createTriggerTurnTaskTool(
       keywords: config.keywords,
     }),
     recoveryCategory: "side-effecting",
+    admissionEstimate: localZeroAdmissionEstimate,
     inputSchema: {
       type: "object",
       properties: {

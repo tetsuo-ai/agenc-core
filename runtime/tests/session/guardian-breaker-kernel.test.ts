@@ -235,6 +235,7 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -520,6 +521,7 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
       totalTokenUsage: 0,
     };
     const services: SessionServices = {
+      admissionRequired: false,
       mcpConnectionManager: {
         setApprovalPolicy: () => {},
         setSandboxPolicy: () => {},

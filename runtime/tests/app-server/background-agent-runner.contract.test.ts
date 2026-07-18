@@ -10,6 +10,8 @@ import {
 } from "./background-agent-runner.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type { AgentBudgetConfig } from "../config/schema.js";
+import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
@@ -101,6 +103,8 @@ function makeTopLevelRunner(opts: {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
+  readonly agentBudget?: AgentBudgetConfig;
+  readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
 }) {
   const shutdown = opts.bootstrapShutdown ?? vi.fn(async () => {});
   const permissionUpdates: ToolPermissionContext[] = [];
@@ -171,6 +175,12 @@ function makeTopLevelRunner(opts: {
     })) as unknown as AgenCEnsureAgentControlFunction,
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.argv !== undefined ? { argv: opts.argv } : {}),
+    ...(opts.agentBudget !== undefined
+      ? { agentBudget: opts.agentBudget }
+      : {}),
+    ...(opts.executionAdmissionKernel !== undefined
+      ? { executionAdmissionKernel: opts.executionAdmissionKernel }
+      : {}),
     now: opts.now ?? (() => "2026-05-09T00:00:00.000Z"),
   });
   return {
@@ -366,6 +376,7 @@ describe("AgenC delegate background-agent runner", () => {
         "grok-4"
       ],
       cwd: "/workspace",
+      executionAdmissionAutonomous: true,
     });
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({
@@ -376,6 +387,29 @@ describe("AgenC delegate background-agent runner", () => {
       },
     });
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
+    const executionAdmissionKernel = {} as ExecutionAdmissionKernel;
+    const { runner, bootstrap, shutdown } = makeTopLevelRunner({
+      conversationId: "kernel-budget-session",
+      agentBudget: { token_cap: 0 },
+      executionAdmissionKernel,
+    });
+
+    await runner.startAgent({ objective: "kernel-owned budget" });
+    await Promise.resolve();
+
+    expect(await runner.getAgentSnapshot("kernel-budget-session")).toMatchObject({
+      status: "running",
+    });
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionAdmissionAutonomous: true,
+        executionAdmissionKernel,
+      }),
+    );
   });
 
   it("setAgentPermissionMode mutates the real session permission registry", async () => {
@@ -634,6 +668,7 @@ describe("AgenC delegate background-agent runner", () => {
     const bootstrapOptions = vi.mocked(bootstrap).mock.calls[0]?.[0];
     expect(bootstrapOptions).toMatchObject({
       argv: ["node", "agenc", ],
+      executionAdmissionAutonomous: true,
     });
     expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
     await expect(

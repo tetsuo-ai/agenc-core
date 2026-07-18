@@ -3,7 +3,10 @@ import type { AuthBackend } from "../auth/backend.js";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
-import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
+} from "./daemon-dispatcher.js";
 import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
@@ -11,6 +14,10 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import {
+  AgenCRealtimeRpcService,
+  TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+} from "./realtime.js";
 
 const workspaces = createTempWorkspaceFixture(
   "agenc-daemon-dispatcher-workspace-",
@@ -207,7 +214,8 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     expect(minimalMethods).toMatchObject({
       initialize: true,
       "request.cancel": true,
-      "commandExec.start": true,
+      "commandExec.start": false,
+      "thread/realtime/start": false,
       "health.ping": true,
       "session.create": false,
       "session.list": false,
@@ -218,6 +226,26 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       "auth.login": false,
       "auth.whoami": false,
       "auth.logout": false,
+    });
+
+    const testOnlyEnabledDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      unadmittedCommandExecStartOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
+      realtime: new AgenCRealtimeRpcService({
+        unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+      }),
+    });
+    const testOnlyEnabledInitialize = await testOnlyEnabledDispatcher
+      .createConnection()
+      .dispatch(
+        request("test-only-enabled-init", "initialize", {
+          protocol: { version: "1.0.0" },
+        }),
+      );
+    expect(daemonMethodCapabilities(testOnlyEnabledInitialize)).toMatchObject({
+      "commandExec.start": true,
+      "thread/realtime/start": true,
     });
 
     const configuredDispatcher = new AgenCDaemonJsonRpcDispatcher({

@@ -77,10 +77,12 @@ describe("openStateDatabases", () => {
         "tool_state_json",
         "mcp_connection_state_json",
       ]);
-      expect(snapshotColumns.find((column) => column.name === "session_id"))
-        .toMatchObject({ notnull: 1, pk: 1 });
-      expect(snapshotColumns.find((column) => column.name === "snapshot_at"))
-        .toMatchObject({ notnull: 1, pk: 2 });
+      expect(
+        snapshotColumns.find((column) => column.name === "session_id"),
+      ).toMatchObject({ notnull: 1, pk: 1 });
+      expect(
+        snapshotColumns.find((column) => column.name === "snapshot_at"),
+      ).toMatchObject({ notnull: 1, pk: 2 });
       const toolCallColumns = driver
         .prepareState<[], { name: string; notnull: number; pk: number }>(
           "PRAGMA table_info(in_flight_tool_calls)",
@@ -98,10 +100,12 @@ describe("openStateDatabases", () => {
         "output_log_bytes",
         "recovery_category",
       ]);
-      expect(toolCallColumns.find((column) => column.name === "session_id"))
-        .toMatchObject({ notnull: 1, pk: 1 });
-      expect(toolCallColumns.find((column) => column.name === "tool_call_id"))
-        .toMatchObject({ notnull: 1, pk: 2 });
+      expect(
+        toolCallColumns.find((column) => column.name === "session_id"),
+      ).toMatchObject({ notnull: 1, pk: 1 });
+      expect(
+        toolCallColumns.find((column) => column.name === "tool_call_id"),
+      ).toMatchObject({ notnull: 1, pk: 2 });
       expect(
         driver
           .prepareLogs<[], { name: string }>(
@@ -138,7 +142,10 @@ describe("openStateDatabases", () => {
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
     const raw = new Database(paths.stateDbPath);
     try {
-      applyMigrations(raw, STATE_DB_MIGRATIONS.slice(0, -1));
+      applyMigrations(
+        raw,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+      );
       const insertEdge = raw.prepare(
         `INSERT INTO thread_spawn_edges (
           child_thread_id, parent_thread_id, parent_path, metadata_json, status
@@ -191,7 +198,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(12);
+      ).toBe(14);
     } finally {
       driver.close();
     }
@@ -248,7 +255,10 @@ describe("openStateDatabases", () => {
     const restored = new Database(restoredPath);
     try {
       expect(() =>
-        applyMigrations(restored, STATE_DB_MIGRATIONS.slice(0, -1)),
+        applyMigrations(
+          restored,
+          STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+        ),
       ).not.toThrow();
       expect(
         restored
@@ -274,23 +284,28 @@ describe("openStateDatabases", () => {
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
     const v11 = new Database(paths.stateDbPath);
     try {
-      applyMigrations(v11, STATE_DB_MIGRATIONS.slice(0, -1));
-      v11.prepare(
-        `INSERT INTO thread_spawn_edges (
+      applyMigrations(
+        v11,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+      );
+      v11
+        .prepare(
+          `INSERT INTO thread_spawn_edges (
           child_thread_id, parent_thread_id, parent_path, metadata_json, status
         ) VALUES (?, ?, ?, ?, ?)`,
-      ).run(
-        "concurrent-child",
-        "root-1",
-        "/root",
-        JSON.stringify({
-          agentId: "concurrent-child",
-          agentPath: "/root/concurrent",
-          agentRole: "default",
-          depth: 1,
-        }),
-        "open",
-      );
+        )
+        .run(
+          "concurrent-child",
+          "root-1",
+          "/root",
+          JSON.stringify({
+            agentId: "concurrent-child",
+            agentPath: "/root/concurrent",
+            agentRole: "default",
+            depth: 1,
+          }),
+          "open",
+        );
 
       const upgraded = openStateDatabases({ cwd });
       upgraded.close();

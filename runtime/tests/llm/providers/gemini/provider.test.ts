@@ -43,6 +43,56 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
+  test("single-wire chat performs exactly one transport attempt", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "temporarily down" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("single-wire stream hands fallback outward without an internal retry", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "overloaded" } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      providerFallback: {
+        provider: "gemini",
+        model: "gemini-2.5-pro",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+    });
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toMatchObject({ name: "FallbackTriggeredError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("uses native generateContent with x-goog-api-key auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -234,6 +284,8 @@ describe("GeminiProvider", () => {
       promptTokens: 4,
       completionTokens: 1,
       totalTokens: 5,
+      availability: "reported",
+      provenance: "provider",
     });
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -317,6 +369,8 @@ describe("GeminiProvider", () => {
       promptTokens: 7,
       completionTokens: 4,
       totalTokens: 11,
+      availability: "reported",
+      provenance: "provider",
     });
 
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];

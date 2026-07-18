@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  anchorWorkbenchProjectRoot,
   frameText,
   listDescendantNeovimPids,
   waitForFrameText,
@@ -26,6 +27,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-buffer-neovim-visual-"));
   try {
+    await anchorWorkbenchProjectRoot(cwd);
     await writeFile(join(cwd, "target.txt"), "alpha beta gamma\nsecond line\n", "utf8");
     session.cwd = cwd;
     await session.start();

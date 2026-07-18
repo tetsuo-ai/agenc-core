@@ -6,6 +6,7 @@ import {
   emit,
   getSessionOrError,
   json,
+  localZeroAdmissionEstimate,
   MAX_WAIT_TIMEOUT_MS,
   MIN_WAIT_TIMEOUT_MS,
   numberValue,
@@ -220,6 +221,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
     isReadOnly: true,
     recoveryCategory: "side-effecting",
+    admissionEstimate: localZeroAdmissionEstimate,
     timeoutBehavior: "tool",
     inputSchema: {
       type: "object",

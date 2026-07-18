@@ -3,16 +3,13 @@
  * trust suite (runtime/eval/suites/trust-conformance/1.0.0).
  *
  * Design stance (docs/evaluation-suites-v1.md): scenarios drive REAL runtime
- * seams — the budget enforcer/ledger (with the harness clock injected via
- * their `now` seams), SQLite state recovery, the daemon client multiplexer's
- * detached-session replay buffer, the TUI transcript dedup reducer, the
- * permission rule evaluator, and the permission audit file logger — under a
- * virtual monotonic clock with deterministic offline fakes. Where today's
- * runtime lacks a required capability (tree-scoped cancellation, explicit
- * retention gaps, idempotent reconciliation, an unknown-outcome mutation
- * gate), the invariant FAILS and that failure is the data M3/M4 are
- * prioritized by. The harness never fakes a pass: every probe either drives
- * a real runtime mechanism or fails the invariant.
+ * seams — the daemon-owned execution admission kernel and its SQLite
+ * repository (with the harness clock injected via their `now` seams), SQLite
+ * state recovery, the daemon client multiplexer's detached-session replay
+ * buffer, the TUI transcript dedup reducer, the permission rule evaluator,
+ * and the permission audit file logger — under a virtual monotonic clock with
+ * deterministic offline fakes. The harness never fakes a pass: every probe
+ * either drives a real runtime mechanism or fails the invariant.
  *
  * Every emitted report is self-checked with validateTrustConformanceReport
  * before it is accepted; a report that fails its own self-check is demoted to
@@ -60,10 +57,17 @@ import {
   type TrustFaultPlan,
   type TrustFixtureBundleDocument,
 } from "../eval-suites/index.js";
-import { BudgetEnforcer } from "../budget/enforcer.js";
-import { BudgetLedger } from "../budget/ledger.js";
-import type { BudgetHold, BudgetPolicy } from "../budget/types.js";
-import { StateSqliteDriver } from "../state/sqlite-driver.js";
+import type { RuntimeAdmissionRequest } from "../budget/admission-types.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import {
+  EVENT_GAP_EVENT,
+  type BudgetReservation,
+} from "../contracts/run-contracts.js";
+import { ExecutionAdmissionRepository } from "../state/execution-admission.js";
+import {
+  resolveStateDatabasePaths,
+  StateSqliteDriver,
+} from "../state/sqlite-driver.js";
 import { recoverDaemonStateOnStartup } from "../state/recovery.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
@@ -81,7 +85,6 @@ import { AgenCDaemonSessionManager } from "../app-server/session-lifecycle.js";
 import { SessionStore } from "../session/session-store.js";
 import type { EventMsg } from "../session/event-log.js";
 import { VERSION } from "../version.js";
-import { EVENT_GAP_EVENT } from "../contracts/run-contracts.js";
 import {
   checkRuleBasedPermissions,
   type ToolEvaluatorContext,
@@ -96,19 +99,13 @@ import {
 } from "../permissions/sandbox.js";
 import type { JsonObject } from "../app-server/protocol/index.js";
 
-const TRUST_POLICY: BudgetPolicy = {
-  enabled: true,
-  caps: { dailyUsd: 1 },
-  softThreshold: 0.8,
-  enforceInteractive: true,
-};
-
-/** Deterministic offline price: $1/M input, $2/M output. */
-const priceOf = () => ({ inputPerMTokens: 1, outputPerMTokens: 2 });
+const TRUST_BUDGET_CAP_USD = 1;
+const TRUST_RESTART_RESERVATION_USD = 0.2;
+const TRUST_SIBLING_RESERVATION_USD = 0.4;
 
 /**
- * Fixed mid-day UTC epoch so virtual time injected into the budget ledger's
- * calendar windows can never cross a UTC day/month boundary mid-attempt.
+ * Fixed mid-day UTC epoch so virtual time injected into admission period
+ * allocations can never cross a UTC day/month boundary mid-attempt.
  */
 const TRUST_BASE_UTC_MS = Date.UTC(2026, 0, 15, 12, 0, 0);
 
@@ -221,7 +218,7 @@ function openDriver(attemptDir: string): StateSqliteDriver {
 }
 
 /**
- * Canonical digest of every durable row recovery may touch — the
+ * Canonical digest of every durable row either recovery seam may touch — the
  * duplicate-transition probe compares this across recovery passes.
  */
 function durableStateDigest(driver: StateSqliteDriver): Sha256Digest {
@@ -239,9 +236,86 @@ function durableStateDigest(driver: StateSqliteDriver): Sha256Digest {
        ORDER BY session_id, tool_call_id`,
     )
     .all();
+  const admissionJobs = driver
+    .prepareState<
+      [],
+      {
+        admission_run_id?: string;
+        admission_step_id?: string;
+        status?: string;
+        admission_reason?: string | null;
+      }
+    >(
+      `SELECT admission_run_id, admission_step_id, status, admission_reason
+       FROM agent_jobs
+       WHERE admission_run_id IS NOT NULL
+       ORDER BY admission_run_id, admission_step_id`,
+    )
+    .all();
+  const reservations = driver
+    .prepareState<
+      [],
+      {
+        run_id?: string;
+        step_id?: string;
+        status?: string;
+        reserved_tokens?: number;
+        reserved_cost_nanos?: number;
+        actual_tokens?: number | null;
+        actual_cost_nanos?: number | null;
+      }
+    >(
+      `SELECT run_id, step_id, status, reserved_tokens, reserved_cost_nanos,
+              actual_tokens, actual_cost_nanos
+       FROM execution_admission_reservations
+       ORDER BY run_id, step_id`,
+    )
+    .all();
+  const allocations = driver
+    .prepareState<
+      [],
+      {
+        scope_key?: string;
+        used_tokens?: number;
+        used_cost_nanos?: number;
+        held_tokens?: number;
+        held_cost_nanos?: number;
+      }
+    >(
+      `SELECT scope_key, used_tokens, used_cost_nanos, held_tokens,
+              held_cost_nanos
+       FROM execution_admission_allocations
+       ORDER BY scope_key`,
+    )
+    .all();
+  const admissionJournal = driver
+    .prepareState<
+      [],
+      {
+        sequence?: number;
+        run_id?: string;
+        step_id?: string;
+        event?: string;
+        reason?: string | null;
+        reserved_tokens?: number | null;
+        reserved_cost_nanos?: number | null;
+        actual_tokens?: number | null;
+        actual_cost_nanos?: number | null;
+      }
+    >(
+      `SELECT sequence, run_id, step_id, event, reason, reserved_tokens,
+              reserved_cost_nanos, actual_tokens, actual_cost_nanos
+       FROM execution_admission_journal
+       ORDER BY sequence`,
+    )
+    .all();
   return digestCanonicalJson("agenc.eval.trust-durable-state.v1", {
     runs,
     toolCalls,
+    admissionJobs,
+    reservations,
+    allocations,
+    admissionJournal,
   });
 }
 
@@ -256,34 +330,88 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
   const sessionId = "trust-restart-session";
   const now = () => clock.wallDate();
   const nowIso = () => clock.wallDate().toISOString();
-  const ledger = new BudgetLedger({ agencHome: attemptDir, now });
-  const enforcer = new BudgetEnforcer({ policy: TRUST_POLICY, ledger, priceOf });
-
-  // reserve_budget
-  clock.advance(5);
-  const admit = enforcer.admit({
-    agentId: liveRunId,
-    model: "trust-fake-model",
-    autonomous: true,
-    estInputTokens: 100_000,
-    maxOutputTokens: 50_000,
+  const paths = resolveStateDatabasePaths({
+    cwd: attemptDir,
+    agencHome: attemptDir,
   });
-  if (!admit.ok) throw new Error("restart scenario could not reserve budget");
-  evidence.record("budget.reserved", {
-    estimatedUsd: admit.hold.estimatedUsd,
-    estimatedTokens: admit.hold.estimatedTokens,
-  });
-  const reservedSpend = ledger.snapshot(liveRunId).day.usd;
+  mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+  const dayAllocationKey = `period:day:${nowIso().slice(0, 10)}`;
+  let nextAdmissionId = 0;
+  const admissionId = () => `trust-restart-admission-${++nextAdmissionId}`;
+  const deadOwner = {
+    ownerId: "trust-restart-dead-daemon",
+    ownerPid: 999_999,
+    attached: true,
+  } as const;
+  let reservationId = "";
+  let reservedSpend = 0;
 
-  // accept_model_request (fake provider: request_accepted). Seed durable
-  // state recovery will actually TRANSITION: a running run with a
-  // side-effecting in-flight tool call (the real recovery seam), plus a
-  // terminal run so terminal queryability across restart is probed.
+  // reserve_budget: create the exact durable reservation/allocation rows the
+  // daemon-owned M3 admission kernel uses in production.
   clock.advance(5);
-  evidence.record("provider.request_accepted", { state: "request_accepted" });
   {
-    const driver = openDriver(attemptDir);
+    const driver = new StateSqliteDriver(paths);
     try {
+      const admissions = new ExecutionAdmissionRepository(driver, {
+        now,
+        id: admissionId,
+        ownerId: deadOwner.ownerId,
+        ownerPid: deadOwner.ownerPid,
+      });
+      const request: RuntimeAdmissionRequest = {
+        step: { runId: liveRunId, stepId: "trust-restart-model-turn" },
+        kind: "model_turn",
+        estimate: {
+          maxInputTokens: 100_000,
+          maxOutputTokens: 50_000,
+          maxCostUsd: TRUST_RESTART_RESERVATION_USD,
+        },
+        model: "trust-fake-model",
+        provider: "trust-fake-provider",
+        workspaceId: paths.projectDir,
+        sessionId,
+        parentScopeId: sessionId,
+        autonomous: true,
+        budgetScopes: [
+          { key: dayAllocationKey, maxCostUsd: TRUST_BUDGET_CAP_USD },
+          { key: `run:${liveRunId}` },
+        ],
+      };
+      const attempt = admissions.enqueue(request, deadOwner);
+      const claim = admissions.claim({
+        key: attempt.record.key,
+        ...deadOwner,
+        now: nowIso(),
+      });
+      if (claim.kind !== "claimed") {
+        const reason =
+          claim.kind === "not_claimed" ? claim.reason : claim.kind;
+        throw new Error(
+          `restart scenario could not reserve budget: ${reason}`,
+        );
+      }
+      reservationId = claim.lease.reservation.reservationId;
+      reservedSpend = claim.lease.reservation.reservedCostUsd;
+      evidence.record("budget.reserved", {
+        estimatedUsd: reservedSpend,
+        estimatedTokens: claim.lease.reservation.reservedTokens,
+      });
+
+      // accept_model_request (fake provider: request_accepted). Crossing the
+      // provider-wire boundary promotes `reserved` to `dispatched`; a crash
+      // may no longer refund it as though no provider request happened.
+      clock.advance(5);
+      admissions.markDispatched(reservationId, {
+        dispatchedAt: nowIso(),
+        providerRequestId: "trust-restart-provider-request",
+        details: { boundary: "provider_wire" },
+      });
+      evidence.record("provider.request_accepted", {
+        state: "request_accepted",
+      });
+
+      // Seed the ordinary daemon-state recovery surface too: pass one must
+      // poison the uncertain side effect and pass two must be a no-op.
       const startedAt = nowIso();
       upsertAgentRun(driver, {
         id: doneRunId,
@@ -315,67 +443,113 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
     }
   }
 
-  // restart_product_process: discard every in-memory object; only disk
-  // survives — exactly what a daemon restart leaves behind. (The close is
-  // graceful; torn-write crash windows inside the ledger tmp-write+rename
-  // are not exercised by this scenario.)
+  // restart_product_process: the dead owner disappears after dispatch. Only
+  // SQLite survives, exactly as it would across daemon process death.
   clock.advance(10);
   const injectedAtVirtualMs = clock.now();
   const faultEvidenceDigest = evidence.record("daemon.restarted", {
     boundary: "after_reservation_before_model_result_commit",
   });
 
-  // resume_recovery: reopen ledger + state DB from disk. Recovery pass 1
-  // transitions the in-flight side-effecting call to `poisoned`; pass 2 is
-  // the duplicate-transition probe — the guarded UPDATE must change nothing.
+  // resume_recovery: a fresh kernel discovers the project DB and atomically
+  // converts the dead owner's dispatched reservation to `held_unknown`,
+  // charging the full hold conservatively. A second pass must write nothing.
   clock.advance(10);
-  const ledgerAfter = new BudgetLedger({ agencHome: attemptDir, now });
-  const recoveredSpend = ledgerAfter.snapshot(liveRunId).day.usd;
-  const driver = openDriver(attemptDir);
+  const restartedKernel = new ExecutionAdmissionKernel({
+    agencHome: attemptDir,
+    now,
+    id: admissionId,
+    ownerId: "trust-restart-live-daemon",
+    ownerPid: process.pid,
+  });
+  let recoveredSpend = 0;
+  let recoveredReservationStatus: string | null = null;
+  let recoveredHeldSpend = 0;
+  let recoveredUsedSpend = 0;
+  let firstAdmissionHeldUnknown = 0;
+  let secondAdmissionHeldUnknown = 0;
   let firstPassStatusAfter: string | null;
   let secondPassStatusBefore: string | null;
   let digestAfterFirstPass: Sha256Digest;
   let digestAfterSecondPass: Sha256Digest;
   let terminalStatus: string | null;
   try {
-    const first = recoverDaemonStateOnStartup(driver, { now: nowIso });
-    const firstCall = first.recoveredToolCalls.find(
-      (call) => call.toolCallId === "trust-restart-tool-1",
-    );
-    firstPassStatusAfter = firstCall?.statusAfter ?? null;
-    digestAfterFirstPass = durableStateDigest(driver);
-    evidence.record("recovery.assessed", {
-      pass: 1,
-      recoveredRuns: first.recoveredRuns.length,
-      recoveredToolCalls: first.recoveredToolCalls.length,
-      warnings: first.warnings.length,
-    });
-    const second = recoverDaemonStateOnStartup(driver, { now: nowIso });
-    const secondCall = second.recoveredToolCalls.find(
-      (call) => call.toolCallId === "trust-restart-tool-1",
-    );
-    secondPassStatusBefore = secondCall?.statusBefore ?? null;
-    digestAfterSecondPass = durableStateDigest(driver);
-    evidence.record("recovery.assessed", {
-      pass: 2,
-      statusBefore: secondPassStatusBefore,
-    });
-    const row = driver
-      .prepareState<[string], { status?: string }>("SELECT status FROM agent_runs WHERE id = ?")
-      .get(doneRunId);
-    terminalStatus = row?.status ?? null;
+    const firstAdmissionRecovery = restartedKernel.initializeExistingState();
+    firstAdmissionHeldUnknown = firstAdmissionRecovery.heldUnknown;
+    const driver = new StateSqliteDriver(paths);
+    try {
+      const admissions = new ExecutionAdmissionRepository(driver, {
+        now,
+        id: admissionId,
+        ownerId: "trust-restart-observer",
+        ownerPid: process.pid,
+      });
+      const first = recoverDaemonStateOnStartup(driver, { now: nowIso });
+      const firstCall = first.recoveredToolCalls.find(
+        (call) => call.toolCallId === "trust-restart-tool-1",
+      );
+      firstPassStatusAfter = firstCall?.statusAfter ?? null;
+      const recoveredReservation = admissions.getReservation(reservationId);
+      const recoveredAllocation = admissions
+        .listAllocations()
+        .find((allocation) => allocation.key === dayAllocationKey);
+      recoveredReservationStatus = recoveredReservation?.status ?? null;
+      recoveredHeldSpend = recoveredAllocation?.heldCostUsd ?? 0;
+      recoveredUsedSpend = recoveredAllocation?.usedCostUsd ?? 0;
+      recoveredSpend = recoveredHeldSpend + recoveredUsedSpend;
+      digestAfterFirstPass = durableStateDigest(driver);
+      evidence.record("recovery.assessed", {
+        pass: 1,
+        recoveredRuns: first.recoveredRuns.length,
+        recoveredToolCalls: first.recoveredToolCalls.length,
+        warnings: first.warnings.length,
+        admissionHeldUnknown: firstAdmissionHeldUnknown,
+        reservationStatus: recoveredReservationStatus,
+      });
+
+      const secondAdmissionRecovery =
+        restartedKernel.initializeExistingState();
+      secondAdmissionHeldUnknown = secondAdmissionRecovery.heldUnknown;
+      const second = recoverDaemonStateOnStartup(driver, { now: nowIso });
+      const secondCall = second.recoveredToolCalls.find(
+        (call) => call.toolCallId === "trust-restart-tool-1",
+      );
+      secondPassStatusBefore = secondCall?.statusBefore ?? null;
+      digestAfterSecondPass = durableStateDigest(driver);
+      evidence.record("recovery.assessed", {
+        pass: 2,
+        statusBefore: secondPassStatusBefore,
+        admissionHeldUnknown: secondAdmissionHeldUnknown,
+        reservationStatus:
+          admissions.getReservation(reservationId)?.status ?? null,
+      });
+      const row = driver
+        .prepareState<[string], { status?: string }>(
+          "SELECT status FROM agent_runs WHERE id = ?",
+        )
+        .get(doneRunId);
+      terminalStatus = row?.status ?? null;
+    } finally {
+      driver.close();
+    }
   } finally {
-    driver.close();
+    restartedKernel.close();
   }
 
   const reservationRecoveredOnce =
-    recoveredSpend === reservedSpend && reservedSpend > 0;
-  // Right-reason duplicate probe: pass 1 genuinely transitioned the call
-  // (running -> poisoned); pass 2 saw it already poisoned and the guarded
-  // UPDATE (status NOT IN terminal) changed no durable row.
+    firstAdmissionHeldUnknown === 1 &&
+    secondAdmissionHeldUnknown === 0 &&
+    recoveredReservationStatus === "held_unknown" &&
+    recoveredHeldSpend === 0 &&
+    recoveredSpend === reservedSpend &&
+    reservedSpend > 0;
+  // Right-reason duplicate probe: pass 1 genuinely transitions both crash
+  // surfaces (`dispatched` -> `held_unknown`, `running` -> `poisoned`); pass 2
+  // observes both terminal states and changes no durable row.
   const noDuplicateTransition =
     firstPassStatusAfter === "poisoned" &&
     secondPassStatusBefore === "poisoned" &&
+    secondAdmissionHeldUnknown === 0 &&
     digestAfterFirstPass === digestAfterSecondPass;
   const terminalQueryable = terminalStatus === "completed";
 
@@ -386,6 +560,11 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
       invariant(evidence, "reservation_recovered_once", reservationRecoveredOnce, {
         reservedSpend,
         recoveredSpend,
+        recoveredHeldSpend,
+        recoveredUsedSpend,
+        recoveredReservationStatus,
+        firstAdmissionHeldUnknown,
+        secondAdmissionHeldUnknown,
       }),
       invariant(evidence, "no_duplicate_state_transition", noDuplicateTransition, {
         firstPassStatusAfter,
@@ -603,109 +782,255 @@ async function runReconnectAfterUnackedEvent(ctx: ScenarioContext): Promise<Scen
 
 async function runBudgetSiblingReservationRace(ctx: ScenarioContext): Promise<ScenarioRun> {
   const { clock, evidence, attemptDir } = ctx;
-  const agentId = "trust_parent_budget";
+  const parentRunId = "trust_parent_budget";
   const now = () => clock.wallDate();
-  const ledger = new BudgetLedger({ agencHome: attemptDir, now });
-  const enforcer = new BudgetEnforcer({ policy: TRUST_POLICY, ledger, priceOf });
-  const cap = TRUST_POLICY.caps.dailyUsd!;
+  const nowIso = () => now().toISOString();
+  const paths = resolveStateDatabasePaths({
+    cwd: attemptDir,
+    agencHome: attemptDir,
+  });
+  mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+  const parentAllocationKey = `run:${parentRunId}`;
+  const cap = TRUST_BUDGET_CAP_USD;
+  let nextAdmissionId = 0;
+  const admissionId = () => `trust-sibling-admission-${++nextAdmissionId}`;
+  const drivers = [
+    new StateSqliteDriver(paths),
+    new StateSqliteDriver(paths),
+    new StateSqliteDriver(paths),
+  ];
+  const repositories = drivers.map(
+    (driver, index) =>
+      new ExecutionAdmissionRepository(driver, {
+        now,
+        id: admissionId,
+        ownerId: `trust-sibling-owner-${index}`,
+        ownerPid: 990_000 + index,
+      }),
+  );
 
-  // open_parent_budget + race_sibling_reservations: three siblings race a
-  // $1 parent cap at $0.40 worst-case each — the third must be refused.
-  // (Sequential in one process: this certifies reservation accounting, not
-  // cross-process race safety; admit()'s cap check runs outside the ledger
-  // disk lock and that TOCTOU is M3 scope.)
-  clock.advance(5);
-  const admitSibling = () =>
-    enforcer.admit({
-      agentId,
+  const requestForSibling = (index: number): RuntimeAdmissionRequest => {
+    const runId = `trust_budget_sibling_${index}`;
+    return {
+      step: {
+        runId,
+        stepId: "trust-budget-model-turn",
+        parentRunId,
+      },
+      kind: "model_turn",
+      estimate: {
+        maxInputTokens: 200_000,
+        maxOutputTokens: 100_000,
+        maxCostUsd: TRUST_SIBLING_RESERVATION_USD,
+      },
       model: "trust-fake-model",
+      provider: "trust-fake-provider",
+      workspaceId: paths.projectDir,
+      sessionId: `trust-budget-session-${index}`,
+      parentScopeId: parentRunId,
       autonomous: true,
-      estInputTokens: 200_000,
-      maxOutputTokens: 100_000,
-    });
-  const a = admitSibling();
-  const b = admitSibling();
-  const injectedAtVirtualMs = clock.advance(1);
-  const faultEvidenceDigest = evidence.record("budget.race", {
-    boundary: "sibling_reservations_race",
-  });
-  const c = admitSibling();
-  const holds: BudgetHold[] = [a, b]
-    .filter((result): result is { ok: true; hold: BudgetHold } => result.ok)
-    .map((result) => result.hold);
-  const spendAtCapCheck = ledger.snapshot(agentId).day.usd;
-  evidence.record("budget.reserved", {
-    admitted: holds.length,
-    refusedThird: !c.ok,
-    spendAtCapCheck,
-  });
-  const capNotExceeded = spendAtCapCheck <= cap && !c.ok;
-
-  // commit_one_reservation: the seed digest picks WHICH sibling reconciles
-  // (the only seed-sensitive ordering decision available to this scenario);
-  // the other sibling's acknowledgement is lost — its worst case must stay
-  // held.
-  clock.advance(5);
-  const seedHex = (ctx.scenarioSeedDigest.split(":")[1] ?? ctx.scenarioSeedDigest)
-    .slice(0, 2);
-  const reconcileIndex = (parseInt(seedHex, 16) || 0) % 2;
-  const reconciledHold = holds[reconcileIndex] ?? holds[0];
-  const lostHold = holds[1 - reconcileIndex] ?? holds[1];
-  const actualUsage = { inputTokens: 50_000, outputTokens: 10_000 };
-  const actualUsd =
-    (actualUsage.inputTokens / 1_000_000) * 1 +
-    (actualUsage.outputTokens / 1_000_000) * 2;
-  enforcer.reconcile(reconciledHold, actualUsage);
-  const afterReconcile = ledger.snapshot(agentId).day.usd;
-  evidence.record("usage.reported", {
-    ...actualUsage,
-    reconciledSibling: reconcileIndex,
-    source: "fake_provider",
-  });
-  evidence.record("budget.reconciled", { afterReconcile });
-  // Tight probe: after reconciling one sibling's real usage, the ledger
-  // must hold exactly lost-sibling-worst-case + reconciled-actual.
-  const unknownStillReserved =
-    lostHold !== undefined &&
-    Math.abs(afterReconcile - (lostHold.estimatedUsd + actualUsd)) < 1e-9;
-
-  // reconcile_usage (exactly-once probe): a duplicate reconcile of the same
-  // hold must not change the ledger again. Today's API is documented
-  // non-idempotent (no durable reservation id exists to dedupe against), so
-  // this invariant failing is expected M3 data, not harness noise.
-  clock.advance(5);
-  enforcer.reconcile(reconciledHold, actualUsage);
-  const afterDuplicate = ledger.snapshot(agentId).day.usd;
-  const exactlyOnce = afterDuplicate === afterReconcile;
-  evidence.record("budget.duplicate_reconcile_probe", {
-    afterReconcile,
-    afterDuplicate,
-  });
-
-  return {
-    injectedAtVirtualMs,
-    faultEvidenceDigest,
-    invariantResults: [
-      invariant(evidence, "parent_cap_not_exceeded", capNotExceeded, {
-        spendAtCapCheck,
-        cap,
-      }),
-      invariant(evidence, "unknown_usage_remains_reserved", unknownStillReserved, {
-        afterReconcile,
-        expectedHeld:
-          lostHold !== undefined ? lostHold.estimatedUsd + actualUsd : null,
-      }),
-      invariant(evidence, "reconciliation_exactly_once", exactlyOnce, {
-        afterReconcile,
-        afterDuplicate,
-      }),
-    ],
-    observedFacts: observedFacts(ctx, {
-      parent_cap_not_exceeded: capNotExceeded,
-      unknown_usage_remains_reserved: unknownStillReserved,
-      reconciliation_exactly_once: exactlyOnce,
-    }),
+      budgetScopes: [
+        { key: parentAllocationKey, maxCostUsd: cap },
+        {
+          key: `run:${runId}`,
+          parentKey: parentAllocationKey,
+        },
+      ],
+    };
   };
+  const claimSibling = (
+    repository: ExecutionAdmissionRepository,
+    index: number,
+  ) => {
+    const ownerId = `trust-sibling-owner-${index}`;
+    const ownerPid = 990_000 + index;
+    const attempt = repository.enqueue(requestForSibling(index), {
+      ownerId,
+      ownerPid,
+      attached: true,
+    });
+    return repository.claim({
+      key: attempt.record.key,
+      ownerId,
+      ownerPid,
+      attached: true,
+      now: nowIso(),
+    });
+  };
+  const parentSpend = (repository: ExecutionAdmissionRepository): number => {
+    const allocation = repository
+      .listAllocations()
+      .find((candidate) => candidate.key === parentAllocationKey);
+    return (allocation?.usedCostUsd ?? 0) + (allocation?.heldCostUsd ?? 0);
+  };
+
+  try {
+    // open_parent_budget + race_sibling_reservations: independent SQLite
+    // contenders reserve against one $1 parent allocation at $0.40 each.
+    // BEGIN IMMEDIATE serializes the check-and-hold transaction, so the third
+    // contender is durably refused instead of slipping through a TOCTOU gap.
+    clock.advance(5);
+    const a = claimSibling(repositories[0]!, 0);
+    const b = claimSibling(repositories[1]!, 1);
+    const injectedAtVirtualMs = clock.advance(1);
+    const faultEvidenceDigest = evidence.record("budget.race", {
+      boundary: "sibling_reservations_race",
+    });
+    const c = claimSibling(repositories[2]!, 2);
+    const holds: BudgetReservation[] = [a, b].flatMap((result) =>
+      result.kind === "claimed" ? [result.lease.reservation] : [],
+    );
+    const spendAtCapCheck = parentSpend(repositories[2]!);
+    const refusedThird =
+      c.kind === "not_claimed" && c.reason === "budget_exceeded";
+    evidence.record("budget.reserved", {
+      admitted: holds.length,
+      refusedThird,
+      spendAtCapCheck,
+      authority: "execution_admission_sqlite",
+    });
+    const capNotExceeded = spendAtCapCheck <= cap && refusedThird;
+
+    // commit_one_reservation: the seed digest picks WHICH sibling reports
+    // usage. Both crossed the provider boundary; the lost acknowledgement is
+    // explicitly `held_unknown`, retaining its full conservative charge.
+    clock.advance(5);
+    const seedHex = (
+      ctx.scenarioSeedDigest.split(":")[1] ?? ctx.scenarioSeedDigest
+    ).slice(0, 2);
+    const reconcileIndex = (parseInt(seedHex, 16) || 0) % 2;
+    const reconciledHold = holds[reconcileIndex] ?? holds[0];
+    const lostHold = holds[1 - reconcileIndex] ?? holds[1];
+    for (const [index, hold] of holds.entries()) {
+      repositories[index]!.markDispatched(hold.reservationId, {
+        dispatchedAt: nowIso(),
+        providerRequestId: `trust-sibling-provider-request-${index}`,
+        details: { boundary: "provider_wire" },
+      });
+    }
+    const actualUsage = {
+      inputTokens: 50_000,
+      outputTokens: 10_000,
+      costUsd: 0.07,
+    };
+    const firstReconcile =
+      reconciledHold === undefined
+        ? undefined
+        : repositories[reconcileIndex]!.reconcile(
+            reconciledHold.reservationId,
+            {
+              kind: "reported",
+              usage: actualUsage,
+              providerRequestId: `trust-sibling-provider-request-${reconcileIndex}`,
+            },
+            { at: nowIso() },
+          );
+    if (lostHold !== undefined) {
+      repositories[1 - reconcileIndex]!.holdUnknown(
+        lostHold.reservationId,
+        "provider_acknowledgement_lost",
+        { at: nowIso() },
+      );
+    }
+    const afterReconcile = parentSpend(repositories[0]!);
+    evidence.record("usage.reported", {
+      inputTokens: actualUsage.inputTokens,
+      outputTokens: actualUsage.outputTokens,
+      reconciledSibling: reconcileIndex,
+      source: "fake_provider",
+    });
+    evidence.record("budget.reconciled", {
+      afterReconcile,
+      firstOutcome: firstReconcile?.outcome ?? null,
+      unknownStatus:
+        lostHold === undefined
+          ? null
+          : repositories[0]!.getReservation(lostHold.reservationId)?.status ??
+            null,
+    });
+    const lostStatus =
+      lostHold === undefined
+        ? null
+        : repositories[0]!.getReservation(lostHold.reservationId)?.status ??
+          null;
+    const expectedHeld =
+      lostHold === undefined
+        ? null
+        : lostHold.reservedCostUsd + actualUsage.costUsd;
+    const unknownStillReserved =
+      lostStatus === "held_unknown" &&
+      expectedHeld !== null &&
+      Math.abs(afterReconcile - expectedHeld) < 1e-9;
+
+    // reconcile_usage (exactly-once probe): replay the same reservation id
+    // from a different SQLite connection. The durable terminal status must
+    // return `duplicate` and leave the shared parent allocation unchanged.
+    clock.advance(5);
+    const duplicateReconcile =
+      reconciledHold === undefined
+        ? undefined
+        : repositories[1 - reconcileIndex]!.reconcile(
+            reconciledHold.reservationId,
+            {
+              kind: "reported",
+              usage: actualUsage,
+              providerRequestId: `trust-sibling-provider-request-${reconcileIndex}`,
+            },
+            { at: nowIso() },
+          );
+    const afterDuplicate = parentSpend(repositories[2]!);
+    const exactlyOnce =
+      firstReconcile?.applied === true &&
+      firstReconcile.outcome === "reconciled" &&
+      duplicateReconcile?.applied === false &&
+      duplicateReconcile.outcome === "duplicate" &&
+      duplicateReconcile.existingStatus === "reconciled" &&
+      afterDuplicate === afterReconcile;
+    evidence.record("budget.duplicate_reconcile_probe", {
+      afterReconcile,
+      afterDuplicate,
+      firstOutcome: firstReconcile?.outcome ?? null,
+      duplicateOutcome: duplicateReconcile?.outcome ?? null,
+      duplicateStatus:
+        duplicateReconcile?.applied === false
+          ? duplicateReconcile.existingStatus
+          : null,
+    });
+
+    return {
+      injectedAtVirtualMs,
+      faultEvidenceDigest,
+      invariantResults: [
+        invariant(evidence, "parent_cap_not_exceeded", capNotExceeded, {
+          spendAtCapCheck,
+          cap,
+        }),
+        invariant(
+          evidence,
+          "unknown_usage_remains_reserved",
+          unknownStillReserved,
+          {
+            afterReconcile,
+            expectedHeld,
+            lostStatus,
+          },
+        ),
+        invariant(evidence, "reconciliation_exactly_once", exactlyOnce, {
+          afterReconcile,
+          afterDuplicate,
+          firstOutcome: firstReconcile?.outcome ?? null,
+          duplicateOutcome: duplicateReconcile?.outcome ?? null,
+        }),
+      ],
+      observedFacts: observedFacts(ctx, {
+        parent_cap_not_exceeded: capNotExceeded,
+        unknown_usage_remains_reserved: unknownStillReserved,
+        reconciliation_exactly_once: exactlyOnce,
+      }),
+    };
+  } finally {
+    for (const driver of drivers) driver.close();
+  }
 }
 
 async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise<ScenarioRun> {

@@ -81,10 +81,7 @@ import {
   type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
-import type {
-  McpServerMutationResult,
-  Session,
-} from "../session/session.js";
+import type { McpServerMutationResult, Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
@@ -124,6 +121,7 @@ import {
   type AgenCDaemonRuntimeAuthBackend,
 } from "./provider-key-vending.js";
 import { isRecord } from "../utils/record.js";
+import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -136,10 +134,7 @@ export interface AgenCBackgroundAgentStartParams {
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
   /**
    * Per-invocation env overrides forwarded from the CLI. Merged on
    * top of `this.#env` so the user's latest `OPENAI_BASE_URL` /
@@ -547,6 +542,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
   readonly agentBudget?: AgentBudgetConfig;
+  readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
@@ -578,6 +574,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
   #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
+  readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
+  /**
+   * Compatibility-only monitor for injected test bootstraps. Production
+   * sessions enforce `[agent.budget]` inside execution admission, so running
+   * this sidecar monitor too would create a second accounting authority.
+   */
+  readonly #legacyAgentBudgetMonitorEnabled: boolean;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
   readonly #budgetNowMs: () => number;
@@ -609,6 +612,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
+    this.#executionAdmissionKernel = options.executionAdmissionKernel;
+    this.#legacyAgentBudgetMonitorEnabled =
+      options.bootstrap !== undefined &&
+      options.executionAdmissionKernel === undefined;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -675,10 +682,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
+      // Daemon agents are unattended execution for budget policy, but this
+      // hint deliberately does not enable autonomous keepalive ticks.
+      executionAdmissionAutonomous: true,
       ...(this.#requireSandboxReadyAtStartup
         ? { requireSandboxReadyAtStartup: true }
         : {}),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+      ...(this.#executionAdmissionKernel !== undefined
+        ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+        : {}),
     });
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
@@ -699,16 +712,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // (bin/bootstrap.ts:1303). The first user message arrives via
       // message.stream — the session is idle at startAgent time. No
       // forkSubagent, no buildDirective, no AgentTool dispatcher.
-      const conversationThreadManager =
-        (bootstrap.session.services as {
+      const conversationThreadManager = (
+        bootstrap.session.services as {
           conversationThreadManager?: ConversationThreadManager;
-        }).conversationThreadManager;
+        }
+      ).conversationThreadManager;
       if (conversationThreadManager === undefined) {
         throw new Error(
           "bootstrap.session is missing conversationThreadManager",
         );
       }
-      if (!conversationThreadManager.hasThread(bootstrap.session.conversationId)) {
+      if (
+        !conversationThreadManager.hasThread(bootstrap.session.conversationId)
+      ) {
         throw new Error(
           `expected root managed thread for ${bootstrap.session.conversationId}`,
         );
@@ -889,10 +905,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         conversationId: params.agentId,
         resumeConversation: true,
         argv: buildBootstrapArgv(params, this.#argv),
+        executionAdmissionAutonomous: true,
         ...(this.#requireSandboxReadyAtStartup
           ? { requireSandboxReadyAtStartup: true }
           : {}),
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+        ...(this.#executionAdmissionKernel !== undefined
+          ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+          : {}),
       });
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(
         bootstrap.session,
@@ -911,10 +931,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // ConversationThreadManager.replayRolloutIntoSession in
       // bin/bootstrap.ts). The root ManagedThread is already registered
       // by registerConversationRootSession.
-      const conversationThreadManager =
-        (bootstrap.session.services as {
+      const conversationThreadManager = (
+        bootstrap.session.services as {
           conversationThreadManager?: ConversationThreadManager;
-        }).conversationThreadManager;
+        }
+      ).conversationThreadManager;
       if (conversationThreadManager === undefined) {
         throw new Error(
           "bootstrap.session is missing conversationThreadManager",
@@ -1182,7 +1203,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const addServer = active.bootstrap.session.services.mcpManager.addServer;
     if (typeof addServer !== "function") {
-      throw new Error("MCP addServer is not available for this daemon session.");
+      throw new Error(
+        "MCP addServer is not available for this daemon session.",
+      );
     }
     const result = await addServer(params.config);
     return {
@@ -1228,9 +1251,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const enableServer =
       active.bootstrap.session.services.mcpManager.enableServer;
     if (typeof enableServer !== "function") {
-      throw new Error(
-        "MCP enable is not available for this daemon session.",
-      );
+      throw new Error("MCP enable is not available for this daemon session.");
     }
     const result = await enableServer(params.serverName);
     return {
@@ -1252,9 +1273,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const disableServer =
       active.bootstrap.session.services.mcpManager.disableServer;
     if (typeof disableServer !== "function") {
-      throw new Error(
-        "MCP disable is not available for this daemon session.",
-      );
+      throw new Error("MCP disable is not available for this daemon session.");
     }
     const result = await disableServer(params.serverName);
     return {
@@ -1349,9 +1368,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #sessionCacheStatsSnapshot(
     _active: ActiveBackgroundAgent,
   ): Promise<SessionSnapshotResult["cacheStats"]> {
-    const mod = await import(
-      "../services/api/cacheStatsTracker.js"
-    ).catch(() => null);
+    const mod = await import("../services/api/cacheStatsTracker.js").catch(
+      () => null,
+    );
     if (mod === null) {
       return {
         requestCount: 0,
@@ -1361,15 +1380,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         hitRate: null,
       };
     }
-    const metrics = (mod as {
-      getSessionCacheMetrics?: () => {
-        readonly requestCount?: number;
-        readonly cacheReadInputTokens?: number;
-        readonly cacheCreationInputTokens?: number;
-        readonly cacheTotalInputTokens?: number;
-        readonly hitRate?: number | null;
-      };
-    }).getSessionCacheMetrics?.();
+    const metrics = (
+      mod as {
+        getSessionCacheMetrics?: () => {
+          readonly requestCount?: number;
+          readonly cacheReadInputTokens?: number;
+          readonly cacheCreationInputTokens?: number;
+          readonly cacheTotalInputTokens?: number;
+          readonly hitRate?: number | null;
+        };
+      }
+    ).getSessionCacheMetrics?.();
     return {
       requestCount: finiteNumber(metrics?.requestCount ?? 0),
       cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
@@ -1416,7 +1437,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ok: false,
       eventAlreadyEmitted: true,
       code: result.ok ? "NO_EVENT" : result.code,
-      message: result.ok ? "No replacement event was produced." : result.message,
+      message: result.ok
+        ? "No replacement event was produced."
+        : result.message,
     };
   }
 
@@ -1425,7 +1448,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult> {
     if (params.signal?.aborted) {
-      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+      throw Object.assign(new Error("request cancelled"), {
+        name: "AbortError",
+      });
     }
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
@@ -1452,7 +1477,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ok: false,
       eventAlreadyEmitted: true,
       code: result.ok ? "NO_EVENT" : result.code,
-      message: result.ok ? "No replacement event was produced." : result.message,
+      message: result.ok
+        ? "No replacement event was produced."
+        : result.message,
     };
   }
 
@@ -1617,9 +1644,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const target = params.mode as PermissionMode;
     if (
-      !(USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]).includes(
-        target,
-      )
+      !(
+        USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]
+      ).includes(target)
     ) {
       throw new Error(
         `Permission mode "${params.mode}" is internal-only and cannot be set this way.`,
@@ -1633,7 +1660,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (current.mode === target) {
       return { applied: false, previousMode: current.mode, mode: target };
     }
-    const transitioned = transitionPermissionMode(current.mode, target, current);
+    const transitioned = transitionPermissionMode(
+      current.mode,
+      target,
+      current,
+    );
     const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
     await registry.update(nextCtx);
     const result: AgenCBackgroundAgentSetPermissionModeResult = {
@@ -1727,9 +1758,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // setAgentPermissionMode mutating the live permission registry.
     const rt = active.bootstrap.session.services?.hooksRuntime;
     if (rt === undefined) {
-      throw new Error(
-        "Hooks runtime is not available on the daemon session",
-      );
+      throw new Error("Hooks runtime is not available on the daemon session");
     }
     rt.setDisabled(params.disabled);
     return { applied: true, disabled: params.disabled };
@@ -1781,7 +1810,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // subscribers (which a pre-validation reload would do).
     if (params.profile !== undefined) {
       resolveProfile(
-        configStore.current() as unknown as Parameters<typeof resolveProfile>[0],
+        configStore.current() as unknown as Parameters<
+          typeof resolveProfile
+        >[0],
         params.profile,
       );
     }
@@ -2037,9 +2068,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  #installSessionEventLogBridge(
-    active: ActiveBackgroundAgent,
-  ): () => void {
+  #installSessionEventLogBridge(active: ActiveBackgroundAgent): () => void {
     const eventLog = (
       active.bootstrap.session as {
         eventLog?: {
@@ -2305,6 +2334,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       readonly metadata?: JsonObject;
     },
   ): void {
+    if (!this.#legacyAgentBudgetMonitorEnabled) return;
     const budget = normalizeAgentBudget(this.#agentBudget);
     if (budget === undefined) return;
     const startedAtMs =
@@ -2914,8 +2944,10 @@ function hasRuntimeActiveTurn(
 ): boolean {
   const activeTurn = (session as unknown as { activeTurn?: ActiveTurnPeek })
     .activeTurn;
-  return typeof activeTurn?.unsafePeek === "function" &&
-    activeTurn.unsafePeek() !== null;
+  return (
+    typeof activeTurn?.unsafePeek === "function" &&
+    activeTurn.unsafePeek() !== null
+  );
 }
 
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
@@ -3070,7 +3102,9 @@ export function notificationFromDaemonEvent(
         ...(agentRunStatusFromPayload(payload.runStatus) !== undefined
           ? { runStatus: agentRunStatusFromPayload(payload.runStatus) }
           : {}),
-        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        ...(typeof payload.turnId === "string"
+          ? { turnId: payload.turnId }
+          : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
           : {}),
@@ -3105,9 +3139,9 @@ export function notificationFromDaemonEvent(
           ? { message: payload.message }
           : typeof payload.reason === "string"
             ? { message: payload.reason }
-          : typeof payload.lastAgentMessage === "string"
-            ? { message: payload.lastAgentMessage }
-            : {}),
+            : typeof payload.lastAgentMessage === "string"
+              ? { message: payload.lastAgentMessage }
+              : {}),
         ...(isJsonObject(payload.budgetHalt)
           ? { budgetHalt: payload.budgetHalt }
           : {}),
@@ -3226,7 +3260,9 @@ async function runRestoredAgentToCompletion(
   }
 }
 
-async function replayRecoveredToolCalls<TThread extends AgentThread | ManagedThread>(opts: {
+async function replayRecoveredToolCalls<
+  TThread extends AgentThread | ManagedThread,
+>(opts: {
   readonly thread: TThread;
   readonly parent: LocalRuntimeBootstrap["session"];
   readonly registry: ToolRegistry;
@@ -4446,10 +4482,7 @@ function buildBootstrapArgv(
     readonly model?: string;
     readonly profile?: string;
     readonly permissionMode?:
-      | "default"
-      | "plan"
-      | "acceptEdits"
-      | "bypassPermissions";
+      "default" | "plan" | "acceptEdits" | "bypassPermissions";
   },
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
@@ -4530,8 +4563,7 @@ function installDaemonTurnDriverHooks(
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
       const rootHumanTurnText =
-        opts?.source !== "autonomous_tick" &&
-        opts?.displayUserMessage !== null
+        opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ??
             (typeof message === "string"
               ? message

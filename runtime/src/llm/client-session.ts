@@ -139,6 +139,8 @@ export interface ProviderHttpRequestOptions {
   readonly signal?: AbortSignal;
   readonly retryBudget?: ProviderHttpRetryBudget;
   readonly providerFallback?: ProviderFallbackLadderOptions;
+  /** Prevent every transport and continuation retry for an admitted call. */
+  readonly singleWireAttempt?: boolean;
 }
 
 export interface ProviderHttpJsonResponse<T> {
@@ -909,7 +911,11 @@ export class ProviderHttpClientSession {
     try {
       response = await this.requestWithRetry(prepared.options, "request");
     } catch (error) {
-      if (!prepared.continuation || !isContinuationExpiryError(error)) {
+      if (
+        prepared.options.singleWireAttempt === true ||
+        !prepared.continuation ||
+        !isContinuationExpiryError(error)
+      ) {
         throw error;
       }
       warnContinuationExpiry(this.config);
@@ -1014,7 +1020,11 @@ export class ProviderHttpClientSession {
         0,
       );
     } catch (error) {
-      if (!prepared.continuation || !isContinuationExpiryError(error)) {
+      if (
+        prepared.options.singleWireAttempt === true ||
+        !prepared.continuation ||
+        !isContinuationExpiryError(error)
+      ) {
         throw error;
       }
       warnContinuationExpiry(this.config);
@@ -1142,12 +1152,15 @@ export class ProviderHttpClientSession {
         ? DEFAULT_STREAM_RETRY_POLICY
         : DEFAULT_REQUEST_RETRY_POLICY,
     );
+    const maxAttempts = options.singleWireAttempt
+      ? 1
+      : retryBudget.maxRetries + 2;
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options.timeoutMs);
     let consecutiveFallbackFailures = 0;
 
     for (
       let attempt = 0;
-      attempt <= retryBudget.maxRetries + 1;
+      attempt < maxAttempts;
       attempt += 1
     ) {
       const attemptState = createAttemptAbortState(options.signal, timeoutMs);
@@ -1174,6 +1187,7 @@ export class ProviderHttpClientSession {
             ? fallbackDecision.consecutiveFailures
             : 0;
           if (
+            !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
             (shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
@@ -1209,9 +1223,11 @@ export class ProviderHttpClientSession {
         consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
-          (attempt < retryBudget.maxRetries &&
+          (!options.singleWireAttempt &&
+            attempt < retryBudget.maxRetries &&
             shouldRetryTransportError(transport, retryBudget)) ||
-          shouldRetryTlsCertificateError(transport, attempt)
+          (!options.singleWireAttempt &&
+            shouldRetryTlsCertificateError(transport, attempt))
         ) {
           const retryDelay = resolveRetryDelayMs(
             this.config.providerName,
@@ -1240,10 +1256,13 @@ export class ProviderHttpClientSession {
     // LLM-02: stream open/headers use the same request timeout as non-stream;
     // body silence is still covered by the idle watchdog after yield.
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options.timeoutMs);
+    const maxAttempts = options.singleWireAttempt
+      ? 1
+      : retryBudget.maxRetries + 2;
     let consecutiveFallbackFailures = 0;
     for (
       let attempt = initialAttempt;
-      attempt <= retryBudget.maxRetries + 1;
+      attempt < maxAttempts;
       attempt += 1
     ) {
       const attemptState = createAttemptAbortState(options.signal, timeoutMs);
@@ -1269,6 +1288,7 @@ export class ProviderHttpClientSession {
             ? fallbackDecision.consecutiveFailures
             : 0;
           if (
+            !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
             (shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
@@ -1312,9 +1332,11 @@ export class ProviderHttpClientSession {
         consecutiveFallbackFailures = 0;
         const transport = normalizeTransportError(error);
         if (
-          (attempt < retryBudget.maxRetries &&
+          (!options.singleWireAttempt &&
+            attempt < retryBudget.maxRetries &&
             shouldRetryTransportError(transport, retryBudget)) ||
-          shouldRetryTlsCertificateError(transport, attempt)
+          (!options.singleWireAttempt &&
+            shouldRetryTlsCertificateError(transport, attempt))
         ) {
           const retryDelay = resolveRetryDelayMs(
             this.config.providerName,

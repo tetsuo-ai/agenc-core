@@ -8,11 +8,16 @@ import {
   type RealtimeWriter,
 } from "../conversation/realtime/conversation.js";
 import { type JsonObject } from "./protocol/index.js";
-import { AgenCRealtimeRpcService } from "./realtime.js";
+import {
+  AgenCRealtimeRpcService,
+  TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+} from "./realtime.js";
 
 describe("AgenC realtime startup guard", () => {
   test("stop() during deferred startup cancels cleanly without orphaning the session", async () => {
-    const realtime = new AgenCRealtimeRpcService();
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     // Fire a stop() at the moment the transport connects: by then the deferred
     // startup has passed its initial cancellation check and brought the session
     // up, so the post-registration guard check must tear it back down.
@@ -58,7 +63,9 @@ describe("AgenC realtime startup guard", () => {
   });
 
   test("stop() before deferred startup connects short-circuits the startup", async () => {
-    const realtime = new AgenCRealtimeRpcService();
+    const realtime = new AgenCRealtimeRpcService({
+      unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
+    });
     const binding = createRealtimeBinding({ blockConnect: true });
     realtime.registerThread(binding.thread);
 

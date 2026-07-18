@@ -124,4 +124,42 @@ describe("ImagineImage tool", () => {
     expect(body.aspect_ratio).toBe("16:9");
     expect(body.response_format).toBe("b64_json");
   });
+
+  it("aborts the in-flight xAI request from the admitted tool signal", async () => {
+    const provider = createProvider("grok", {
+      apiKey: "session-key",
+      model: "grok-4.5",
+      baseURL: "https://api.x.ai/v1",
+    });
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? undefined;
+          requestSignal?.addEventListener(
+            "abort",
+            () => reject(requestSignal?.reason),
+            { once: true },
+          );
+        }),
+    ) as unknown as typeof fetch;
+    const tool = createImagineImageTool({
+      workspaceRoot: process.cwd(),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled image generation");
+
+    const running = tool.execute({
+      prompt: "a cancelled image",
+      __abortSignal: admittedAbort.signal,
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    admittedAbort.abort(reason);
+
+    await expect(running).rejects.toBe(reason);
+    expect(requestSignal?.aborted).toBe(true);
+  });
 });

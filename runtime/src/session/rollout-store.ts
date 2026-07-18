@@ -43,6 +43,11 @@ import {
   openStateDatabases,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
+import {
+  checkUnknownOutcomeMutationGate,
+  UnknownOutcomeMutationBlockedError,
+} from "../state/unknown-outcome-gate.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 import { isRecord } from "../utils/record.js";
 
@@ -117,6 +122,20 @@ export class RolloutStore {
 
   get sessionId(): string {
     return this.store.sessionId;
+  }
+
+  /** M3 pre-dispatch gate backed by the same project state database. */
+  assertToolAdmissionAllowed(recoveryCategory: ToolRecoveryCategory): void {
+    const decision = checkUnknownOutcomeMutationGate(this.stateDriver, {
+      sessionId: this.sessionId,
+      recoveryCategory,
+    });
+    if (!decision.allowed) {
+      throw new UnknownOutcomeMutationBlockedError(
+        this.sessionId,
+        decision.blocking,
+      );
+    }
   }
 
   get isDegraded(): boolean {

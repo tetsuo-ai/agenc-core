@@ -7,7 +7,11 @@ import {
   AgenCCommandExecService,
   type AgenCCommandExec,
 } from "./command-exec.js";
-import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC,
+  TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
+} from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 import type {
   SandboxExecRequest,
@@ -123,6 +127,45 @@ function killMarker(marker: string): void {
 }
 
 describe("AgenC daemon command exec", () => {
+  it("fails direct command starts closed without a session-bound admission identity", async () => {
+    const commandExec: AgenCCommandExec = {
+      start: vi.fn(async () => ({ exitCode: 0, stdout: "bypass", stderr: "" })),
+      write: vi.fn(async () => ({})),
+      resize: vi.fn(async () => ({})),
+      terminate: vi.fn(async () => ({})),
+      closeConnection: vi.fn(async () => {}),
+    };
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      commandExec,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "start-denied",
+        method: "commandExec.start",
+        params: { command: [process.execPath, "-e", "process.exit(0)"] },
+      }),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "start-denied",
+      error: {
+        code: -32602,
+        message: COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC,
+        data: { code: "EXECUTION_ADMISSION_REQUIRED" },
+      },
+    });
+    expect(commandExec.start).not.toHaveBeenCalled();
+  });
+
   it("dispatches commandExec methods through initialized JSON-RPC connections", async () => {
     const commandExec: AgenCCommandExec = {
       start: vi.fn(async () => ({ exitCode: 0, stdout: "ok", stderr: "" })),
@@ -135,6 +178,8 @@ describe("AgenC daemon command exec", () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
       commandExec,
+      unadmittedCommandExecStartOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
     });
     const connection = dispatcher.createConnection({
       sendNotification: (notification) => notifications.push(notification),
@@ -218,6 +263,8 @@ describe("AgenC daemon command exec", () => {
   it("rejects streaming commandExec starts when the connection cannot receive notifications", async () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
+      unadmittedCommandExecStartOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
     });
     const connection = dispatcher.createConnection();
     await connection.dispatch({
@@ -622,6 +669,8 @@ describe("AgenC daemon command exec", () => {
       const notifications: JsonObject[] = [];
       const dispatcher = new AgenCDaemonJsonRpcDispatcher({
         agentManager: new AgenCDaemonAgentManager(),
+        unadmittedCommandExecStartOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
       });
       const connection = dispatcher.createConnection({
         sendNotification: (message) => notifications.push(message),
@@ -706,6 +755,8 @@ describe("AgenC daemon command exec", () => {
       const notifications: JsonObject[] = [];
       const dispatcher = new AgenCDaemonJsonRpcDispatcher({
         agentManager: new AgenCDaemonAgentManager(),
+        unadmittedCommandExecStartOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
       });
       const connection = dispatcher.createConnection({
         sendNotification: (message) => notifications.push(message),

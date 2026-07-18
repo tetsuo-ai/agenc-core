@@ -67,6 +67,7 @@ import {
 } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getPrompt } from 'src/tools/AgentTool/prompt.js';
 import { runAgent } from './runAgent.js';
+import { beginLegacyAgentSpawnAdmission } from './spawnAdmission.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
 
@@ -94,6 +95,14 @@ type AgentMetadataWriter = typeof writeAgentMetadata;
 
 let agentMetadataWriter: AgentMetadataWriter = writeAgentMetadata;
 
+type AgentWorktreeCreator = typeof createAgentWorktree;
+type AsyncAgentRegistrar = typeof registerAsyncAgent;
+type ForegroundAgentRegistrar = typeof registerAgentForeground;
+
+let agentWorktreeCreator: AgentWorktreeCreator | undefined;
+let asyncAgentRegistrar: AsyncAgentRegistrar | undefined;
+let foregroundAgentRegistrar: ForegroundAgentRegistrar | undefined;
+
 /** @internal Observes the post-policy boundary in focused tests. */
 export function __setAgentToolLaunchPreflightForTesting(
   preflight: AgentToolLaunchPreflightForTesting | undefined,
@@ -106,6 +115,22 @@ export function __setAgentMetadataWriterForTesting(
   writer: AgentMetadataWriter | undefined,
 ): void {
   agentMetadataWriter = writer ?? writeAgentMetadata;
+}
+
+/** @internal Injects the reversible worktree pre-publication boundary. */
+export function __setAgentWorktreeCreatorForTesting(
+  creator: AgentWorktreeCreator | undefined,
+): void {
+  agentWorktreeCreator = creator;
+}
+
+/** @internal Injects task publication sinks for launch-ordering tests. */
+export function __setAgentTaskRegistrarsForTesting(registrars?: {
+  readonly async?: AsyncAgentRegistrar;
+  readonly foreground?: ForegroundAgentRegistrar;
+}): void {
+  asyncAgentRegistrar = registrars?.async;
+  foregroundAgentRegistrar = registrars?.foreground;
 }
 
 // Progress display constants (for showing background hint)
@@ -583,6 +608,22 @@ export const AgentTool = buildTool({
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
 
+    // Admission precedes every child-visible mutation. Async agents use a
+    // dedicated source controller so cancelling the parent turn does not kill
+    // an intentionally detached child; sync agents retain the existing parent
+    // cancellation semantics. The admitted controller is later installed in
+    // the task registry, so foreground→background never swaps authority.
+    const spawnSourceAbortController = shouldRunAsync
+      ? new AbortController()
+      : toolUseContext.abortController;
+    const spawnAdmission = await beginLegacyAgentSpawnAdmission({
+      parent: parentSession,
+      agentId: earlyAgentId,
+      sourceAbortController: spawnSourceAbortController,
+    });
+
+    try {
+
     // Set up worktree isolation if requested
     let worktreeInfo: {
       worktreePath: string;
@@ -597,7 +638,7 @@ export const AgentTool = buildTool({
     if (effectiveIsolation === 'worktree') {
       const slug = `agent-${earlyAgentId.slice(0, 8)}`;
       try {
-        worktreeInfo = await createAgentWorktree(
+        worktreeInfo = await (agentWorktreeCreator ?? createAgentWorktree)(
           slug,
           worktreeSandboxExecutionBroker,
         );
@@ -629,6 +670,10 @@ export const AgentTool = buildTool({
     // is missing. Worktrees created during preflight are removed before the
     // persistence error is returned.
     try {
+      // Crossing this marker makes a crash during the atomic metadata write a
+      // conservative unknown outcome. Reconciliation happens only after the
+      // durable sidecar has been published successfully.
+      spawnAdmission.markDispatched();
       await agentMetadataWriter(asAgentId(earlyAgentId), {
         agentType: selectedAgent.agentType,
         agentRoleWorkspaceId,
@@ -664,6 +709,7 @@ export const AgentTool = buildTool({
       }
       throw persistenceError;
     }
+    spawnAdmission.commit();
 
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
@@ -709,6 +755,7 @@ export const AgentTool = buildTool({
       description,
       agentName: name,
       agentMetadataAlreadyPersisted: true,
+      spawnAdmission,
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
@@ -774,12 +821,17 @@ export const AgentTool = buildTool({
 
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
-      const agentBackgroundTask = registerAsyncAgent({
+      // No await separates this cancellation check from synchronous task
+      // publication, so a parent/kernel cancellation cannot publish a child
+      // after revoking its spawn lease.
+      spawnAdmission.abortController.signal.throwIfAborted();
+      const agentBackgroundTask = (asyncAgentRegistrar ?? registerAsyncAgent)({
         agentId: asyncAgentId,
         description,
         prompt,
         selectedAgent,
         setAppState: rootSetAppState,
+        abortController: spawnAdmission.abortController,
         // Don't link to parent's abort controller -- background agents should
         // survive when the user presses ESC to cancel the main thread.
         // They are killed explicitly via chat:killAgents.
@@ -825,7 +877,7 @@ export const AgentTool = buildTool({
       // invocation time — when this `void` fires — and survives every await
       // inside. No capture/restore needed; the detached closure sees the
       // parent turn's workload automatically, isolated from its finally.
-      void runWithAgentContext(asyncAgentContext, () => wrapWithCwd(() => runAsyncAgentLifecycle({
+      const asyncLifecycle = runWithAgentContext(asyncAgentContext, () => wrapWithCwd(() => runAsyncAgentLifecycle({
         taskId: agentBackgroundTask.agentId,
         abortController: agentBackgroundTask.abortController!,
         makeStream: onCacheSafeParams => runAgent({
@@ -845,6 +897,9 @@ export const AgentTool = buildTool({
         enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
         getWorktreeResult: cleanupWorktreeIfNeeded
       })));
+      void Promise.resolve(asyncLifecycle).finally(() => {
+        spawnAdmission.complete();
+      });
       const canReadOutputFile = toolUseContext.options.tools.some(t => toolMatchesName(t, FILE_READ_TOOL_NAME) || toolMatchesName(t, BASH_TOOL_NAME));
       return {
         data: {
@@ -883,7 +938,7 @@ export const AgentTool = buildTool({
 
       // Wrap entire sync agent execution in context for request attribution
       // and optionally in a worktree cwd override for filesystem isolation
-      return runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
+      const syncLifecycle = runWithAgentContext(syncAgentContext, () => wrapWithCwd(async () => {
         const agentMessages: MessageType[] = [];
         const agentStartTime = Date.now();
         const syncTracker = createProgressTracker();
@@ -917,12 +972,14 @@ export const AgentTool = buildTool({
         }> | undefined;
         let cancelAutoBackground: (() => void) | undefined;
         if (!isBackgroundTasksDisabled) {
-          const registration = registerAgentForeground({
+          spawnAdmission.abortController.signal.throwIfAborted();
+          const registration = (foregroundAgentRegistrar ?? registerAgentForeground)({
             agentId: syncAgentId,
             description,
             prompt,
             selectedAgent,
             setAppState: rootSetAppState,
+            abortController: spawnAdmission.abortController,
             toolUseId: toolUseContext.toolUseId,
             autoBackgroundMs: getAutoBackgroundMs() || undefined
           });
@@ -1347,6 +1404,13 @@ export const AgentTool = buildTool({
           }
         };
       }));
+      return Promise.resolve(syncLifecycle).finally(() => {
+        spawnAdmission.complete();
+      });
+    }
+    } catch (error) {
+      spawnAdmission.complete();
+      throw error;
     }
   },
   isReadOnly() {

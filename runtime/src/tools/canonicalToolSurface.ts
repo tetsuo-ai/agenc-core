@@ -1,6 +1,7 @@
 import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { z } from "zod/v4";
 
+import { runAdmittedLegacyToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { getSessionId } from "../bootstrap/state.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import { getCwd } from "../utils/cwd.js";
@@ -23,7 +24,11 @@ import {
   type SandboxExecutionSurface,
 } from "../sandbox/execution-broker.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "./system/notebook-edit.js";
-import type { Tool as RuntimeTool, ToolResult as RuntimeToolResult } from "./types.js";
+import type {
+  Tool as RuntimeTool,
+  ToolRecoveryCategory,
+  ToolResult as RuntimeToolResult,
+} from "./types.js";
 import { buildTool, type Tool, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
 
 type RuntimeToolFactory = (workspaceRoot: string) => RuntimeTool;
@@ -48,6 +53,7 @@ interface CanonicalToolOptions {
   readonly maxResultSizeChars: number;
   readonly inputSchema: z.ZodType<Record<string, unknown>>;
   readonly createRuntimeTool: RuntimeToolFactory;
+  readonly recoveryCategory: ToolRecoveryCategory;
   readonly mapInput?: (
     input: Record<string, unknown>,
     workspaceRoot: string,
@@ -353,6 +359,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
   // (almost always 1). Keyed lookup keeps the right tool when the
   // session genuinely switches roots.
   const runtimeToolByRoot = new Map<string, ReturnType<typeof options.createRuntimeTool>>();
+  const admissionToolByRoot = new Map<string, RuntimeTool>();
   function getRuntimeTool(root: string): ReturnType<typeof options.createRuntimeTool> {
     let tool = runtimeToolByRoot.get(root);
     if (tool === undefined) {
@@ -361,8 +368,33 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     }
     return tool;
   }
+  function getAdmissionTool(root: string): RuntimeTool {
+    let tool = admissionToolByRoot.get(root);
+    if (tool === undefined) {
+      const runtimeTool = getRuntimeTool(root);
+      tool = {
+        ...runtimeTool,
+        recoveryCategory: options.recoveryCategory,
+        admissionEstimate:
+          runtimeTool.admissionEstimate ??
+          (() => ({
+            maxInputTokens: 0,
+            maxOutputTokens: 0,
+            maxCostUsd: 0,
+          })),
+      };
+      admissionToolByRoot.set(root, tool);
+    }
+    return tool;
+  }
   return buildTool({
     name: options.name,
+    recoveryCategory: options.recoveryCategory,
+    admissionEstimate(input) {
+      const root = workspaceRoot();
+      const runtimeInput = mapCanonicalInput(options, input, root);
+      return getAdmissionTool(root).admissionEstimate!(runtimeInput);
+    },
     ...(options.aliases !== undefined ? { aliases: [...options.aliases] } : {}),
     searchHint: options.searchHint,
     maxResultSizeChars: options.maxResultSizeChars,
@@ -428,31 +460,48 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     async call(input, context, _canUseTool, _parentMessage, onProgress) {
       const root = workspaceRoot();
       const runtimeTool = getRuntimeTool(root);
+      const admissionTool = getAdmissionTool(root);
       const runtimeInput = mapCanonicalInput(options, input, root);
       const progressForwarder =
         options.name === "system.bash"
           ? buildBashProgressForwarder(input, onProgress)
           : undefined;
-      const executionInput: Record<string, unknown> = {
-        ...runtimeInput,
-        __abortSignal: context.abortController.signal,
-        ...(progressForwarder !== undefined ? { __onProgress: progressForwarder } : {}),
-      };
       const runtimeContext = readToolRuntimeContext(input);
-      if (runtimeContext !== undefined) {
-        attachToolRuntimeContext(executionInput, runtimeContext);
-      }
       const carriedBroker = readSandboxExecutionBroker(input) ??
         sandboxBrokerFromToolUseContext(context);
-      if (carriedBroker !== undefined) {
-        attachSandboxExecutionBroker(
-          executionInput,
-          carriedBroker,
-          canonicalExecutionSurface(input, context),
-        );
-      }
-      const result = await runtimeTool.execute(executionInput);
-      return { data: runtimeResultToData(result) };
+      const result = await runAdmittedLegacyToolCall({
+        tool: admissionTool,
+        input,
+        admissionArgs: runtimeInput,
+        context,
+        invoke: async ({ signal }) => {
+          const executionInput: Record<string, unknown> = {
+            ...runtimeInput,
+            __abortSignal: signal,
+            ...(progressForwarder !== undefined
+              ? { __onProgress: progressForwarder }
+              : {}),
+          };
+          if (runtimeContext !== undefined) {
+            attachToolRuntimeContext(executionInput, runtimeContext);
+          }
+          if (carriedBroker !== undefined) {
+            attachSandboxExecutionBroker(
+              executionInput,
+              carriedBroker,
+              canonicalExecutionSurface(input, context),
+            );
+          }
+          return runtimeTool.execute(executionInput);
+        },
+        toDispatchResult: (runtimeResult) => runtimeResult,
+      });
+      return {
+        data: runtimeResultToData(result),
+        ...(result.admissionUsage !== undefined
+          ? { admissionUsage: result.admissionUsage }
+          : {}),
+      };
     },
     mapToolResultToToolResultBlockParam: textToolResultBlock,
     renderToolUseMessage(input) {
@@ -584,6 +633,7 @@ export const CanonicalBashTool = createCanonicalTool({
   maxResultSizeChars: Infinity,
   inputSchema: bashInputSchema,
   createRuntimeTool: (root) => createBashTool({ cwd: root }),
+  recoveryCategory: "side-effecting",
   mapInput: (input, root) => ({
     command: input.command,
     ...(Array.isArray(input.args) ? { args: input.args } : {}),
@@ -611,6 +661,7 @@ export const CanonicalFileReadTool = createCanonicalTool({
   maxResultSizeChars: Infinity,
   inputSchema: fileReadInputSchema,
   createRuntimeTool: (root) => createFileReadTool({ allowedPaths: [root] }),
+  recoveryCategory: "idempotent",
   getPath: (input) =>
     typeof input.file_path === "string" ? input.file_path : undefined,
   userFacingName: () => "FileRead",
@@ -626,6 +677,7 @@ export const CanonicalFileEditTool = createCanonicalTool({
   maxResultSizeChars: 30_000,
   inputSchema: fileEditInputSchema,
   createRuntimeTool: (root) => createFileEditTool({ allowedPaths: [root] }),
+  recoveryCategory: "side-effecting",
   getPath: (input) =>
     typeof input.file_path === "string" ? input.file_path : undefined,
   userFacingName: () => "Edit",
@@ -645,6 +697,7 @@ export const CanonicalFileWriteTool = createCanonicalTool({
   maxResultSizeChars: 30_000,
   inputSchema: fileWriteInputSchema,
   createRuntimeTool: (root) => createFileWriteTool({ allowedPaths: [root] }),
+  recoveryCategory: "side-effecting",
   getPath: (input) =>
     typeof input.file_path === "string" ? input.file_path : undefined,
   userFacingName: () => "Write",
@@ -663,6 +716,7 @@ export const CanonicalGrepTool = createCanonicalTool({
   maxResultSizeChars: 30_000,
   inputSchema: grepInputSchema,
   createRuntimeTool: (root) => createGrepTool({ allowedPaths: [root] }),
+  recoveryCategory: "idempotent",
   getPath: (input) => (typeof input.path === "string" ? input.path : undefined),
   userFacingName: () => "Grep",
   summary: (input) =>
@@ -677,6 +731,7 @@ export const CanonicalGlobTool = createCanonicalTool({
   maxResultSizeChars: 30_000,
   inputSchema: globInputSchema,
   createRuntimeTool: (root) => createGlobTool({ allowedPaths: [root] }),
+  recoveryCategory: "idempotent",
   getPath: (input) => (typeof input.path === "string" ? input.path : undefined),
   userFacingName: () => "Glob",
   summary: (input) =>
@@ -691,6 +746,7 @@ export const CanonicalNotebookEditTool = createCanonicalTool({
   inputSchema: notebookEditInputSchema,
   createRuntimeTool: (root) =>
     createSystemNotebookEditTool({ workspaceRoot: root }),
+  recoveryCategory: "side-effecting",
   getPath: (input) =>
     typeof input.notebook_path === "string" ? input.notebook_path : undefined,
   userFacingName: () => "NotebookEdit",

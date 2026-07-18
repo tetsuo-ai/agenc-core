@@ -568,6 +568,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: false,
     });
     const target = {
       preToolUseHooks: [],

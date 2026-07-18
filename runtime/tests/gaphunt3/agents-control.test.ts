@@ -36,6 +36,7 @@ function stubSession(): ConstructorParameters<typeof AgentControl>[0]["session"]
     },
     nextInternalSubId: () => `sub-${emitted.length}`,
     childInboxes: new Map(),
+    services: { admissionRequired: false },
     rolloutStore: null,
     conversationId: "gaphunt3-control",
     sessionConfiguration: { cwd: agencHome },

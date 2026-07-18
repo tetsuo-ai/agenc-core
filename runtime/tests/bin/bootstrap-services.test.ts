@@ -24,12 +24,16 @@ import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
+  bindExecutionAdmissionJournal,
   buildBootstrapSessionServices,
   loadBootstrapHooks,
   loadBootstrapLspServersInBackground,
   loadBootstrapLspServers,
   shutdownBootstrapLspServers,
 } from "./bootstrap-services.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import type { Session } from "../session/session.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
 import {
   _resetLspManagerForTesting,
@@ -61,20 +65,20 @@ function sessionStartEchoCommand(): string {
     "process.stdin.on('end', () => {",
     "const x = JSON.parse(s);",
     "process.stdout.write('source=' + x.source + ';model=' + x.model + ';mode=' + x.permission_mode);",
-    "});\"",
+    '});"',
   ].join(" ");
 }
 
 function sessionStartStopCommand(): string {
   return [
-    "node -e \"process.stdout.write(JSON.stringify({",
+    'node -e "process.stdout.write(JSON.stringify({',
     "continue: false,",
     "stopReason: 'pause startup',",
     "hookSpecificOutput: {",
     "hookEventName: 'SessionStart',",
     "additionalContext: 'startup context'",
     "}",
-    "}));\"",
+    '}));"',
   ].join(" ");
 }
 
@@ -141,7 +145,9 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
-    expect(target.postToolUseHooks.filter((hook) => hook === autoFixHook)).toHaveLength(1);
+    expect(
+      target.postToolUseHooks.filter((hook) => hook === autoFixHook),
+    ).toHaveLength(1);
 
     loadBootstrapHooks({
       hooksRuntime: runtime,
@@ -150,6 +156,49 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+});
+
+describe("execution admission journal projection", () => {
+  test("persists live admission decisions through the session event stream", () => {
+    let listener: ((event: AdmissionJournalEvent) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const admission = {
+      subscribe: vi.fn((next: (event: AdmissionJournalEvent) => void) => {
+        listener = next;
+        return unsubscribe;
+      }),
+    } as unknown as ExecutionAdmissionClient;
+    const emit = vi.fn();
+    const session = {
+      nextInternalSubId: () => "admission-event-1",
+      emit,
+    } as unknown as Session;
+    const stop = bindExecutionAdmissionJournal(session, admission);
+    const event: AdmissionJournalEvent = {
+      sequence: 7,
+      eventId: "journal-7",
+      timestamp: "2026-07-18T00:00:00.000Z",
+      runId: "run-1",
+      stepId: "model-1",
+      kind: "model_turn",
+      event: "reconciled",
+      reservationId: "reservation-1",
+      actualTokens: 42,
+      actualCostUsd: 0.01,
+    };
+
+    listener?.(event);
+
+    expect(emit).toHaveBeenCalledWith(
+      {
+        id: "admission-event-1",
+        msg: { type: "execution_admission", payload: event },
+      },
+      { durable: true },
+    );
+    stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -237,13 +286,16 @@ describe("SessionStart bootstrap hooks", () => {
       conversationId: "session-sessionstart",
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
+      admissionRequired: false,
     });
     const session = await bootstrapSession({
       conversationId: "session-sessionstart",
       initialState: {
         sessionConfiguration: sessionConfiguration as never,
         history: [],
-        ...(opts.resume ? { pendingSessionStartSource: "resume" as const } : {}),
+        ...(opts.resume
+          ? { pendingSessionStartSource: "resume" as const }
+          : {}),
       },
       features: config.features,
       services: handle.services,
@@ -285,8 +337,10 @@ describe("SessionStart bootstrap hooks", () => {
     });
     try {
       const events = drainSessionEvents(env.session as never);
-      const sessionStartContexts = events.filter((event) =>
-        (event as { msg?: { type?: string } }).msg?.type === "hook_additional_context"
+      const sessionStartContexts = events.filter(
+        (event) =>
+          (event as { msg?: { type?: string } }).msg?.type ===
+          "hook_additional_context",
       );
       expect(sessionStartContexts).toHaveLength(1);
       expect(sessionStartContexts[0]).toMatchObject({
@@ -407,7 +461,9 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         sessionConfiguration: {} as never,
       });
 
-      expect(policyLimitsMocks.configurePolicyLimitsService).toHaveBeenCalledWith(
+      expect(
+        policyLimitsMocks.configurePolicyLimitsService,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
           agencHome: home,
           providerName: "anthropic",
@@ -415,7 +471,9 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
           sessionId: "session-policy-bootstrap",
         }),
       );
-      expect(policyLimits.initializePolicyLimitsLoadingPromise).toHaveBeenCalled();
+      expect(
+        policyLimits.initializePolicyLimitsLoadingPromise,
+      ).toHaveBeenCalled();
       expect(policyLimits.loadPolicyLimits).toHaveBeenCalled();
       expect(handle.services.policyLimits).toBe(policyLimits);
 
@@ -525,7 +583,8 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       );
       const manager = getLspServerManager(sandboxExecutionBroker);
       expect(manager?.getAllServers().has("ts")).toBe(true);
-      if (manager === undefined) throw new Error("LSP manager was not initialized");
+      if (manager === undefined)
+        throw new Error("LSP manager was not initialized");
       await expect(
         manager.ensureServerStarted(join(workspace, "file.ts")),
       ).rejects.toMatchObject({

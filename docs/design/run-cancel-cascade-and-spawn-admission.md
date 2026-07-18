@@ -1,5 +1,10 @@
 # run.cancel cascade + spawn admission gate (M3 final slice)
 
+> **Historical implementation slice.** References below to JSON-ledger
+> `BudgetLedger` holds describe the pre-M3 path. Production cancellation and
+> reservation transitions now run through the durable
+> [`ExecutionAdmissionKernel`](execution-admission-kernel.md).
+
 Status: DESIGN — implements the last red trust-conformance family
 (`cancel-parent-after-child-admission`: `descendant_admission_stopped`,
 `queued_and_running_descendants_cancelled`). Builds against the frozen

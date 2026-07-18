@@ -18,6 +18,18 @@ function nextChunk(stream: PassThrough): Promise<string> {
   });
 }
 
+const RESPONSIVE_CONTROL_METHODS = [
+  "run.cancel",
+  "session.cancelTurn",
+  "agent.list",
+  "session.list",
+  "session.snapshot",
+  "session.hooks.status",
+  "health.ping",
+  "health.ready",
+  "health.stats",
+] as const;
+
 describe("AgenC stdio transport", () => {
   it("encodes one compact JSON message per newline", () => {
     const line = encodeJsonLine({
@@ -154,6 +166,78 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
+  it("does not let attach overtake a pipelined create dependency", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseCreate: (() => void) | undefined;
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        if (message.method === "agent.create") {
+          events.push("create:start");
+          await new Promise<void>((resolve) => {
+            releaseCreate = resolve;
+          });
+          events.push("create:end");
+          return;
+        }
+        events.push(String(message.method));
+      },
+    });
+    transport.start();
+
+    input.write('{"jsonrpc":"2.0","id":1,"method":"agent.create"}\n');
+    input.write('{"jsonrpc":"2.0","id":2,"method":"agent.attach"}\n');
+    await delay(20);
+    expect(events).toEqual(["create:start"]);
+
+    releaseCreate?.();
+    await delay(20);
+    expect(events).toEqual(["create:start", "create:end", "agent.attach"]);
+    await transport.close();
+  });
+
+  it("does not let a priority request overtake connection initialization", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseInitialize: (() => void) | undefined;
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        if (message.method === "initialize") {
+          events.push("initialize:start");
+          await new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+          });
+          events.push("initialize:end");
+          return;
+        }
+        events.push(String(message.method));
+      },
+    });
+    transport.start();
+
+    input.write(
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0"}}\n',
+    );
+    input.write('{"jsonrpc":"2.0","id":2,"method":"health.ping"}\n');
+    await delay(20);
+    expect(events).toEqual(["initialize:start"]);
+
+    releaseInitialize?.();
+    await delay(20);
+    expect(events).toEqual([
+      "initialize:start",
+      "initialize:end",
+      "health.ping",
+    ]);
+    await transport.close();
+  });
+
   it("dispatches request.cancel ahead of an in-flight long request", async () => {
     // Regression for the transport-FIFO cancellation starvation: a
     // request.cancel chained behind a long-running request could never run
@@ -245,6 +329,60 @@ describe("AgenC stdio transport", () => {
     await delay(20);
     expect(events).toEqual(["stream:start", "turn:cancel", "stream:end"]);
 
+    await transport.close();
+  });
+
+  it("keeps cancel, health, status, and session lookup responsive under a blocked stream", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseStream: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const streamStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const transport = new AgenCStdioTransport({
+      input,
+      output,
+      onMessage: async (message) => {
+        if (message.method === "message.stream") {
+          events.push("stream:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseStream = resolve;
+          });
+          events.push("stream:end");
+          return;
+        }
+        events.push(String(message.method));
+      },
+    });
+    transport.start();
+
+    input.write(`${JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "stream",
+      method: "message.stream",
+    })}\n`);
+    await streamStarted;
+    for (const [index, method] of RESPONSIVE_CONTROL_METHODS.entries()) {
+      input.write(`${JSON.stringify({
+        jsonrpc: JSON_RPC_VERSION,
+        id: `control-${index}`,
+        method,
+      })}\n`);
+    }
+
+    await delay(40);
+    expect(events[0]).toBe("stream:start");
+    expect(events).not.toContain("stream:end");
+    expect(events.slice(1).sort()).toEqual(
+      [...RESPONSIVE_CONTROL_METHODS].sort(),
+    );
+
+    releaseStream?.();
+    await delay(20);
+    expect(events.at(-1)).toBe("stream:end");
     await transport.close();
   });
 

@@ -5,11 +5,17 @@
  * Acceptance matrix: authed POST triggers a framed turn (with channel
  * delivery via `deliver` or the final message in the response); missing,
  * wrong, and QUERY-STRING tokens are rejected; non-loopback binds are
- * refused; budget refusal is a visible 429; sessionKey/agent give session
- * continuity/isolation through the SessionRouter.
+ * refused; daemon admission refusal is a visible 429; sessionKey/agent give
+ * session continuity/isolation through the SessionRouter.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -25,7 +31,6 @@ import type {
   GatewaySessionCreateOptions,
 } from "../../src/gateway/types.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
-import { BudgetLedger } from "../../src/budget/ledger.js";
 
 const TOKEN = "hooks-test-token-0123456789";
 
@@ -144,7 +149,7 @@ describe("HooksServer", () => {
     expect(prompt).toContain('channel="hooks"');
   });
 
-  test("deliver routes the turn to the channel and responds 202 immediately", async () => {
+  test("deliver routes the admitted turn to the channel and responds 202", async () => {
     const url = await startServer();
     const res = await post(url, {
       message: "post the release notes",
@@ -242,19 +247,38 @@ describe("HooksServer", () => {
     expect(client.sessions).toHaveLength(2);
   });
 
-  test("budget refusal is a visible 429 and no turn runs", async () => {
-    const url = await startServer({
-      config: { budget: { enabled: true, daily_tokens: 1 } } as unknown as AgenCConfig,
-    });
+  test("daemon execution-admission refusal is a visible 429", async () => {
+    client.throwOnPrompt = new Error(
+      "execution admission deny: budget_exceeded",
+    );
+    const url = await startServer();
     const res = await post(url, { message: "expensive" });
     expect(res.status).toBe(429);
     expect(String(((await res.json()) as Record<string, unknown>).error)).toContain(
-      "budget",
+      "budget_exceeded",
     );
-    expect(client.sessions).toHaveLength(0);
+    expect(client.labels).toHaveLength(1);
+    expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
   });
 
-  test("turn throw refunds hold (ledger tokens/usd 0) with exclusive finally", async () => {
+  test("deliver does not hide daemon execution-admission refusal behind 202", async () => {
+    client.throwOnPrompt = new Error(
+      "execution admission deny: budget_exceeded",
+    );
+    const url = await startServer();
+    const res = await post(url, {
+      message: "expensive delivery",
+      deliver: { channel: "mem", to: "ops-room" },
+    });
+
+    expect(res.status).toBe(429);
+    expect(String(((await res.json()) as Record<string, unknown>).error)).toContain(
+      "budget_exceeded",
+    );
+    expect(mem.lastText("ops-room")).toBeUndefined();
+  });
+
+  test("turn failure does not create the retired surface budget ledger", async () => {
     client.throwOnPrompt = new Error("turn exploded");
     const url = await startServer({
       config: {
@@ -263,11 +287,7 @@ describe("HooksServer", () => {
     });
     const res = await post(url, { message: "will explode", name: "ci" });
     expect(res.status).toBe(500);
-    // Hold fully refunded after throw (zeros reconcile in finally).
-    const ledger = new BudgetLedger({ agencHome: home });
-    const snap = ledger.snapshot("hook:ci");
-    expect(snap.day.tokens).toBe(0);
-    expect(snap.day.usd).toBe(0);
+    expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
   });
 
   test("non-loopback host is refused without allowNonLoopback", () => {

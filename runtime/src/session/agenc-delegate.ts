@@ -14,11 +14,7 @@
  * @module
  */
 
-import type {
-  LLMChatOptions,
-  LLMMessage,
-  LLMProvider,
-} from "../llm/types.js";
+import type { LLMChatOptions, LLMMessage, LLMProvider } from "../llm/types.js";
 import {
   createProvider,
   readProviderFactoryOptions,
@@ -31,11 +27,7 @@ import type {
   TurnContext,
 } from "./turn-context.js";
 import { buildTurnContext } from "./turn-context.js";
-import {
-  Session,
-  type AgentStatus,
-  type SessionServices,
-} from "./session.js";
+import { Session, type AgentStatus, type SessionServices } from "./session.js";
 import type { Event, EventMsg } from "./event-log.js";
 import type { ReviewOutput, ReviewRequest } from "./review.js";
 import {
@@ -54,6 +46,7 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
@@ -312,11 +305,7 @@ export interface BuildGuardianReviewSessionConfigOptions {
 export function buildGuardianReviewSessionConfig(
   opts: BuildGuardianReviewSessionConfigOptions,
 ): Readonly<Config> {
-  const {
-    parentConfig,
-    activeModel,
-    reasoningEffort,
-  } = opts;
+  const { parentConfig, activeModel, reasoningEffort } = opts;
 
   // Gut's Config is readonly; structuredClone+graft-preserved the
   // non-serializable features field mirrors `buildPerTurnConfig`
@@ -433,7 +422,10 @@ async function resolveReviewerModelInfo(
     try {
       return await modelsManager.getModelInfo(reviewerModel, req.config);
     } catch {
-      throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
+      throw new ReviewerModelMismatchError(
+        reviewerModel,
+        session.provider.name,
+      );
     }
   }
   return {
@@ -588,7 +580,13 @@ function createDelegateProvider(
       return provider.chatStream(messages, onChunk, mergedOptions);
     },
     ...(provider.getExecutionProfile !== undefined
-      ? { getExecutionProfile: () => provider.getExecutionProfile!() }
+      ? {
+          getExecutionProfile: (options) =>
+            provider.getExecutionProfile!({
+              ...options,
+              model: reviewerModel,
+            }),
+        }
       : {}),
     ...(provider.retrieveStoredResponse !== undefined
       ? {
@@ -635,13 +633,21 @@ function buildChildServices(
   parent: Session,
   provider: LLMProvider,
   sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
+  childSessionId: string,
 ): SessionServices {
   return {
     ...parent.services,
     provider,
-    ...(sandboxExecutionBroker !== undefined
-      ? { sandboxExecutionBroker }
+    admissionRequired: parent.services.admissionRequired !== false,
+    ...(parent.services.executionAdmission !== undefined
+      ? {
+          executionAdmission: parent.services.executionAdmission.forSession({
+            sessionId: childSessionId,
+            parentScopeId: parent.conversationId,
+          }),
+        }
       : {}),
+    ...(sandboxExecutionBroker !== undefined ? { sandboxExecutionBroker } : {}),
     lspManager: undefined,
     startupPrewarm: undefined,
     registry: createDisabledToolRegistry(),
@@ -694,9 +700,10 @@ function messageText(message: LLMMessage): string {
     .join("\n");
 }
 
-function splitDelegateInput(
-  req: AgenCReviewOneShotRequest,
-): { readonly history: LLMMessage[]; readonly userMessage: string } {
+function splitDelegateInput(req: AgenCReviewOneShotRequest): {
+  readonly history: LLMMessage[];
+  readonly userMessage: string;
+} {
   const input = [...(req.initialHistory ?? []), ...req.input];
   for (let i = input.length - 1; i >= 0; i -= 1) {
     const message = input[i];
@@ -712,51 +719,233 @@ function splitDelegateInput(
   };
 }
 
-export function spawnAgenCDelegateThread(
+function delegateSpawnCancellationError(
+  signal: AbortSignal,
+): AdmissionDeniedError {
+  if (signal.reason instanceof AdmissionDeniedError) return signal.reason;
+  const reason =
+    signal.reason instanceof Error
+      ? signal.reason.message
+      : typeof signal.reason === "string" && signal.reason.length > 0
+        ? signal.reason
+        : "review_delegate_spawn_cancelled";
+  return new AdmissionDeniedError(reason, "cancelled");
+}
+
+export async function spawnAgenCDelegateThread(
   parent: Session,
   req: AgenCReviewOneShotRequest,
   reviewerModel: string,
   reviewerModelInfo: ModelInfo,
   childController: AbortController,
-): InternalDelegateThread {
-  const childSessionConfiguration = buildChildSessionConfiguration(
-    req.parentContext,
-    reviewerModel,
-  );
-  const sandboxExecutionBroker =
-    parent.services.sandboxExecutionBroker?.forkForCwd(
-      childSessionConfiguration.cwd,
-    );
-  const providerLease = createDelegateProvider(
-    parent.provider,
-    reviewerModel,
-    childSessionConfiguration.cwd,
-    sandboxExecutionBroker,
-    req.finalOutputJsonSchema,
-  );
-  const provider = providerLease.provider;
-  const childSession = new Session({
-    conversationId: `${parent.conversationId}:review:${req.subId}`,
-    roleWorkspace: parent.roleWorkspace,
-    agentDefinitions: parent.agentDefinitions,
-    initialState: {
-      sessionConfiguration: childSessionConfiguration,
-      history: [...(req.initialHistory ?? [])],
-    },
-    features: parent.features,
-    services: buildChildServices(parent, provider, sandboxExecutionBroker),
-    jsRepl: parent.jsRepl,
-    config: req.config,
-    modelInfo: reviewerModelInfo,
-    agentStatus: { status: "pending_init" },
-  });
+): Promise<InternalDelegateThread> {
+  const childSessionId = `${parent.conversationId}:review:${req.subId}`;
+  const admission = parent.services.executionAdmission;
+  if (admission === undefined && parent.services.admissionRequired !== false) {
+    throw new AdmissionDeniedError("admission_kernel_unavailable");
+  }
+  if (childController.signal.aborted) {
+    throw delegateSpawnCancellationError(childController.signal);
+  }
 
-  const rxEvent = new AsyncQueue<Event>({ maxDepth: DELEGATE_EVENT_QUEUE_DEPTH });
+  const spawnLease =
+    admission === undefined
+      ? undefined
+      : await admission.acquire(
+          {
+            stepId: `review-spawn:${req.parentContext.subId}:${req.subId}`,
+            kind: "spawn",
+            sessionId: parent.conversationId,
+            parentScopeId: parent.conversationId,
+            maxInputTokens: 0,
+            maxOutputTokens: 0,
+            maxCostUsd: 0,
+          },
+          childController.signal,
+        );
+  let removeLeaseAbortListener: (() => void) | undefined;
+  if (spawnLease !== undefined) {
+    const forwardLeaseAbort = (): void => {
+      if (!childController.signal.aborted) {
+        childController.abort(spawnLease.signal.reason);
+      }
+    };
+    if (spawnLease.signal.aborted) {
+      forwardLeaseAbort();
+    } else {
+      spawnLease.signal.addEventListener("abort", forwardLeaseAbort, {
+        once: true,
+      });
+      removeLeaseAbortListener = () => {
+        spawnLease.signal.removeEventListener("abort", forwardLeaseAbort);
+      };
+    }
+  }
+
+  let sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
+  let providerLease: DelegateProviderLease | undefined;
+  let childSession: Session | undefined;
+  let spawnDispatched = false;
+  let spawnSettled = false;
+  try {
+    if (childController.signal.aborted || spawnLease?.signal.aborted) {
+      throw delegateSpawnCancellationError(
+        spawnLease?.signal.aborted === true
+          ? spawnLease.signal
+          : childController.signal,
+      );
+    }
+    const childSessionConfiguration = buildChildSessionConfiguration(
+      req.parentContext,
+      reviewerModel,
+    );
+    sandboxExecutionBroker =
+      parent.services.sandboxExecutionBroker?.forkForCwd(
+        childSessionConfiguration.cwd,
+      );
+    providerLease = createDelegateProvider(
+      parent.provider,
+      reviewerModel,
+      childSessionConfiguration.cwd,
+      sandboxExecutionBroker,
+      req.finalOutputJsonSchema,
+    );
+    const provider = providerLease.provider;
+    const childServices = buildChildServices(
+      parent,
+      provider,
+      sandboxExecutionBroker,
+      childSessionId,
+    );
+
+    if (childController.signal.aborted || spawnLease?.signal.aborted) {
+      throw delegateSpawnCancellationError(
+        spawnLease?.signal.aborted === true
+          ? spawnLease.signal
+          : childController.signal,
+      );
+    }
+    if (spawnLease !== undefined) {
+      admission?.markDispatched(spawnLease.reservation.reservationId, {
+        boundary: "spawn_commit",
+        details: {
+          childSessionId,
+          parentSessionId: parent.conversationId,
+          rootRunId: admission.scope.runId,
+          reviewerDelegate: true,
+        },
+      });
+      spawnDispatched = true;
+    }
+
+    // markDispatched may synchronously surface a concurrent run cancellation.
+    // Check again before the constructor so a cancelled commit never creates
+    // or registers a child Session.
+    if (childController.signal.aborted || spawnLease?.signal.aborted) {
+      if (spawnLease !== undefined) {
+        admission?.reconcile(spawnLease.reservation.reservationId, {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+        });
+        spawnSettled = true;
+      }
+      throw delegateSpawnCancellationError(
+        spawnLease?.signal.aborted === true
+          ? spawnLease.signal
+          : childController.signal,
+      );
+    }
+
+    childSession = new Session({
+      conversationId: childSessionId,
+      roleWorkspace: parent.roleWorkspace,
+      agentDefinitions: parent.agentDefinitions,
+      initialState: {
+        sessionConfiguration: childSessionConfiguration,
+        history: [...(req.initialHistory ?? [])],
+      },
+      features: parent.features,
+      services: childServices,
+      jsRepl: parent.jsRepl,
+      config: req.config,
+      modelInfo: reviewerModelInfo,
+      agentStatus: { status: "pending_init" },
+    });
+    if (spawnLease !== undefined) {
+      admission?.reconcile(spawnLease.reservation.reservationId, {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+      spawnSettled = true;
+    }
+  } catch (error) {
+    if (spawnLease !== undefined && !spawnSettled) {
+      try {
+        if (spawnDispatched) {
+          admission?.holdUnknown(
+            spawnLease.reservation.reservationId,
+            "review_spawn_commit_outcome_unknown",
+          );
+        } else {
+          admission?.void(
+            spawnLease.reservation.reservationId,
+            "review_spawn_failed_before_commit",
+          );
+        }
+      } catch {
+        // Preserve the spawn failure; the kernel has already journaled the
+        // original reservation and recovery can classify it after restart.
+      }
+    }
+    removeLeaseAbortListener?.();
+    if (childSession !== undefined) {
+      try {
+        await childSession.shutdown();
+      } catch {
+        // Preserve the admission/setup failure.
+      }
+    }
+    if (sandboxExecutionBroker !== undefined) {
+      try {
+        await disposeSandboxExecutionBroker(sandboxExecutionBroker);
+      } catch {
+        // Preserve the admission/setup failure.
+      }
+    }
+    try {
+      await providerLease?.ownedProvider?.dispose?.();
+    } catch {
+      // Preserve the admission/setup failure.
+    }
+    throw error;
+  } finally {
+    if (spawnLease !== undefined) {
+      // The spawn boundary is physically complete once construction either
+      // returns or its rollback finishes. Never let a reconciliation/journal
+      // fault retain live daemon capacity indefinitely.
+      admission?.acknowledgeCompletion(
+        spawnLease.reservation.reservationId,
+      );
+    }
+  }
+
+  const activeChildSession = childSession;
+  const activeProviderLease = providerLease;
+  if (activeChildSession === undefined || activeProviderLease === undefined) {
+    throw new Error("review delegate spawn completed without a child session");
+  }
+  const provider = activeProviderLease.provider;
+
+  const rxEvent = new AsyncQueue<Event>({
+    maxDepth: DELEGATE_EVENT_QUEUE_DEPTH,
+  });
   const txSub = new AsyncQueue<AgenCDelegateOp>();
   let assistantText: string | null = null;
   let runError: Error | null = null;
 
-  const unsubscribe = childSession.eventLog.subscribe((event) => {
+  const unsubscribe = activeChildSession.eventLog.subscribe((event) => {
     if (event.msg.type === "agent_message") {
       assistantText = event.msg.payload.message;
     }
@@ -780,7 +969,7 @@ export function spawnAgenCDelegateThread(
           if (!childController.signal.aborted) {
             childController.abort(op.reason ?? "interrupted");
           }
-          await childSession.abortAllTasks("interrupted");
+          await activeChildSession.abortAllTasks("interrupted");
           continue;
         }
 
@@ -795,7 +984,7 @@ export function spawnAgenCDelegateThread(
           req.subId,
           provider,
         );
-        for await (const phase of childSession.runTurn(userMessage, {
+        for await (const phase of activeChildSession.runTurn(userMessage, {
           ctx: reviewCtx,
           systemPrompt: req.systemPrompt ?? REVIEW_SYSTEM_PROMPT,
           systemPromptTrust: "trusted_internal",
@@ -820,10 +1009,11 @@ export function spawnAgenCDelegateThread(
       runError = err instanceof Error ? err : new Error(String(err));
     } finally {
       unsubscribe();
+      removeLeaseAbortListener?.();
       rxEvent.close();
       txSub.close();
       try {
-        await childSession.shutdown();
+        await activeChildSession.shutdown();
       } catch (error) {
         runError ??= error instanceof Error ? error : new Error(String(error));
       }
@@ -831,11 +1021,12 @@ export function spawnAgenCDelegateThread(
         try {
           await disposeSandboxExecutionBroker(sandboxExecutionBroker);
         } catch (error) {
-          runError ??= error instanceof Error ? error : new Error(String(error));
+          runError ??=
+            error instanceof Error ? error : new Error(String(error));
         }
       }
       try {
-        await providerLease.ownedProvider?.dispose?.();
+        await activeProviderLease.ownedProvider?.dispose?.();
       } catch (error) {
         runError ??= error instanceof Error ? error : new Error(String(error));
       }
@@ -843,10 +1034,10 @@ export function spawnAgenCDelegateThread(
   })();
 
   return {
-    childSession,
+    childSession: activeChildSession,
     rxEvent,
     txSub,
-    agentStatus: childSession.agentStatus,
+    agentStatus: activeChildSession.agentStatus,
     completion,
     lastAssistantText: () => assistantText,
     error: () => runError,
@@ -881,8 +1072,9 @@ export async function runAgenCReviewOneShot(
   // spawning the child review session; AgenC mirrors that when the
   // live Session service bag is present and falls back to the parent
   // metadata shape only for slim test fixtures.
-  const reviewerModel =
-    (req.reviewerModel ?? req.parentContext.modelInfo.slug).trim();
+  const reviewerModel = (
+    req.reviewerModel ?? req.parentContext.modelInfo.slug
+  ).trim();
   if (reviewerModel.length === 0) {
     throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
   }
@@ -916,14 +1108,15 @@ export async function runAgenCReviewOneShot(
     }
   }
 
-  const task = req.registerTask === false
-    ? undefined
-    : await session.spawnTask({
-        subId: req.subId,
-        kind: "review",
-        abortController: childController,
-        startedAtMs: Date.now(),
-      });
+  const task =
+    req.registerTask === false
+      ? undefined
+      : await session.spawnTask({
+          subId: req.subId,
+          kind: "review",
+          abortController: childController,
+          startedAtMs: Date.now(),
+        });
 
   let timeoutFired = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -936,10 +1129,11 @@ export async function runAgenCReviewOneShot(
 
   let assistantText: string | null = null;
   let providerError: Error | null = null;
+  let fatalAdmissionError: AdmissionDeniedError | null = null;
   let thread: InternalDelegateThread | null = null;
   try {
     if (!childController.signal.aborted) {
-      thread = spawnAgenCDelegateThread(
+      thread = await spawnAgenCDelegateThread(
         parentSession,
         req,
         effectiveReviewerModel,
@@ -947,12 +1141,19 @@ export async function runAgenCReviewOneShot(
         childController,
       );
       thread.txSub.send({ type: "user_input", input: req.input });
-      await Promise.race([thread.completion, waitForAbort(childController.signal)]);
+      await Promise.race([
+        thread.completion,
+        waitForAbort(childController.signal),
+      ]);
       assistantText = thread.lastAssistantText();
       providerError = thread.error();
     }
   } catch (err) {
-    providerError = err instanceof Error ? err : new Error(String(err));
+    if (err instanceof AdmissionDeniedError && !childController.signal.aborted) {
+      fatalAdmissionError = err;
+    } else {
+      providerError = err instanceof Error ? err : new Error(String(err));
+    }
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     if (parentSignal && parentAbortListener !== undefined) {
@@ -961,6 +1162,13 @@ export async function runAgenCReviewOneShot(
     if (thread !== null && !thread.rxEvent.isClosed) {
       await thread.shutdown("review_complete");
     }
+  }
+
+  if (fatalAdmissionError !== null) {
+    if (task !== undefined) {
+      await session.onTaskFinished(task.subId);
+    }
+    throw fatalAdmissionError;
   }
 
   // Verdict classification. Order matches upstream: timeout → abort
@@ -993,7 +1201,10 @@ export async function runAgenCReviewOneShot(
     output = emptyReviewOutput();
     error = providerError;
   } else {
-    output = assistantText !== null ? parseReviewOutput(assistantText) : emptyReviewOutput();
+    output =
+      assistantText !== null
+        ? parseReviewOutput(assistantText)
+        : emptyReviewOutput();
     if (output.findings.length > 0) {
       verdict = "fail"; // findings present → reviewer flagged issues
     } else if (output.overallExplanation.trim().length === 0) {

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -87,7 +87,10 @@ async function configureHookSession(): Promise<{ configDir: string; cwd: string 
   resetStateForTests();
   clearCurrentRuntimeSession();
   setCurrentRuntimeSession({
-    services: { sandboxExecutionBroker: explicitDangerBroker },
+    services: {
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: false,
+    },
   } as never);
 
   const cwd = join(configDir, "workspace");
@@ -433,6 +436,97 @@ test("executes command hooks through the pre-tool generator", async () => {
       result.updatedInput?.command === "pwd",
     ),
   ).toBe(true);
+});
+
+test("legacy command hooks stop on the admitted lease signal", async () => {
+  const { cwd } = await configureHookSession();
+  acceptInteractiveWorkspaceTrust();
+  const leaseAbort = new AbortController();
+  const markDispatched = vi.fn();
+  const reconcile = vi.fn();
+  const holdUnknown = vi.fn();
+  const acknowledgeCompletion = vi.fn();
+  const acquire = vi.fn(async () => ({
+    decision: "allow" as const,
+    reservation: {
+      reservationId: "legacy-hook-reservation",
+      step: { runId: "run-legacy", stepId: "hook-step" },
+      reservedCostUsd: 0,
+      reservedTokens: 0,
+      reservedAt: new Date().toISOString(),
+    },
+    request: {},
+    signal: leaseAbort.signal,
+  }));
+  clearCurrentRuntimeSession();
+  setCurrentRuntimeSession({
+    conversationId: sessionId,
+    services: {
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: true,
+      executionAdmission: {
+        scope: {
+          runId: "run-legacy",
+          workspaceId: cwd,
+          sessionId,
+          autonomous: false,
+        },
+        acquire,
+        markDispatched,
+        reconcile,
+        holdUnknown,
+        acknowledgeCompletion,
+        void: vi.fn(),
+        recordFallback: vi.fn(),
+        forSession: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+      },
+    },
+  } as never);
+  const appState = { sessionHooks: new Map<string, unknown>() };
+  registerHookCallbacks({
+    PreToolUse: [
+      {
+        matcher: "Bash",
+        hooks: [
+          {
+            type: "command",
+            command: nodeCommand("setInterval(() => {}, 1000)"),
+          },
+        ],
+      },
+    ],
+  } as never);
+
+  const running = collectAsyncGenerator(
+    executePreToolHooks(
+      "Bash",
+      "tool-cancelled-hook",
+      { command: "pwd" },
+      toolUseContext(appState),
+      "default",
+      undefined,
+      10_000,
+    ),
+  );
+  await vi.waitFor(() => expect(markDispatched).toHaveBeenCalledOnce());
+  leaseAbort.abort(new Error("kernel deadline expired"));
+  const results = await running;
+
+  expect(
+    results.some((result) =>
+      JSON.stringify(result.message).includes("hook_cancelled"),
+    ),
+  ).toBe(true);
+  expect(acquire.mock.calls[0]?.[0]).toMatchObject({ maxCostUsd: 0 });
+  expect(holdUnknown).toHaveBeenCalledWith(
+    "legacy-hook-reservation",
+    "hook_cancelled_after_dispatch",
+  );
+  expect(reconcile).not.toHaveBeenCalled();
+  expect(acknowledgeCompletion).toHaveBeenCalledWith(
+    "legacy-hook-reservation",
+  );
 });
 
 test("executes blocking command hook output through the pre-tool generator", async () => {

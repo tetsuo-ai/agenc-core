@@ -83,7 +83,7 @@ agenc help [command]
 
 Topics include (among others): `agent`, `init`, `login` / `logout` / `whoami`,
 `daemon`, `remote`, `mcp`, `doctor`, `onboard`, `security`, `update`, `gateway`,
-`budget`, `permissions`, `plugin` / `plugins`, `providers`, `config`, `state`,
+`budget`, `run`, `permissions`, `plugin` / `plugins`, `providers`, `config`, `state`,
 `trajectories`. Unknown topics error with a pointer to `agenc help`.
 
 ---
@@ -239,18 +239,44 @@ agenc budget status [--json]
 agenc budget reset <agent>
 ```
 
-Cost-bounded autonomy. Read-only except `reset`. Enforced daemon-side around
-autonomous turns; **disabled by default**.
+Cost-bounded execution admission policy; **disabled by default**. Durable
+usage is inspected by run id with `agenc run status|replay|evidence`.
 
 | Subcommand | Meaning |
 | --- | --- |
-| `status` | Policy + per-agent spend vs caps |
-| `reset <agent>` | Clear an agent's spend and un-pause it |
+| `status` | Configured admission policy and canonical run-inspection commands |
+| `reset <agent>` | Rejected compatibility command; durable admission evidence cannot be reset |
 
 Configure via `[budget]` in `config.toml` or `AGENC_BUDGET*` env vars.
-Ledger: `<AGENC_HOME>/budget/ledger.json`.
+The daemon execution-admission kernel is the sole production accounting
+authority; gateway heartbeat, cron, and hooks do not maintain separate ledgers.
 
-Design: [`../design/budget-enforcement.md`](../design/budget-enforcement.md).
+Design: [`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md).
+
+---
+
+## `run`
+
+```text
+agenc run status <run-id>
+agenc run result <run-id>
+agenc run replay <run-id> [--after <sequence>] [--limit <1-200>]
+agenc run evidence <run-id> [--after <sequence>] [--limit <1-200>]
+agenc run cancel <run-id> [--reason <text>]
+```
+
+These commands use the daemon's durable run/admission contract and print
+canonical JSON. `status` includes aggregate admission and budget/hold state;
+`result` succeeds only after the durable run is terminal. `replay` pages the
+append-only admission journal with an exclusive sequence cursor. `evidence`
+adds source/completeness metadata and SHA-256 hashes for mechanical review.
+`cancel` durably locks the run tree, cancels queued descendants, and propagates
+to running descendants without deleting partial evidence.
+
+Replay and evidence pages default to the daemon's bounded page size and never
+accept more than 200 events. A missing retained source is returned as an
+explicit gap; an admission-only record is not presented as a fabricated
+terminal result.
 
 ---
 
@@ -518,7 +544,7 @@ agenc mcp xaa
 
 | Command | Meaning |
 | --- | --- |
-| `serve` | Expose workspace-scoped read-only AgenC tools as an MCP server |
+| `serve` | Expose workspace-scoped AgenC prompts and resources as an MCP server |
 | `add` | Add an MCP server |
 | `list` | List configured MCP servers |
 | `get` | Show one MCP server |
@@ -543,10 +569,12 @@ agenc mcp serve --transport stdio
 agenc mcp list
 ```
 
-Inbound serve advertises only explicitly non-mutating, idempotent read tools.
-Environment flags cannot authorize mutations. Daemon SSE autostart additionally
-requires an absolute `mcp.server.workspace`; foreground serve uses its working
-directory.
+Inbound serve does not advertise or execute tools until a request can be bound
+to a daemon session-owned admission identity. Direct `tools/call` requests fail
+closed with `ADMISSION_IDENTITY_REQUIRED`; environment flags cannot authorize
+execution. Prompts and resources remain workspace-scoped. Daemon SSE autostart
+additionally requires an absolute `mcp.server.workspace`; foreground serve uses
+its working directory.
 
 ---
 

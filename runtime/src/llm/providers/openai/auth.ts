@@ -41,6 +41,7 @@ export class OpenAIAuthSession {
 
   async withAuthorizedOperation<T>(
     operation: () => Promise<T>,
+    options: { readonly singleWireAttempt?: boolean } = {},
   ): Promise<T> {
     if (this.oauthState && this.config.oauth) {
       if (this.oauthExhaustedMessage) {
@@ -52,6 +53,9 @@ export class OpenAIAuthSession {
       }
 
       try {
+        if (options.singleWireAttempt === true) {
+          return await operation();
+        }
         const result = await retryWithOAuthRefresh(
           this.oauthState,
           async () => await operation(),

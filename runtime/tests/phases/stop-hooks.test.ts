@@ -70,6 +70,7 @@ function mkSession(
     eventLog: log,
     services: {
       hooks: { stopHooks, stopFailureHooks },
+      admissionRequired: false,
     },
     nextInternalSubId: () => `s-${++i}`,
   } as unknown as Session;
@@ -339,6 +340,7 @@ describe("evaluateStopHooks", () => {
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: false,
       // This test exercises hook dispatch; treat the workspace as trusted
       // (production establishes trust before command hooks run).
       isWorkspaceTrusted: () => true,

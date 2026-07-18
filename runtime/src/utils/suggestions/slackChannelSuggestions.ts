@@ -1,12 +1,41 @@
 import { z } from 'zod'
+import { runAdmittedSessionBoundToolCall } from '../../budget/admitted-legacy-tool-call.js'
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import type { MCPServerConnection } from '../../services/mcp/types.js'
+import type { Tool } from '../../tools/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { lazySchema } from '../lazySchema.js'
 import { createSignal } from '../signal.js'
 import { jsonParse } from '../slowOperations.js'
 
 const SLACK_SEARCH_TOOL = 'slack_search_channels'
+const SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS = 5000
+const SLACK_CHANNEL_SUGGESTION_ADMISSION_TOOL: Tool = {
+  name: 'mcp.preflight.slack_channel_suggestions',
+  description: 'Read Slack channel names for prompt typeahead.',
+  inputSchema: {
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+    additionalProperties: false,
+  },
+  metadata: {
+    family: 'mcp',
+    source: 'mcp',
+    mutating: false,
+    hiddenByDefault: true,
+  },
+  isReadOnly: true,
+  recoveryCategory: 'idempotent',
+  admissionEstimate: () => ({
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: 0,
+  }),
+  async execute() {
+    throw new Error('Slack typeahead admission descriptor is not executable')
+  },
+}
 
 // Plain Map (not LRUCache) — findReusableCacheEntry needs to iterate all
 // entries for prefix matching, which LRUCache doesn't expose cleanly.
@@ -36,18 +65,30 @@ async function fetchChannels(
   }
 
   try {
-    const result = await slackClient.client.callTool(
-      {
-        name: SLACK_SEARCH_TOOL,
-        arguments: {
-          query,
-          limit: 20,
-          channel_types: 'public_channel,private_channel',
-        },
-      },
-      undefined,
-      { timeout: 5000 },
-    )
+    const result = await runAdmittedSessionBoundToolCall({
+      tool: SLACK_CHANNEL_SUGGESTION_ADMISSION_TOOL,
+      args: { server: slackClient.name, query },
+      invoke: ({ signal }) =>
+        slackClient.client.callTool(
+          {
+            name: SLACK_SEARCH_TOOL,
+            arguments: {
+              query,
+              limit: 20,
+              channel_types: 'public_channel,private_channel',
+            },
+          },
+          undefined,
+          {
+            signal,
+            timeout: SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS,
+            maxTotalTimeout: SLACK_CHANNEL_SUGGESTION_TIMEOUT_MS,
+          },
+        ),
+      toDispatchResult: () => ({
+        content: '',
+      }),
+    })
 
     const content = result.content
     if (!Array.isArray(content)) return []

@@ -94,6 +94,10 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import {
+  beginLegacyAgentSpawnAdmission,
+  type LegacyAgentSpawnAdmission,
+} from './spawnAdmission.js'
+import {
   type AgentDefinition,
   isBuiltInAgent,
   isRepositoryControlledAgentDefinition,
@@ -316,6 +320,7 @@ export async function* runAgent({
   onQueryProgress,
   agentName,
   agentMetadataAlreadyPersisted,
+  spawnAdmission: transferredSpawnAdmission,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -381,6 +386,9 @@ export async function* runAgent({
    * publishing the task. Direct callers omit this and runAgent persists it
    * before performing any agent work. */
   agentMetadataAlreadyPersisted?: boolean
+  /** Spawn lease acquired by AgentTool before worktree/metadata/task
+   * publication. Direct callers omit it and acquire at this boundary. */
+  spawnAdmission?: LegacyAgentSpawnAdmission
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -421,6 +429,24 @@ export async function* runAgent({
   const effectiveModel = providerOverride ? providerOverride.model : resolvedAgentModel
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
+  // Preserve legacy sync/async abort ownership while adding a child-only
+  // controller when admission is active. Kernel cancellation must stop the
+  // child without aborting the parent controller shared by sync AgentTool.
+  const sourceAgentAbortController = override?.abortController
+    ? override.abortController
+    : isAsync
+      ? new AbortController()
+      : toolUseContext.abortController
+  const spawnAdmission =
+    transferredSpawnAdmission ??
+    (await beginLegacyAgentSpawnAdmission({
+      parent: parentSession,
+      agentId,
+      sourceAbortController: sourceAgentAbortController,
+    }))
+  const agentAbortController = spawnAdmission.abortController
+
+  try {
 
   // Route this agent's transcript into a grouping subdirectory if requested
   // (e.g. workflow subagents write to subagents/workflows/<runId>/).
@@ -429,6 +455,7 @@ export async function* runAgent({
   }
 
   if (!agentMetadataAlreadyPersisted) {
+    spawnAdmission.markDispatched()
     try {
       await writeAgentMetadata(agentId, {
         agentType: agentDefinition.agentType,
@@ -443,6 +470,12 @@ export async function* runAgent({
       }
       throw error
     }
+    spawnAdmission.commit()
+  } else if (transferredSpawnAdmission === undefined) {
+    // A direct caller may prove that metadata already exists, but it still
+    // owns a fresh spawn reservation and must durably commit that edge.
+    spawnAdmission.markDispatched()
+    spawnAdmission.commit()
   }
 
   // Log API calls path for subagents (internal-only)
@@ -623,16 +656,6 @@ export async function* runAgent({
           resolvedTools,
         ),
       )
-
-  // Determine abortController:
-  // - Override takes precedence
-  // - Async agents get a new unlinked controller (runs independently)
-  // - Sync agents share parent's controller
-  const agentAbortController = override?.abortController
-    ? override.abortController
-    : isAsync
-      ? new AbortController()
-      : toolUseContext.abortController
 
   // Execute SubagentStart hooks and collect additional context
   const additionalContexts: string[] = []
@@ -873,6 +896,9 @@ export async function* runAgent({
     }, {
       conversationId: agentId,
       signal: agentAbortController.signal,
+      ...(spawnAdmission.childAdmission !== undefined
+        ? { executionAdmission: spawnAdmission.childAdmission }
+        : {}),
     })) {
       onQueryProgress?.()
       if (
@@ -962,6 +988,12 @@ export async function* runAgent({
       )
     }
     /* eslint-enable @typescript-eslint/no-require-imports */
+  }
+  } finally {
+    // Idempotent with the normal cleanup path and also covers failures during
+    // metadata/setup before the query-loop cleanup becomes active.
+    clearAgentTranscriptSubdir(agentId)
+    spawnAdmission.complete()
   }
 }
 

@@ -93,6 +93,14 @@ export interface AdmissionRequest {
   };
   readonly model?: string;
   readonly provider?: string;
+  /** Stable project/workspace scope used for budget and capacity accounting. */
+  readonly workspaceId?: string;
+  /** Subordinate daemon/session identity; never substitutes for `runId`. */
+  readonly sessionId?: string;
+  /** Immediate execution parent for parent-scoped capacity. */
+  readonly parentScopeId?: string;
+  /** Absolute deadline. Expired queued work is cancelled, not dispatched. */
+  readonly deadlineAt?: string;
 }
 
 export const ADMISSION_DECISIONS = [

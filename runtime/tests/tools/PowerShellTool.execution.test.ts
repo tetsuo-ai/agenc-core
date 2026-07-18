@@ -15,8 +15,16 @@ import {
 } from '../../src/tools/Tool.ts'
 import { PowerShellTool } from '../../src/tools/PowerShellTool/PowerShellTool.tsx'
 import { SandboxExecutionBroker } from '../../src/sandbox/execution-broker.ts'
+import {
+  clearCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from '../../src/session/current-session.ts'
 
 let tempRoot: string | undefined
+const legacyTestSession = {
+  conversationId: 'powershell-execution-test-session',
+  services: { admissionRequired: false },
+} as never
 
 function findPowerShellExecutable(): string | null {
   for (const candidate of ['pwsh', 'powershell']) {
@@ -36,6 +44,7 @@ function findPowerShellExecutable(): string | null {
 async function makeToolUseContext(
   boundary: 'danger' | 'unavailable' = 'danger',
 ): Promise<ToolUseContext> {
+  setCurrentRuntimeSession(legacyTestSession)
   tempRoot = await mkdtemp(join(tmpdir(), 'agenc-powershell-tool-'))
   setProjectRoot(tempRoot)
   setOriginalCwd(tempRoot)
@@ -76,6 +85,7 @@ async function makeToolUseContext(
 }
 
 afterEach(async () => {
+  clearCurrentRuntimeSession(legacyTestSession)
   resetStateForTests()
   if (tempRoot) {
     await rm(tempRoot, { recursive: true, force: true })

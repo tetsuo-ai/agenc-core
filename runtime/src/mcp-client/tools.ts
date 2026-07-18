@@ -810,22 +810,51 @@ async function callRequestPermissionsTool(
 async function withRPCDeadline<T>(
   operation: string,
   timeoutMs: number,
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
+  callerSignal?.throwIfAborted();
+
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `${operation} timed out after ${timeoutMs}ms`,
+  );
+  let timedOut = false;
+  const forwardCallerAbort = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(callerSignal?.reason);
+    }
+  };
+  callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!controller.signal.aborted) controller.abort(timeoutError);
+  }, timeoutMs);
 
   try {
-    return await Promise.race([task(), timeoutPromise]);
+    // Abort the physical RPC on cancellation/deadline, but do not settle this
+    // boundary until the transport promise itself settles. Otherwise the
+    // enclosing admission lease could release concurrency while an
+    // abort-ignoring MCP request is still live.
+    const result = await task(controller.signal);
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    return result;
+  } catch (error) {
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    throw error;
   } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", forwardCallerAbort);
   }
+}
+
+function abortSignalFromArgs(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const signal = args.__abortSignal;
+  return signal instanceof AbortSignal ? signal : undefined;
 }
 
 /**
@@ -859,7 +888,8 @@ export async function createToolBridge(
   const response = await withRPCDeadline<MCPListToolsResponse>(
     `MCP server "${serverName}" listTools`,
     listToolsTimeoutMs,
-    () => client.listTools(),
+    (signal) =>
+      client.listTools(undefined, { signal, timeout: listToolsTimeoutMs }),
   );
   const rawTools = normalizeMCPToolCatalog(response.tools);
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
@@ -925,6 +955,8 @@ export async function createToolBridge(
       ...(defaultPermissionMode !== undefined ? { defaultPermissionMode } : {}),
 
       async execute(args: Record<string, unknown>): Promise<ToolResult> {
+        const effectSignal = abortSignalFromArgs(args);
+        effectSignal?.throwIfAborted();
         if (disposed) {
           return {
             content: `MCP server "${serverName}" has been disconnected`,
@@ -958,6 +990,7 @@ export async function createToolBridge(
             return authorization.result;
           }
           const executionArgs = authorization.args;
+          effectSignal?.throwIfAborted();
           const callArgs = safeStringifyArgs(executionArgs);
           const observer = options.callObserver;
           observer?.onBegin?.({
@@ -970,11 +1003,16 @@ export async function createToolBridge(
             await withRPCDeadline<unknown>(
               `MCP tool "${mcpTool.name}" callTool`,
               callToolTimeoutMs,
-              () =>
-                client.callTool({
-                  name: mcpTool.name,
-                  arguments: executionArgs,
-                }),
+              (signal) =>
+                client.callTool(
+                  {
+                    name: mcpTool.name,
+                    arguments: executionArgs,
+                  },
+                  undefined,
+                  { signal, timeout: callToolTimeoutMs },
+                ),
+              effectSignal,
             ),
           );
 
@@ -1005,7 +1043,10 @@ export async function createToolBridge(
             isError,
           };
         } catch (error) {
-          const errMessage = `MCP tool "${mcpTool.name}" failed: ${(error as Error).message}`;
+          const effectiveError = effectSignal?.aborted
+            ? effectSignal.reason
+            : error;
+          const errMessage = `MCP tool "${mcpTool.name}" failed: ${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}`;
           const durationMs = Date.now() - startedAtMs;
           options.callObserver?.onEnd?.({
             callId,
@@ -1015,6 +1056,7 @@ export async function createToolBridge(
             isError: true,
             durationMs,
           });
+          effectSignal?.throwIfAborted();
           return {
             content: errMessage,
             isError: true,

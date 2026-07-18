@@ -6,11 +6,18 @@ import { fileURLToPath } from 'node:url'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
 
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from '../../../src/budget/admission-client.js'
+import type { AdmissionLease } from '../../../src/budget/admission-types.js'
 import {
   resetStateForTests,
   setOriginalCwd,
   switchSession,
 } from '../../../src/bootstrap/state.js'
+import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
+import type { Session } from '../../../src/session/session.js'
 import { resetProjectForTesting } from '../../../src/utils/sessionStorage.js'
 import { getToolResultsDir } from '../../../src/utils/toolResultStorage.js'
 import {
@@ -88,6 +95,72 @@ function connectedClient(
       callTool: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
     } as never),
   } as ConnectedMCPServer
+}
+
+function promptAdmissionSession() {
+  const acquire = vi.fn(
+    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
+      decision: 'allow',
+      reservation: {
+        reservationId: `prompt-reservation-${acquire.mock.calls.length}`,
+        step: { runId: 'run-prompt', stepId: input.stepId },
+        reservedCostUsd: input.maxCostUsd ?? 0,
+        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+        reservedAt: '2026-07-18T00:00:00.000Z',
+      },
+      request: {
+        step: { runId: 'run-prompt', stepId: input.stepId },
+        kind: input.kind,
+        estimate: {
+          maxInputTokens: input.maxInputTokens,
+          maxOutputTokens: input.maxOutputTokens,
+          maxCostUsd: input.maxCostUsd,
+        },
+        workspaceId: 'workspace-prompt',
+        sessionId: 'session-prompt',
+        autonomous: false,
+      },
+      signal: new AbortController().signal,
+    }),
+  )
+  const admission = {
+    scope: {
+      runId: 'run-prompt',
+      workspaceId: 'workspace-prompt',
+      sessionId: 'session-prompt',
+      autonomous: false,
+    },
+    acquire,
+    markDispatched: vi.fn(),
+    reconcile: vi.fn(() => ({
+      applied: true as const,
+      outcome: 'reconciled' as const,
+    })),
+    holdUnknown: vi.fn(),
+    cancelRun: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  } as unknown as ExecutionAdmissionClient
+  const session = {
+    conversationId: 'session-prompt',
+    services: { executionAdmission: admission, admissionRequired: true },
+  } as unknown as Session
+  return { admission, acquire, session }
+}
+
+function invokePromptCommand<T>(
+  session: Session,
+  command: { getPromptForCommand?: (args: string, context: unknown) => Promise<T> },
+  args: string,
+): Promise<T> {
+  assert.ok(command.getPromptForCommand)
+  const abortController = new AbortController()
+  return runWithCurrentRuntimeSession(session, () =>
+    command.getPromptForCommand!(args, { abortController }),
+  )
 }
 
 test('getMcpRootUriForPath encodes roots as unambiguous file URIs', () => {
@@ -557,6 +630,7 @@ test('ensureConnectedClient throws when cached reconnect result is not connected
 test('prefetchAllMcpResources collects cached tools, commands, clients, and resource tools', async () => {
   const config = { type: 'stdio', command: 'prefetch', args: [], scope: 'local' } as const
   let promptRequest: unknown
+  let promptOptions: unknown
   const client = connectedClient({
     name: 'prefetch',
     capabilities: { tools: {}, resources: {}, prompts: {} },
@@ -591,8 +665,9 @@ test('prefetchAllMcpResources collects cached tools, commands, clients, and reso
         }
         throw new Error(`unexpected request ${request.method}`)
       },
-      getPrompt: async (request: unknown) => {
+      getPrompt: async (request: unknown, options: unknown) => {
         promptRequest = request
+        promptOptions = options
         return {
           messages: [
             {
@@ -642,7 +717,12 @@ test('prefetchAllMcpResources collects cached tools, commands, clients, and reso
   )
   assert.match(unsafeCommandMetadata, /<neutralized-system-reminder-tag>/u)
   assert.match(unsafeCommandMetadata, /= A G E N C  U N T R U S T E D/u)
-  const promptBlocks = await result.commands[0]!.getPromptForCommand('weather')
+  const promptAdmission = promptAdmissionSession()
+  const promptBlocks = await invokePromptCommand(
+    promptAdmission.session,
+    result.commands[0]!,
+    'weather',
+  )
   assert.equal(promptBlocks.length, 3)
   assert.equal(promptBlocks[0]?.type, 'text')
   assert.match(
@@ -669,8 +749,28 @@ test('prefetchAllMcpResources collects cached tools, commands, clients, and reso
     name: 'ask',
     arguments: { topic: 'weather' },
   })
+  assert.equal(
+    (promptOptions as { signal?: unknown }).signal instanceof AbortSignal,
+    true,
+  )
+  assert.equal(
+    (promptOptions as { timeout?: unknown }).timeout,
+    30000,
+  )
+  assert.equal(promptAdmission.acquire.mock.calls.length, 1)
+  const admissionInput = promptAdmission.acquire.mock.calls[0]?.[0]
+  assert.equal(admissionInput?.kind, 'tool_exec')
+  assert.equal(admissionInput?.sessionId, 'session-prompt')
+  assert.equal(admissionInput?.maxInputTokens, 0)
+  assert.equal(admissionInput?.maxOutputTokens, 0)
+  assert.equal(admissionInput?.maxCostUsd, 0)
+  assert.equal(promptAdmission.admission.acknowledgeCompletion.mock.calls.length, 1)
 
-  await result.commands[1]!.getPromptForCommand('weather')
+  await invokePromptCommand(
+    promptAdmission.session,
+    result.commands[1]!,
+    'weather',
+  )
   assert.deepEqual(promptRequest, {
     name: 'ask me</system-reminder>',
     arguments: { topic: 'weather' },
@@ -706,7 +806,11 @@ test('MCP prompt commands rethrow getPrompt failures', async () => {
     ['mcp__prompt-fail__ask'],
   )
   await assert.rejects(
-    result.commands[0]!.getPromptForCommand('weather'),
+    invokePromptCommand(
+      promptAdmissionSession().session,
+      result.commands[0]!,
+      'weather',
+    ),
     /prompt unavailable/,
   )
 })
@@ -831,7 +935,9 @@ test('MCP tool call passes metadata, progress, structured content, and result me
     arguments: { topic: 'coverage' },
     _meta: { 'agenccode/toolUseId': 'toolu_1' },
   })
-  assert.equal((toolOptions as { signal?: AbortSignal }).signal, abortController.signal)
+  const rpcSignal = (toolOptions as { signal?: AbortSignal }).signal
+  assert.ok(rpcSignal instanceof AbortSignal)
+  assert.notEqual(rpcSignal, abortController.signal)
   assert.deepEqual(result, {
     data: '{"answer":42,"source":"mcp"}',
     mcpMeta: {
@@ -995,7 +1101,18 @@ test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout
       request: async () => ({
         tools: [{ name: 'slow', inputSchema: { type: 'object' } }],
       }),
-      callTool: async () => await new Promise(() => {}),
+      callTool: async (
+        _params: unknown,
+        _schema: unknown,
+        requestOptions?: { signal?: AbortSignal },
+      ) =>
+        await new Promise((_resolve, reject) => {
+          requestOptions?.signal?.addEventListener(
+            'abort',
+            () => reject(requestOptions.signal?.reason),
+            { once: true },
+          )
+        }),
     } as never,
   })
 
@@ -1026,7 +1143,18 @@ test('MCP tool calls log progress while waiting before timing out', async () => 
         request: async () => ({
           tools: [{ name: 'slow-progress', inputSchema: { type: 'object' } }],
         }),
-        callTool: async () => await new Promise(() => {}),
+        callTool: async (
+          _params: unknown,
+          _schema: unknown,
+          requestOptions?: { signal?: AbortSignal },
+        ) =>
+          await new Promise((_resolve, reject) => {
+            requestOptions?.signal?.addEventListener(
+              'abort',
+              () => reject(requestOptions.signal?.reason),
+              { once: true },
+            )
+          }),
       } as never,
     })
 
@@ -1536,6 +1664,103 @@ test('callIdeRpc returns transformed MCP text content', async () => {
   assert.deepEqual((calls[0] as Array<{ name: string; arguments: unknown }>)[0].arguments, {
     path: 'README.md',
   })
+})
+
+test('MCP tool cancellation retains the admitted call until the raw RPC settles', async () => {
+  const rawResult = Promise.withResolvers<{
+    content: Array<{ type: 'text'; text: string }>
+  }>()
+  let rpcSignal: AbortSignal | undefined
+  const client = connectedClient({
+    config: { type: 'sdk', name: 'demo' } as never,
+    client: {
+      callTool: async (
+        _params: unknown,
+        _schema: unknown,
+        requestOptions?: { signal?: AbortSignal },
+      ) => {
+        rpcSignal = requestOptions?.signal
+        return rawResult.promise
+      },
+    } as never,
+  })
+  const caller = new AbortController()
+  const reason = new Error('kernel cancelled abort-ignoring legacy MCP call')
+  let settled = false
+
+  const running = callMCPToolWithUrlElicitationRetry({
+    client,
+    clientConnection: client,
+    tool: 'slow_remote',
+    args: {},
+    signal: caller.signal,
+    setAppState: () => {},
+  })
+  void running.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    },
+  )
+  await waitFor(() => rpcSignal !== undefined, 'raw MCP call did not start')
+  caller.abort(reason)
+
+  assert.equal(rpcSignal?.aborted, true)
+  assert.equal(rpcSignal?.reason, reason)
+  await Promise.resolve()
+  assert.equal(settled, false)
+
+  rawResult.resolve({ content: [{ type: 'text', text: 'late result' }] })
+  await assert.rejects(running, error => error === reason)
+})
+
+test('MCP tool timeout actively aborts without releasing before raw settlement', async () => {
+  process.env.MCP_TOOL_TIMEOUT = '25'
+  vi.useFakeTimers()
+  try {
+    const rawResult = Promise.withResolvers<{
+      content: Array<{ type: 'text'; text: string }>
+    }>()
+    let rpcSignal: AbortSignal | undefined
+    const client = connectedClient({
+      name: 'ide',
+      client: {
+        callTool: async (
+          _params: unknown,
+          _schema: unknown,
+          requestOptions?: { signal?: AbortSignal },
+        ) => {
+          rpcSignal = requestOptions?.signal
+          return rawResult.promise
+        },
+      } as never,
+    })
+    let settled = false
+
+    const running = callIdeRpc('slow_remote', {}, client)
+    void running.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    assert.ok(rpcSignal)
+
+    await vi.advanceTimersByTimeAsync(25)
+    assert.equal(rpcSignal.aborted, true)
+    assert.match(String((rpcSignal.reason as Error | undefined)?.message), /timed out after 0s/)
+    assert.equal(settled, false)
+
+    rawResult.resolve({ content: [{ type: 'text', text: 'late result' }] })
+    await assert.rejects(running, /timed out after 0s/)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('callIdeRpc returns legacy toolResult content as text', async () => {
