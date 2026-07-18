@@ -29,6 +29,8 @@ const HERMETIC_ENV_CONTRACT = JSON.parse(
 
 const LIVE_TEST_FILES = [
   'tests/browser/live-e2e.test.ts',
+  'tests/live/eval-executor-docker.live.test.ts',
+  'tests/live/eval-executor-egress.live.test.ts',
   'tests/live/grok-full-surface-e2e.live.test.ts',
   'tests/live/imagine-video-e2e.live.test.ts',
   'tests/live/xsearch-retry.live.test.ts',
