@@ -28,6 +28,7 @@ function cancelledReport(runId: string): CancelAgentRunTreeReport {
     missing: false,
     alreadyTerminal: false,
     rootStatusBefore: "running",
+    subtreeRunIds: [runId, `${runId}_child`],
     cancelledRunIds: [runId, `${runId}_child`],
     priorStatusById: { [runId]: "running", [`${runId}_child`]: "pending" },
     closedEdgeChildIds: [`${runId}_child`],
@@ -106,7 +107,7 @@ describe("run.cancel dispatcher contract", () => {
       "operator",
     );
     expect(harness.stopAgent).toHaveBeenCalledWith("run_a", "operator");
-    // Voided holds cover every cancelled run in the subtree.
+    // Voided holds cover the FULL subtree (idempotent superset).
     expect(harness.voidHolds).toHaveBeenCalledWith(["run_a", "run_a_child"]);
     await harness.dispatcher.closeConnection(harness.connection);
   });
@@ -118,6 +119,7 @@ describe("run.cancel dispatcher contract", () => {
         missing: true,
         alreadyTerminal: false,
         rootStatusBefore: null,
+        subtreeRunIds: [],
         cancelledRunIds: [],
         priorStatusById: {},
         closedEdgeChildIds: [],
@@ -138,13 +140,14 @@ describe("run.cancel dispatcher contract", () => {
     await harness.dispatcher.closeConnection(harness.connection);
   });
 
-  it("reports an already-terminal run idempotently without live or budget action", async () => {
+  it("still voids subtree holds on an already-terminal retry (crash between cascade and voiding)", async () => {
     const harness = await dispatchRunCancel({
       report: {
         runId: "done_run",
         missing: false,
         alreadyTerminal: true,
         rootStatusBefore: "cancelled",
+        subtreeRunIds: ["done_run", "done_run_child"],
         cancelledRunIds: [],
         priorStatusById: {},
         closedEdgeChildIds: [],
@@ -154,9 +157,15 @@ describe("run.cancel dispatcher contract", () => {
       request("rc4", "run.cancel", { runId: "done_run" }),
     );
     expect(response).toMatchObject({
-      result: { runId: "done_run", alreadyTerminal: true, voidedHolds: 0 },
+      result: { runId: "done_run", alreadyTerminal: true, voidedHolds: 3 },
     });
-    expect(harness.voidHolds).not.toHaveBeenCalled();
+    // A crash between a prior cancel's durable cascade and its hold
+    // voiding must be recoverable by retry: voiding runs on the subtree
+    // even when nothing new was cancelled.
+    expect(harness.voidHolds).toHaveBeenCalledWith([
+      "done_run",
+      "done_run_child",
+    ]);
     await harness.dispatcher.closeConnection(harness.connection);
   });
 });

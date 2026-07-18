@@ -94,11 +94,13 @@ export class SpawnAdmissionBlockedError extends Error {
 }
 
 /**
- * Resolve the nearest ancestor of `parentThreadId` (inclusive) that has an
- * `agent_runs` row, walking UP `thread_spawn_edges` regardless of edge
- * status — a closed edge still defines ancestry. Refuse when that
- * ancestor's status is cancel-locked; allow when no run row exists
- * anywhere up the chain (nothing durable to gate on).
+ * Walk the ENTIRE ancestor chain of `parentThreadId` (inclusive) UP
+ * `thread_spawn_edges`, regardless of edge status — a closed edge still
+ * defines ancestry. Refuse when ANY ancestor with an `agent_runs` row is
+ * cancel-locked: cancellation poisons the whole tree for new admissions,
+ * so a terminal-but-revivable intermediate (e.g. a `completed` child of a
+ * cancelled root) must not shield spawns below it. Allow when no run row
+ * up the chain is cancel-locked (nothing durable forbids the admission).
  */
 export function checkSpawnAdmissionGate(
   driver: StateSqliteDriver,
@@ -118,17 +120,14 @@ export function checkSpawnAdmissionGate(
     if (seen.has(current)) break;
     seen.add(current);
     const status = runStatusStmt.get(current)?.status;
-    if (status !== undefined) {
-      if (isCancelLockedAgentRunStatus(status)) {
-        return {
-          allowed: false,
-          decision: "deny",
-          reason: "parent_cancel_locked",
-          parentRunId: current,
-          parentStatus: status,
-        };
-      }
-      return { allowed: true };
+    if (status !== undefined && isCancelLockedAgentRunStatus(status)) {
+      return {
+        allowed: false,
+        decision: "deny",
+        reason: "parent_cancel_locked",
+        parentRunId: current,
+        parentStatus: status,
+      };
     }
     current = parentEdgeStmt.get(current)?.parent_thread_id;
   }
@@ -142,6 +141,12 @@ export interface CancelAgentRunTreeReport {
   /** Root was already cancel-locked/terminal. Nothing was written. */
   readonly alreadyTerminal: boolean;
   readonly rootStatusBefore: string | null;
+  /**
+   * The full spawn subtree (root included), reported even when
+   * `alreadyTerminal` — a retried run.cancel after a crash between the
+   * cascade and hold voiding uses this to void the stranded holds.
+   */
+  readonly subtreeRunIds: readonly string[];
   /** Every run (root included) moved to `cancelled` by this call. */
   readonly cancelledRunIds: readonly string[];
   /** Prior status of each cancelled run (queued-vs-running evidence). */
@@ -189,24 +194,26 @@ function cancelSubtreeLocked(
       missing: true,
       alreadyTerminal: false,
       rootStatusBefore: null,
+      subtreeRunIds: [],
       cancelledRunIds: [],
       priorStatusById: {},
       closedEdgeChildIds: [],
     };
   }
+  const subtree = collectSubtreeThreadIds(driver, runId);
   if (isTerminalAgentRunStatus(rootStatus)) {
     return {
       runId,
       missing: false,
       alreadyTerminal: true,
       rootStatusBefore: rootStatus,
+      subtreeRunIds: subtree,
       cancelledRunIds: [],
       priorStatusById: {},
       closedEdgeChildIds: [],
     };
   }
 
-  const subtree = collectSubtreeThreadIds(driver, runId);
   const cancelledRunIds: string[] = [];
   const priorStatusById: Record<string, string> = {};
   const closedEdgeChildIds: string[] = [];
@@ -239,6 +246,11 @@ function cancelSubtreeLocked(
         cancelReason: reason,
         cancelledBy: runId,
         cancelledAt,
+        // The cascade is one transaction: when the root row says
+        // cascadeComplete, the whole subtree was handled — startup repair
+        // must never re-police this tree (it would re-kill descendants
+        // that were legitimately revived later).
+        ...(threadId === runId ? { cascadeComplete: true } : {}),
       });
       const result = cancelStmt.run(cancelledAt, merged, threadId, status);
       if (result.changes > 0) {
@@ -257,6 +269,7 @@ function cancelSubtreeLocked(
     missing: false,
     alreadyTerminal: false,
     rootStatusBefore: rootStatus,
+    subtreeRunIds: subtree,
     cancelledRunIds,
     priorStatusById,
     closedEdgeChildIds,
@@ -297,28 +310,40 @@ export interface RepairCancelledSubtreesReport {
 }
 
 /**
- * Crash-mid-cascade repair, run inside the startup-recovery transaction
- * BEFORE recoverable runs are loaded: any non-terminal run with a
- * `cancelled` ancestor (edges of any status) is finished off with the
- * same cascade write shape, so recovery completes an interrupted
- * `run.cancel` instead of resurrecting its survivors. Scoped to
- * `cancelled` ancestors only — descendants of completed/errored parents
- * are legitimate survivors.
+ * One-shot repair for cancelled roots whose cascade never ran, executed
+ * inside the startup-recovery transaction BEFORE recoverable runs are
+ * loaded. `cancelAgentRunTree` is a single transaction and stamps
+ * `cascadeComplete` on the root, so cascade-cancelled trees are never
+ * touched here. What remains is a root that became `cancelled` via a
+ * non-cascade writer (e.g. a relayed status transition): its surviving
+ * non-terminal descendants are finished off ONCE, then the root is
+ * stamped `cascadeComplete` so later startups never re-police the tree —
+ * a descendant legitimately revived afterwards (completed → running via a
+ * follow-up message) must not be re-killed forever. Scoped to `cancelled`
+ * ancestors only — descendants of completed/errored parents are
+ * legitimate survivors.
  */
 export function repairCancelledSubtrees(
   driver: StateSqliteDriver,
   options: { readonly now: string },
 ): RepairCancelledSubtreesReport {
   const cancelledRoots = driver
-    .prepareState<[], { id: string }>(
-      "SELECT id FROM agent_runs WHERE status = 'cancelled' ORDER BY id ASC",
+    .prepareState<[], { id: string; metadata_json: string | null }>(
+      `SELECT id, metadata_json FROM agent_runs
+       WHERE status = 'cancelled'
+       ORDER BY id ASC`,
     )
     .all();
   const repairedRunIds: string[] = [];
   const statusStmt = driver.prepareState<[string], { status?: string }>(
     "SELECT status FROM agent_runs WHERE id = ?",
   );
+  const stampStmt = driver.prepareState<[string, string]>(
+    "UPDATE agent_runs SET metadata_json = ? WHERE id = ? AND status = 'cancelled'",
+  );
   for (const root of cancelledRoots) {
+    const metadata = parseJsonObjectOrEmpty(root.metadata_json);
+    if (metadata.cascadeComplete === true) continue;
     const subtree = collectSubtreeThreadIds(driver, root.id);
     for (const threadId of subtree) {
       if (threadId === root.id) continue;
@@ -332,6 +357,10 @@ export function repairCancelledSubtrees(
       );
       repairedRunIds.push(...report.cancelledRunIds);
     }
+    stampStmt.run(
+      JSON.stringify({ ...metadata, cascadeComplete: true }),
+      root.id,
+    );
   }
   return { repairedRunIds };
 }

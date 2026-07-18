@@ -50,49 +50,56 @@ export class ThreadSpawnEdgeRepository {
     opts: { readonly admissionGate?: SpawnEdgeAdmissionGateMode } = {},
   ): IndexedThreadSpawnEdge {
     const normalized = normalizeIndexedThreadSpawnEdge(edge);
-    if ((opts.admissionGate ?? "enforce") === "enforce") {
-      const decision = checkSpawnAdmissionGate(this.driver, {
-        parentThreadId: normalized.parentThreadId,
-      });
-      if (!decision.allowed) {
-        throw new SpawnAdmissionBlockedError(
-          normalized.childThreadId,
-          decision.parentRunId,
-          decision.parentStatus,
-        );
+    // Gate check + INSERT run under ONE BEGIN IMMEDIATE transaction: the
+    // write lock is held across the check, so a concurrent cross-process
+    // run.cancel cannot commit between the admission decision and the edge
+    // landing (the TOCTOU that would admit a child under a cancelled
+    // parent that the cascade never enumerated).
+    return this.driver.transactionImmediate(() => {
+      if ((opts.admissionGate ?? "enforce") === "enforce") {
+        const decision = checkSpawnAdmissionGate(this.driver, {
+          parentThreadId: normalized.parentThreadId,
+        });
+        if (!decision.allowed) {
+          throw new SpawnAdmissionBlockedError(
+            normalized.childThreadId,
+            decision.parentRunId,
+            decision.parentStatus,
+          );
+        }
       }
-    }
-    const metadata = normalized.metadata;
-    const result = this.driver
-      .prepareState(
-        `INSERT INTO thread_spawn_edges (
-          child_thread_id,
-          parent_thread_id,
-          parent_path,
-          metadata_json,
-          agent_role_workspace_id,
-          agent_role_fingerprint,
-          status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(child_thread_id) DO NOTHING`,
-      )
-      .run(
-        normalized.childThreadId,
-        normalized.parentThreadId,
-        normalized.parentPath,
-        JSON.stringify(metadata),
-        metadata.agentRoleWorkspaceId ?? null,
-        metadata.agentRoleFingerprint ?? null,
-        normalized.status,
-      );
-    if (result.changes === 0) {
-      throw new AgentIdExistsError(normalized.childThreadId);
-    }
-    const persisted = this.get(normalized.childThreadId);
-    if (!persisted) {
-      throw new Error("persisted thread-spawn edge could not be read back");
-    }
-    return persisted;
+      const metadata = normalized.metadata;
+      const result = this.driver
+        .prepareState(
+          `INSERT INTO thread_spawn_edges (
+            child_thread_id,
+            parent_thread_id,
+            parent_path,
+            metadata_json,
+            agent_role_workspace_id,
+            agent_role_fingerprint,
+            status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(child_thread_id) DO NOTHING`,
+        )
+        .run(
+          normalized.childThreadId,
+          normalized.parentThreadId,
+          normalized.parentPath,
+          JSON.stringify(metadata),
+          metadata.agentRoleWorkspaceId ?? null,
+          metadata.agentRoleFingerprint ?? null,
+          normalized.status,
+        );
+      if (result.changes === 0) {
+        throw new AgentIdExistsError(normalized.childThreadId);
+      }
+      const persisted = this.get(normalized.childThreadId);
+      if (!persisted) {
+        throw new Error("persisted thread-spawn edge could not be read back");
+      }
+      return persisted;
+    });
   }
 
   setStatus(

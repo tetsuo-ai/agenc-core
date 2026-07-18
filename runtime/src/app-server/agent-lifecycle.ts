@@ -983,21 +983,32 @@ export class AgenCDaemonAgentManager {
     const interruptedLiveAgentIds: string[] = [];
     const runner = this.#runner;
     if (runner !== undefined) {
+      // Interrupt and stop are independently best-effort: an interrupt
+      // throw must not skip the stop. No live agent (or one dying midway)
+      // is not an error — the durable record stands either way.
       try {
         const interrupted =
           (await runner.interruptAgentTurn?.(runId, reason)) ?? false;
-        await runner.stopAgent?.(runId, reason);
         if (interrupted) interruptedLiveAgentIds.push(runId);
       } catch {
-        // No live agent (or it died mid-stop): the durable record stands.
+        // best-effort
+      }
+      try {
+        await runner.stopAgent?.(runId, reason);
+      } catch {
+        // best-effort
       }
     }
 
+    // Void over the FULL subtree, and also when alreadyTerminal: a crash
+    // between a prior cancel's durable cascade and its hold voiding leaves
+    // stranded holds that only a retry can release (voiding is idempotent
+    // — an agent with no open holds voids zero).
     let voidedHolds = 0;
     const voidHolds = this.#voidBudgetHoldsForAgents;
-    if (voidHolds !== undefined && report.cancelledRunIds.length > 0) {
+    if (voidHolds !== undefined && report.subtreeRunIds.length > 0) {
       try {
-        voidedHolds = await voidHolds(report.cancelledRunIds);
+        voidedHolds = await voidHolds(report.subtreeRunIds);
       } catch (error) {
         this.#onSnapshotError(error);
       }

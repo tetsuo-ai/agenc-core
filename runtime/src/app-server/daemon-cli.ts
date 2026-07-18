@@ -2186,6 +2186,9 @@ function cancelRunTreeAcrossStateDatabases(
         missing: false,
         alreadyTerminal: merged.alreadyTerminal && report.alreadyTerminal,
         rootStatusBefore: merged.rootStatusBefore ?? report.rootStatusBefore,
+        subtreeRunIds: [
+          ...new Set([...merged.subtreeRunIds, ...report.subtreeRunIds]),
+        ],
         cancelledRunIds: [...merged.cancelledRunIds, ...report.cancelledRunIds],
         priorStatusById: {
           ...merged.priorStatusById,
@@ -2206,6 +2209,7 @@ function cancelRunTreeAcrossStateDatabases(
       missing: true,
       alreadyTerminal: false,
       rootStatusBefore: null,
+      subtreeRunIds: [],
       cancelledRunIds: [],
       priorStatusById: {},
       closedEdgeChildIds: [],

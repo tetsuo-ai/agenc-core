@@ -94,6 +94,17 @@ export class StateSqliteDriver {
     return this.state.transaction(fn)();
   }
 
+  /**
+   * BEGIN IMMEDIATE transaction: acquires the write lock before the first
+   * read, so a read-then-write sequence (e.g. an admission-gate check
+   * followed by the gated INSERT) cannot interleave with another process's
+   * commit between the check and the write. Nested calls degrade to a
+   * savepoint inside the outer transaction (better-sqlite3 semantics).
+   */
+  transactionImmediate<T>(fn: () => T): T {
+    return this.state.transaction(fn).immediate();
+  }
+
   logsTransaction<T>(fn: () => T): T {
     return this.logs.transaction(fn)();
   }

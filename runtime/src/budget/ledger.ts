@@ -307,6 +307,13 @@ export class BudgetLedger {
         if (hold.dayKey === state.day.key) {
           state.day.usd -= hold.estimatedUsd;
           state.day.tokens -= hold.estimatedTokens;
+        }
+        // The month window outlives the day window: a hold whose day
+        // rolled still carries its debit in the current month, and
+        // `voided` means FULL refund (frozen contract) — unlike
+        // consumeHold's window_rolled, which deliberately keeps the
+        // month debit because the usage is unknown, not cancelled.
+        if (hold.monthKey === state.month.key) {
           state.month.usd -= hold.estimatedUsd;
           state.month.tokens -= hold.estimatedTokens;
         }

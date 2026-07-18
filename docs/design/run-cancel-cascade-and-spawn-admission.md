@@ -56,15 +56,17 @@ Vocabulary:
 API:
 
 - `checkSpawnAdmissionGate(driver, { parentThreadId }): SpawnAdmissionDecision`
-  — resolves the nearest ancestor that has an `agent_runs` row: first
-  `parentThreadId` itself, else walk UP `thread_spawn_edges`
-  (`child_thread_id → parent_thread_id`, edges of ANY status — a closed
-  edge still defines ancestry) with a cycle guard and depth bound. If that
-  ancestor's status is cancel-locked → `{ allowed: false, decision: "deny",
-  reason: "parent_cancel_locked", parentRunId, parentStatus }` (reason is a
-  machine-readable member of the frozen `AdmissionDecision` shape, not
-  prose). No run row anywhere up the chain → allowed (nothing durable to
-  gate on).
+  — walks the ENTIRE ancestor chain from `parentThreadId` (inclusive) UP
+  `thread_spawn_edges` (`child_thread_id → parent_thread_id`, edges of ANY
+  status — a closed edge still defines ancestry) with a cycle guard and
+  depth bound. If ANY ancestor with an `agent_runs` row is cancel-locked →
+  `{ allowed: false, decision: "deny", reason: "parent_cancel_locked",
+  parentRunId, parentStatus }` (reason is a machine-readable member of the
+  frozen `AdmissionDecision` shape, not prose). The walk deliberately does
+  NOT stop at the first run row found: a terminal-but-revivable
+  intermediate (a `completed` child of a cancelled root) must not shield
+  admissions below it. No cancel-locked row anywhere up the chain →
+  allowed.
 - `class SpawnAdmissionBlockedError extends Error` — `code =
   "SPAWN_ADMISSION_BLOCKED"`, carries `childThreadId`, `parentRunId`,
   `parentStatus`; message names the refused child, the cancel-locked
@@ -89,24 +91,35 @@ API:
   an already-cancelled tree returns `alreadyTerminal: true` and mutates
   nothing. Unknown `runId` → `missing: true`, no throw (the daemon layer
   maps it to a typed RPC error).
-- `repairCancelledSubtrees(driver, { now }): RepairReport` — recovery
-  interplay (crash-mid-cascade): find every non-terminal run whose ancestor
-  chain (via edges, any status) contains a `cancelled` run, and complete
-  the cascade on it (same write shape, `cancelReason:
-  "recovery_cascade_repair"`). Scoped to `cancelled` ancestors only —
-  descendants of a merely `completed`/`errored` parent are legitimate
-  survivors and stay recoverable.
+- `repairCancelledSubtrees(driver, { now }): RepairReport` — ONE-SHOT
+  recovery interplay. `cancelAgentRunTree` is a single transaction and
+  stamps `cascadeComplete: true` in the root's metadata, so
+  cascade-cancelled trees are never re-examined. Repair targets only
+  cancelled roots WITHOUT the stamp (a root cancelled by a non-cascade
+  writer, e.g. a relayed status transition): their surviving non-terminal
+  descendants are finished off once (`cancelReason:
+  "recovery_cascade_repair"`), then the root is stamped so later startups
+  never re-police the tree — a descendant legitimately revived afterwards
+  (completed → running via a follow-up message) is never re-killed.
+  Scoped to `cancelled` ancestors only — descendants of a merely
+  `completed`/`errored` parent are legitimate survivors and stay
+  recoverable.
 
 ### 2.2 Enforcement at the durable seams (non-bypassable)
 
 - `ThreadSpawnEdgeRepository.create(edge, opts?)` consults
   `checkSpawnAdmissionGate` on `edge.parentThreadId` inside the repo and
-  throws `SpawnAdmissionBlockedError` on refusal. Default mode `"enforce"`;
-  `opts.admissionGate: "import"` skips the check ONLY for the two
-  historical-topology writers, which are not admissions: the legacy JSON
-  import (`rollout-store.ts loadThreadSpawnEdges`) and
-  `state/export-import.ts` import. Same shape as
-  `recordInFlightToolCallStart`'s `unknownOutcomeGate: "enforce" | "flag"`.
+  throws `SpawnAdmissionBlockedError` on refusal. Gate check + INSERT run
+  under ONE `BEGIN IMMEDIATE` transaction
+  (`StateSqliteDriver.transactionImmediate`): the write lock is held
+  across the check, closing the cross-process TOCTOU where a concurrent
+  `run.cancel` commits between the admission decision and the edge landing
+  (the cascade would never have enumerated that child). Default mode
+  `"enforce"`; `opts.admissionGate: "import"` skips the check ONLY for the
+  legacy JSON edge import (`rollout-store.ts loadThreadSpawnEdges`), which
+  records historical topology rather than admitting new work. Same shape
+  as `recordInFlightToolCallStart`'s `unknownOutcomeGate: "enforce" |
+  "flag"`.
 - `updateAgentRunStatus` gains cancel-lock stickiness: if the existing
   status is cancel-locked and the incoming status differs, the write is a
   guarded no-op returning `{ applied: false, reason:
@@ -155,12 +168,18 @@ Handler flow (manager `cancelRunTree`):
 3. **Void reservations**: new additive `BudgetLedger.voidHoldsForAgent(
    agentId): number` — deletes OPEN holds for that agent under the
    existing disk lock WITHOUT touching spend/pause (unlike operator
-   `reset`). Called for every cancelled run id; total reported as
-   `voidedHolds`. This is the frozen `voided` resolution ("work cancelled
-   before any charge; full refund"). Cross-store atomicity with SQLite is
-   impossible (ledger is a file); ordering durable-cancel → void is safe
-   because an unvoided hold of a cancelled run only over-reserves (fails
-   closed) until voided, never under-reserves.
+   `reset`). `voided` is a FULL refund per the frozen contract: the day
+   debit is refunded when the hold's day window is current, and the month
+   debit whenever its month window is current — including holds whose day
+   already rolled (unlike `consumeHold`'s `window_rolled`, which keeps
+   the month debit because the usage is unknown, not cancelled). Called
+   over the FULL `subtreeRunIds` (not just freshly-cancelled ids) and
+   ALSO on an `alreadyTerminal` retry: a crash between a prior cancel's
+   durable cascade and its voiding leaves stranded holds that only a
+   retried `run.cancel` can release (voiding is idempotent). Cross-store
+   atomicity with SQLite is impossible (ledger is a file); ordering
+   durable-cancel → void is safe because an unvoided hold only
+   over-reserves (fails closed), never under-reserves.
 
 Result: `{ runId, alreadyTerminal, cancelledRunIds, closedEdges,
 interruptedLive, voidedHolds }`.
@@ -200,16 +219,27 @@ Expected scoreboard: TRR 7/7.
 - Gating the legacy JSON edge file itself (import-only; the SQLite repo is
   the durable authority).
 
-## 4. Risks
+## 4. Risks & known limitations
 
 - **Legitimate revival flows**: mitigated by locking only
-  `cancelled`/`unknown_outcome`, never `completed`/`errored`/`stopped`.
-- **Shared project DB, multiple daemons**: cascade and repair run in
-  SQLite transactions; edge-close uses the existing CAS; stickiness makes
-  concurrent late writers converge on `cancelled`.
+  `cancelled`/`unknown_outcome`, never `completed`/`errored`/`stopped`,
+  and by one-shot repair (`cascadeComplete` stamp) so revived descendants
+  are never re-killed on later startups.
+- **Shared project DB, multiple daemons**: the admission gate + edge
+  INSERT run under one `BEGIN IMMEDIATE` transaction; cascade and repair
+  run in SQLite transactions; edge-close uses the existing CAS; stickiness
+  makes concurrent late writers converge on `cancelled`. `agenc state
+  import` over a cancel-locked run fails atomically instead of
+  half-applying (run-row write dropped, session state replaced).
+- **Live agents in OTHER processes** (e.g. a CLI-local session whose tree
+  the daemon cancels): the durable record wins immediately — stickiness
+  rejects their late status writes, the gate refuses their new spawns —
+  but their in-flight work is NOT interrupted; it runs until its own
+  turn/loop checks fail or the next startup recovery. Cross-process live
+  interruption needs an IPC signal and is a deliberate follow-up.
 - **Ancestor walk cost**: gate walk is depth-bounded (existing spawn depth
-  cap) and hits the `parent_thread_id` index; repair sweep runs once per
-  startup inside the existing recovery transaction.
+  cap) and hits the `parent_thread_id` index; repair sweep visits only
+  unstamped cancelled roots inside the existing recovery transaction.
 - **False refusal on unrelated trees**: gate only consults the ancestor
-  chain of the specific parent; runs with no `agent_runs` ancestor are
-  never refused.
+  chain of the specific parent; runs with no cancel-locked `agent_runs`
+  ancestor are never refused.
