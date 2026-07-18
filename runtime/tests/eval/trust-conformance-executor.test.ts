@@ -78,21 +78,22 @@ describe("trust-conformance executor", () => {
     // Both directions are regression-sensitive: a runtime regression flips a
     // passed family to failed; a harness bug faking a pass flips a failed
     // family to passed. Either way this assertion goes red.
-    // Baseline updated with the M3 budget reservation kernel: durable
-    // holdId reconciliation made reconciliation_exactly_once genuinely pass,
-    // flipping the budget family (3/7 -> 4/7).
+    // Baseline history: 3/7 -> 4/7 with the M3 budget reservation kernel
+    // (reconciliation_exactly_once), 4/7 -> 5/7 with the M4 event-gap
+    // markers (the multiplexer replay buffer now announces eviction, so
+    // retention_gap_explicit and hidden_event_loss_zero genuinely pass).
     expect(summary.faultFamilyResults).toEqual({
       budget: "passed",
       cancellation: "failed",
-      event_loss: "failed",
+      event_loss: "passed",
       permission: "passed",
       reconnect: "passed",
       restart: "passed",
       uncertain_effect: "failed",
     });
-    expect(summary.passed).toBe(4);
-    expect(summary.failed).toBe(3);
-    expect(summary.trustRecoveryRate).toBeCloseTo(4 / 7, 10);
+    expect(summary.passed).toBe(5);
+    expect(summary.failed).toBe(2);
+    expect(summary.trustRecoveryRate).toBeCloseTo(5 / 7, 10);
   }, 120_000);
 
   it("reports exactly the known capability-gap invariants as failed", async () => {
@@ -109,14 +110,6 @@ describe("trust-conformance executor", () => {
         invariant: "queued_and_running_descendants_cancelled",
       },
       {
-        scenarioId: "event-loss-explicit-retention-gap",
-        invariant: "hidden_event_loss_zero",
-      },
-      {
-        scenarioId: "event-loss-explicit-retention-gap",
-        invariant: "retention_gap_explicit",
-      },
-      {
         scenarioId: "uncertain-effect-lost-acknowledgement",
         invariant: "dependent_mutations_stopped",
       },
@@ -124,7 +117,7 @@ describe("trust-conformance executor", () => {
     expect(summary.zeroTolerance).toEqual({
       policyEscapeCount: 0,
       duplicatedUncertainMutationCount: 0,
-      hiddenEventLossCount: 1,
+      hiddenEventLossCount: 0,
     });
     expect(summary.unknownOutcomeCount).toBe(1);
   }, 120_000);
@@ -188,6 +181,9 @@ describe("trust-conformance executor", () => {
     );
     expect(preserved).not.toContain(
       "trust-budget-sibling-reservation-race-slot0",
+    );
+    expect(preserved).not.toContain(
+      "trust-event-loss-explicit-retention-gap-slot0",
     );
     // wx flags: a rerun into the same output dir must refuse to clobber.
     await expect(

@@ -80,24 +80,30 @@ describe("client multiplexer buffered byte budget", () => {
     });
     await multiplexer.attachClientToSession("session_1", "client_1");
 
-    // Far fewer than 50 events survived the byte budget.
-    expect(replayed.length).toBeGreaterThan(0);
+    // Far fewer than 50 events survived the byte budget; the eviction is
+    // ANNOUNCED by a leading event_gap marker (M4), never silent.
+    expect(replayed.length).toBeGreaterThan(1);
     expect(replayed.length).toBeLessThan(10);
+    const marker = replayed[0] as { type: string; retiredCount: number };
+    expect(marker.type).toBe("event_gap");
+    const survivors = replayed.slice(1);
+    expect(marker.retiredCount).toBe(50 - survivors.length);
 
     // The survivors are the most recent events (oldest evicted from the head).
-    const lastReplayed = replayed[replayed.length - 1] as {
+    const lastReplayed = survivors[survivors.length - 1] as {
       sequence: number;
     };
     expect(lastReplayed.sequence).toBe(50);
-    const firstReplayed = replayed[0] as { sequence: number };
+    const firstReplayed = survivors[0] as { sequence: number };
     expect(firstReplayed.sequence).toBeGreaterThan(40);
 
-    // Total replayed bytes stay within ~one event of the budget.
+    // Total replayed bytes stay within ~one event of the budget (plus the
+    // small gap marker).
     const replayedBytes = replayed.reduce(
       (sum, event) => sum + Buffer.byteLength(JSON.stringify(event)),
       0,
     );
-    expect(replayedBytes).toBeLessThanOrEqual(4 * 1100 + 1100);
+    expect(replayedBytes).toBeLessThanOrEqual(4 * 1100 + 1100 + 200);
   });
 
   it("always retains at least the most recent event even when it alone exceeds the budget", async () => {
