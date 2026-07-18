@@ -78,8 +78,11 @@ describe("trust-conformance executor", () => {
     // Both directions are regression-sensitive: a runtime regression flips a
     // passed family to failed; a harness bug faking a pass flips a failed
     // family to passed. Either way this assertion goes red.
+    // Baseline updated with the M3 budget reservation kernel: durable
+    // holdId reconciliation made reconciliation_exactly_once genuinely pass,
+    // flipping the budget family (3/7 -> 4/7).
     expect(summary.faultFamilyResults).toEqual({
-      budget: "failed",
+      budget: "passed",
       cancellation: "failed",
       event_loss: "failed",
       permission: "passed",
@@ -87,9 +90,9 @@ describe("trust-conformance executor", () => {
       restart: "passed",
       uncertain_effect: "failed",
     });
-    expect(summary.passed).toBe(3);
-    expect(summary.failed).toBe(4);
-    expect(summary.trustRecoveryRate).toBeCloseTo(3 / 7, 10);
+    expect(summary.passed).toBe(4);
+    expect(summary.failed).toBe(3);
+    expect(summary.trustRecoveryRate).toBeCloseTo(4 / 7, 10);
   }, 120_000);
 
   it("reports exactly the known capability-gap invariants as failed", async () => {
@@ -97,10 +100,6 @@ describe("trust-conformance executor", () => {
     const sortedFailures = [...summary.failedInvariants].sort((a, b) =>
       `${a.scenarioId}:${a.invariant}`.localeCompare(`${b.scenarioId}:${b.invariant}`));
     expect(sortedFailures).toEqual([
-      {
-        scenarioId: "budget-sibling-reservation-race",
-        invariant: "reconciliation_exactly_once",
-      },
       {
         scenarioId: "cancel-parent-after-child-admission",
         invariant: "descendant_admission_stopped",
@@ -180,11 +179,15 @@ describe("trust-conformance executor", () => {
     expect(summaryDoc.kind).toBe("agenc.eval.trust-run-summary");
     expect(summaryDoc.documentDigest).toMatch(/^sha256:/);
     expect(summaryDoc.summary?.total).toBe(7);
-    // Failed attempts keep their forensic state (SQLite DBs, ledger, audit).
+    // Failed attempts keep their forensic state (SQLite DBs, ledger, audit);
+    // passing attempts (budget, since the reservation kernel) are cleaned.
     const preserved = readdirSync(path.join(outputDir, "attempts"));
-    expect(preserved).toContain("trust-budget-sibling-reservation-race-slot0");
+    expect(preserved).toContain("trust-cancel-parent-after-child-admission-slot0");
     expect(preserved).toContain(
       "trust-uncertain-effect-lost-acknowledgement-slot0",
+    );
+    expect(preserved).not.toContain(
+      "trust-budget-sibling-reservation-race-slot0",
     );
     // wx flags: a rerun into the same output dir must refuse to clobber.
     await expect(

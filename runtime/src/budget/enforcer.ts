@@ -2,15 +2,22 @@
  * Budget enforcer (TODO task 15) — the daemon-side admission gate.
  *
  * Contract (see docs/design/budget-enforcement.md):
- *   admit()      pre-flight: debit worst-case (est input + max output) priced
- *                at the model rate; check BOTH daily and monthly caps; fail
- *                closed. Returns a hold or a typed BUDGET_EXCEEDED refusal.
- *   reconcile()  post-call: replace the held estimate with real usage, refund
- *                the delta, and fire soft-warning / paused notifications.
+ *   admit()      pre-flight: transactionally reserve the worst-case charge
+ *                (est input + max output priced at the model rate) under the
+ *                ledger's cross-process lock — cap check, debit, and the
+ *                durable uniquely-identified hold land in ONE atomic save.
+ *                Returns a hold or a typed BUDGET_EXCEEDED refusal.
+ *   reconcile()  post-call: consume the persisted hold exactly once — replace
+ *                the held estimate with real usage, refund the delta, fire
+ *                soft-warning / paused notifications. Duplicate calls are
+ *                mechanical no-ops (holdId is the idempotency key per the
+ *                frozen BudgetReservation contract in run-contracts.ts).
  *
  * Never silently downgrades the model. On a hard-cap breach it pauses the
  * agent's autonomy and notifies; the operator raises the cap or resets.
  */
+
+import { randomUUID } from "node:crypto";
 
 import { BudgetLedger } from "./ledger.js";
 import type {
@@ -24,6 +31,7 @@ import type {
   BudgetUsage,
   ModelPrice,
   ModelPriceResolver,
+  ReconcileResult,
 } from "./types.js";
 
 export interface BudgetEnforcerOptions {
@@ -73,11 +81,14 @@ export class BudgetEnforcer {
    * relevant cap would be exceeded by the worst-case debit, refuses.
    */
   admit(request: AdmitRequest): AdmitResult {
-    const { dayKey, monthKey } = this.#ledger.currentKeys();
+    const holdId = randomUUID();
     if (!this.#inScope(request)) {
+      const { dayKey, monthKey } = this.#ledger.currentKeys();
+      // Zero hold: nothing reserved, nothing persisted; reconcile no-ops.
       return {
         ok: true,
         hold: {
+          holdId,
           agentId: request.agentId,
           model: request.model,
           estimatedUsd: 0,
@@ -86,11 +97,6 @@ export class BudgetEnforcer {
           monthKey,
         },
       };
-    }
-
-    const state = this.#ledger.snapshot(request.agentId);
-    if (state.paused) {
-      return this.#refuse("paused", request.agentId, 0, 0);
     }
 
     const price = this.#priceOf(request.model);
@@ -110,41 +116,61 @@ export class BudgetEnforcer {
         ? priceTokens(price, request.estInputTokens, request.maxOutputTokens)
         : 0;
 
-    // Dollar caps.
-    if (caps.dailyUsd !== undefined && state.day.usd + estUsd > caps.dailyUsd) {
-      return this.#refuse("daily_usd", request.agentId, estUsd, estTokens);
-    }
-    if (
-      caps.monthlyUsd !== undefined &&
-      state.month.usd + estUsd > caps.monthlyUsd
-    ) {
-      return this.#refuse("monthly_usd", request.agentId, estUsd, estTokens);
-    }
-    // Token caps.
-    if (
-      caps.dailyTokens !== undefined &&
-      state.day.tokens + estTokens > caps.dailyTokens
-    ) {
-      return this.#refuse("daily_tokens", request.agentId, estUsd, estTokens);
-    }
-    if (
-      caps.monthlyTokens !== undefined &&
-      state.month.tokens + estTokens > caps.monthlyTokens
-    ) {
-      return this.#refuse("monthly_tokens", request.agentId, estUsd, estTokens);
-    }
-
-    // Admit: hold the worst-case debit so a concurrent turn can't double-spend.
-    this.#ledger.addSpend(request.agentId, estUsd, estTokens);
-    return {
-      ok: true,
-      hold: {
+    // Reserve transactionally: the cap check runs against the LOCKED ledger
+    // state and the worst-case debit + persisted hold land in one atomic
+    // save, so concurrent reservers cannot both pass the same headroom and
+    // a crash after admit leaves a durable, uniquely-identified open hold.
+    const reserved = this.#ledger.tryReserve(
+      {
+        holdId,
         agentId: request.agentId,
         model: request.model,
         estimatedUsd: estUsd,
         estimatedTokens: estTokens,
-        dayKey,
-        monthKey,
+        reservedAt: new Date().toISOString(),
+      },
+      (state) => {
+        if (state.paused) return "paused";
+        if (
+          caps.dailyUsd !== undefined &&
+          state.day.usd + estUsd > caps.dailyUsd
+        ) {
+          return "daily_usd";
+        }
+        if (
+          caps.monthlyUsd !== undefined &&
+          state.month.usd + estUsd > caps.monthlyUsd
+        ) {
+          return "monthly_usd";
+        }
+        if (
+          caps.dailyTokens !== undefined &&
+          state.day.tokens + estTokens > caps.dailyTokens
+        ) {
+          return "daily_tokens";
+        }
+        if (
+          caps.monthlyTokens !== undefined &&
+          state.month.tokens + estTokens > caps.monthlyTokens
+        ) {
+          return "monthly_tokens";
+        }
+        return null;
+      },
+    );
+    if (!reserved.reserved) {
+      return this.#refuse(reserved.reason, request.agentId, estUsd, estTokens);
+    }
+    return {
+      ok: true,
+      hold: {
+        holdId: reserved.hold.holdId,
+        agentId: reserved.hold.agentId,
+        model: reserved.hold.model,
+        estimatedUsd: reserved.hold.estimatedUsd,
+        estimatedTokens: reserved.hold.estimatedTokens,
+        dayKey: reserved.hold.dayKey,
+        monthKey: reserved.hold.monthKey,
       },
     };
   }
@@ -202,17 +228,22 @@ export class BudgetEnforcer {
 
   /**
    * Replace a hold's worst-case estimate with the real usage and refund the
-   * delta (ledger applies `actual − estimated`), then fire a one-shot soft
-   * warning if a window crossed the soft threshold.
+   * delta (ledger applies `actual − estimated` from the PERSISTED estimate),
+   * then fire a one-shot soft warning if a window crossed the soft threshold.
    *
-   * **Not idempotent:** each call applies another `(actual − estimated)`
-   * delta. Call **exactly once** per successful admit (prefer exclusive
-   * `try`/`finally`). Zero holds (budget disabled / out of scope) are a no-op.
+   * **Exactly-once by mechanism:** the hold's durable `holdId` is the
+   * reconciliation idempotency key (frozen contract, run-contracts.ts).
+   * The first call consumes the persisted hold in one locked transaction;
+   * every later call finds no open hold and leaves the ledger untouched
+   * (`reason: "duplicate"`). Zero holds (budget disabled / out of scope)
+   * are a no-op. A hold whose day window rolled before reconciliation is
+   * discarded WITHOUT refund — its debit was already zeroed by the roll and
+   * unknown usage is never refunded as if the call were free.
    */
-  reconcile(hold: BudgetHold, usage: BudgetUsage): void {
+  reconcile(hold: BudgetHold, usage: BudgetUsage): ReconcileResult {
     if (hold.estimatedTokens === 0 && hold.estimatedUsd === 0) {
       // Out-of-scope / unpriced admit held nothing; account nothing.
-      return;
+      return { applied: false, reason: "zero_hold" };
     }
     const price = this.#priceOf(hold.model);
     const actualTokens = usage.inputTokens + usage.outputTokens;
@@ -220,13 +251,12 @@ export class BudgetEnforcer {
       price !== null
         ? priceTokens(price, usage.inputTokens, usage.outputTokens)
         : 0;
-    // Refund the difference between the worst-case hold and the actual spend.
-    this.#ledger.addSpend(
-      hold.agentId,
-      actualUsd - hold.estimatedUsd,
-      actualTokens - hold.estimatedTokens,
-    );
+    const outcome = this.#ledger.consumeHold(hold.holdId, actualUsd, actualTokens);
+    if (outcome !== "reconciled") {
+      return { applied: false, reason: outcome };
+    }
     this.#maybeSoftWarn(hold.agentId);
+    return { applied: true, reason: "reconciled" };
   }
 
   #maybeSoftWarn(agentId: string): void {
