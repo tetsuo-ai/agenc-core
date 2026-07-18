@@ -174,9 +174,11 @@ content-addressed summary under `--output` (default
 `eval-executor-output/trust`), refusing to clobber existing evidence. Honest
 invariant failures exit 0 — they are the suite's product; only
 infrastructure-invalid attempts exit 1. The current honest baseline on
-`main` is 4/7 families passing (restart, reconnect, permission, and budget —
-the M3 budget reservation kernel made reconciliation exactly-once) with
-cancellation cascade/admission, event-gap markers, and the unknown-outcome
+`main` is 5/7 families passing (restart, reconnect, permission, budget — the
+M3 reservation kernel — and event loss: the client multiplexer's SESSION
+replay buffer now announces eviction with in-band `event_gap` markers whose
+retired counts must match the actual loss; capability buffers are a
+follow-up) with cancellation cascade/admission and the unknown-outcome
 dependent-mutation gate failing until the rest of M3/M4 lands. `runtime/tests/eval/trust-conformance-executor.test.ts` pins those
 outcomes in both directions: a runtime regression flips a passing family, a
 harness bug faking a pass flips a failing one, and either turns CI red.
@@ -308,7 +310,7 @@ qualified until its cold preflights, independent solve, negative-patch review,
 and stressor mechanism evidence exist. The real-agent executor and the
 deterministic trust executor now exist (`eval:executor run-agent-real-batch`
 reproduced the first seed baseline; `eval:executor trust-run` scores the trust
-suite with an honest 4/7 baseline). The remaining work is to implement
+suite with an honest 5/7 baseline). The remaining work is to implement
 comparator adapters, run the paired pilot, freeze the powered private holdout
 under separate custody, publish aggregate reports, and turn measured failures
 into improvements. M3/M4 implementation will make the failing trust scenarios

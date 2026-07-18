@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { EVENT_GAP_EVENT } from "../contracts/run-contracts.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
@@ -350,7 +351,7 @@ export class AgenCDaemonClientMultiplexer {
     // Replay never evicts (allowEvict=false below), so nothing is ever pushed
     // here; the array only satisfies the shared enqueueDelivery signature.
     const replayEvictedClientIds: string[] = [];
-    const { attachment, replayedEventCount, replay } = await this.#state.with(
+    const { attachment, replayedEvents, replay } = await this.#state.with(
       async (state) => {
         const client = requireClient(state, clientId);
         const attachment = await this.#sessionManager.attachSession({
@@ -361,7 +362,7 @@ export class AgenCDaemonClientMultiplexer {
 
         client.sessionIds.add(sessionId);
         route.clientAttachmentIds.set(clientId, attachment.attachmentId);
-        const replayedEventCount = route.bufferedEvents.length;
+        const replayedEvents = [...route.bufferedEvents];
         const replay = route.bufferedEvents
           .map((event) =>
             enqueueDelivery(
@@ -376,7 +377,7 @@ export class AgenCDaemonClientMultiplexer {
           )
           .filter((delivery): delivery is EnqueuedDelivery => delivery !== null);
 
-        return { attachment, replayedEventCount, replay };
+        return { attachment, replayedEvents, replay };
       },
     );
 
@@ -385,7 +386,21 @@ export class AgenCDaemonClientMultiplexer {
       if (replayResult.failed.length === 0) {
         await this.#state.with((state) => {
           const route = state.sessions.get(sessionId);
-          route?.bufferedEvents.splice(0, replayedEventCount);
+          if (route === undefined) return;
+          // Remove EXACTLY the delivered events, by identity — never by
+          // count. The settle above runs outside the state lock, so the
+          // buffer may have shifted meanwhile (new events appended, oldest
+          // evicted, a gap marker unshifted/merged at the head). A
+          // positional splice would destroy never-delivered events and the
+          // marker itself, silently re-hiding announced loss. A marker
+          // merged during the window is a NEW object and correctly
+          // survives for the next client (its retiredCount may then
+          // re-announce already-delivered events — over-announcing is the
+          // safe direction).
+          const delivered = new Set(replayedEvents);
+          route.bufferedEvents = route.bufferedEvents.filter(
+            (event) => !delivered.has(event),
+          );
         });
       }
     }
@@ -922,6 +937,61 @@ async function settleDeliveries(
   };
 }
 
+/**
+ * In-band retention-gap marker announcing evicted buffered events, using the
+ * frozen vocabulary (EVENT_GAP_EVENT + RunEventGap reason "retention",
+ * contracts/run-contracts.ts). Buffered events are opaque to the multiplexer,
+ * so the marker is a flat object rather than a session-event envelope;
+ * sequence-addressed RunEventGap markers arrive with the M4 journal
+ * (run.replay). JSON-RPC clients that dispatch on `method` ignore it;
+ * gap-aware clients read `type`/`retiredCount`.
+ *
+ * Invariants: at most ONE marker per session buffer, always at the head,
+ * merged (retiredCount accumulates) across evictions, never itself evicted,
+ * exempt from the event-count capacity. It leaves the buffer only by being
+ * replayed — a fully-acked replay splices it out with the replayed prefix,
+ * so a later eviction starts a fresh marker for the next reconnecting
+ * client. After a failed (unacked) replay the buffer — marker included — is
+ * retained for the next attach.
+ */
+function makeEventGapMarker(sessionId: string, retiredCount: number): JsonObject {
+  return {
+    type: EVENT_GAP_EVENT,
+    sessionId,
+    reason: "retention",
+    retiredCount,
+    // Brand so the predicate below can never confuse a future
+    // sequence-addressed RunEventGap journal event (same frozen type
+    // vocabulary) with a multiplexer-owned retention marker.
+    source: "multiplexer_retention",
+  };
+}
+
+function isBufferedEventGapMarker(event: JsonObject): boolean {
+  return (
+    event.type === EVENT_GAP_EVENT &&
+    event.reason === "retention" &&
+    event.source === "multiplexer_retention"
+  );
+}
+
+/** Merge newly retired events into the head marker (creating it if absent). */
+function recordRetiredEvents(
+  bufferedEvents: JsonObject[],
+  sessionId: string,
+  retiredCount: number,
+): void {
+  if (retiredCount <= 0) return;
+  const head = bufferedEvents[0];
+  if (head !== undefined && isBufferedEventGapMarker(head)) {
+    const previous =
+      typeof head.retiredCount === "number" ? head.retiredCount : 0;
+    bufferedEvents[0] = makeEventGapMarker(sessionId, previous + retiredCount);
+    return;
+  }
+  bufferedEvents.unshift(makeEventGapMarker(sessionId, retiredCount));
+}
+
 function bufferSessionEvent(
   route: MutableSessionRoute,
   event: JsonObject,
@@ -929,13 +999,24 @@ function bufferSessionEvent(
   maxBufferedBytes: number,
 ): void {
   route.bufferedEvents.push(event);
-  if (route.bufferedEvents.length > maxBufferedEvents) {
-    route.bufferedEvents.splice(
-      0,
-      route.bufferedEvents.length - maxBufferedEvents,
+  const startIndex =
+    route.bufferedEvents[0] !== undefined &&
+    isBufferedEventGapMarker(route.bufferedEvents[0])
+      ? 1
+      : 0;
+  const realCount = route.bufferedEvents.length - startIndex;
+  if (realCount > maxBufferedEvents) {
+    const evicted = route.bufferedEvents.splice(
+      startIndex,
+      realCount - maxBufferedEvents,
     );
+    recordRetiredEvents(route.bufferedEvents, route.sessionId, evicted.length);
   }
-  evictBufferedEventsByBytes(route.bufferedEvents, maxBufferedBytes);
+  evictBufferedEventsByBytes(
+    route.bufferedEvents,
+    maxBufferedBytes,
+    route.sessionId,
+  );
 }
 
 function advertisedCapabilities(capabilities: JsonObject | undefined): Set<string> {
@@ -1010,25 +1091,44 @@ function bufferedEventByteSize(event: JsonObject): number {
 /**
  * Drops the oldest buffered events in-place until the total approximate byte
  * size is within `maxBufferedBytes`. Always retains at least the most recent
- * event so a single oversized payload is still replayable rather than silently
- * lost. Pairs with the count cap in {@link bufferSessionEvent}.
+ * REAL event so a single oversized payload is still replayable rather than
+ * silently lost, and never evicts the head gap marker (announced loss must
+ * not itself be lost). Every eviction is folded into the marker via
+ * {@link recordRetiredEvents}; the marker's own ~130 bytes are deliberately
+ * not re-looped against KB-scale budgets. Pairs with the count cap in
+ * {@link bufferSessionEvent}.
  */
 function evictBufferedEventsByBytes(
   bufferedEvents: JsonObject[],
   maxBufferedBytes: number,
+  sessionId: string,
 ): void {
   if (maxBufferedBytes <= 0 || bufferedEvents.length === 0) return;
   let total = 0;
   for (const event of bufferedEvents) {
     total += bufferedEventByteSize(event);
   }
-  while (total > maxBufferedBytes && bufferedEvents.length > 1) {
-    const removed = bufferedEvents.shift();
+  let retired = 0;
+  while (total > maxBufferedBytes) {
+    const startIndex =
+      bufferedEvents[0] !== undefined &&
+      isBufferedEventGapMarker(bufferedEvents[0])
+        ? 1
+        : 0;
+    if (bufferedEvents.length - startIndex <= 1) break;
+    const [removed] = bufferedEvents.splice(startIndex, 1);
     if (removed === undefined) break;
     total -= bufferedEventByteSize(removed);
+    retired += 1;
   }
+  if (retired > 0) recordRetiredEvents(bufferedEvents, sessionId, retired);
 }
 
+/**
+ * Note: a buffer holding only a gap marker deliberately keeps the route
+ * alive — the announced loss must survive for the next attaching client.
+ * The pin is one small object per session and clears on attach/terminate.
+ */
 function deleteRouteIfEmpty(
   state: MultiplexerState,
   route: MutableSessionRoute,

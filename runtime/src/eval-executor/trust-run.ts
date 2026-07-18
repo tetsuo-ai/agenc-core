@@ -1040,14 +1040,26 @@ async function runEventLossExplicitRetentionGap(ctx: ScenarioContext): Promise<S
     .map((event) => eventIdOf(event))
     .filter((id): id is string => id !== null && publishedSet.has(id));
   const lostCount = total - deliveredPublishedIds.length;
-  const gapMarkerPresent = delivered.some(
+  const gapMarkers = delivered.filter(
     (event) => eventTypeOf(event) === EVENT_GAP_EVENT,
   );
-  const hiddenLossZero = lostCount === 0 || gapMarkerPresent;
+  const gapMarkerPresent = gapMarkers.length > 0;
+  const announcedRetiredCount = gapMarkers.reduce(
+    (sum, marker) =>
+      sum + (typeof marker.retiredCount === "number" ? marker.retiredCount : 0),
+    0,
+  );
+  // Hidden loss is zero only when the loss is announced HONESTLY: the
+  // marker's retired count must account for every lost event, not merely
+  // exist. A marker with a wrong count is still hidden loss.
+  const hiddenLossZero =
+    lostCount === 0 ||
+    (gapMarkerPresent && announcedRetiredCount === lostCount);
   const terminalQueryable = deliveredPublishedIds.includes("terminal");
   evidence.record("event.gap", {
     lostCount,
     gapMarkerPresent,
+    announcedRetiredCount,
     deliveredCount: deliveredPublishedIds.length,
   });
   evidence.record("recovery.assessed", {
@@ -1066,6 +1078,7 @@ async function runEventLossExplicitRetentionGap(ctx: ScenarioContext): Promise<S
       invariant(evidence, "hidden_event_loss_zero", hiddenLossZero, {
         lostCount,
         gapMarkerPresent,
+        announcedRetiredCount,
       }),
       invariant(evidence, "terminal_result_queryable", terminalQueryable, {}),
     ],
