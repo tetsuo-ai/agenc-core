@@ -9,6 +9,20 @@ import {
 } from "../agents/registry.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  checkSpawnAdmissionGate,
+  SpawnAdmissionBlockedError,
+} from "./run-cancellation.js";
+
+/**
+ * Admission-gate mode for {@link ThreadSpawnEdgeRepository.create}.
+ * "enforce" (default) refuses a new edge whose nearest ancestor run is
+ * cancel-locked (SpawnAdmissionBlockedError). "import" skips the check —
+ * ONLY for historical-topology writers (legacy JSON edge import, state
+ * export/import), which record edges that were admitted in the past
+ * rather than admitting new work now.
+ */
+export type SpawnEdgeAdmissionGateMode = "enforce" | "import";
 
 export interface IndexedThreadSpawnEdge {
   readonly childThreadId: ThreadId;
@@ -31,8 +45,23 @@ interface SpawnEdgeRow {
 export class ThreadSpawnEdgeRepository {
   constructor(private readonly driver: StateSqliteDriver) {}
 
-  create(edge: IndexedThreadSpawnEdge): IndexedThreadSpawnEdge {
+  create(
+    edge: IndexedThreadSpawnEdge,
+    opts: { readonly admissionGate?: SpawnEdgeAdmissionGateMode } = {},
+  ): IndexedThreadSpawnEdge {
     const normalized = normalizeIndexedThreadSpawnEdge(edge);
+    if ((opts.admissionGate ?? "enforce") === "enforce") {
+      const decision = checkSpawnAdmissionGate(this.driver, {
+        parentThreadId: normalized.parentThreadId,
+      });
+      if (!decision.allowed) {
+        throw new SpawnAdmissionBlockedError(
+          normalized.childThreadId,
+          decision.parentRunId,
+          decision.parentStatus,
+        );
+      }
+    }
     const metadata = normalized.metadata;
     const result = this.driver
       .prepareState(

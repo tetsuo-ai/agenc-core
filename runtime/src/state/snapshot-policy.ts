@@ -1061,6 +1061,7 @@ function agentRunStatusForTransition(
     case "completed":
     case "errored":
     case "stopped":
+    case "cancelled":
       return transition.runStatus;
   }
   switch (transition.status) {

@@ -114,6 +114,11 @@ import {
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
+import {
+  cancelAgentRunTree,
+  type CancelAgentRunTreeReport,
+} from "../state/run-cancellation.js";
+import { BudgetLedger } from "../budget/ledger.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { readRotatedToolOutputLog } from "../state/tool-output-rotation.js";
 import {
@@ -1511,6 +1516,20 @@ async function runAgenCDaemonForeground(
       io.stderr.write(
         `agenc: permission audit log failed: ${formatCleanupError(error)}\n`,
       ),
+    cancelRunTreeDurable: (params) =>
+      cancelRunTreeAcrossStateDatabases(
+        authStartup.daemonHome,
+        primaryCwd,
+        params,
+      ),
+    voidBudgetHoldsForAgents: (agentIds) => {
+      const ledger = new BudgetLedger({ agencHome: authStartup.daemonHome });
+      let voided = 0;
+      for (const agentId of agentIds) {
+        voided += ledger.voidHoldsForAgent(agentId);
+      }
+      return voided;
+    },
   });
   // Wire the runner's terminal-status hook into the lifecycle so a
   // completed/errored agent's status transitions out of `running` in
@@ -2134,6 +2153,64 @@ function recoverAgenCDaemonStartupState(
     recoveredToolCalls,
     warnings,
   };
+}
+
+/**
+ * Durable half of run.cancel: apply the tree-scoped cascade against every
+ * project state DB that holds the run row (a run lives in exactly one
+ * project DB in practice; the merge keeps the result honest if ids ever
+ * collide across projects). Missing everywhere → `missing: true`.
+ */
+function cancelRunTreeAcrossStateDatabases(
+  daemonHome: string,
+  cwd: string,
+  params: {
+    readonly runId: string;
+    readonly reason: string;
+    readonly cancelledAt: string;
+  },
+): CancelAgentRunTreeReport {
+  const paths = discoverAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  let merged: CancelAgentRunTreeReport | undefined;
+  for (const pathSet of paths) {
+    const driver = openStateDatabasePaths(pathSet);
+    try {
+      const report = cancelAgentRunTree(driver, params);
+      if (report.missing) continue;
+      if (merged === undefined) {
+        merged = report;
+        continue;
+      }
+      merged = {
+        runId: params.runId,
+        missing: false,
+        alreadyTerminal: merged.alreadyTerminal && report.alreadyTerminal,
+        rootStatusBefore: merged.rootStatusBefore ?? report.rootStatusBefore,
+        cancelledRunIds: [...merged.cancelledRunIds, ...report.cancelledRunIds],
+        priorStatusById: {
+          ...merged.priorStatusById,
+          ...report.priorStatusById,
+        },
+        closedEdgeChildIds: [
+          ...merged.closedEdgeChildIds,
+          ...report.closedEdgeChildIds,
+        ],
+      };
+    } finally {
+      driver.close();
+    }
+  }
+  return (
+    merged ?? {
+      runId: params.runId,
+      missing: true,
+      alreadyTerminal: false,
+      rootStatusBefore: null,
+      cancelledRunIds: [],
+      priorStatusById: {},
+      closedEdgeChildIds: [],
+    }
+  );
 }
 
 function discoverAgenCDaemonStateDatabasePaths(

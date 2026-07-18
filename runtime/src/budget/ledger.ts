@@ -289,6 +289,34 @@ export class BudgetLedger {
     });
   }
 
+  /**
+   * The frozen `voided` reservation resolution ("work cancelled before any
+   * charge; full refund"): under the disk lock, delete every open hold for
+   * `agentId` and refund its reserved debit from the current windows.
+   * Unlike operator `reset`, recorded spend, pause, and warn flags are
+   * untouched — only unresolved reservations are released. Holds whose day
+   * window already rolled are discarded without refund (the roll zeroed
+   * the debit). Returns the number of holds voided.
+   */
+  voidHoldsForAgent(agentId: string): number {
+    return this.#withDiskLock(() => {
+      let voided = 0;
+      for (const [holdId, hold] of Object.entries(this.#file.holds)) {
+        if (hold.agentId !== agentId) continue;
+        const state = this.#stateRolled(agentId);
+        if (hold.dayKey === state.day.key) {
+          state.day.usd -= hold.estimatedUsd;
+          state.day.tokens -= hold.estimatedTokens;
+          state.month.usd -= hold.estimatedUsd;
+          state.month.tokens -= hold.estimatedTokens;
+        }
+        delete this.#file.holds[holdId];
+        voided += 1;
+      }
+      return voided;
+    });
+  }
+
   /** Open (unresolved) holds, optionally filtered by agent. */
   listOpenHolds(agentId?: string): readonly PersistedBudgetHold[] {
     return Object.values(this.#file.holds)

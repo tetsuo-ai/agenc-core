@@ -58,6 +58,7 @@ import {
   type AgentListParams,
   type AgentLogsParams,
   type AgentStopParams,
+  type RunCancelParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -173,6 +174,7 @@ function buildServerCapabilities(
     "agent.attach": hasMethod(agentManager, "attachAgent"),
     "agent.stop": hasMethod(agentManager, "stopAgent"),
     "agent.logs": hasMethod(agentManager, "getAgentLogs"),
+    "run.cancel": hasMethod(agentManager, "cancelRunTree"),
     "session.create": hasMethod(sessionManager, "createSession"),
     "session.list": hasMethod(sessionManager, "listSessions"),
     "session.attach": hasMethod(sessionManager, "attachSession"),
@@ -298,6 +300,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
+    | "cancelRunTree"
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
@@ -372,6 +375,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
+    | "cancelRunTree"
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
@@ -617,6 +621,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.getAgentLogs(
             validateAgentLogsParams(params),
+          ),
+        );
+      case "run.cancel":
+        return successResponse(
+          id,
+          await this.#agentManager.cancelRunTree(
+            validateRunCancelParams(params),
           ),
         );
       case "session.create":
@@ -1640,6 +1651,15 @@ function validateAgentStopParams(params: JsonObject): AgentStopParams {
   });
   validateRequiredString(validated, "agent.stop", "agentId");
   return validated as AgentStopParams;
+}
+
+function validateRunCancelParams(params: JsonObject): RunCancelParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.cancel",
+    stringFields: ["runId", "reason"],
+  });
+  validateRequiredString(validated, "run.cancel", "runId");
+  return validated as RunCancelParams;
 }
 
 function validateAgentLogsParams(params: JsonObject): AgentLogsParams {

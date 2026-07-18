@@ -39,6 +39,8 @@ import type {
   MessageContent,
   PermissionListParams,
   PermissionListResult,
+  RunCancelParams,
+  RunCancelResult,
   SessionCancelTurnParams,
   SessionCancelTurnResult,
   SessionClearParams,
@@ -106,12 +108,15 @@ import {
 import type { Event } from "../session/event-log.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
+import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
   | "BACKGROUND_RUNNER_UNAVAILABLE"
   | "INVALID_ARGUMENT"
-  | "INVALID_CURSOR";
+  | "INVALID_CURSOR"
+  | "RUN_NOT_FOUND"
+  | "RUN_CANCEL_UNAVAILABLE";
 
 export class AgenCDaemonAgentLifecycleError extends Error {
   readonly code: AgenCDaemonAgentLifecycleErrorCode;
@@ -161,6 +166,25 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly onSnapshotError?: (error: unknown) => void;
   readonly permissionAuditLogger?: PermissionAuditLogger;
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
+  /**
+   * Durable tree-scoped cancel (run.cancel step 1). Applies
+   * `cancelAgentRunTree` against every project state DB that holds the run
+   * row; the daemon-cli wiring owns DB discovery. REQUIRED for run.cancel —
+   * the durable record is the authority, the live interrupt is second.
+   */
+  readonly cancelRunTreeDurable?: (params: {
+    readonly runId: string;
+    readonly reason: string;
+    readonly cancelledAt: string;
+  }) => CancelAgentRunTreeReport | Promise<CancelAgentRunTreeReport>;
+  /**
+   * Frozen `voided` reservation resolution for cancelled runs: release
+   * open budget holds for the given agent ids (spend history untouched).
+   * Returns the number of holds voided.
+   */
+  readonly voidBudgetHoldsForAgents?: (
+    agentIds: readonly string[],
+  ) => number | Promise<number>;
 }
 
 export interface AgenCDaemonAgentToolOutputReadParams {
@@ -312,6 +336,16 @@ export class AgenCDaemonAgentManager {
   readonly #onSnapshotError: (error: unknown) => void;
   readonly #permissionAuditLogger: PermissionAuditLogger | undefined;
   readonly #onPermissionAuditError: PermissionAuditErrorHandler | undefined;
+  readonly #cancelRunTreeDurable:
+    | ((params: {
+        readonly runId: string;
+        readonly reason: string;
+        readonly cancelledAt: string;
+      }) => CancelAgentRunTreeReport | Promise<CancelAgentRunTreeReport>)
+    | undefined;
+  readonly #voidBudgetHoldsForAgents:
+    | ((agentIds: readonly string[]) => number | Promise<number>)
+    | undefined;
   #shuttingDown = false;
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
@@ -340,6 +374,8 @@ export class AgenCDaemonAgentManager {
     this.#onSnapshotError = options.onSnapshotError ?? (() => {});
     this.#permissionAuditLogger = options.permissionAuditLogger;
     this.#onPermissionAuditError = options.onPermissionAuditError;
+    this.#cancelRunTreeDurable = options.cancelRunTreeDurable;
+    this.#voidBudgetHoldsForAgents = options.voidBudgetHoldsForAgents;
   }
 
   async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
@@ -910,6 +946,71 @@ export class AgenCDaemonAgentManager {
     );
     await this.#terminateAgentSessions(target.sessionIds, reason);
     return { agentId, stopped: true };
+  }
+
+  /**
+   * run.cancel (frozen Wave-B method): tree-scoped cancel of the run plus
+   * its queued and running descendants. Durable-first — the state-DB
+   * cascade is the authority and survives a daemon crash (startup recovery
+   * finishes an interrupted cascade); the live interrupt/stop is second
+   * and reuses the existing descendant-cascading primitives. Late status
+   * writes from dying agents lose to cancel-lock stickiness in the state
+   * layer. Idempotent: an already-terminal run reports `alreadyTerminal`.
+   */
+  async cancelRunTree(params: RunCancelParams): Promise<RunCancelResult> {
+    const runId = normalizeRequiredAgentId(params.runId, "run.cancel");
+    const reason = normalizeNonEmpty(params.reason) ?? "run.cancel";
+    const cancelDurable = this.#cancelRunTreeDurable;
+    if (cancelDurable === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "RUN_CANCEL_UNAVAILABLE",
+        "run.cancel requires durable state wiring (cancelRunTreeDurable)",
+      );
+    }
+    const cancelledAt = this.#now();
+    const report = await cancelDurable({ runId, reason, cancelledAt });
+    if (report.missing) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "RUN_NOT_FOUND",
+        `run.cancel: no agent run found for id: ${runId}`,
+      );
+    }
+
+    // Live propagation: interrupt cascades to descendants inside the
+    // runner (control.interrupt), then stop tears the root down. Both are
+    // best-effort — the durable cascade above already decided the outcome,
+    // and a dead/absent live agent is not an error for run.cancel.
+    const interruptedLiveAgentIds: string[] = [];
+    const runner = this.#runner;
+    if (runner !== undefined) {
+      try {
+        const interrupted =
+          (await runner.interruptAgentTurn?.(runId, reason)) ?? false;
+        await runner.stopAgent?.(runId, reason);
+        if (interrupted) interruptedLiveAgentIds.push(runId);
+      } catch {
+        // No live agent (or it died mid-stop): the durable record stands.
+      }
+    }
+
+    let voidedHolds = 0;
+    const voidHolds = this.#voidBudgetHoldsForAgents;
+    if (voidHolds !== undefined && report.cancelledRunIds.length > 0) {
+      try {
+        voidedHolds = await voidHolds(report.cancelledRunIds);
+      } catch (error) {
+        this.#onSnapshotError(error);
+      }
+    }
+
+    return {
+      runId,
+      alreadyTerminal: report.alreadyTerminal,
+      cancelledRunIds: report.cancelledRunIds,
+      closedEdgeChildIds: report.closedEdgeChildIds,
+      interruptedLiveAgentIds,
+      voidedHolds,
+    };
   }
 
   /**

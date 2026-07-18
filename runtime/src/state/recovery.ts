@@ -3,6 +3,7 @@ import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { sqlPlaceholders } from "./sql.js";
 import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
+import { repairCancelledSubtrees } from "./run-cancellation.js";
 import { asRecord } from "../utils/record.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
@@ -138,6 +139,10 @@ export function recoverDaemonStateOnStartup(
   const warnings: DaemonStartupRecoveryWarning[] = [];
   const recoveredAt = options.now?.() ?? new Date().toISOString();
   return driver.transaction(() => {
+    // Crash-mid-cascade repair MUST precede the recoverable-run load: a
+    // surviving descendant of a cancelled parent is finished off here so
+    // the restore loop never resurrects it.
+    repairCancelledSubtrees(driver, { now: recoveredAt });
     const recoveredToolCalls = recoverStaleToolCalls(driver, warnings);
     const recoveredRuns = loadRecoverableAgentRuns(
       driver,
