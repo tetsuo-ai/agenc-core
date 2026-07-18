@@ -14,6 +14,15 @@ export {
   type AgentRunInputs,
   type RealProviderAgentConfig,
 } from "./agent-run.js";
+export {
+  createRealAgentBatchDeps,
+  runRealAgentBatch,
+  writeRealAgentBatchSummary,
+  type RealAgentBatchDeps,
+  type RealAgentBatchOptions,
+  type RealAgentBatchSummary,
+  type RealAgentBatchTaskResult,
+} from "./batch.js";
 export { DockerContainerRunner } from "./container-runner.js";
 export {
   allContainmentProbesPass,

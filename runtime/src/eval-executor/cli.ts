@@ -5,6 +5,11 @@ import path from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { runAgentOnTask, runRealProviderAgentOnTask } from "./agent-run.js";
+import {
+  createRealAgentBatchDeps,
+  runRealAgentBatch,
+  writeRealAgentBatchSummary,
+} from "./batch.js";
 import { DockerContainerRunner } from "./container-runner.js";
 import {
   DEFAULT_PREFLIGHT_TIMEOUTS,
@@ -18,6 +23,7 @@ import {
   loadPilotSourceLock,
   readPilotArtifact,
 } from "./source-lock.js";
+import type { LoadedPilotSourceLock } from "./types.js";
 import { decodeVerifierBundle } from "./verifier-bundle.js";
 
 const DEFAULT_LOCK_PATH =
@@ -33,6 +39,11 @@ const USAGE = `Usage:
                           --provider-host <host> --provider-base-url <url>
                           --provider-model <model> [--key-env-var <NAME>]
                           [--lock <path>] [--output <dir>] [--agent-timeout-ms <n>]
+  eval:executor run-agent-real-batch --overlay <dir>
+                          --provider-host <host> --provider-base-url <url>
+                          --provider-model <model> [--tasks <id,id,...>]
+                          [--key-env-var <NAME>] [--key-command <exe>]
+                          [--lock <path>] [--output <dir>] [--agent-timeout-ms <n>]
 
 verify-lock  Load the frozen pilot source lock, re-hash every CAS artifact,
              and decode every verifier bundle. Hermetic and offline.
@@ -47,7 +58,15 @@ run-agent-real  Run the real AgenC agent against a REAL model provider inside a
              allowlist proxy sidecar). The agent runs only after every
              containment probe passes; the provider key is read from
              --key-env-var in the executor env and injected via docker exec
-             (never on any argv). Requires docker.`;
+             (never on any argv). Requires docker.
+run-agent-real-batch  Run run-agent-real across every lock task (or --tasks, in
+             the given order): resumable (tasks with an existing report are
+             skipped), continue-on-error, per-task image pull, and optional
+             per-task key refresh via --key-command (an executable whose
+             stdout becomes the key — no shell). Writes batch-progress.log
+             and batch-summary.json under --output. Exit 0 only when every
+             task ends with a report. This is the documented reproduction
+             path for the real-agent baseline report.`;
 
 async function verifyLock(lockPath: string): Promise<number> {
   const loaded = await loadPilotSourceLock(lockPath);
@@ -186,9 +205,7 @@ async function runAgent(options: {
   return report.outcome === "verified_fix" ? 0 : 1;
 }
 
-async function runRealProviderAgent(options: {
-  readonly lockPath: string;
-  readonly taskId: string;
+interface RealProviderRunConfig {
   readonly overlayDir: string;
   readonly outputDir: string;
   readonly allowHost: string;
@@ -197,9 +214,19 @@ async function runRealProviderAgent(options: {
   readonly keyEnvVar: string;
   readonly agentTimeoutMs?: number;
   readonly parserFallbackImage?: string;
-}): Promise<number> {
-  const loaded = await loadPilotSourceLock(options.lockPath);
-  const task = findPilotTask(loaded.lock, options.taskId);
+}
+
+/**
+ * One real-provider task run against an already-loaded lock: egress lane,
+ * report + patch + raw-result files under `<outputDir>/<taskId>/`. Shared by
+ * the single-task and batch subcommands so their behavior cannot drift.
+ */
+async function runRealProviderAgentTask(
+  loaded: LoadedPilotSourceLock,
+  taskId: string,
+  options: RealProviderRunConfig,
+): Promise<{ readonly outcome: string; readonly summary: Record<string, unknown> }> {
+  const task = findPilotTask(loaded.lock, taskId);
   const runner = new DockerContainerRunner();
   await runner.environment();
   // Resolve the provider host once, on the host, to a set of pinned IPs the
@@ -247,17 +274,66 @@ async function runRealProviderAgent(options: {
   if (rawAgentResult !== null && rawAgentResult.length > 0) {
     await writeFile(path.join(taskDir, "agent-result.json"), rawAgentResult, { flag: "wx" });
   }
-  process.stdout.write(`${JSON.stringify({
-    taskId: report.taskId,
+  return {
     outcome: report.outcome,
-    oracleContainment: report.egress?.oracleContainment,
-    denyProbes: report.egress?.denyProbes,
-    patchKeyScan: report.egress?.patchKeyScan,
-    failureDetail: report.failureDetail,
-    tokenUsage: report.agent.tokenUsage,
-    outputDir: taskDir,
-  }, null, 2)}\n`);
-  return report.outcome === "verified_fix" ? 0 : 1;
+    summary: {
+      taskId: report.taskId,
+      outcome: report.outcome,
+      oracleContainment: report.egress?.oracleContainment,
+      denyProbes: report.egress?.denyProbes,
+      patchKeyScan: report.egress?.patchKeyScan,
+      failureDetail: report.failureDetail,
+      tokenUsage: report.agent.tokenUsage,
+      outputDir: taskDir,
+    },
+  };
+}
+
+async function runRealProviderAgent(
+  options: RealProviderRunConfig & {
+    readonly lockPath: string;
+    readonly taskId: string;
+  },
+): Promise<number> {
+  const loaded = await loadPilotSourceLock(options.lockPath);
+  const { outcome, summary } = await runRealProviderAgentTask(
+    loaded,
+    options.taskId,
+    options,
+  );
+  process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+  return outcome === "verified_fix" ? 0 : 1;
+}
+
+async function runRealProviderAgentBatch(
+  options: RealProviderRunConfig & {
+    readonly lockPath: string;
+    readonly taskIds?: readonly string[];
+    readonly keyCommand?: string;
+  },
+): Promise<number> {
+  const loaded = await loadPilotSourceLock(options.lockPath);
+  const deps = createRealAgentBatchDeps({
+    outputDir: options.outputDir,
+    keyCommand: options.keyCommand,
+    runTask: (taskId) => runRealProviderAgentTask(loaded, taskId, options),
+  });
+  const summary = await runRealAgentBatch(
+    {
+      loaded,
+      taskIds: options.taskIds,
+      outputDir: options.outputDir,
+      keyCommand: options.keyCommand,
+      keyEnvVar: options.keyEnvVar,
+    },
+    deps,
+  );
+  const summaryPath = await writeRealAgentBatchSummary(options.outputDir, summary);
+  process.stdout.write(`${JSON.stringify({ ...summary, summaryPath }, null, 2)}\n`);
+  // The batch's job is a complete scorecard: every task must end with a
+  // report (verified or not). Driver-level failures are the only batch
+  // failure — a lost task means the scorecard is not the one asked for.
+  return summary.driverErrors === 0 ? 0 : 1;
 }
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -280,6 +356,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       "provider-base-url": { type: "string" },
       "provider-model": { type: "string" },
       "key-env-var": { type: "string" },
+      "key-command": { type: "string" },
+      tasks: { type: "string" },
     },
     strict: true,
   });
@@ -347,6 +425,43 @@ export async function main(argv: readonly string[]): Promise<number> {
       baseUrl,
       model,
       keyEnvVar: values["key-env-var"] ?? "OPENAI_COMPATIBLE_API_KEY",
+      agentTimeoutMs,
+      parserFallbackImage: values["parser-fallback-image"],
+    });
+  }
+  if (command === "run-agent-real-batch") {
+    if (!values.overlay) {
+      throw new EvalExecutorError(["run-agent-real-batch requires --overlay <dir>"]);
+    }
+    const host = values["provider-host"];
+    const baseUrl = values["provider-base-url"];
+    const model = values["provider-model"];
+    if (!host || !baseUrl || !model) {
+      throw new EvalExecutorError([
+        "run-agent-real-batch requires --provider-host, --provider-base-url, and --provider-model",
+      ]);
+    }
+    const timeoutRaw = values["agent-timeout-ms"];
+    const agentTimeoutMs = timeoutRaw === undefined ? undefined : Number(timeoutRaw);
+    if (agentTimeoutMs !== undefined && (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0)) {
+      throw new EvalExecutorError(["--agent-timeout-ms must be a positive integer"]);
+    }
+    const taskIds = values.tasks === undefined
+      ? undefined
+      : values.tasks.split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+    if (taskIds !== undefined && taskIds.length === 0) {
+      throw new EvalExecutorError(["--tasks must name at least one task id"]);
+    }
+    return runRealProviderAgentBatch({
+      lockPath,
+      taskIds,
+      overlayDir: values.overlay,
+      outputDir: values.output ?? "eval-executor-output",
+      allowHost: host,
+      baseUrl,
+      model,
+      keyEnvVar: values["key-env-var"] ?? "OPENAI_COMPATIBLE_API_KEY",
+      keyCommand: values["key-command"],
       agentTimeoutMs,
       parserFallbackImage: values["parser-fallback-image"],
     });
