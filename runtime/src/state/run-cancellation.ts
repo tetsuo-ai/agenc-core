@@ -136,8 +136,10 @@ export function checkSpawnAdmissionGate(
 
 export interface CancelAgentRunTreeReport {
   readonly runId: string;
-  /** Root run row does not exist. Nothing was written. */
+  /** No durable agent-run or admission state exists. Nothing was written. */
   readonly missing: boolean;
+  /** The public run exists only through execution-admission evidence. */
+  readonly admissionOnly?: boolean;
   /** Root was already cancel-locked/terminal. Nothing was written. */
   readonly alreadyTerminal: boolean;
   readonly rootStatusBefore: string | null;
@@ -153,6 +155,10 @@ export interface CancelAgentRunTreeReport {
   readonly priorStatusById: Readonly<Record<string, string>>;
   /** Open edges closed by this call (child thread ids). */
   readonly closedEdgeChildIds: readonly string[];
+  /** Admission reservations voided atomically with this run cascade. */
+  readonly admissionVoidedReservations?: number;
+  /** Dispatched reservations conservatively held atomically with the cascade. */
+  readonly admissionHeldUnknownReservations?: number;
 }
 
 /**

@@ -17,7 +17,6 @@ import type {
   LLMRequestMetrics,
   LLMResponse,
   LLMToolCall,
-  LLMUsage,
   LLMTool,
   StreamProgressCallback,
 } from "../../types.js";
@@ -36,6 +35,7 @@ import { safeStringify } from "../../_deps/safe-stringify.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "./health.js";
 import { isRecord } from "../../../utils/record.js";
+import { coerceUsage } from "../../wire/shared.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3.3";
@@ -196,10 +196,6 @@ function readNonNegativeNumber(value: unknown): number | undefined {
     : undefined;
 }
 
-function readNonNegativeNumberOrZero(value: unknown): number {
-  return readNonNegativeNumber(value) ?? 0;
-}
-
 function serializeOllamaToolArguments(value: unknown): string | null {
   if (value === undefined) return "{}";
   if (typeof value === "string") {
@@ -301,18 +297,66 @@ async function nextWithAbort<T>(
   signal: AbortSignal,
 ): Promise<IteratorResult<T>> {
   if (signal.aborted) {
+    await closeAsyncIterator(iterator);
     throw readAbortReason(signal);
   }
 
-  return await new Promise<IteratorResult<T>>((resolve, reject) => {
-    const abort = (): void => reject(readAbortReason(signal));
-    signal.addEventListener("abort", abort, { once: true });
-    void iterator.next()
-      .then(resolve, reject)
-      .finally(() => {
-        signal.removeEventListener("abort", abort);
-      });
+  let nextCall: Promise<IteratorResult<T>>;
+  try {
+    nextCall = Promise.resolve(iterator.next());
+  } catch (error) {
+    throw error;
+  }
+  const nextOutcome = nextCall.then(
+    (result) => ({ kind: "result" as const, result }),
+    (error: unknown) => ({ kind: "error" as const, error }),
+  );
+  let abortReason: unknown;
+  let resolveInterrupted!: () => void;
+  const interrupted = new Promise<void>((resolve) => {
+    resolveInterrupted = resolve;
   });
+  const abort = (): void => {
+    if (abortReason !== undefined) return;
+    abortReason = readAbortReason(signal);
+    void Promise.all([closeAsyncIterator(iterator), nextOutcome]).then(() => {
+      resolveInterrupted();
+    });
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+
+  try {
+    const outcome = await Promise.race([
+      nextOutcome,
+      interrupted.then(() => ({ kind: "interrupted" as const })),
+    ]);
+    if (abortReason !== undefined) throw abortReason;
+    if (outcome.kind === "error") throw outcome.error;
+    if (outcome.kind === "interrupted") throw readAbortReason(signal);
+    return outcome.result;
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+const iteratorCloseTasks = new WeakMap<object, Promise<boolean>>();
+
+function closeAsyncIterator(iterator: AsyncIterator<unknown>): Promise<boolean> {
+  const key = iterator as object;
+  const existing = iteratorCloseTasks.get(key);
+  if (existing !== undefined) return existing;
+  const task = (async () => {
+    if (typeof iterator.return !== "function") return false;
+    try {
+      await iterator.return();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  iteratorCloseTasks.set(key, task);
+  return task;
 }
 
 async function* abortableAsyncIterable<T>(
@@ -327,7 +371,7 @@ async function* abortableAsyncIterable<T>(
       yield result.value;
     }
   } finally {
-    void iterator.return?.();
+    await closeAsyncIterator(iterator);
   }
 }
 
@@ -554,6 +598,7 @@ export class OllamaProvider implements LLMProvider {
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
     let completionTokens = 0;
+    let sawProviderUsage = false;
 
     try {
       emitProviderTraceEvent(options, {
@@ -604,10 +649,20 @@ export class OllamaProvider implements LLMProvider {
 
               const chunkModel = readString(chunk.model);
               if (chunkModel) model = chunkModel;
-              promptTokens =
-                readNonNegativeNumber(chunk.prompt_eval_count) ?? promptTokens;
-              completionTokens =
-                readNonNegativeNumber(chunk.eval_count) ?? completionTokens;
+              const reportedPromptTokens = readNonNegativeNumber(
+                chunk.prompt_eval_count,
+              );
+              const reportedCompletionTokens = readNonNegativeNumber(
+                chunk.eval_count,
+              );
+              if (reportedPromptTokens !== undefined) {
+                promptTokens = reportedPromptTokens;
+                sawProviderUsage = true;
+              }
+              if (reportedCompletionTokens !== undefined) {
+                completionTokens = reportedCompletionTokens;
+                sawProviderUsage = true;
+              }
             }
           } finally {
             cleanupStreamAbort();
@@ -647,11 +702,13 @@ export class OllamaProvider implements LLMProvider {
       return {
         content,
         toolCalls,
-        usage: {
+        usage: coerceUsage({
           promptTokens,
           completionTokens,
           totalTokens: promptTokens + completionTokens,
-        },
+          availability: sawProviderUsage ? "reported" : "unknown",
+          provenance: sawProviderUsage ? "provider" : "synthetic",
+        }),
         model,
         requestMetrics,
         finishReason,
@@ -671,11 +728,13 @@ export class OllamaProvider implements LLMProvider {
         return {
           content,
           toolCalls,
-          usage: {
+          usage: coerceUsage({
             promptTokens,
             completionTokens,
             totalTokens: promptTokens + completionTokens,
-          },
+            availability: "unknown",
+            provenance: "synthetic",
+          }),
           model,
           requestMetrics,
           finishReason: "error",
@@ -713,6 +772,8 @@ export class OllamaProvider implements LLMProvider {
     ) ?? {
       provider: "ollama",
       model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
       maxOutputTokens:
         typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
           ? this.config.maxTokens
@@ -931,13 +992,16 @@ export class OllamaProvider implements LLMProvider {
     const content = readString(message.content);
     const toolCalls = normalizeOllamaToolCalls(message.tool_calls);
 
-    const promptTokens = readNonNegativeNumberOrZero(record.prompt_eval_count);
-    const completionTokens = readNonNegativeNumberOrZero(record.eval_count);
-    const usage: LLMUsage = {
+    const promptTokens = readNonNegativeNumber(record.prompt_eval_count);
+    const completionTokens = readNonNegativeNumber(record.eval_count);
+    const usage = coerceUsage({
       promptTokens,
       completionTokens,
-      totalTokens: promptTokens + completionTokens,
-    };
+      totalTokens:
+        promptTokens !== undefined || completionTokens !== undefined
+          ? (promptTokens ?? 0) + (completionTokens ?? 0)
+          : undefined,
+    });
 
     return {
       content,

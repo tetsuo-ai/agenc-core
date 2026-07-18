@@ -31,6 +31,7 @@ export const SyntheticOutputTool = buildTool({
   isReadOnly() {
     return true
   },
+  recoveryCategory: 'idempotent',
   isOpenWorld() {
     return false
   },

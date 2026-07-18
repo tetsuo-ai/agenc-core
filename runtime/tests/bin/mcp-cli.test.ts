@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough, Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { LLMTool } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
+import {
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE,
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE,
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON,
+} from "../mcp/server/start.js";
 import {
   formatMcpSseServeUrl,
   formatAgenCMcpCliHelpText,
@@ -68,9 +73,9 @@ function request(id: number, method: string, params?: unknown) {
   } as const;
 }
 
-function createToolRegistry(): ToolRegistry {
+function createToolRegistry(sampleTool: Tool = SAMPLE_TOOL): ToolRegistry {
   return {
-    tools: [SAMPLE_TOOL, MUTATING_TOOL, CONTRADICTORY_TOOL],
+    tools: [sampleTool, MUTATING_TOOL, CONTRADICTORY_TOOL],
     toLLMTools(): LLMTool[] {
       return [];
     },
@@ -79,6 +84,26 @@ function createToolRegistry(): ToolRegistry {
         content: `echo:${JSON.parse(toolCall.arguments).text}`,
         codeModeResult: { tool: toolCall.name },
       };
+    },
+  };
+}
+
+function admissionRequiredMessage(id: number): unknown {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      content: [
+        {
+          type: "text",
+          text: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE,
+        },
+      ],
+      structuredContent: {
+        code: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE,
+        reason: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON,
+      },
+      isError: true,
     },
   };
 }
@@ -440,6 +465,7 @@ describe("AgenC MCP CLI", () => {
     const output = new PassThrough();
     const stderr = createWritableCapture();
     const lines = createOutputLines(output);
+    const execute = vi.fn(SAMPLE_TOOL.execute);
     const result = runAgenCMcpCli(
       {
         kind: "serve",
@@ -449,7 +475,7 @@ describe("AgenC MCP CLI", () => {
       },
       {
         io: createIo(input, output, stderr),
-        toolRegistry: createToolRegistry(),
+        toolRegistry: createToolRegistry({ ...SAMPLE_TOOL, execute }),
       },
     );
 
@@ -459,6 +485,10 @@ describe("AgenC MCP CLI", () => {
         jsonrpc: "2.0",
         id: 1,
         result: expect.objectContaining({
+          capabilities: {
+            prompts: { listChanged: false },
+            resources: { listChanged: false, subscribe: false },
+          },
           serverInfo: expect.objectContaining({
             name: "agenc-mcp-server",
           }),
@@ -471,13 +501,7 @@ describe("AgenC MCP CLI", () => {
       jsonrpc: "2.0",
       id: 2,
       result: {
-        tools: [
-          {
-            name: SAMPLE_TOOL.name,
-            description: SAMPLE_TOOL.description,
-            inputSchema: SAMPLE_TOOL.inputSchema,
-          },
-        ],
+        tools: [],
         nextCursor: null,
       },
     });
@@ -490,14 +514,10 @@ describe("AgenC MCP CLI", () => {
         }),
       )}\n`,
     );
-    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual({
-      jsonrpc: "2.0",
-      id: 3,
-      result: {
-        content: [{ type: "text", text: "echo:hello" }],
-        structuredContent: { tool: "sample.echo" },
-      },
-    });
+    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual(
+      admissionRequiredMessage(3),
+    );
+    expect(execute).not.toHaveBeenCalled();
 
     input.write(
       `${JSON.stringify(
@@ -507,21 +527,10 @@ describe("AgenC MCP CLI", () => {
         }),
       )}\n`,
     );
-    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual({
-      jsonrpc: "2.0",
-      id: 4,
-      result: {
-        content: [
-          {
-            type: "text",
-            text: expect.stringContaining(
-              "only explicitly read-only, non-mutating, idempotent tools",
-            ),
-          },
-        ],
-        isError: true,
-      },
-    });
+    await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual(
+      admissionRequiredMessage(4),
+    );
+    expect(execute).not.toHaveBeenCalled();
 
     input.end();
     await expect(withTimeout(result)).resolves.toBe(0);
@@ -529,7 +538,7 @@ describe("AgenC MCP CLI", () => {
     lines.close();
   });
 
-  test("pins foreground stdio workspace before lazy tool creation", async () => {
+  test("keeps foreground stdio tools fail-closed across workspace boundaries", async () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-mcp-pinned-stdio-"));
     const workspaceA = join(root, "workspace-a");
     const workspaceB = join(root, "workspace-b");
@@ -566,7 +575,9 @@ describe("AgenC MCP CLI", () => {
           }),
         )}\n`,
       );
-      expect(await lines.nextLine()).toContain("only-a.txt");
+      await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual(
+        admissionRequiredMessage(2),
+      );
       input.write(
         `${JSON.stringify(
           request(3, "tools/call", {
@@ -575,8 +586,8 @@ describe("AgenC MCP CLI", () => {
           }),
         )}\n`,
       );
-      expect(await lines.nextLine()).toContain(
-        "Path is outside allowed directories",
+      await expect(lines.nextLine().then(JSON.parse)).resolves.toEqual(
+        admissionRequiredMessage(3),
       );
       input.end();
       await expect(result).resolves.toBe(0);
@@ -591,6 +602,7 @@ describe("AgenC MCP CLI", () => {
   });
 
   test("starts an MCP streamable HTTP server for SSE transport", async () => {
+    const execute = vi.fn(SAMPLE_TOOL.execute);
     const started = await startMcpSseServe(
       {
         kind: "serve",
@@ -598,7 +610,7 @@ describe("AgenC MCP CLI", () => {
         host: "127.0.0.1",
         port: 0,
       },
-      { toolRegistry: createToolRegistry() },
+      { toolRegistry: createToolRegistry({ ...SAMPLE_TOOL, execute }) },
     );
     try {
       expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
@@ -611,14 +623,34 @@ describe("AgenC MCP CLI", () => {
       const sessionId = response.headers.get("mcp-session-id");
       expect(sessionId).toEqual(expect.any(String));
       await expect(response.json()).resolves.toEqual(
-        expect.objectContaining({ jsonrpc: "2.0", id: 1 }),
+        expect.objectContaining({
+          jsonrpc: "2.0",
+          id: 1,
+          result: expect.objectContaining({
+            capabilities: {
+              prompts: { listChanged: false },
+              resources: { listChanged: false, subscribe: false },
+            },
+          }),
+        }),
       );
+
+      const listResponse = await fetch(started.url, {
+        method: "POST",
+        headers: streamablePostHeaders(sessionId ?? undefined),
+        body: JSON.stringify(request(2, "tools/list")),
+      });
+      await expect(listResponse.json()).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { tools: [], nextCursor: null },
+      });
 
       const toolResponse = await fetch(started.url, {
         method: "POST",
         headers: streamablePostHeaders(sessionId ?? undefined),
         body: JSON.stringify(
-          request(2, "tools/call", {
+          request(3, "tools/call", {
             name: "sample.echo",
             arguments: { text: "hello" },
           }),
@@ -629,20 +661,14 @@ describe("AgenC MCP CLI", () => {
         "text/event-stream",
       );
       const toolMessage = JSON.parse(parseSseData(await toolResponse.text()));
-      expect(toolMessage).toEqual({
-        jsonrpc: "2.0",
-        id: 2,
-        result: {
-          content: [{ type: "text", text: "echo:hello" }],
-          structuredContent: { tool: "sample.echo" },
-        },
-      });
+      expect(toolMessage).toEqual(admissionRequiredMessage(3));
+      expect(execute).not.toHaveBeenCalled();
 
       const deniedResponse = await fetch(started.url, {
         method: "POST",
         headers: streamablePostHeaders(sessionId ?? undefined),
         body: JSON.stringify(
-          request(3, "tools/call", {
+          request(4, "tools/call", {
             name: MUTATING_TOOL.name,
             arguments: {},
           }),
@@ -652,21 +678,8 @@ describe("AgenC MCP CLI", () => {
       const deniedMessage = JSON.parse(
         parseSseData(await deniedResponse.text()),
       );
-      expect(deniedMessage).toEqual({
-        jsonrpc: "2.0",
-        id: 3,
-        result: {
-          content: [
-            {
-              type: "text",
-              text: expect.stringContaining(
-                "Environment overrides are not authorization",
-              ),
-            },
-          ],
-          isError: true,
-        },
-      });
+      expect(deniedMessage).toEqual(admissionRequiredMessage(4));
+      expect(execute).not.toHaveBeenCalled();
     } finally {
       await started.close();
     }

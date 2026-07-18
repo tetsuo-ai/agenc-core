@@ -6,7 +6,10 @@ import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import type { AgenCBackgroundAgentRunner } from "./background-agent-runner.js";
 import { AgenCCommandExecService } from "./command-exec.js";
-import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
+} from "./daemon-dispatcher.js";
 import type { AgenCFuzzyFileSearch } from "./fuzzy-file-search.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -138,6 +141,8 @@ describe("AgenC daemon cancellation and preemption", () => {
       const dispatcher = new AgenCDaemonJsonRpcDispatcher({
         agentManager: new AgenCDaemonAgentManager(),
         commandExec: new AgenCCommandExecService(),
+        unadmittedCommandExecStartOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
       });
       const connection = dispatcher.createConnection();
       await connection.dispatch({

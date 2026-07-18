@@ -13,11 +13,13 @@
 
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
+import { runAdmittedSessionBoundToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
+import type { Tool } from "../tools/types.js";
 import { asRecord } from "../utils/record.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
 
-const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
+export const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 
 export interface MCPPromptArgumentSpec {
   readonly name: string;
@@ -53,6 +55,7 @@ export interface MCPPromptBridge {
   renderPrompt(
     name: string,
     args?: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<MCPPromptRendered>;
   dispose(): Promise<void>;
 }
@@ -84,7 +87,11 @@ export async function createPromptBridge(
         const response = await withDeadline<unknown>(
           `MCP server "${serverName}" listPrompts`,
           rpcTimeoutMs,
-          () => client.listPrompts({}),
+          (effectSignal) =>
+            client.listPrompts(
+              {},
+              { signal: effectSignal, timeout: rpcTimeoutMs },
+            ),
         );
         return normalizePromptCatalog(response, serverName);
       } catch (err) {
@@ -98,21 +105,31 @@ export async function createPromptBridge(
     async renderPrompt(
       name: string,
       args?: Record<string, unknown>,
+      signal?: AbortSignal,
     ): Promise<MCPPromptRendered> {
       if (disposed) {
         throw new Error(
           `MCP prompt bridge for "${serverName}" has been disposed`,
         );
       }
-      const response = await withDeadline<unknown>(
-        `MCP server "${serverName}" getPrompt("${name}")`,
+      const response = await runAdmittedMcpPromptGet<unknown>({
+        serverName,
+        promptName: name,
+        args: args ?? {},
         rpcTimeoutMs,
-        () =>
-          client.getPrompt({
-            name,
-            ...(args !== undefined ? { arguments: args } : {}),
-          }),
-      );
+        ...(signal !== undefined ? { signal } : {}),
+        invoke: (effectSignal) =>
+          client.getPrompt(
+            {
+              name,
+              ...(args !== undefined ? { arguments: args } : {}),
+            },
+            {
+              signal: effectSignal,
+              timeout: rpcTimeoutMs,
+            },
+          ),
+      });
       const record = asRecord(response);
       const messages: MCPPromptRenderedMessage[] = arrayField(record, "messages")
         .map(projectPromptMessage)
@@ -129,6 +146,76 @@ export async function createPromptBridge(
       disposed = true;
     },
   };
+}
+
+const MCP_PROMPT_ADMISSION_TOOL: Tool = {
+  name: "mcp.prompt.get",
+  description: "Render a prompt exposed by a connected MCP server.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      server: { type: "string" },
+      prompt: { type: "string" },
+      arguments: { type: "object" },
+    },
+    required: ["server", "prompt"],
+    additionalProperties: false,
+  },
+  metadata: {
+    family: "mcp",
+    source: "mcp",
+    mutating: false,
+    hiddenByDefault: true,
+  },
+  isReadOnly: true,
+  recoveryCategory: "idempotent",
+  admissionEstimate: () => ({
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: 0,
+  }),
+  async execute() {
+    throw new Error("MCP prompt admission descriptor is not executable");
+  },
+};
+
+export interface AdmittedMcpPromptGetOptions<T> {
+  readonly serverName: string;
+  readonly promptName: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly rpcTimeoutMs?: number;
+  readonly signal?: AbortSignal;
+  readonly invoke: (signal: AbortSignal) => Promise<T>;
+}
+
+/**
+ * Admit one physical MCP `prompts/get` RPC against the exact ambient session.
+ * The deadline actively aborts transports that support cancellation, but the
+ * raw promise is still awaited before the common tool boundary releases its
+ * live concurrency slot.
+ */
+export async function runAdmittedMcpPromptGet<T>(
+  options: AdmittedMcpPromptGetOptions<T>,
+): Promise<T> {
+  const rpcTimeoutMs =
+    options.rpcTimeoutMs ?? DEFAULT_PROMPT_RPC_TIMEOUT_MS;
+  return runAdmittedSessionBoundToolCall({
+    tool: MCP_PROMPT_ADMISSION_TOOL,
+    args: {
+      server: options.serverName,
+      prompt: options.promptName,
+      arguments: options.args,
+    },
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    invoke: ({ signal }) =>
+      withDeadline(
+        `MCP server "${options.serverName}" getPrompt("${options.promptName}")`,
+        rpcTimeoutMs,
+        options.invoke,
+        signal,
+      ),
+    toDispatchResult: () => ({ content: "" }),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -284,18 +371,44 @@ function frameUntrustedMcpPromptMessages(
   ];
 }
 
-function withDeadline<T>(
+async function withDeadline<T>(
   operation: string,
   timeoutMs: number,
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  return Promise.race([task(), timeoutPromise]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
+  callerSignal?.throwIfAborted();
+
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `${operation} timed out after ${timeoutMs}ms`,
+  );
+  let timedOut = false;
+  const forwardCallerAbort = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(callerSignal?.reason);
+    }
+  };
+  callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!controller.signal.aborted) controller.abort(timeoutError);
+  }, timeoutMs);
+
+  try {
+    // Do not race away from the physical RPC. Cancellation/deadline aborts the
+    // transport signal, while admission capacity remains occupied until the
+    // underlying request has actually settled.
+    const result = await task(controller.signal);
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    return result;
+  } catch (error) {
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", forwardCallerAbort);
+  }
 }

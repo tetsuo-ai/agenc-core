@@ -336,7 +336,8 @@ describe("tokenEstimation service", () => {
           beta: { messages: { countTokens: vi.fn(), create } },
         },
       }),
-    ).resolves.toBe(10);
+    ).resolves.toBeGreaterThan(0);
+    expect(create).not.toHaveBeenCalled();
   });
 
   test("selects provider-compatible fallback models and handles create failures", async () => {
@@ -361,10 +362,8 @@ describe("tokenEstimation service", () => {
           beta: { messages: { countTokens: vi.fn(), create } },
         },
       }),
-    ).resolves.toBe(7);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "claude-opus-4-7" }),
-    );
+    ).resolves.toBeGreaterThan(0);
+    expect(create).not.toHaveBeenCalled();
 
     await expect(
       countTokensViaHaikuFallback([], [], {
@@ -379,7 +378,7 @@ describe("tokenEstimation service", () => {
           },
         },
       }),
-    ).resolves.toBe(null);
+    ).resolves.toBeGreaterThan(0);
   });
 
   test("counts Bedrock tokens through a lazily loaded runtime module", async () => {

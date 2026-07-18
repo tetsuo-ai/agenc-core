@@ -8,7 +8,10 @@ import {
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import type { AgenCCommandExec } from "./command-exec.js";
-import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import {
+  AgenCDaemonJsonRpcDispatcher,
+  TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
+} from "./daemon-dispatcher.js";
 import {
   JSON_RPC_VERSION,
   type AgenCDaemonRequest,
@@ -71,6 +74,8 @@ describe("AgenC in-process app-server transport", () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),
       commandExec,
+      unadmittedCommandExecStartOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
     });
     const transport = new AgenCInProcessDaemonTransport({
       dispatcher,

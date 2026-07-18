@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  anchorWorkbenchProjectRoot,
   listDescendantNeovimPids,
   waitForScreen,
 } from "../helpers/workbench-buffer-neovim.mjs";
@@ -22,6 +23,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-buffer-neovim-missing-e2e-"));
   try {
+    await anchorWorkbenchProjectRoot(cwd);
     const missingNvim = join(cwd, "missing-nvim");
     await writeFile(join(cwd, "target.txt"), "fallback\n", "utf8");
     session.cwd = cwd;

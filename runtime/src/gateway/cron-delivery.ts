@@ -16,17 +16,12 @@
  *
  * Turns reuse the SessionRouter: one persistent daemon session per task
  * (`cron|<id>`), dead-agent retry, and channel streaming for free. Turns are
- * autonomous: permission requests are DENIED and the task-15 budget envelope
- * gates every fire (refusal delivers a paused notice, never silent).
+ * autonomous: permission requests are DENIED and the daemon-owned execution
+ * admission kernel gates every model/tool boundary (refusal delivers a paused
+ * notice, never silent).
  */
 
 import type { AgenCConfig } from "../config/schema.js";
-import {
-  BudgetEnforcer,
-  BudgetLedger,
-  createModelPriceResolver,
-  resolveBudgetPolicy,
-} from "../budget/index.js";
 import {
   listAllCronTasks,
   markCronTasksFired,
@@ -37,16 +32,13 @@ import {
 import { SessionRouter } from "./session-router.js";
 import type { ChannelAdapter, GatewayDaemonClient } from "./types.js";
 import { frameChannelMessage } from "./untrusted.js";
+import {
+  executionAdmissionErrorMessage,
+  isExecutionAdmissionDenied,
+} from "./admission-errors.js";
 
 /** Upper bound on one sleep so externally-added tasks are noticed. */
 export const CRON_DELIVERY_SCAN_CAP_MS = 5 * 60 * 1000;
-
-const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
-
-/** Deterministic ~chars/4 token estimate (mirrors the heartbeat runner). */
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
-}
 
 export interface CronDeliveryClock {
   now(): Date;
@@ -64,6 +56,7 @@ export interface StartCronDeliveryOptions {
   readonly agencHome: string;
   /** Workspace holding `.agenc/scheduled_tasks.json`. */
   readonly workspaceDir: string;
+  /** Main config retained on the gateway construction contract. */
   readonly config: AgenCConfig;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly client: GatewayDaemonClient;
@@ -170,20 +163,8 @@ export function startCronDelivery(
 ): CronDeliveryHandle {
   const log = options.log ?? (() => {});
   const clock = options.clock ?? REAL_CLOCK;
-  const env = options.env ?? {};
   const postWebhook = options.postWebhook ?? defaultPostWebhook;
   const adaptersById = new Map(options.adapters.map((a) => [a.id, a]));
-
-  const { policy: budgetPolicy } = resolveBudgetPolicy(
-    options.config.budget,
-    env,
-  );
-  const enforcer = new BudgetEnforcer({
-    policy: budgetPolicy,
-    ledger: new BudgetLedger({ agencHome: options.agencHome }),
-    priceOf: createModelPriceResolver(),
-    notify: (e) => log(`cron/budget: ${e.message}`),
-  });
 
   const router = new SessionRouter({
     agencHome: options.agencHome,
@@ -214,35 +195,9 @@ export function startCronDelivery(
     const routeAdapter = adapter ?? NULL_ADAPTER;
     const conversationId = adapter !== undefined ? deliver.to ?? "" : "cron";
 
-    // Budget pre-flight: cron fires are autonomous turns. A refusal delivers
-    // a paused notice instead of running the turn (never silent).
-    const admitModel =
-      typeof options.config.model === "string" &&
-      options.config.model.trim().length > 0
-        ? options.config.model.trim()
-        : "grok-4.5";
-    const admit = enforcer.admit({
-      agentId: `cron:${task.id}`,
-      model: admitModel,
-      autonomous: true,
-      estInputTokens: estimateTokens(task.prompt),
-      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-    });
-    if (!admit.ok) {
-      const notice = `⏸ cron task ${task.id} paused: ${admit.message}`;
-      log(`cron: ${notice}`);
-      if (adapter !== undefined && deliver.to !== undefined) {
-        await adapter
-          .send({ conversationId: deliver.to, text: notice })
-          .catch((error: unknown) => log(`cron: notice failed: ${String(error)}`));
-      }
-      return;
-    }
-
-    // GW-06: after successful admit, exactly one reconcile in `finally`
-    // (success → real/zero usage; throw → zeros refund the worst-case hold).
-    // try starts immediately so no post-admit path can skip reconcile.
-    let usage = { inputTokens: 0, outputTokens: 0 };
+    // Admission/reservation/reconciliation belongs to the daemon session at
+    // the actual model/tool boundary. The gateway owns only scheduling and
+    // delivery, never a second outer-turn spend ledger.
     try {
       // Frame scheduled prompts as untrusted work data (parity with hooks/channels, todo-126).
       const framedPrompt = frameChannelMessage({
@@ -265,7 +220,6 @@ export function startCronDelivery(
           reason: "cron delivery turns do not grant tool permissions",
         }),
       });
-      usage = result.usage ?? usage;
 
       if (deliver.webhook !== undefined) {
         await postWebhook(deliver.webhook, {
@@ -280,8 +234,19 @@ export function startCronDelivery(
         );
       }
       log(`cron: task ${task.id} delivered (${result.stopReason})`);
-    } finally {
-      enforcer.reconcile(admit.hold, usage);
+    } catch (error) {
+      if (!isExecutionAdmissionDenied(error)) throw error;
+      const notice =
+        `⏸ cron task ${task.id} paused: ` +
+        executionAdmissionErrorMessage(error);
+      log(`cron: ${notice}`);
+      if (adapter !== undefined && deliver.to !== undefined) {
+        await adapter
+          .send({ conversationId: deliver.to, text: notice })
+          .catch((noticeError: unknown) =>
+            log(`cron: notice failed: ${String(noticeError)}`),
+          );
+      }
     }
   };
 

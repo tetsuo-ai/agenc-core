@@ -28,6 +28,7 @@ import type {
   Tool,
   ToolCatalogEntry,
   ToolMetadata,
+  ToolAdmissionUsage,
   ToolRecoveryCategory,
 } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
@@ -80,6 +81,9 @@ import {
   attachSandboxExecutionBroker,
   type SandboxExecutionBrokerLike,
 } from "./sandbox/execution-broker.js";
+import type { Session } from "./session/session.js";
+import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
+import { AdmissionDeniedError } from "./budget/admission-client.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -92,6 +96,8 @@ export interface ToolDispatchResult {
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
   readonly metadata?: Record<string, unknown>;
   readonly preventContinuation?: boolean;
+  /** Authoritative metered usage, kept outside provider-visible content. */
+  readonly admissionUsage?: ToolAdmissionUsage;
 }
 
 export interface CodeModeNestedToolDispatch {
@@ -281,6 +287,8 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
 interface BuiltinToolSurfaceGroup {
   readonly id: string;
   readonly tools: readonly Tool[];
+  /** Explicit monetary classification for unannotated tools in this group. */
+  readonly admissionDefault: "local_zero" | "unpriced";
   readonly visibleByDefault?: readonly string[];
   readonly stringArgumentFields?: Readonly<Record<string, string>>;
 }
@@ -308,7 +316,19 @@ function buildBuiltinToolSurface(
     )) {
       if (groupToolNames.has(toolName)) stringArgumentFields[toolName] = field;
     }
-    tools.push(...group.tools);
+    tools.push(
+      ...group.tools.map((tool) => {
+        if (tool.admissionEstimate !== undefined) return tool;
+        return {
+          ...tool,
+          admissionEstimate: () => ({
+            maxInputTokens: 0,
+            maxOutputTokens: 0,
+            maxCostUsd: group.admissionDefault === "local_zero" ? 0 : null,
+          }),
+        } satisfies Tool;
+      }),
+    );
   }
   return { tools, visibleToolNames, stringArgumentFields };
 }
@@ -468,6 +488,10 @@ export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
 
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
+  /** Live session used to admit direct registry/code-mode dispatches. */
+  readonly getSession?: () => Session | null;
+  /** Fail closed when direct dispatch has no live admission session. */
+  readonly requireAdmission?: boolean;
   readonly allowBashDelete?: boolean;
   /**
    * T6 gap #119: observer that receives `exec_command_begin` /
@@ -730,6 +754,7 @@ export function buildToolRegistry(
   const baseBuiltinSurfaceGroups: readonly BuiltinToolSurfaceGroup[] = [
     {
       id: "filesystem-compatibility",
+      admissionDefault: "local_zero",
       tools: filesystemCompatibilityTools,
       stringArgumentFields: {
         "system.listDir": "path",
@@ -740,11 +765,13 @@ export function buildToolRegistry(
     },
     {
       id: "coding",
+      admissionDefault: "local_zero",
       tools: codingTools,
       visibleByDefault: ["system.searchTools"],
     },
     {
       id: "shell",
+      admissionDefault: "local_zero",
       tools: shellTools,
       visibleByDefault: [
         shellToolSurface.execCommand,
@@ -758,6 +785,7 @@ export function buildToolRegistry(
     },
     {
       id: "first-class-files",
+      admissionDefault: "local_zero",
       tools: firstClassFileTools,
       visibleByDefault: [
         firstClassFileSurface.read,
@@ -781,22 +809,26 @@ export function buildToolRegistry(
     },
     {
       id: "interaction",
+      admissionDefault: "local_zero",
       tools: interactionTools,
       visibleByDefault: ["AskUserQuestion"],
     },
     {
       id: "browser",
+      admissionDefault: "local_zero",
       tools: browserTools,
       // No visibleByDefault: the Browser tool's metadata.deferred keeps it out
       // of the default advertised set until system.searchTools discovery.
     },
     {
       id: "planning",
+      admissionDefault: "local_zero",
       tools: planningTools,
       visibleByDefault: ["TodoWrite", "EnterPlanMode", "ExitPlanMode"],
     },
     {
       id: "model-facing",
+      admissionDefault: "unpriced",
       tools: registryModelFacingTools,
       visibleByDefault: registryModelFacingTools
         .filter((tool) => tool.metadata?.deferred !== true)
@@ -822,6 +854,7 @@ export function buildToolRegistry(
     ...baseBuiltinSurfaceGroups,
     {
       id: "code-mode",
+      admissionDefault: "local_zero",
       tools: codeModeTools,
       visibleByDefault: ["exec", "wait"],
       stringArgumentFields: {
@@ -970,14 +1003,40 @@ export function buildToolRegistry(
           : "tool",
       );
     }
-    const result = await spec.tool.execute(args);
-    return {
-      content: result.content,
-      isError: result.isError,
-      codeModeResult: result.codeModeResult,
-      contentItems: result.contentItems,
-      metadata: result.metadata,
+    const invoke = async (signal?: AbortSignal): Promise<ToolDispatchResult> => {
+      if (signal !== undefined) {
+        Object.defineProperty(args, "__abortSignal", {
+          value: signal,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+      const result = await spec.tool.execute(args);
+      return {
+        content: result.content,
+        isError: result.isError,
+        codeModeResult: result.codeModeResult,
+        contentItems: result.contentItems,
+        metadata: result.metadata,
+        admissionUsage: result.admissionUsage,
+      };
     };
+    const session = options.getSession?.() ?? null;
+    if (session === null) {
+      if (options.requireAdmission !== false) {
+        throw new AdmissionDeniedError("tool_admission_session_unavailable");
+      }
+      return invoke(opts.abortSignal);
+    }
+    return runAdmittedToolCall({
+      session,
+      turnId: `registry:${session.conversationId}`,
+      callId,
+      tool: spec.tool,
+      args,
+      ...(opts.abortSignal !== undefined ? { signal: opts.abortSignal } : {}),
+      invoke: ({ signal }) => invoke(signal),
+    });
   }
 
   return {

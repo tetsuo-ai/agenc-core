@@ -102,7 +102,9 @@ function debugLog(error: unknown): void {
 /**
  * Load a custom session memory template from config home if it exists.
  */
-export async function loadSessionMemoryTemplate(): Promise<string> {
+export async function loadSessionMemoryTemplate(
+  signal?: AbortSignal,
+): Promise<string> {
   const templatePath = join(
     getAgenCConfigHomeDir(),
     "session-memory",
@@ -111,8 +113,9 @@ export async function loadSessionMemoryTemplate(): Promise<string> {
   );
 
   try {
-    return await readFile(templatePath, { encoding: "utf8" });
+    return await readFile(templatePath, { encoding: "utf8", signal });
   } catch (error) {
+    signal?.throwIfAborted();
     if (errnoCode(error) === "ENOENT") return DEFAULT_SESSION_MEMORY_TEMPLATE;
     debugLog(error);
     return DEFAULT_SESSION_MEMORY_TEMPLATE;

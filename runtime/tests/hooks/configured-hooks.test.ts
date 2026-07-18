@@ -23,6 +23,7 @@ class ConfiguredHooksRuntime extends ProductionConfiguredHooksRuntime {
   ) {
     super({
       ...options,
+      admissionRequired: options.admissionRequired ?? false,
       sandboxExecutionBroker:
         options.sandboxExecutionBroker ?? explicitDangerBroker,
     });

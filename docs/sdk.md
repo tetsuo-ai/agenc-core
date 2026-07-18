@@ -14,12 +14,12 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 
 | | daemon transport | subprocess transport |
 |---|---|---|
-| entry | `connect()` → `AgencClient` | `promptViaSubprocess()` |
-| wire | JSON-lines over `~/.agenc/daemon.sock` | `agenc -p --output-format stream-json --input-format stream-json` |
-| sessions | persistent, resumable, multi-turn | one-shot per spawn |
-| permission callbacks | yes (approve or deny live) | no — CLI auto-denies (exit code 2 = tool-denied giveup) |
-| background agents | spawn / attach / stop / logs | no |
-| daemon required | attaches, or starts one via the CLI | the CLI manages its own daemon |
+| entry                | `connect()` → `AgencClient`            | `promptViaSubprocess()`                                           |
+| wire                 | JSON-lines over `~/.agenc/daemon.sock` | `agenc -p --output-format stream-json --input-format stream-json` |
+| sessions             | persistent, resumable, multi-turn      | one-shot per spawn                                                |
+| permission callbacks | yes (approve or deny live)             | no — CLI auto-denies (exit code 2 = tool-denied giveup)           |
+| background agents    | spawn / attach / stop / logs           | no                                                                |
+| daemon required      | attaches, or starts one via the CLI    | the CLI manages its own daemon                                    |
 
 Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
@@ -69,7 +69,9 @@ Key `AgencClient` methods:
 - `spawnAgent(params)` → background agent (`agent.create`)
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
 - `listAgents()` / `stopAgent(id)` / `agentLogs(id)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **41** daemon methods
+- `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
+  `runEvidence(params)` / `cancelRun(id, reason?)`
+- `request(method, params)` → raw typed JSON-RPC for any of the **45** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -139,8 +141,8 @@ adapts its stream-json output onto the same event iterable:
 import { promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
 
 const run = promptViaSubprocess("explain the fee split", {
-  agencCommand: "agenc",      // or ["/abs/path/agenc"]
-  model: "grok-4.5",           // optional; also provider/profile/permissionMode
+  agencCommand: "agenc", // or ["/abs/path/agenc"]
+  model: "grok-4.5", // optional; also provider/profile/permissionMode
 });
 for await (const event of run) { /* same AgencPromptEvent union */ }
 const result = await run.result(); // exitCode/finalMessage/usage from the CLI's result line
@@ -163,7 +165,37 @@ node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 
-## Daemon method surface (41 methods)
+### Durable run inspection
+
+```ts
+const status = await client.runStatus(runId);
+if (status.terminal) {
+  const result = await client.runResult(runId);
+  console.log(result.outcome, result.output.available);
+}
+
+let afterSequence = 0;
+do {
+  const page = await client.replayRun({ runId, afterSequence, limit: 100 });
+  for (const event of page.events) console.log(event.sequence, event.event);
+  afterSequence = page.nextAfterSequence;
+  if (!page.hasMore) break;
+} while (true);
+
+const evidence = await client.runEvidence({ runId, limit: 100 });
+console.log(evidence.source.completeness, evidence.hashes.bundleSha256);
+```
+
+`run.result` rejects through `AgencRpcError` with
+`error.data.code === "RUN_NOT_TERMINAL"` until an `agent_runs` row is durably
+terminal. `run.replay` cursors are exclusive database-global sequences and
+always return `hasMore` and `nextAfterSequence`; skipped numbers can belong to
+other runs. `run.evidence` is explicitly limited to existing M3 admission
+state (`workflowEvidenceIncluded: false`) and marks partial pages. No helper
+claims a terminal assistant payload or future workflow evidence that the
+current database does not store.
+
+## Daemon method surface (45 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -172,6 +204,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | --- | --- |
 | lifecycle | `initialize`, `request.cancel` |
 | agents | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs` |
+| runs | `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel` |
 | sessions | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.cancelTurn`, `session.mcp.addServer` |
 | messaging | `message.send`, `message.stream` |
 | realtime | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices` |
@@ -183,6 +216,14 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`) cover
 command-exec deltas, message chunks, tool/permission/elicitation requests,
 agent/session status, and realtime stream events.
+
+The command-exec methods remain typed for protocol compatibility, but
+`commandExec.start` currently returns `EXECUTION_ADMISSION_REQUIRED`: it cannot
+start work until the RPC carries a daemon session-bound admission identity.
+The server therefore advertises `commandExec.start: false`. It also advertises
+`thread/realtime/start: false` while realtime provider traffic lacks the same
+durable admission and usage contract; clients should use the initialize
+capability map instead of treating registry membership as availability.
 
 Important raw protocol additions:
 
@@ -197,7 +238,12 @@ Important raw protocol additions:
 Plain `scope: "session"` without `allowAllToolsForSession: true` keeps the
 narrower equivalent-rule approval cache. Interactive approval/deny/elicitation
 RPCs are preemptive in daemon transports so a reply cannot queue behind the
-turn it must unblock.
+turn it must unblock. Cancel, bounded run reads, health/status, attach,
+`session.list`, and `session.snapshot` requests use the same transport priority
+lane so they remain responsive during a streaming turn. `session.list` returns
+at most `limit` rows (default 50, maximum 100); continue with its opaque
+`nextCursor` and the
+same `agentId` filter.
 
 Use typed helpers when available; fall back to
 `client.request("session.snapshot", { sessionId })` (etc.) for anything else.

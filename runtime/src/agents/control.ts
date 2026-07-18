@@ -34,9 +34,7 @@
 
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
-import type {
-  ThreadSpawnEdgeStatus,
-} from "../session/rollout-store.js";
+import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
 import { Mailbox, MailboxClosedError } from "./mailbox.js";
 import {
@@ -72,6 +70,7 @@ import {
   type RoleShapedConfig,
 } from "./role.js";
 import { canonicalAgentRoleName } from "./role-presentation.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 
 /**
  * Resolve the role for a RESUMED agent fail-closed. A named-but-unknown
@@ -89,10 +88,7 @@ function resolveResumedAgentRole(
   const normalized = normalizeAgentRoleMetadata(metadata);
   const roleName = normalized.agentRole;
   if (roleName === undefined) return resolveAgentRole(workspace, roleName);
-  assertAgentRoleWorkspaceMatches(
-    workspace,
-    normalized.agentRoleWorkspaceId,
-  );
+  assertAgentRoleWorkspaceMatches(workspace, normalized.agentRoleWorkspaceId);
   const known = getAgentRoleByExactName(workspace, roleName);
   if (!known) {
     throw new InvalidAgentMetadataError(
@@ -150,7 +146,9 @@ function parseDepthOverride(raw: string | undefined): number | undefined {
 }
 
 function resolveDefaultMaxDepth(env: NodeJS.ProcessEnv = process.env): number {
-  return parseDepthOverride(env.AGENC_AGENT_MAX_DEPTH) ?? DEFAULT_MAX_AGENT_DEPTH;
+  return (
+    parseDepthOverride(env.AGENC_AGENT_MAX_DEPTH) ?? DEFAULT_MAX_AGENT_DEPTH
+  );
 }
 
 export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
@@ -165,8 +163,7 @@ function resolveSessionMaxDepth(session: Session): number | undefined {
   const originalDepth = asPositiveIntegerDepth(
     (
       session.sessionConfiguration?.originalConfigDoNotUse as
-        | { agent_max_depth?: unknown }
-        | undefined
+        { agent_max_depth?: unknown } | undefined
     )?.agent_max_depth,
   );
   if (originalDepth !== undefined) return originalDepth;
@@ -239,7 +236,9 @@ export interface SpawnAgentOptions {
   readonly depthCap?: number;
   /** Caller-supplied metadata fields to merge into the allocated
    *  record (e.g. inherited `agentRole` from a resume payload). */
-  readonly metadata?: { readonly [K in keyof AgentMetadata]?: AgentMetadata[K] };
+  readonly metadata?: {
+    readonly [K in keyof AgentMetadata]?: AgentMetadata[K];
+  };
   readonly forkParentSpawnCallId?: string;
   readonly forkMode?: SpawnAgentForkMode;
 }
@@ -359,9 +358,7 @@ export class AgentControl {
   ): string {
     const normalized = normalizeAgentRoleMetadata(metadata);
     if (normalized.agentRole === undefined) {
-      throw new InvalidAgentMetadataError(
-        "agent role provenance is missing",
-      );
+      throw new InvalidAgentMetadataError("agent role provenance is missing");
     }
     return resolveResumedAgentRole(this.roleWorkspace, normalized).name;
   }
@@ -432,16 +429,11 @@ export class AgentControl {
       expectedRoleProvenance !== undefined &&
       expectedRoleProvenance.agentRole === undefined
     ) {
-      throw new InvalidAgentMetadataError(
-        "agent role provenance is missing",
-      );
+      throw new InvalidAgentMetadataError("agent role provenance is missing");
     }
     const role =
       expectedRoleProvenance !== undefined
-        ? resolveResumedAgentRole(
-            this.roleWorkspace,
-            expectedRoleProvenance,
-          )
+        ? resolveResumedAgentRole(this.roleWorkspace, expectedRoleProvenance)
         : requireAgentRole(this.roleWorkspace, opts.roleName);
     if (
       opts.roleName !== undefined &&
@@ -468,6 +460,7 @@ export class AgentControl {
       (opts.agentName !== undefined
         ? joinAgentPath(opts.parentPath, opts.agentName)
         : undefined);
+    const threadId = opts.threadId ?? crypto.randomUUID();
 
     if (childDepth > depthCap) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
@@ -487,12 +480,83 @@ export class AgentControl {
       throw new AgentIdExistsError(opts.threadId);
     }
 
-    // I-63: atomic slot acquisition.
-    const reservation = await this.registry.reserveSpawnSlot();
+    const admission = this.session.services?.executionAdmission;
+    if (
+      admission === undefined &&
+      this.session.services?.admissionRequired !== false
+    ) {
+      throw new AdmissionDeniedError("admission_kernel_unavailable");
+    }
+    const parentToken = this.parentTokens.get(opts.parentPath);
+    const spawnLease =
+      admission === undefined
+        ? undefined
+        : await admission.acquire(
+            {
+              stepId: `spawn:${threadId}`,
+              kind: "spawn",
+              sessionId: this.session.conversationId,
+              parentScopeId: opts.parentPath,
+              maxInputTokens: 0,
+              maxOutputTokens: 0,
+              maxCostUsd: 0,
+            },
+            parentToken?.signal,
+          );
+    const finishSpawnAdmission = (
+      stage: string,
+      settle: (reservationId: string) => void,
+      recoverSettlement?: (reservationId: string) => void,
+    ): void => {
+      if (spawnLease === undefined) return;
+      const reservationId = spawnLease.reservation.reservationId;
+      const failures: unknown[] = [];
+      try {
+        settle(reservationId);
+      } catch (error) {
+        failures.push(error);
+        if (recoverSettlement !== undefined) {
+          try {
+            recoverSettlement(reservationId);
+          } catch (recoveryError) {
+            failures.push(recoveryError);
+          }
+        }
+      } finally {
+        try {
+          admission?.acknowledgeCompletion(reservationId);
+        } catch (acknowledgementError) {
+          failures.push(acknowledgementError);
+        }
+      }
+      if (failures.length > 0) {
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "spawn_admission_settlement_failed",
+          `spawn ${threadId} admission settlement failed at ${stage}: ${failures
+            .map((error) =>
+              error instanceof Error ? error.message : String(error),
+            )
+            .join("; ")}`,
+        );
+      }
+    };
+
+    // I-63: atomic local slot acquisition. If the in-memory guard rejects the
+    // spawn, release the still-pre-dispatch durable reservation immediately.
+    let reservation: Awaited<ReturnType<AgentRegistry["reserveSpawnSlot"]>>;
+    try {
+      reservation = await this.registry.reserveSpawnSlot();
+    } catch (error) {
+      finishSpawnAdmission("local_slot_reservation", (reservationId) => {
+        admission?.void(reservationId, "session_concurrency_limit");
+      });
+      throw error;
+    }
 
     let nickname!: string;
     let releaseNicknameOnRollback = false;
-    let threadId!: ThreadId;
     let metadata!: AgentMetadata;
     try {
       if (explicitAgentPath !== undefined) {
@@ -505,7 +569,6 @@ export class AgentControl {
         nickname = allocateNickname(role, this.registry);
         releaseNicknameOnRollback = true;
       }
-      threadId = opts.threadId ?? crypto.randomUUID();
       metadata = buildChildMetadata({
         agentId: threadId,
         parentPath: opts.parentPath,
@@ -515,7 +578,9 @@ export class AgentControl {
         nickname,
         depth: childDepth,
         ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
-        ...(explicitAgentPath !== undefined ? { agentPath: explicitAgentPath } : {}),
+        ...(explicitAgentPath !== undefined
+          ? { agentPath: explicitAgentPath }
+          : {}),
       });
       if (explicitAgentPath === undefined && metadata.agentPath !== undefined) {
         reservation.reserveAgentPath(metadata.agentPath);
@@ -524,7 +589,7 @@ export class AgentControl {
       // I-32: check cancellation before finalize. If the parent was
       // interrupted while we were allocating, roll back + throw.
       const parentToken = this.parentTokens.get(opts.parentPath);
-      if (parentToken?.signal.aborted) {
+      if (parentToken?.signal.aborted || spawnLease?.signal.aborted) {
         emitWarning(
           this.session.eventLog,
           this.session.nextInternalSubId(),
@@ -538,14 +603,20 @@ export class AgentControl {
       // AgentPathExistsError on a path owned by another live/reserved agent.
       reservation.finalize(metadata);
     } catch (err) {
-      reservation.release();
-      // gaphunt3 #46: reservation.release() rolls back the slot + reserved
-      // path but NOT the nickname. A nickname freshly allocated here (no
-      // preferredNickname) leaks into the registry's usedNicknames pool on
-      // any rollback (I-32 abort, path collision). Release it on the failure
-      // path so it returns to the pool.
-      if (releaseNicknameOnRollback && nickname) {
-        releaseNickname(this.registry, nickname);
+      try {
+        reservation.release();
+        // gaphunt3 #46: reservation.release() rolls back the slot + reserved
+        // path but NOT the nickname. A nickname freshly allocated here (no
+        // preferredNickname) leaks into the registry's usedNicknames pool on
+        // any rollback (I-32 abort, path collision). Release it on the failure
+        // path so it returns to the pool.
+        if (releaseNicknameOnRollback && nickname) {
+          releaseNickname(this.registry, nickname);
+        }
+      } finally {
+        finishSpawnAdmission("metadata_precommit", (reservationId) => {
+          admission?.void(reservationId, "spawn_failed_before_commit");
+        });
       }
       if (err instanceof AgentPathExistsError) {
         emitError(this.session.eventLog, this.session.nextInternalSubId(), {
@@ -610,18 +681,42 @@ export class AgentControl {
     // Durability is the commit point. Do not publish any live maps until the
     // edge is safely stored; a rejected provenance rebind or SQLite failure
     // must leave the registry and control plane exactly as they were.
+    let spawnDispatched = false;
     try {
+      if (spawnLease !== undefined) {
+        admission?.markDispatched(spawnLease.reservation.reservationId, {
+          boundary: "spawn_commit",
+          details: {
+            childThreadId: threadId,
+            parentPath: opts.parentPath,
+          },
+        });
+        spawnDispatched = true;
+      }
       await this.persistThreadSpawnEdgeForSource(
         opts.parentPath,
         threadId,
         metadata,
       );
     } catch (error) {
-      upInbox.close("spawn_persistence_failed");
-      downInbox.close("spawn_persistence_failed");
-      await this.registry.releaseSpawnedThread(threadId);
-      if (releaseNicknameOnRollback) {
-        releaseNickname(this.registry, nickname);
+      try {
+        upInbox.close("spawn_persistence_failed");
+        downInbox.close("spawn_persistence_failed");
+        await this.registry.releaseSpawnedThread(threadId);
+        if (releaseNicknameOnRollback) {
+          releaseNickname(this.registry, nickname);
+        }
+      } finally {
+        finishSpawnAdmission("durable_edge_commit", (reservationId) => {
+          if (spawnDispatched) {
+            admission?.holdUnknown(
+              reservationId,
+              "spawn_commit_outcome_unknown",
+            );
+          } else {
+            admission?.void(reservationId, "spawn_cancelled_before_commit");
+          }
+        });
       }
       throw error;
     }
@@ -629,7 +724,10 @@ export class AgentControl {
     // Persistence may yield to an interrupt. A child must never become live
     // after its parent was cancelled while the durable edge was committing.
     const parentTokenAfterPersistence = this.parentTokens.get(opts.parentPath);
-    if (parentTokenAfterPersistence?.signal.aborted) {
+    if (
+      parentTokenAfterPersistence?.signal.aborted ||
+      spawnLease?.signal.aborted
+    ) {
       let closeError: unknown;
       try {
         await this.setThreadSpawnEdgeStatus(threadId, "closed");
@@ -644,6 +742,12 @@ export class AgentControl {
         this.threadManager?.registerLiveAgent(agent, {
           ...(parentThreadId !== undefined ? { parentThreadId } : {}),
         });
+        finishSpawnAdmission("durable_edge_rollback", (reservationId) => {
+          admission?.holdUnknown(
+            reservationId,
+            "spawn_rollback_outcome_unknown",
+          );
+        });
         emitWarning(
           this.session.eventLog,
           this.session.nextInternalSubId(),
@@ -652,11 +756,30 @@ export class AgentControl {
         );
         throw closeError;
       }
-      upInbox.close("spawn_race_aborted");
-      downInbox.close("spawn_race_aborted");
-      await this.registry.releaseSpawnedThread(threadId);
-      if (releaseNicknameOnRollback) {
-        releaseNickname(this.registry, nickname);
+      try {
+        upInbox.close("spawn_race_aborted");
+        downInbox.close("spawn_race_aborted");
+        await this.registry.releaseSpawnedThread(threadId);
+        if (releaseNicknameOnRollback) {
+          releaseNickname(this.registry, nickname);
+        }
+      } finally {
+        finishSpawnAdmission(
+          "cancelled_durable_edge_rollback",
+          (reservationId) => {
+            admission?.reconcile(reservationId, {
+              inputTokens: 0,
+              outputTokens: 0,
+              costUsd: 0,
+            });
+          },
+          (reservationId) => {
+            admission?.holdUnknown(
+              reservationId,
+              "spawn_reconciliation_failed_after_rollback",
+            );
+          },
+        );
       }
       emitWarning(
         this.session.eventLog,
@@ -670,6 +793,53 @@ export class AgentControl {
     // I-5: publish only after the durable commit and post-commit cancellation
     // check have both completed.
     publishAgent();
+
+    if (spawnLease !== undefined) {
+      const reservationId = spawnLease.reservation.reservationId;
+      const settlementFailures: unknown[] = [];
+      try {
+        admission?.reconcile(reservationId, {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+        });
+      } catch (error) {
+        settlementFailures.push(error);
+        // The spawn edge is already durable and the live child is published.
+        // Never report this as a clean pre-commit failure: callers could retry
+        // and create a second child. Conservatively hold the zero-cost spawn
+        // reservation unknown while returning the committed child handle.
+        try {
+          admission?.holdUnknown(
+            reservationId,
+            "spawn_reconciliation_failed_after_commit",
+          );
+        } catch (holdError) {
+          settlementFailures.push(holdError);
+        }
+      } finally {
+        // Even a repository/journal failure must not strand the daemon's live
+        // concurrency slot. Durable recovery can repair a dispatched record;
+        // physical spawn work has completed at this point.
+        try {
+          admission?.acknowledgeCompletion(reservationId);
+        } catch (acknowledgementError) {
+          settlementFailures.push(acknowledgementError);
+        }
+      }
+      if (settlementFailures.length > 0) {
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "spawn_admission_reconciliation_failed",
+          `spawn ${threadId} committed, but admission settlement needs recovery: ${settlementFailures
+            .map((error) =>
+              error instanceof Error ? error.message : String(error),
+            )
+            .join("; ")}`,
+        );
+      }
+    }
 
     return agent;
   }
@@ -1335,9 +1505,10 @@ export class AgentControl {
     return this.live.get(threadId)?.status.value ?? { status: "not_found" };
   }
 
-  async subscribeStatus(
-    threadId: ThreadId,
-  ): Promise<{ readonly value: AgentStatus; readonly unsubscribe: () => void }> {
+  async subscribeStatus(threadId: ThreadId): Promise<{
+    readonly value: AgentStatus;
+    readonly unsubscribe: () => void;
+  }> {
     if (this.threadManager?.hasThread(threadId)) {
       const thread = this.threadManager.getThread(threadId);
       let value = thread.status();
@@ -1470,9 +1641,7 @@ export class AgentControl {
 
     const metadatas = Array.from(this.registry.liveAgents())
       .slice()
-      .sort((l, r) =>
-        (l.agentPath ?? "").localeCompare(r.agentPath ?? ""),
-      );
+      .sort((l, r) => (l.agentPath ?? "").localeCompare(r.agentPath ?? ""));
 
     for (const metadata of metadatas) {
       if (roleName && metadata.agentRole !== roleName) continue;
@@ -1558,7 +1727,10 @@ export class AgentControl {
         triggerTurn: true,
       });
     } catch (err) {
-      if (err instanceof ThreadNotFoundError || err instanceof MailboxClosedError) {
+      if (
+        err instanceof ThreadNotFoundError ||
+        err instanceof MailboxClosedError
+      ) {
         return;
       }
       this.emitCompletionWatcherSendFailed(parentId, err);
@@ -1630,9 +1802,11 @@ export class AgentControl {
   }
 
   private requestRootFollowupTurn(author: string): void {
-    const submit = (this.session as unknown as {
-      readonly submit?: Session["submit"];
-    }).submit;
+    const submit = (
+      this.session as unknown as {
+        readonly submit?: Session["submit"];
+      }
+    ).submit;
     if (typeof submit !== "function") return;
     void submit
       .call(this.session, "", { displayUserMessage: null })
@@ -1648,7 +1822,10 @@ export class AgentControl {
       });
   }
 
-  private emitCompletionWatcherSendFailed(parentId: ThreadId, err: unknown): void {
+  private emitCompletionWatcherSendFailed(
+    parentId: ThreadId,
+    err: unknown,
+  ): void {
     emitWarning(
       this.session.eventLog,
       this.session.nextInternalSubId(),
@@ -1692,7 +1869,10 @@ export class AgentControl {
     _parentThreadId: ThreadId | undefined,
   ): unknown | undefined {
     void _parentThreadId;
-    const services = this.session.services as unknown as Record<string, unknown>;
+    const services = this.session.services as unknown as Record<
+      string,
+      unknown
+    >;
     return (
       services.shellSnapshot ??
       services.shell_snapshot ??
@@ -1704,11 +1884,12 @@ export class AgentControl {
     _parentThreadId: ThreadId | undefined,
   ): unknown | undefined {
     void _parentThreadId;
-    const services = this.session.services as unknown as Record<string, unknown>;
+    const services = this.session.services as unknown as Record<
+      string,
+      unknown
+    >;
     return (
-      services.execPolicy ??
-      services.exec_policy ??
-      services.execPolicyManager
+      services.execPolicy ?? services.exec_policy ?? services.execPolicyManager
     );
   }
 
@@ -1795,7 +1976,8 @@ export class AgentControl {
     if (!parentThreadId) return;
     const rolloutStore = this.session.rolloutStore;
     if (!rolloutStore) return;
-    const storedMetadata = metadata ?? this.registry.agentMetadataForThread(childThreadId);
+    const storedMetadata =
+      metadata ?? this.registry.agentMetadataForThread(childThreadId);
     if (!storedMetadata) return;
     rolloutStore.createThreadSpawnEdge({
       childThreadId,

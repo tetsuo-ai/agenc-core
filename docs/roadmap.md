@@ -32,7 +32,7 @@ shipped / open summary.
   accessibility-ref actions, SSRF-proxy egress control (task 18)
 - Multi-agent v2: `spawn_agent`, `wait_agent`, `close_agent`, `assign_task`,
   `send_message`, `list_agents`
-- Background agents over the 41-method daemon protocol
+- Background agents and durable run inspection over the 45-method daemon protocol
 - Embedding SDK `@tetsuo-ai/agenc-sdk` **0.2.0** (`connect`, `promptViaSubprocess`)
 - Legacy local agent-eval diagnostic + regression gate (`runtime/eval/tasks/`)
 - Versioned competitive/trust evaluation suite protocols (`runtime/eval/suites/`)

@@ -119,6 +119,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `initialize` | Handshake + capability advertisement |
 | `request.cancel` | Cancel an in-flight request |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs` | Background agents |
+| `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel` | Durable run inspection, admission replay/evidence, and tree cancellation |
 | `session.create` / `session.list` / `session.attach` / `session.detach` | Session lifecycle |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` | Session control |
 | `session.cancelTurn` | Abort current turn |
@@ -129,10 +130,50 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `elicitation.respond` | User-input / MCP elicitation reply |
 | `permission.list` | List pending / granted permissions |
 | `fs.fuzzy_search` | Workspace fuzzy file search |
-| `commandExec.start` / `write` / `resize` / `terminate` | PTY/command exec |
+| `commandExec.start` / `write` / `resize` / `terminate` | Reserved PTY/command-exec protocol; direct starts currently fail closed |
 | `health.ping` / `health.ready` / `health.stats` | Liveness and stats |
 | `daemon.reload` | Reload configuration |
 | `auth.login` / `auth.whoami` / `auth.logout` | Auth backend |
+
+`session.list` is page-bounded: `limit` defaults to 50 and is capped at 100.
+Pass the returned opaque `nextCursor` back with the same `agentId` filter; a
+cursor is scoped to that filter and should not be persisted across daemon
+upgrades. Persisted metadata is read with an indexed keyset page rather than a
+full thread-history scan.
+
+Run inspection is read-only and searches the discovered project state
+databases by `runId`:
+
+- `run.status` returns the durable `agent_runs` state plus aggregate M3
+  admission step, reservation, allocation, fallback, and budget/hold totals.
+  `terminal` is true only when the durable run row is terminal. An
+  admission-only record stays nonterminal because admission state cannot prove
+  that no future step will be created.
+- `run.replay` pages the existing append-only execution-admission journal.
+  `afterSequence` is exclusive, `limit` defaults to 100 and is capped at 200,
+  and every response includes `hasMore` plus `nextAfterSequence`. Sequences are
+  database-global, so a page filtered to one run may legitimately skip
+  numbers. A missing journal source is an explicit `gap`.
+- `run.result` succeeds only for a durable terminal `agent_runs` row. A live or
+  admission-only run returns `RUN_NOT_TERMINAL`; a missing run returns
+  `RUN_NOT_FOUND`. Existing state stores terminal status/metadata but not a
+  canonical terminal assistant payload, so `output.available` is explicitly
+  false rather than fabricated.
+- `run.evidence` returns a bounded admission-event page with SHA-256 hashes of
+  the run state, admission summary, individual events, and page bundle. Its
+  source declares `workflowEvidenceIncluded: false` and completeness as
+  `complete`, `partial`, or `admission_source_unavailable`: this is M3
+  admission evidence, not a future workflow/effect ledger.
+
+All four reads use the transport priority lane. Their SQL output is bounded and
+indexed; they never migrate, create, or mutate a state database. If one run id
+exists in multiple project databases, they fail with `RUN_ID_AMBIGUOUS` instead
+of choosing silently.
+
+The stdio and WebSocket transports give cancel operations plus bounded health,
+status, attach, and session lookup RPCs a priority lane. They still wait for
+`initialize`, but do not wait for a full `message.send` / `message.stream` turn
+to finish. Ordinary order-dependent mutations remain FIFO per connection.
 
 ### Internal methods (TUI / privileged clients)
 
@@ -141,12 +182,20 @@ Include session rewind/compact, `session.setModel`,
 MCP reconnect/enable/disable. Full list:
 `AGENC_DAEMON_INTERNAL_METHODS` in the protocol module.
 
-`commandExec.start` requires an explicit `permissionProfile` or legacy
-`sandboxPolicy`. Policy-less requests are rejected with
-`sandbox_surface_uncovered`; clients that intentionally need host execution
-must send `permissionProfile: ":danger-full-access"`. Restricted profiles use
-the packaged, non-workspace-writable sandbox helper and fail before spawn when
-platform isolation is unavailable.
+`commandExec.start` is currently fail-closed with
+`EXECUTION_ADMISSION_REQUIRED`. Although the underlying service retains its
+explicit sandbox-policy contract for internal testing and future wiring, the
+daemon RPC has no session-bound run/step identity and therefore cannot start a
+process. Use an ordinary admitted session tool. `write`, `resize`, and
+`terminate` remain available as cleanup/control operations for an already
+owned process; they do not create execution. The initialize capability map
+advertises `commandExec.start: false` while this guard is active.
+
+`thread/realtime/start` is likewise fail-closed and advertised as unavailable
+until realtime provider traffic has durable admission, bounded reservation,
+and authoritative usage reconciliation. The remaining realtime methods stay
+typed for protocol compatibility and cleanup of test-only/previously owned
+sessions.
 
 ### Server → client notifications
 

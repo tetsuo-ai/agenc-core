@@ -131,49 +131,117 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     expect(resolveTimeoutMs(tool, { timeoutMs: 5_000 })).toBeNull();
   });
 
-  test("timer fires → ToolTimeoutError thrown", async () => {
-    await expect(
-      withTimeoutAndAbort(() => new Promise(() => {}), {
+  test("timer records ToolTimeoutError but waits for physical settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const physical = Promise.withResolvers<string>();
+      let settled = false;
+      const running = withTimeoutAndAbort(() => physical.promise, {
         timeoutMs: 50,
         toolName: "stub",
-      }),
-    ).rejects.toThrow(ToolTimeoutError);
+      });
+      void running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(settled).toBe(false);
+
+      physical.resolve("late result");
+      await expect(running).rejects.toThrow(ToolTimeoutError);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  test("signal abort preempts timer", async () => {
+  test("signal abort preempts timer but waits for physical settlement", async () => {
     const ctl = new AbortController();
-    const p = withTimeoutAndAbort(() => new Promise(() => {}), {
+    const physical = Promise.withResolvers<string>();
+    let settled = false;
+    const running = withTimeoutAndAbort(() => physical.promise, {
       timeoutMs: 5_000,
       toolName: "stub",
       signal: ctl.signal,
     });
-    setTimeout(() => ctl.abort("user"), 20);
-    await expect(p).rejects.toThrow(/user|aborted/);
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    ctl.abort("user");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    physical.resolve("late result");
+    await expect(running).rejects.toThrow(/user|aborted/);
   });
 
-  test("null timeout preserves abort race without a deadline timer", async () => {
+  test("null timeout preserves abort semantics without releasing early", async () => {
     const ctl = new AbortController();
-    const p = withTimeoutAndAbort(() => new Promise(() => {}), {
+    const physical = Promise.withResolvers<string>();
+    let settled = false;
+    const running = withTimeoutAndAbort(() => physical.promise, {
       timeoutMs: null,
       toolName: "stub",
       signal: ctl.signal,
     });
-    setTimeout(() => ctl.abort("user"), 20);
-    await expect(p).rejects.toThrow(/user|aborted/);
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    ctl.abort("user");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    physical.resolve("late result");
+    await expect(running).rejects.toThrow(/user|aborted/);
   });
 
   test("timeout aborts the provided controller so the underlying tool can cancel", async () => {
-    const ctl = new AbortController();
-    await expect(
-      withTimeoutAndAbort(() => new Promise(() => {}), {
+    vi.useFakeTimers();
+    try {
+      const ctl = new AbortController();
+      const physical = Promise.withResolvers<string>();
+      let settled = false;
+      const running = withTimeoutAndAbort(() => physical.promise, {
         timeoutMs: 20,
         toolName: "stub",
         signal: ctl.signal,
         abortController: ctl,
-      }),
-    ).rejects.toThrow(ToolTimeoutError);
-    expect(ctl.signal.aborted).toBe(true);
-    expect(String(ctl.signal.reason)).toContain("tool timeout");
+      });
+      void running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(20);
+      expect(ctl.signal.aborted).toBe(true);
+      expect(String(ctl.signal.reason)).toContain("tool timeout");
+      expect(settled).toBe(false);
+
+      physical.resolve("late result");
+      await expect(running).rejects.toThrow(ToolTimeoutError);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -459,12 +527,15 @@ describe("runToolUse end-to-end", () => {
     expect(seenSurface).toBe("tool");
   });
 
-  test("I-9 timeout on stalled tool", async () => {
+  test("I-9 timeout waits for a stalled tool to physically settle", async () => {
     const tool: Tool = {
       name: "stuck",
       description: "",
       inputSchema: {},
-      execute: () => new Promise(() => {}),
+      execute: async () =>
+        await new Promise((resolve) =>
+          setTimeout(() => resolve({ content: "late result" }), 75),
+        ),
       timeoutMs: 50,
     };
     const out = await runToolUse("{}", {

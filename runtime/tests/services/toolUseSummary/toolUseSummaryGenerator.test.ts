@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { LLMProvider } from "../../llm/types.js";
+import type { Session } from "../../session/session.js";
 import {
   E_TOOL_USE_SUMMARY_GENERATION_FAILED,
   TOOL_USE_SUMMARY_DEFAULT_MODEL,
@@ -100,6 +101,7 @@ describe("generateToolUseSummary", () => {
         signal: new AbortController().signal,
         isNonInteractiveSession: false,
         provider,
+        session: summarySessionFor(provider),
       }),
     ).resolves.toBeNull();
     expect(provider.chat).not.toHaveBeenCalled();
@@ -120,6 +122,7 @@ describe("generateToolUseSummary", () => {
         signal,
         isNonInteractiveSession: true,
         provider,
+        session: summarySessionFor(provider),
         lastAssistantText: "I will inspect the config file.",
       }),
     ).resolves.toBe("Read config.json");
@@ -146,6 +149,7 @@ describe("generateToolUseSummary", () => {
         signal: new AbortController().signal,
         isNonInteractiveSession: false,
         provider,
+        session: summarySessionFor(provider),
       }),
     ).resolves.toBeNull();
   });
@@ -165,6 +169,7 @@ describe("generateToolUseSummary", () => {
         signal: new AbortController().signal,
         isNonInteractiveSession: false,
         provider,
+        session: summarySessionFor(provider),
         logError,
       }),
     ).resolves.toBeNull();
@@ -178,3 +183,15 @@ describe("generateToolUseSummary", () => {
     });
   });
 });
+
+function summarySessionFor(provider: Pick<LLMProvider, "chat">): Session {
+  return {
+    conversationId: "tool-summary-test",
+    nextInternalSubId: () => "summary-step",
+    modelInfo: { slug: TOOL_USE_SUMMARY_DEFAULT_MODEL },
+    services: {
+      provider,
+      admissionRequired: false,
+    },
+  } as unknown as Session;
+}

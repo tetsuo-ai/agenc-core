@@ -120,6 +120,8 @@ export async function resolveContextWindowProfile(
     if (explicit !== undefined) {
       return {
         provider: "grok",
+        usageReporting: "authoritative",
+        supportsMaxOutputTokens: true,
         ...(model ? { model } : {}),
         contextWindowTokens: explicit,
         contextWindowSource: "explicit_config",
@@ -128,6 +130,8 @@ export async function resolveContextWindowProfile(
     }
     return {
       provider: "grok",
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
       ...(model ? { model } : {}),
       contextWindowTokens: inferGrokContextWindowTokens(model),
       contextWindowSource: "grok_model_heuristic",
@@ -138,6 +142,8 @@ export async function resolveContextWindowProfile(
     const model = llmConfig.model?.trim() || DEFAULT_OLLAMA_MODEL;
     return {
       provider: "ollama",
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
       model,
       contextWindowTokens: explicit ?? DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS,
       contextWindowSource: "ollama_request_num_ctx",
@@ -147,6 +153,8 @@ export async function resolveContextWindowProfile(
   if (explicit !== undefined && llmConfig.model) {
     return {
       provider: llmConfig.provider ?? "unknown",
+      usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
       model: llmConfig.model,
       contextWindowTokens: explicit,
       contextWindowSource: "explicit_config",

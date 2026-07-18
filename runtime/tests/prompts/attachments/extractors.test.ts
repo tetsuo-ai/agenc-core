@@ -6,6 +6,8 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { createUserMessage, createAssistantMessage } from "../../../src/utils/messages.js";
 import type { ToolUseContext } from "../../../src/tools/Tool.js";
+import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
+import type { Session } from "../../../src/session/session.js";
 import { createTask, getTaskListId } from "../../../src/utils/tasks.js";
 import { CanonicalFileReadTool } from "../../../src/tools/canonicalToolSurface.js";
 import { applyPermissionRulesToPermissionContext } from "../../../src/permissions/rules.js";
@@ -95,6 +97,16 @@ function attachmentContext(
       ...appStateOverrides,
     }),
   } as unknown as ToolUseContext;
+}
+
+function withUnadmittedTestSession<T>(run: () => T): T {
+  return runWithCurrentRuntimeSession(
+    {
+      conversationId: "attachment-extractors",
+      services: { admissionRequired: false },
+    } as unknown as Session,
+    run,
+  );
 }
 
 async function collectAsyncGenerator<T>(generator: AsyncGenerator<T>): Promise<T[]> {
@@ -479,12 +491,19 @@ describe("attachment mention extractors", () => {
         } as never,
       });
 
-      const attachments = await getAttachments(
-        "ask @agent-reviewer and @agent-ghost about @docs:guide",
-        context,
-        null,
-        [],
-        [],
+      const attachments = await runWithCurrentRuntimeSession(
+        {
+          conversationId: "attachment-extractor-test",
+          services: { admissionRequired: false },
+        } as unknown as Session,
+        () =>
+          getAttachments(
+            "ask @agent-reviewer and @agent-ghost about @docs:guide",
+            context,
+            null,
+            [],
+            [],
+          ),
       );
 
       expect(attachments).toEqual(
@@ -736,12 +755,14 @@ describe("attachment mention extractors", () => {
         const filePath = join(workspace, "note.txt");
         await writeFile(filePath, "alpha\nbeta\n", "utf8");
 
-        const attachment = await generateFileAttachment(
-          filePath,
-          attachmentContext(),
-          "attachment_success",
-          "attachment_error",
-          "at-mention",
+        const attachment = await withUnadmittedTestSession(() =>
+          generateFileAttachment(
+            filePath,
+            attachmentContext(),
+            "attachment_success",
+            "attachment_error",
+            "at-mention",
+          ),
         );
 
         expect(attachment).toMatchObject({
@@ -911,7 +932,9 @@ describe("attachment mention extractors", () => {
         ]);
         await writeFile(filePath, "new line\nshared\n", "utf8");
 
-        const attachments = await getChangedFiles(attachmentContext(readFileState));
+        const attachments = await withUnadmittedTestSession(() =>
+          getChangedFiles(attachmentContext(readFileState)),
+        );
 
         expect(attachments).toEqual([
           expect.objectContaining({

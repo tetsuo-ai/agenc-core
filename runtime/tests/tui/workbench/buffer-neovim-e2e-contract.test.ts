@@ -59,6 +59,16 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(helpers).toContain("waitForPidsGone");
     expect(helpers).toContain("waitForFrameText");
     expect(helpers).toContain("workspaceSnapshot");
+    expect(helpers).toContain("anchorWorkbenchProjectRoot");
+    for (const anchoredScenario of [
+      scenario,
+      missingFallback,
+      killCleanup,
+      runtimeExit,
+      visualRender,
+    ]) {
+      expect(anchoredScenario).toContain("anchorWorkbenchProjectRoot(cwd)");
+    }
     expect(helpers).toContain("ps");
     expect(wrapper).toContain("workbench-buffer-neovim");
     expect(visualSmoke).toContain("AGENC_OAUTH_TOKEN");

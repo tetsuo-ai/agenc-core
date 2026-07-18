@@ -30,6 +30,7 @@ import {
   mergeRoleDisallowlist,
   resolveThreadSpawnDisabledTools,
   runAgent,
+  TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
   type RunAgentProgressEvent,
   type RunAgentResult,
 } from "./run-agent.js";
@@ -64,6 +65,12 @@ import type {
   SessionConfiguration,
 } from "../session/turn-context.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
@@ -178,6 +185,7 @@ function makeStubSession(opts: {
   modelInfo?: ModelInfo;
   roleWorkspace?: SessionOpts["roleWorkspace"];
   agentDefinitions?: SessionOpts["agentDefinitions"];
+  conversationId?: string;
 } = {}): Session {
   const state = {
     sessionConfiguration:
@@ -188,7 +196,7 @@ function makeStubSession(opts: {
     history: [],
   };
   const session = new Session({
-    conversationId: "conv-parent",
+    conversationId: opts.conversationId ?? "conv-parent",
     ...(opts.roleWorkspace !== undefined
       ? { roleWorkspace: opts.roleWorkspace }
       : {}),
@@ -212,6 +220,7 @@ function makeStubSession(opts: {
       hooks: {
         executeStop: async () => ({}),
       },
+      admissionRequired: false,
       ...(opts.services ?? {}),
     } as unknown as SessionServices,
     jsRepl: { id: "repl-test" },
@@ -283,6 +292,69 @@ async function spawnLive(session: Session, roleName?: string) {
     ...(roleName !== undefined ? { roleName } : {}),
   });
   return { control, registry, live };
+}
+
+function makeChildToolAdmission(options: {
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly denyReason?: string;
+}) {
+  const acquire = vi.fn(
+    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => {
+      if (options.denyReason !== undefined) {
+        throw new AdmissionDeniedError(options.denyReason);
+      }
+      return {
+        decision: "allow",
+        reservation: {
+          reservationId: `reservation-${input.stepId}`,
+          step: { runId: options.runId, stepId: input.stepId },
+          reservedCostUsd: input.maxCostUsd ?? 0,
+          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+          reservedAt: "2026-07-18T00:00:00.000Z",
+        },
+        request: {
+          step: { runId: options.runId, stepId: input.stepId },
+          kind: input.kind,
+          estimate: {
+            maxInputTokens: input.maxInputTokens,
+            maxOutputTokens: input.maxOutputTokens,
+            maxCostUsd: input.maxCostUsd,
+          },
+          workspaceId: "workspace-child",
+          sessionId: input.sessionId ?? options.sessionId,
+          parentScopeId: input.parentScopeId,
+          autonomous: false,
+        },
+        signal: new AbortController().signal,
+      };
+    },
+  );
+  const markDispatched = vi.fn();
+  const reconcile = vi.fn(() => ({
+    applied: true as const,
+    outcome: "reconciled" as const,
+  }));
+  let client: ExecutionAdmissionClient;
+  client = {
+    scope: {
+      runId: options.runId,
+      workspaceId: "workspace-child",
+      sessionId: options.sessionId,
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown: vi.fn(),
+    cancelRun: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(() => client),
+    subscribe: vi.fn(() => () => {}),
+  };
+  return { acquire, client, markDispatched, reconcile };
 }
 
 type OwnedChildProviderScenario = "success" | "error" | "abort";
@@ -1585,6 +1657,198 @@ describe("runAgent", () => {
     expect(readSandboxExecutionBroker(parsed)).toBe(childBroker);
   });
 
+  it("admits direct child-registry dispatch with the child run/session identity", async () => {
+    const admission = makeChildToolAdmission({
+      runId: "run-child-direct",
+      sessionId: "child-direct",
+    });
+    const childSession = makeStubSession({
+      conversationId: "child-direct",
+      services: {
+        executionAdmission: admission.client,
+        admissionRequired: true,
+      },
+    });
+    const childBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/tmp/child-direct",
+    });
+    const execute = vi.fn(async () => ({ content: "admitted" }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            recoveryCategory: "idempotent",
+            admissionEstimate: () => ({
+              maxInputTokens: 0,
+              maxOutputTokens: 0,
+              maxCostUsd: 0,
+            }),
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "base bypass" }),
+      },
+      {
+        childConversationId: "child-direct",
+        getSession: () => childSession,
+        sandboxExecutionBroker: childBroker,
+        childToolPolicy: (_tool, input) => ({
+          behavior: "allow",
+          updatedInput: { ...input, policyValue: "approved" },
+        }),
+      },
+    );
+
+    await expect(
+      registry.dispatch({
+        id: "call-direct",
+        name: "system.echo",
+        arguments: JSON.stringify({ value: "hello" }),
+      }),
+    ).resolves.toEqual({ content: "admitted" });
+
+    expect(admission.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stepId: "tool:registry:child-direct:call-direct",
+        kind: "tool_exec",
+        sessionId: "child-direct",
+        parentScopeId: "registry:child-direct",
+      }),
+      undefined,
+    );
+    expect(admission.markDispatched).toHaveBeenCalledOnce();
+    expect(admission.reconcile).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    const executedArgs = execute.mock.calls[0]![0] as Record<string, unknown>;
+    expect(executedArgs).toMatchObject({
+      value: "hello",
+      policyValue: "approved",
+      [SESSION_ID_ARG]: "child-direct",
+    });
+    expect(readSandboxExecutionBroker(executedArgs)).toBe(childBroker);
+  });
+
+  it("does not execute a direct child-registry dispatch denied by admission", async () => {
+    const admission = makeChildToolAdmission({
+      runId: "run-child-denied",
+      sessionId: "child-denied",
+      denyReason: "child_budget_exhausted",
+    });
+    const childSession = makeStubSession({
+      conversationId: "child-denied",
+      services: {
+        executionAdmission: admission.client,
+        admissionRequired: true,
+      },
+    });
+    const execute = vi.fn(async () => ({ content: "must not run" }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "Write",
+            description: "write",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "base bypass" }),
+      },
+      {
+        childConversationId: "child-denied",
+        getSession: () => childSession,
+      },
+    );
+
+    await expect(
+      registry.dispatch({
+        id: "call-denied",
+        name: "Write",
+        arguments: "{}",
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "child_budget_exhausted",
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(admission.markDispatched).not.toHaveBeenCalled();
+  });
+
+  it("fails direct child-registry dispatch closed without a child session", async () => {
+    const execute = vi.fn(async () => ({ content: "must not run" }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "base bypass" }),
+      },
+      { childConversationId: "child-missing-session" },
+    );
+
+    await expect(
+      registry.dispatch({
+        id: "call-missing-session",
+        name: "system.echo",
+        arguments: "{}",
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "child_tool_admission_session_unavailable",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("fails direct child-registry dispatch closed when the child has no kernel", async () => {
+    const childSession = makeStubSession({
+      conversationId: "child-without-kernel",
+      services: { admissionRequired: false },
+    });
+    const execute = vi.fn(async () => ({ content: "must not run" }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "base bypass" }),
+      },
+      {
+        childConversationId: "child-without-kernel",
+        getSession: () => childSession,
+      },
+    );
+
+    await expect(
+      registry.dispatch({
+        id: "call-without-kernel",
+        name: "system.echo",
+        arguments: "{}",
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "child_tool_admission_kernel_unavailable",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("mergeRoleDisallowlist unions a role denylist into the disabled set", () => {
     const base = new Set(["spawn_agent"]);
     expect(mergeRoleDisallowlist(base, undefined)).toBe(base);
@@ -1615,6 +1879,8 @@ describe("runAgent", () => {
       },
       {
         childConversationId: "child-deny",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
         // Mirrors run-agent's call site: the read-only role denylist folded in.
         disabledTools: mergeRoleDisallowlist(new Set<string>(), BUILTIN_READONLY_DISALLOWLIST),
       },
@@ -1775,6 +2041,8 @@ describe("runAgent", () => {
       },
       {
         childConversationId: "child-123",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
         worktree: {
           path: "/tmp/subagent-wt",
           branch: "worktree-child",
@@ -2005,6 +2273,8 @@ describe("runAgent", () => {
       },
       {
         childConversationId: "child-123",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
         childToolPolicy: (_tool, input) => ({
           behavior: "allow",
           updatedInput: {
@@ -2055,6 +2325,8 @@ describe("runAgent", () => {
       },
       {
         childConversationId: "child-123",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
         worktree: {
           path: worktreeRoot,
           branch: "worktree-child",
@@ -2092,6 +2364,8 @@ describe("runAgent", () => {
       mkNamedRegistry(["spawn_agent", "wait_agent", "TaskList", "system.echo"]),
       {
         childConversationId: "child-123",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
         disabledTools: resolveThreadSpawnDisabledTools({
           depth: 1,
           maxDepth: 1,
@@ -2261,6 +2535,8 @@ describe("runAgent", () => {
       },
       {
         childConversationId: "child-123",
+        unadmittedDispatchOverride:
+          TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
       },
     );
 

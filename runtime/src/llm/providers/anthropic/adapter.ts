@@ -60,6 +60,7 @@ interface AnthropicSseEvent {
 interface AnthropicUsageAccumulator {
   readonly input_tokens: number;
   readonly output_tokens: number;
+  readonly reported: boolean;
   readonly cache_read_input_tokens?: number;
   readonly cache_creation_input_tokens?: number;
   readonly reasoning_output_tokens?: number;
@@ -104,7 +105,14 @@ function mergeAnthropicUsage(
       Number.isFinite(serverToolUse.web_search_requests)
       ? serverToolUse.web_search_requests
       : undefined;
+  const reported =
+    usage.reported ||
+    (typeof record.input_tokens === "number" &&
+      Number.isFinite(record.input_tokens)) ||
+    (typeof record.output_tokens === "number" &&
+      Number.isFinite(record.output_tokens));
   return {
+    reported,
     input_tokens:
       typeof record.input_tokens === "number" &&
       Number.isFinite(record.input_tokens) &&
@@ -238,9 +246,14 @@ export class AnthropicProvider implements LLMProvider {
 
   private providerFallbackForModel(
     model: string,
+    singleWireAttempt = false,
   ): AnthropicProviderConfig["providerFallback"] {
     return this.config.providerFallback
-      ? { ...this.config.providerFallback, model }
+      ? {
+          ...this.config.providerFallback,
+          model,
+          ...(singleWireAttempt ? { maxFailures: 1 } : {}),
+        }
       : undefined;
   }
 
@@ -293,7 +306,11 @@ export class AnthropicProvider implements LLMProvider {
         body: request,
         timeoutMs,
         signal: options?.signal,
-        providerFallback: this.providerFallbackForModel(model),
+        providerFallback: this.providerFallbackForModel(
+          model,
+          options?.singleWireAttempt,
+        ),
+        singleWireAttempt: options?.singleWireAttempt,
       });
       return parseAnthropicMessagesResponse(model, response.data, {
         model,
@@ -352,6 +369,7 @@ export class AnthropicProvider implements LLMProvider {
       let usage: AnthropicUsageAccumulator = {
         input_tokens: 0,
         output_tokens: 0,
+        reported: false,
       };
       const toolBlocks = new Map<
         number,
@@ -379,7 +397,11 @@ export class AnthropicProvider implements LLMProvider {
         body: request,
         timeoutMs,
         signal: options?.signal,
-        providerFallback: this.providerFallbackForModel(requestModel),
+        providerFallback: this.providerFallbackForModel(
+          requestModel,
+          options?.singleWireAttempt,
+        ),
+        singleWireAttempt: options?.singleWireAttempt,
         // Provider SSE streams are not resumable; preserve single-attempt
         // stream semantics while using the shared session transport contract.
         retryBudget: { maxRetries: 0 },
@@ -644,6 +666,7 @@ export class AnthropicProvider implements LLMProvider {
               requestModel,
             );
             if (
+              options?.singleWireAttempt !== true &&
               fallbackDecision?.kind === "wait" &&
               await this.waitForConfiguredFallbackRetry(
                 fallbackDecision,
@@ -722,6 +745,8 @@ export class AnthropicProvider implements LLMProvider {
           ...parsed.usage,
           totalTokens:
             parsed.usage.promptTokens + parsed.usage.completionTokens,
+          availability: usage.reported ? "reported" : "unknown",
+          provenance: usage.reported ? "provider" : "synthetic",
         },
       };
       onChunk({
@@ -753,6 +778,7 @@ export class AnthropicProvider implements LLMProvider {
           requestModel,
         );
         if (
+          options?.singleWireAttempt !== true &&
           fallbackDecision?.kind === "wait" &&
           await this.waitForConfiguredFallbackRetry(
             fallbackDecision,
@@ -796,6 +822,8 @@ export class AnthropicProvider implements LLMProvider {
             cacheCreationInputTokens: usage.cache_creation_input_tokens,
             reasoningOutputTokens: usage.reasoning_output_tokens,
             webSearchRequests: usage.server_tool_use?.web_search_requests,
+            availability: "unknown",
+            provenance: "synthetic",
           }),
           model,
           finishReason: "error",
@@ -819,6 +847,17 @@ export class AnthropicProvider implements LLMProvider {
     } catch {
       return false;
     }
+  }
+
+  async getExecutionProfile() {
+    const maxOutputTokens = resolveMaxTokens(undefined, this.config.maxTokens);
+    return {
+      provider: this.name,
+      model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    };
   }
 
   private async *readSseEvents(

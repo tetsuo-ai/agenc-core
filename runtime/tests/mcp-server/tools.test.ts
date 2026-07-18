@@ -138,7 +138,7 @@ describe("MCP server tool registration", () => {
     ]);
   });
 
-  test("framework tools/call executes the audited tool instance", async () => {
+  test("AgenC adapter never calls a captured tool.execute without admission", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const safeTool: Tool = {
       ...SAMPLE_TOOL,
@@ -161,9 +161,17 @@ describe("MCP server tool registration", () => {
     });
     server.handleMessage(request(1, "initialize"));
 
+    expect(server.handleMessage(request(2, "tools/list"))).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: { tools: [], nextCursor: null },
+      },
+    ]);
+
     await expect(
       server.handleMessageAsync(
-        request(2, "tools/call", {
+        request(3, "tools/call", {
           name: "sample.echo",
           arguments: { text: "hello" },
         }),
@@ -171,19 +179,19 @@ describe("MCP server tool registration", () => {
     ).resolves.toEqual([
       {
         jsonrpc: "2.0",
-        id: 2,
+        id: 3,
         result: {
-          content: [{ type: "text", text: "echo:hello" }],
-          structuredContent: { echoed: true },
+          content: [
+            {
+              type: "text",
+              text: expect.stringContaining("session-bound admission identity"),
+            },
+          ],
+          isError: true,
         },
       },
     ]);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ text: "hello" });
-    expect(Object.getOwnPropertyDescriptor(calls[0], "__callId")).toMatchObject({
-      value: "2",
-      enumerable: false,
-    });
+    expect(calls).toEqual([]);
   });
 
   test.each(["1", "true"])(
@@ -219,13 +227,14 @@ describe("MCP server tool registration", () => {
             jsonrpc: "2.0",
             id: 2,
             result: {
-              tools: [mcpDefinitionFromAgenCTool(SAMPLE_TOOL)],
+              tools: [],
               nextCursor: null,
             },
           },
         ]);
 
         for (const [index, tool] of [
+          SAMPLE_TOOL,
           MUTATING_TOOL,
           CONTRADICTORY_TOOL,
           NON_IDEMPOTENT_READ_TOOL,
@@ -270,7 +279,7 @@ describe("MCP server tool registration", () => {
     },
   );
 
-  test("binds calls to the audited tool instance instead of a registry alias or rebound name", async () => {
+  test("remains fail-closed if the source registry is rebound after adaptation", async () => {
     const auditedCalls: Array<Record<string, unknown>> = [];
     const registryDispatch = vi.fn(async (): Promise<ToolDispatchResult> => ({
       content: "mutating alias target executed",
@@ -299,9 +308,15 @@ describe("MCP server tool registration", () => {
         { requestId: "bound-call" },
       ),
     ).resolves.toEqual({
-      content: [{ type: "text", text: "audited instance executed" }],
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining("session-bound admission identity"),
+        },
+      ],
+      isError: true,
     });
-    expect(auditedCalls).toHaveLength(1);
+    expect(auditedCalls).toEqual([]);
     expect(registryDispatch).not.toHaveBeenCalled();
   });
 

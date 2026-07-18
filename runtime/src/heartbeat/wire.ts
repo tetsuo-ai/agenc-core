@@ -2,26 +2,19 @@
  * Heartbeat ↔ gateway/budget integration (TODO task 14).
  *
  * Builds a live {@link HeartbeatScheduler} from the gateway's daemon client
- * (turn runner), its channel adapters (delivery), the task-15 budget enforcer,
- * and the workspace HEARTBEAT.md. Returns null when heartbeat is disabled.
+ * (turn runner), its channel adapters (delivery), and the workspace
+ * HEARTBEAT.md. The daemon execution-admission kernel owns spend accounting.
+ * Returns null when heartbeat is disabled.
  *
  * The utility-model OVERRIDE (running heartbeat turns on a cheaper model) is
  * carried through `policy.model` to the turn runner, but applying it to the
- * live daemon turn needs a per-turn model seam the SDK does not yet expose —
- * that is the deferred cost-reduction tier (budget design §6). The budget CAP
- * is the safety boundary and is fully live regardless of which model runs.
+ * live daemon turn needs a per-turn model seam the SDK does not yet expose.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { AgenCConfig } from "../config/schema.js";
-import {
-  BudgetEnforcer,
-  BudgetLedger,
-  createModelPriceResolver,
-  resolveBudgetPolicy,
-} from "../budget/index.js";
 import { isDaemonAgentGoneError } from "../gateway/sdk-daemon-client.js";
 import type {
   ChannelAdapter,
@@ -33,12 +26,10 @@ import { WorkspaceHeartbeatFileReader } from "./heartbeat-file.js";
 import { HeartbeatRunner } from "./runner.js";
 import { HeartbeatScheduler } from "./scheduler.js";
 import type {
-  HeartbeatBudgetGate,
   HeartbeatClock,
   HeartbeatDelivery,
   HeartbeatTarget,
   HeartbeatTurnRunner,
-  HeartbeatUsage,
 } from "./types.js";
 
 const REAL_CLOCK: HeartbeatClock = {
@@ -58,24 +49,6 @@ export interface StartHeartbeatOptions {
   readonly isCronRunning?: () => boolean;
   /** Test seam: real timers by default. */
   readonly clock?: HeartbeatClock;
-}
-
-/** Adapt the task-15 BudgetEnforcer to the heartbeat's budget-gate seam. */
-export function budgetGate(
-  enforcer: BudgetEnforcer,
-): HeartbeatBudgetGate {
-  return {
-    admit(input) {
-      const r = enforcer.admit({ ...input, autonomous: true });
-      return r.ok
-        ? { ok: true, hold: r.hold }
-        : { ok: false, message: r.message };
-    },
-    reconcile(hold, usage: HeartbeatUsage) {
-      // The hold is a BudgetHold; the enforcer validates its own shape.
-      enforcer.reconcile(hold as never, usage);
-    },
-  };
 }
 
 const HEARTBEAT_SESSION_LABEL = "heartbeat";
@@ -178,15 +151,6 @@ export async function startHeartbeat(
   const policy = resolveHeartbeatPolicy(options.config.heartbeat, env);
   if (!policy.enabled) return null;
 
-  // Budget enforcer (task 15). Disabled budget → the gate admits everything.
-  const { policy: budgetPolicy } = resolveBudgetPolicy(options.config.budget, env);
-  const enforcer = new BudgetEnforcer({
-    policy: budgetPolicy,
-    ledger: new BudgetLedger({ agencHome: options.agencHome }),
-    priceOf: createModelPriceResolver(),
-    notify: (e) => log(`heartbeat/budget: ${e.message}`),
-  });
-
   const runner = new HeartbeatRunner({
     policy,
     clock: options.clock ?? REAL_CLOCK,
@@ -198,7 +162,6 @@ export async function startHeartbeat(
     ),
     delivery: delivery(options.adapters),
     file: new WorkspaceHeartbeatFileReader(options.workspaceDir),
-    budget: budgetGate(enforcer),
     ...(options.isCronRunning !== undefined
       ? { isCronRunning: options.isCronRunning }
       : {}),

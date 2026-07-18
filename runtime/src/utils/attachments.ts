@@ -5,7 +5,9 @@ import {
   type ToolUseContext,
   type ToolPermissionContext,
 } from '../tools/Tool.js'
+import { runAdmittedSessionBoundToolCall } from '../budget/admitted-legacy-tool-call.js'
 import { CanonicalFileReadTool } from '../tools/canonicalToolSurface.js'
+import type { Tool } from '../tools/types.js'
 import { withSignedAllowedRoots } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
@@ -1980,8 +1982,16 @@ async function processMcpResourceAttachments(
         }
 
         try {
-          const result = await client.client.readResource({
-            uri,
+          const result = await runAdmittedSessionBoundToolCall({
+            tool: MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL,
+            args: { server: serverName, uri },
+            signal: toolUseContext.abortController.signal,
+            invoke: ({ signal }) =>
+              client.client.readResource(
+                { uri },
+                { signal, timeout: MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS },
+              ),
+            toDispatchResult: () => ({ content: '' }),
           })
 
           return {
@@ -2005,6 +2015,39 @@ async function processMcpResourceAttachments(
   return results.filter(
     (result): result is NonNullable<typeof result> => result !== null,
   ) as Attachment[]
+}
+
+const MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS = 1000
+const MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL: Tool = {
+  name: 'mcp.preflight.resource_attachment',
+  description: 'Read an MCP resource referenced by a user attachment.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      server: { type: 'string' },
+      uri: { type: 'string' },
+    },
+    required: ['server', 'uri'],
+    additionalProperties: false,
+  },
+  metadata: {
+    family: 'mcp',
+    source: 'mcp',
+    mutating: false,
+    hiddenByDefault: true,
+  },
+  isReadOnly: true,
+  recoveryCategory: 'idempotent',
+  admissionEstimate: () => ({
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: 0,
+  }),
+  async execute() {
+    throw new Error(
+      'MCP resource attachment admission descriptor is not executable',
+    )
+  },
 }
 
 async function callCanonicalFileReadTool(

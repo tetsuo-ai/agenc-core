@@ -28,7 +28,7 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
-  isDaemonPreemptiveMessage,
+  isDaemonPriorityMessage,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
@@ -101,6 +101,9 @@ interface ActiveWebSocketConnection {
   // racing as fire-and-forget promises. Each connection owns its own chain so
   // cross-connection concurrency is preserved.
   dispatchChain: Promise<void>;
+  // Priority requests can bypass model turns only after initialize/auth state
+  // for this connection has settled.
+  initializeBarrier: Promise<void>;
   // gaphunt3 #47: accept-auth teardown state. `accepted` is true once an
   // authenticator-approved message is seen (or when no authenticator is
   // configured). `authTimeout` is the armed teardown timer; it is cleared on
@@ -290,6 +293,7 @@ export class AgenCWebSocketServer {
       socket,
       pendingMessages: new Set(),
       dispatchChain: Promise.resolve(),
+      initializeBarrier: Promise.resolve(),
       // gaphunt3 #47: only require auth when an authenticator is configured;
       // otherwise the connection is accepted immediately (legacy behavior).
       accepted: this.#options.acceptAuthenticator === undefined,
@@ -422,17 +426,18 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    if (isDaemonPreemptiveMessage(message)) {
-      // Abort controls and interactive decisions must NOT queue behind the
-      // in-flight request they unblock. They reference an explicit target, so
-      // dispatch them off-chain while keeping normal requests FIFO. The promise
-      // is still tracked in pendingMessages so close() drains it.
+    if (isDaemonPriorityMessage(message)) {
+      // Control-plane requests must NOT queue behind a full model stream.
+      // Dispatch them off-chain while keeping ordinary, order-dependent work
+      // FIFO. The promise is still tracked so close() drains it.
       //
-      // gaphunt3 #47: a preemptive message cannot itself satisfy the accept-auth
-      // gate (it is not an `initialize`), so on a not-yet-accepted connection
-      // it must not run — it is dropped until the connection authenticates.
+      // A priority message cannot itself satisfy the accept-auth gate (it is
+      // not `initialize`), so it waits for the connection's initialization
+      // barrier before checking the accepted state.
+      const initializeBarrier = active.initializeBarrier;
       const pending = Promise.resolve()
         .then(async () => {
+          await initializeBarrier;
           if (active.accepted && !active.closingUnauthenticated) {
             await this.#options.onMessage(message, context);
           }
@@ -483,6 +488,9 @@ export class AgenCWebSocketServer {
       this.#options.onError?.(asError(error), context.connectionId);
     }));
     active.pendingMessages.add(pending);
+    if (message.method === "initialize") {
+      active.initializeBarrier = pending;
+    }
     pending.finally(() => {
       active.pendingMessages.delete(pending);
     });

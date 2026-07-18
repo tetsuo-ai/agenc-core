@@ -1,15 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
+import type { ExecutionAdmissionClient } from '../../../src/budget/admission-client.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   __setAgentMetadataWriterForTesting,
+  __setAgentTaskRegistrarsForTesting,
   __setAgentToolLaunchPreflightForTesting,
+  __setAgentWorktreeCreatorForTesting,
   AgentTool,
 } from '../../../src/tools/AgentTool/AgentTool.js'
 import {
@@ -25,7 +28,9 @@ const roots: string[] = []
 afterEach(() => {
   __setPluginAgentsLoaderForTesting(undefined)
   __setAgentMetadataWriterForTesting(undefined)
+  __setAgentTaskRegistrarsForTesting(undefined)
   __setAgentToolLaunchPreflightForTesting(undefined)
+  __setAgentWorktreeCreatorForTesting(undefined)
   clearAgentDefinitionsCache()
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true })
@@ -38,10 +43,95 @@ function tempRoot(label: string): string {
   return root
 }
 
-function sessionFor(cwd: string): Session {
+function sessionFor(
+  cwd: string,
+  executionAdmission?: ExecutionAdmissionClient,
+): Session {
   return {
+    conversationId: 'parent-session',
     roleWorkspace: createAgentRoleWorkspace(cwd),
+    services: executionAdmission === undefined
+      ? { admissionRequired: false }
+      : {
+          executionAdmission,
+          admissionRequired: true,
+          sandboxExecutionBroker: {
+            cwd,
+            prepareSpawn: vi.fn(),
+          },
+        },
   } as unknown as Session
+}
+
+function admissionClient(
+  order: string[],
+  leaseSignal: AbortSignal = new AbortController().signal,
+): {
+  readonly client: ExecutionAdmissionClient
+  readonly acquire: ReturnType<typeof vi.fn>
+  readonly markDispatched: ReturnType<typeof vi.fn>
+  readonly reconcile: ReturnType<typeof vi.fn>
+  readonly holdUnknown: ReturnType<typeof vi.fn>
+  readonly voidReservation: ReturnType<typeof vi.fn>
+  readonly acknowledgeCompletion: ReturnType<typeof vi.fn>
+} {
+  const child = {
+    scope: {
+      runId: 'child-agent',
+      workspaceId: 'workspace',
+      sessionId: 'child-agent',
+      autonomous: false,
+    },
+  } as ExecutionAdmissionClient
+  const acquire = vi.fn(async () => {
+    order.push('acquire')
+    return {
+      decision: 'allow' as const,
+      reservation: {
+        reservationId: 'spawn-reservation',
+        step: { runId: 'parent-run', stepId: 'spawn-step' },
+        reservedCostUsd: 0,
+        reservedTokens: 0,
+        reservedAt: '2026-07-18T00:00:00.000Z',
+      },
+      request: {} as never,
+      signal: leaseSignal,
+    }
+  })
+  const markDispatched = vi.fn(() => order.push('dispatch'))
+  const reconcile = vi.fn(() => {
+    order.push('commit')
+    return { applied: true as const, outcome: 'reconciled' as const }
+  })
+  const holdUnknown = vi.fn(() => order.push('unknown'))
+  const voidReservation = vi.fn(() => order.push('void'))
+  const acknowledgeCompletion = vi.fn()
+  const client = {
+    scope: {
+      runId: 'parent-run',
+      workspaceId: 'workspace',
+      sessionId: 'parent-session',
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown,
+    void: voidReservation,
+    acknowledgeCompletion,
+    recordFallback: vi.fn(),
+    forSession: vi.fn(() => child),
+    subscribe: vi.fn(() => () => {}),
+  } satisfies ExecutionAdmissionClient
+  return {
+    client,
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown,
+    voidReservation,
+    acknowledgeCompletion,
+  }
 }
 
 function contextFor(
@@ -83,6 +173,7 @@ function contextFor(
       },
       getAppState: () => appState,
       setAppState,
+      abortController: new AbortController(),
     } as unknown as ToolUseContext,
   }
 }
@@ -231,12 +322,15 @@ Audit without mutations.
         getSystemPrompt: () => 'Do not start.',
       },
     ])
+    const order: string[] = []
+    const admission = admissionClient(order)
     const persistenceFailure = new Error('simulated metadata fsync failure')
     const writer = vi.fn(async () => {
+      order.push('metadata')
       throw persistenceFailure
     })
     __setAgentMetadataWriterForTesting(writer)
-    const session = sessionFor(workspace)
+    const session = sessionFor(workspace, admission.client)
     const { context, setAppState } = contextFor(workspace)
 
     await expect(
@@ -258,6 +352,248 @@ Audit without mutations.
     // registerAsyncAgent publishes through the root AppState setter. It must
     // remain untouched when persistence fails.
     expect(setAppState).not.toHaveBeenCalled()
+    expect(order).toEqual(['acquire', 'dispatch', 'metadata', 'unknown'])
+    expect(admission.reconcile).not.toHaveBeenCalled()
+    expect(admission.holdUnknown).toHaveBeenCalledWith(
+      'spawn-reservation',
+      'legacy_agent_spawn_commit_outcome_unknown',
+    )
+  })
+
+  it('acquires spawn admission before reversible worktree creation', async () => {
+    const workspace = tempRoot('agent-worktree-admission-order')
+    __setPluginAgentsLoaderForTesting(async () => [
+      {
+        agentType: 'worktree-auditor',
+        whenToUse: 'Tests pre-publication ordering',
+        source: 'plugin',
+        plugin: 'atomic-test-plugin',
+        baseDir: workspace,
+        getSystemPrompt: () => 'Do not start.',
+      },
+    ])
+    const order: string[] = []
+    const admission = admissionClient(order)
+    const worktreeFailure = new Error('worktree boundary reached')
+    __setAgentWorktreeCreatorForTesting(async () => {
+      order.push('worktree')
+      throw worktreeFailure
+    })
+    const writer = vi.fn()
+    __setAgentMetadataWriterForTesting(writer)
+    const session = sessionFor(workspace, admission.client)
+    const { context, setAppState } = contextFor(workspace)
+
+    await expect(
+      callAgentTool(session, context, undefined, {
+        subagent_type: 'worktree-auditor',
+        isolation: 'worktree',
+      }),
+    ).rejects.toBe(worktreeFailure)
+
+    expect(order).toEqual(['acquire', 'worktree', 'void'])
+    expect(writer).not.toHaveBeenCalled()
+    expect(setAppState).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'async', runInBackground: true },
+    { label: 'foreground', runInBackground: false },
+  ])(
+    'publishes $label task state only after metadata commits under the spawn lease',
+    async ({ runInBackground }) => {
+      const workspace = tempRoot(`agent-${runInBackground ? 'async' : 'sync'}-commit-order`)
+      const agentsDir = join(workspace, '.agenc', 'agents')
+      mkdirSync(agentsDir, { recursive: true })
+      writeFileSync(
+        join(agentsDir, 'ordered-auditor.md'),
+        `---
+name: ordered-auditor
+description: Tests durable task publication ordering
+disallowedTools:
+  - Write
+---
+Do not start.
+`,
+      )
+      __setPluginAgentsLoaderForTesting(async () => [])
+      const order: string[] = []
+      const admission = admissionClient(order)
+      __setAgentMetadataWriterForTesting(async () => {
+        order.push('metadata')
+      })
+      const registrationFailure = new Error('task publication boundary reached')
+      const registrar = vi.fn(() => {
+        order.push('register')
+        throw registrationFailure
+      })
+      __setAgentTaskRegistrarsForTesting(
+        runInBackground
+          ? { async: registrar }
+          : { foreground: registrar },
+      )
+      const session = sessionFor(workspace, admission.client)
+      const { context, setAppState } = contextFor(workspace)
+
+      await expect(
+        callAgentTool(session, context, undefined, {
+          subagent_type: 'ordered-auditor',
+          run_in_background: runInBackground,
+        }),
+      ).rejects.toBe(registrationFailure)
+
+      expect(order).toEqual([
+        'acquire',
+        'dispatch',
+        'metadata',
+        'commit',
+        'register',
+      ])
+      expect(registrar).toHaveBeenCalledWith(
+        expect.objectContaining({
+          abortController: expect.any(AbortController),
+        }),
+      )
+      expect(setAppState).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not retry durable metadata publication when spawn reconciliation faults', async () => {
+    const workspace = tempRoot('agent-reconciliation-failure')
+    const agentsDir = join(workspace, '.agenc', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'reconciliation-auditor.md'),
+      `---
+name: reconciliation-auditor
+description: Tests post-publication settlement failure
+disallowedTools:
+  - Write
+---
+Do not start.
+`,
+    )
+    __setPluginAgentsLoaderForTesting(async () => [])
+    const order: string[] = []
+    const admission = admissionClient(order)
+    const reconciliationFailure = new Error(
+      'simulated reconciliation journal failure',
+    )
+    admission.reconcile.mockImplementationOnce(() => {
+      order.push('reconciliation-fault')
+      throw reconciliationFailure
+    })
+    const writer = vi.fn(async () => {
+      order.push('metadata')
+    })
+    __setAgentMetadataWriterForTesting(writer)
+    const publicationBoundary = new Error('task publication boundary reached')
+    const registrar = vi.fn(() => {
+      order.push('register')
+      throw publicationBoundary
+    })
+    __setAgentTaskRegistrarsForTesting({ async: registrar })
+    const session = sessionFor(workspace, admission.client)
+    const { context } = contextFor(workspace)
+    let retried = false
+
+    const launch = () =>
+      callAgentTool(session, context, undefined, {
+        subagent_type: 'reconciliation-auditor',
+        run_in_background: true,
+      })
+    const launchWithSettlementRetry = async () => {
+      try {
+        return await launch()
+      } catch (error) {
+        if (error !== reconciliationFailure) throw error
+        retried = true
+        return launch()
+      }
+    }
+
+    await expect(launchWithSettlementRetry()).rejects.toBe(publicationBoundary)
+
+    expect(retried).toBe(false)
+    expect(writer).toHaveBeenCalledOnce()
+    expect(registrar).toHaveBeenCalledOnce()
+    expect(admission.acquire).toHaveBeenCalledOnce()
+    expect(admission.holdUnknown).toHaveBeenCalledWith(
+      'spawn-reservation',
+      'legacy_agent_spawn_reconciliation_failed_after_commit',
+    )
+    expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      'spawn-reservation',
+    )
+    expect(order).toEqual([
+      'acquire',
+      'dispatch',
+      'metadata',
+      'reconciliation-fault',
+      'unknown',
+      'register',
+    ])
+  })
+
+  it('prevents task publication when cancellation wins between acquire and metadata', async () => {
+    const workspace = tempRoot('agent-cancel-before-metadata')
+    __setPluginAgentsLoaderForTesting(async () => [
+      {
+        agentType: 'cancelled-auditor',
+        whenToUse: 'Tests cancellation ordering',
+        source: 'plugin',
+        plugin: 'atomic-test-plugin',
+        baseDir: workspace,
+        getSystemPrompt: () => 'Do not start.',
+      },
+    ])
+    const order: string[] = []
+    const leaseAbort = new AbortController()
+    leaseAbort.abort(new Error('parent cancelled before metadata'))
+    const admission = admissionClient(order, leaseAbort.signal)
+    const writer = vi.fn()
+    const registrar = vi.fn()
+    __setAgentMetadataWriterForTesting(writer)
+    __setAgentTaskRegistrarsForTesting({ async: registrar })
+    const session = sessionFor(workspace, admission.client)
+    const { context, setAppState } = contextFor(workspace)
+
+    await expect(
+      callAgentTool(session, context, undefined, {
+        subagent_type: 'cancelled-auditor',
+        run_in_background: true,
+      }),
+    ).rejects.toThrow('parent cancelled before metadata')
+
+    expect(order).toEqual(['acquire', 'void'])
+    expect(admission.markDispatched).not.toHaveBeenCalled()
+    expect(writer).not.toHaveBeenCalled()
+    expect(registrar).not.toHaveBeenCalled()
+    expect(setAppState).not.toHaveBeenCalled()
+  })
+
+  it('reuses one transferred spawn admission across sync-to-background continuation', () => {
+    const runtimeRoot = resolve(import.meta.dirname, '../../../src')
+    const agentToolSource = readFileSync(
+      resolve(runtimeRoot, 'tools/AgentTool/AgentTool.tsx'),
+      'utf8',
+    )
+    const runAgentSource = readFileSync(
+      resolve(runtimeRoot, 'tools/AgentTool/runAgent.ts'),
+      'utf8',
+    )
+
+    expect(
+      agentToolSource.match(/await beginLegacyAgentSpawnAdmission\(/g),
+    ).toHaveLength(1)
+    expect(agentToolSource).toContain('agentMetadataAlreadyPersisted: true')
+    expect(agentToolSource).toContain('spawnAdmission,')
+    expect(runAgentSource).toContain(
+      'transferredSpawnAdmission ??',
+    )
+    expect(runAgentSource).toContain(
+      'executionAdmission: spawnAdmission.childAdmission',
+    )
   })
 
   it('prefers an exact restrictive plugin alias on the immediate call path', async () => {

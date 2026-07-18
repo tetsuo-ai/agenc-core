@@ -21,6 +21,7 @@
 
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus } from "../agents/status.js";
+import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import type {
   CollaborationMode,
   FileSystemSandboxPolicy,
@@ -297,11 +298,7 @@ export interface WarningEvent {
 }
 
 export type GuardianAssessmentStatus =
-  | "in_progress"
-  | "approved"
-  | "denied"
-  | "timed_out"
-  | "aborted";
+  "in_progress" | "approved" | "denied" | "timed_out" | "aborted";
 
 export type GuardianAssessmentDecisionSource = "agent";
 export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
@@ -320,17 +317,10 @@ export interface GuardianAssessmentEvent {
 }
 
 export type ReviewDelegateVerdict =
-  | "pass"
-  | "fail"
-  | "partial"
-  | "aborted"
-  | "timeout";
+  "pass" | "fail" | "partial" | "aborted" | "timeout";
 
 export type ReviewDelegateCompletionReason =
-  | "completed"
-  | "timeout"
-  | "aborted"
-  | "error";
+  "completed" | "timeout" | "aborted" | "error";
 
 export interface ReviewDelegateStartedEvent {
   readonly subId: string;
@@ -367,10 +357,7 @@ export interface PlanApprovalRequestedEvent {
 }
 
 export type PlanApprovalOutcome =
-  | "approved"
-  | "approved_for_session"
-  | "denied"
-  | "aborted";
+  "approved" | "approved_for_session" | "denied" | "aborted";
 
 export interface PlanApprovalCompletedEvent {
   readonly requestId: string;
@@ -472,11 +459,7 @@ export interface CollabAgentSpawnEndEvent {
 }
 
 export type CollabAgentTaskStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed";
+  "pending" | "running" | "completed" | "failed" | "killed";
 
 export interface CollabAgentStatusEvent {
   readonly callId: string;
@@ -787,6 +770,11 @@ export type EventMsg =
   | { readonly type: "stream_error"; readonly payload: StreamErrorEvent }
   | { readonly type: "warning"; readonly payload: WarningEvent }
   | {
+      /** Durable projection of the daemon-owned M3 admission journal. */
+      readonly type: "execution_admission";
+      readonly payload: AdmissionJournalEvent;
+    }
+  | {
       readonly type: "guardian_assessment";
       readonly payload: GuardianAssessmentEvent;
     }
@@ -994,6 +982,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "error",
     "stream_error",
     "warning",
+    "execution_admission",
     "guardian_assessment",
     "review_delegate_started",
     "review_delegate_completed",

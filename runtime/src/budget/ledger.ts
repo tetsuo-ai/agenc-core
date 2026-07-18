@@ -115,7 +115,8 @@ export class BudgetLedger {
 
   /**
    * Cross-process exclusive lock for multi-instance ledger writers
-   * (heartbeat / hooks / cron each construct their own BudgetLedger — todo-110).
+   * Legacy/evaluation callers may construct independent BudgetLedger objects.
+   * Production model/tool accounting is owned by ExecutionAdmissionKernel.
    * Re-loads disk state under the lock so concurrent addSpend merges.
    */
   #withDiskLock<T>(mutate: () => T): T {

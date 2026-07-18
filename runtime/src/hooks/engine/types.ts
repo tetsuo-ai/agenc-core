@@ -6,13 +6,10 @@
 
 import type { HookCommand, HookEventName } from "../../config/schema.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import type { ExecutionAdmissionClient } from "../../budget/admission-client.js";
 
 export type HookRunStatus =
-  | "success"
-  | "blocking"
-  | "non_blocking_error"
-  | "timeout"
-  | "skipped";
+  "success" | "blocking" | "non_blocking_error" | "timeout" | "skipped";
 
 export interface HookRunDiagnostic {
   readonly id: string;
@@ -60,6 +57,8 @@ export interface HookEngineOptions {
   readonly sourcePath: string;
   readonly maxDiagnostics?: number;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  readonly admissionRequired?: boolean;
 }
 
 export interface HookDispatchResult {

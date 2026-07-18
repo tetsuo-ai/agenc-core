@@ -41,7 +41,9 @@ function makeInvocation(
   callId = "c0",
 ): ToolInvocation {
   return {
-    session: { services: {} } as ToolInvocation["session"],
+    session: {
+      services: { admissionRequired: false },
+    } as ToolInvocation["session"],
     turn: {} as ToolInvocation["turn"],
     tracker: {
       appendFileDiff: () => {},
@@ -111,7 +113,7 @@ describe("ToolRouter", () => {
     ]);
     const session = {
       eventLog: new EventLog(),
-      services: {},
+      services: { admissionRequired: false },
       currentRootHumanTurn: () => ({
         turnId: "turn-ledger",
         text: "@LEDGER send exactly 1 lamport",
@@ -186,7 +188,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-read-alias" } as never,
         tracker: {
@@ -235,7 +237,7 @@ describe("ToolRouter", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-injection" } as never,
         tracker: {
@@ -659,7 +661,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-approval"),
       session: {
         eventLog: new EventLog(),
-        services: {},
+        services: { admissionRequired: false },
       } as never,
       turn: {
         subId: "turn-direct-approval",
@@ -789,7 +791,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       ...makeInvocation({ name: "Write" }, "direct-ask"),
       session: {
         eventLog: new EventLog(),
-        services: {},
+        services: { admissionRequired: false },
       } as never,
       turn: {
         subId: "turn-direct-ask",
@@ -845,7 +847,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-approval-1" } as never,
         tracker: {
@@ -909,7 +911,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-evaluator-ask",
@@ -977,7 +979,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-guardian-denied",
@@ -1062,7 +1064,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-guardian-network-interfaces",
@@ -1149,7 +1151,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-hook-ask",
@@ -1214,7 +1216,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       {
         session: {
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: {
           subId: "turn-model-bigint-rewrite",
@@ -1268,7 +1270,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-denied" } as never,
         tracker: {
@@ -1337,7 +1339,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-auto-approved" } as never,
         tracker: {
@@ -1396,7 +1398,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         session: {
           conversationId: "session_router",
           eventLog: new EventLog(),
-          services: {},
+          services: { admissionRequired: false },
         } as never,
         turn: { subId: "turn-forbidden" } as never,
         tracker: {

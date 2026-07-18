@@ -47,6 +47,13 @@ function stringValue(value: unknown): string | undefined {
     : undefined;
 }
 
+function abortSignalFromArgs(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const signal = args.__abortSignal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
 const ALLOWED_ASPECT = new Set([
   "1:1",
   "16:9",
@@ -73,6 +80,11 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
     recoveryCategory: "side-effecting",
+    admissionEstimate: () => ({
+      maxInputTokens: 0,
+      maxOutputTokens: 0,
+      maxCostUsd: null,
+    }),
     inputSchema: {
       type: "object",
       properties: {
@@ -90,6 +102,8 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       additionalProperties: false,
     },
     execute: async (args) => {
+      const admittedSignal = abortSignalFromArgs(args);
+      admittedSignal?.throwIfAborted();
       const session = opts.getSession();
       const provider = session?.services?.provider;
       if (readProviderIdentity(provider as never) !== "grok") {
@@ -132,8 +146,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const prompt = stringValue(args.prompt);
       if (!prompt) return json({ error: "prompt is required" }, true);
 
-      const model =
-        stringValue(args.model) ?? "grok-imagine-image";
+      const model = stringValue(args.model) ?? "grok-imagine-image";
       if (
         model !== "grok-imagine-image" &&
         model !== "grok-imagine-image-quality"
@@ -151,7 +164,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const n = Math.max(1, Math.min(10, Math.floor(nRaw)));
       const aspect_ratio = stringValue(args.aspect_ratio);
       if (aspect_ratio !== undefined && !ALLOWED_ASPECT.has(aspect_ratio)) {
-        return json({ error: `unsupported aspect_ratio: ${aspect_ratio}` }, true);
+        return json(
+          { error: `unsupported aspect_ratio: ${aspect_ratio}` },
+          true,
+        );
       }
       const resolution = stringValue(args.resolution);
       if (
@@ -176,8 +192,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         "",
       );
       const fetchImpl = opts.fetchImpl ?? fetch;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 120_000);
+      const timeoutSignal = AbortSignal.timeout(120_000);
+      const requestSignal = admittedSignal
+        ? AbortSignal.any([admittedSignal, timeoutSignal])
+        : timeoutSignal;
       try {
         const res = await fetchImpl(`${baseURL}/images/generations`, {
           method: "POST",
@@ -186,7 +204,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
             "content-type": "application/json",
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: requestSignal,
         });
         const payload = (await res.json()) as {
           data?: readonly { b64_json?: string; url?: string }[];
@@ -195,9 +213,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
         if (!res.ok) {
           return json(
             {
-              error:
-                payload.error?.message ??
-                `Imagine HTTP ${res.status}`,
+              error: payload.error?.message ?? `Imagine HTTP ${res.status}`,
             },
             true,
           );
@@ -214,18 +230,25 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           const filename = `imagine-${randomUUID()}.jpg`;
           const path = join(outDir, filename);
           if (image.b64_json) {
-            await writeFile(path, Buffer.from(image.b64_json, "base64"));
+            await writeFile(path, Buffer.from(image.b64_json, "base64"), {
+              signal: requestSignal,
+            });
             paths.push(path);
           } else if (image.url) {
             // URL-only response: download
-            const imgRes = await fetchImpl(image.url);
+            const imgRes = await fetchImpl(image.url, {
+              signal: requestSignal,
+            });
             const buf = Buffer.from(await imgRes.arrayBuffer());
-            await writeFile(path, buf);
+            await writeFile(path, buf, { signal: requestSignal });
             paths.push(path);
           }
         }
         if (paths.length === 0) {
-          return json({ error: "Imagine returned no downloadable images" }, true);
+          return json(
+            { error: "Imagine returned no downloadable images" },
+            true,
+          );
         }
         return json({
           model,
@@ -234,17 +257,14 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           n: paths.length,
         });
       } catch (error) {
+        admittedSignal?.throwIfAborted();
         return json(
           {
             error:
-              error instanceof Error
-                ? error.message
-                : "Imagine request failed",
+              error instanceof Error ? error.message : "Imagine request failed",
           },
           true,
         );
-      } finally {
-        clearTimeout(timeout);
       }
     },
   };

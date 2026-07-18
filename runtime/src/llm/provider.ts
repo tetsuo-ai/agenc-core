@@ -15,6 +15,7 @@ import type { GrokProviderConfig } from "./providers/grok/types.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import type { OllamaProviderConfig } from "./providers/ollama/types.js";
 import type {
+  LLMChatOptions,
   LLMProvider,
   LLMProviderConfig,
   LLMProviderExecutionProfile,
@@ -455,12 +456,16 @@ class AuthVendedProvider implements LLMProvider {
     return (await this.delegate()).instance.healthCheck();
   }
 
-  async getExecutionProfile(): Promise<LLMProviderExecutionProfile> {
+  async getExecutionProfile(
+    options?: LLMChatOptions,
+  ): Promise<LLMProviderExecutionProfile> {
     const { instance: delegate } = await this.delegate();
-    const profile = await delegate.getExecutionProfile?.();
+    const profile = await delegate.getExecutionProfile?.(options);
     return profile ?? {
       provider: this.#provider,
       model: this.config.model,
+      usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
     };
   }
 

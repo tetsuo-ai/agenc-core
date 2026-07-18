@@ -106,6 +106,8 @@ const BASE_USAGE = {
   promptTokens: 11,
   completionTokens: 3,
   totalTokens: 14,
+  availability: "reported",
+  provenance: "provider",
 } as const;
 
 interface ExpectedToolCall {

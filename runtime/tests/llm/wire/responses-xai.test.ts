@@ -240,6 +240,7 @@ describe("responses-xai wire shim", () => {
       tools,
       options: {
         promptCacheKey: "session-1",
+        maxOutputTokens: 12_345,
         includeEncryptedReasoning: true,
         parallelToolCalls: false,
         toolChoice: {
@@ -261,6 +262,7 @@ describe("responses-xai wire shim", () => {
       model: "grok-4-fast",
       store: false,
       prompt_cache_key: "session-1",
+      max_output_tokens: 12_345,
       include: [XAI_ENCRYPTED_REASONING_INCLUDE],
       parallel_tool_calls: false,
       // A named tool_choice goes through the same MCP wire-name encoding

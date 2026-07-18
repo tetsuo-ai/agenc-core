@@ -361,7 +361,7 @@ Why this is mandatory: a durable multi-agent product cannot promise budgets,
 bounded fan-out, cancellation, or consistent permissions while each entry point
 starts work differently.
 
-[ ] Define one admission API used before every model turn and tool execution.
+[x] Define one admission API used before every model turn and tool execution.
     - Prove it first through the M5 CLI/SDK slice, then route TUI, print,
       background agents, subagents, workflows/jobs, hooks, cron, MCP, and future
       protocol adapters through it.
@@ -369,7 +369,7 @@ starts work differently.
     - Return a durable run/step identity and an explicit allow, queue, deny, or
       approval-required decision.
 
-[ ] Enforce hierarchical budgets transactionally.
+[x] Enforce hierarchical budgets transactionally.
     - Give every charge a durable unique reservation/reconciliation ID.
     - Reserve a conservative maximum charge before every model call or charged
       tool, and constrain the provider request with corresponding token/output
@@ -387,18 +387,18 @@ starts work differently.
     - Surface every fallback/model/spend decision. Never silently downgrade to
       make a budget appear satisfied.
 
-[ ] Enforce bounded concurrency and durable admission.
+[x] Enforce bounded concurrency and durable admission.
     - Add global, workspace, session, parent, and provider limits.
     - Persist queued work and use starvation-resistant ordering.
     - A daemon restart must reconstruct reservations and the queue before new
       work is admitted.
 
-[ ] Propagate cancellation and deadlines.
+[x] Propagate cancellation and deadlines.
     - Cancelling a parent prevents new child admission and reaches queued and
       running descendants.
     - Preserve final states and partial evidence; cancellation is not deletion.
 
-[ ] Keep the control plane responsive under agent load.
+[x] Keep the control plane responsive under agent load.
     - Make `session.list` bounded/paginated and stop scanning persisted threads
       while holding the session lock.
     - Do not serialize cancel, health, status, or session lookup behind a full

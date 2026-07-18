@@ -22,6 +22,11 @@ export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
   readonly metadata?: Record<string, unknown>;
+  readonly admissionUsage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly costUsd: number;
+  };
 }
 
 export interface ToolRegistry {

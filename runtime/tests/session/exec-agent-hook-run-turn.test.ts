@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
 
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 import {
   createAgentRoleWorkspace,
   type AgentRoleWorkspace,
@@ -91,6 +96,151 @@ describe("execAgentHook run-turn integration", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(setResponseLength).toHaveBeenCalled();
     expect(setStreamMode).toHaveBeenCalledWith("responding");
+  });
+
+  test("admits the hook child under a distinct child execution identity", async () => {
+    const provider = providerWithToolCall({
+      id: "tool-1",
+      name: "StructuredOutput",
+      arguments: JSON.stringify({ ok: true }),
+    });
+    const parent = createParentSession(provider);
+    Object.assign(parent.modelInfo, { maxOutputTokens: 128 });
+
+    let childReservationSequence = 0;
+    const childAcquire = vi.fn(
+      async (input: AdmissionAcquireInput, signal?: AbortSignal) =>
+        allowAdmissionLease(
+          input,
+          `child-reservation-${++childReservationSequence}`,
+          "hook-child-run",
+          signal ?? new AbortController().signal,
+        ),
+    );
+    let childAdmission: ExecutionAdmissionClient;
+    childAdmission = {
+      scope: {
+        runId: "hook-child-run",
+        workspaceId: "workspace",
+        sessionId: "hook-child-session",
+        autonomous: false,
+      },
+      acquire: childAcquire,
+      markDispatched: vi.fn(),
+      reconcile: vi.fn(() => ({
+        applied: true as const,
+        outcome: "reconciled" as const,
+      })),
+      holdUnknown: vi.fn(),
+      void: vi.fn(),
+      acknowledgeCompletion: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession: vi.fn(() => childAdmission),
+      subscribe: vi.fn(() => () => {}),
+    };
+
+    const spawnAcquire = vi.fn(
+      async (input: AdmissionAcquireInput, _signal?: AbortSignal) => {
+        if (input.kind !== "spawn") {
+          throw new Error(`parent admission received ${input.kind}`);
+        }
+        return allowAdmissionLease(
+          input,
+          "hook-spawn-reservation",
+          "parent-run",
+          new AbortController().signal,
+        );
+      },
+    );
+    const spawnMarkDispatched = vi.fn();
+    const spawnReconcile = vi.fn(() => ({
+      applied: true as const,
+      outcome: "reconciled" as const,
+    }));
+    const spawnVoid = vi.fn();
+    const forSession = vi.fn(() => childAdmission);
+    const parentAdmission: ExecutionAdmissionClient = {
+      scope: {
+        runId: "parent-run",
+        workspaceId: "workspace",
+        sessionId: "parent-test",
+        autonomous: false,
+      },
+      acquire: spawnAcquire,
+      markDispatched: spawnMarkDispatched,
+      reconcile: spawnReconcile,
+      holdUnknown: vi.fn(),
+      void: spawnVoid,
+      acknowledgeCompletion: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession,
+      subscribe: vi.fn(() => () => {}),
+    };
+    Object.assign(parent.services, {
+      executionAdmission: parentAdmission,
+      admissionRequired: true,
+    });
+    setCurrentRuntimeSession(parent);
+
+    const result = await execAgentHook(
+      {
+        type: "agent",
+        prompt: "verify",
+      } as never,
+      "Stop",
+      "Stop" as never,
+      "{}",
+      new AbortController().signal,
+      createToolUseContext({ roleWorkspace: parent.roleWorkspace }),
+      "hook-tool-use",
+      [],
+    );
+
+    expect(result.outcome).toBe("success");
+    expect(spawnAcquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stepId: expect.stringMatching(
+          /^hook-agent-spawn:hook-tool-use:hook-agent-/,
+        ),
+        kind: "spawn",
+        sessionId: "parent-test",
+        parentScopeId: "parent-test",
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+      expect.any(AbortSignal),
+    );
+    const childScope = forSession.mock.calls[0]?.[0];
+    expect(childScope).toEqual({
+      runId: expect.stringMatching(/^hook-agent-/),
+      sessionId: expect.stringMatching(/^hook-agent-/),
+      parentRunId: "parent-run",
+      parentScopeId: "parent-test",
+    });
+    expect(childScope?.runId).toBe(childScope?.sessionId);
+    expect(spawnMarkDispatched).toHaveBeenCalledWith(
+      "hook-spawn-reservation",
+      expect.objectContaining({
+        boundary: "spawn_commit",
+        details: expect.objectContaining({
+          childThreadId: childScope?.sessionId,
+          parentSessionId: "parent-test",
+        }),
+      }),
+    );
+    expect(spawnReconcile).toHaveBeenCalledWith(
+      "hook-spawn-reservation",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(spawnVoid).not.toHaveBeenCalled();
+    expect(
+      childAcquire.mock.calls.some(
+        ([input]) =>
+          input.kind === "model_turn" &&
+          input.sessionId === childScope?.sessionId,
+      ),
+    ).toBe(true);
   });
 
   test("waits for validated structured-output tool results", async () => {
@@ -1502,6 +1652,45 @@ function llmMessageText(message: LLMMessage): string {
     .join("\n");
 }
 
+function allowAdmissionLease(
+  input: AdmissionAcquireInput,
+  reservationId: string,
+  runId: string,
+  signal: AbortSignal,
+): AdmissionLease {
+  return {
+    decision: "allow",
+    reservation: {
+      reservationId,
+      step: { runId, stepId: input.stepId },
+      reservedCostUsd: input.maxCostUsd ?? 0,
+      reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+      reservedAt: "2026-07-18T00:00:00.000Z",
+    },
+    request: {
+      step: { runId, stepId: input.stepId },
+      kind: input.kind,
+      estimate: {
+        maxInputTokens: input.maxInputTokens,
+        maxOutputTokens: input.maxOutputTokens,
+        maxCostUsd: input.maxCostUsd,
+      },
+      workspaceId: "workspace",
+      sessionId: input.sessionId ?? "session",
+      autonomous: false,
+      ...(input.parentScopeId !== undefined
+        ? { parentScopeId: input.parentScopeId }
+        : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.provider !== undefined ? { provider: input.provider } : {}),
+      ...(input.deadlineAt !== undefined
+        ? { deadlineAt: input.deadlineAt }
+        : {}),
+    },
+    signal,
+  };
+}
+
 function providerWithToolCall(
   toolCall: LLMResponse["toolCalls"][number],
 ): LLMProvider & { chatStream: ReturnType<typeof vi.fn> } {
@@ -1540,6 +1729,7 @@ function providerWithResponses(
 function echoTool(): Tool {
   return {
     name: "Echo",
+    recoveryCategory: "idempotent",
     inputSchema: z.object({ value: z.string() }),
     inputJSONSchema: {
       type: "object",
@@ -1566,6 +1756,7 @@ function echoTool(): Tool {
 function errorTool(): Tool {
   return {
     name: "ErrorTool",
+    recoveryCategory: "idempotent",
     inputSchema: z.object({}),
     inputJSONSchema: {
       type: "object",
@@ -1608,6 +1799,7 @@ function createParentSession(
     createEmptyToolPermissionContext({ mode: "dontAsk" }),
   );
   const services = {
+    admissionRequired: false,
     provider,
     registry: {
       tools: [],

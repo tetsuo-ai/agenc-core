@@ -23,7 +23,8 @@ function stubSession(): Session {
     conversationId: "root-thread",
     eventLog: {},
     nextInternalSubId: () => "sub-1",
-    services: {},
+    config: {},
+    services: { admissionRequired: false },
   } as unknown as Session;
 }
 

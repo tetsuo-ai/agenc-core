@@ -19,6 +19,12 @@ import {
 } from "vitest";
 
 import type { RunAgentParams } from "../../agents/run-agent.js";
+import {
+  AdmissionDeniedError,
+  type AdmissionAcquireInput,
+  type ExecutionAdmissionClient,
+} from "../../budget/admission-client.js";
+import type { AdmissionLease } from "../../budget/admission-types.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
 import {
@@ -139,6 +145,7 @@ afterEach(async () => {
 });
 
 function makeSession(sessionId: string, childId = "child-session"): Session {
+  let nextSubId = 1;
   return {
     conversationId: sessionId,
     sessionConfiguration: {
@@ -147,6 +154,7 @@ function makeSession(sessionId: string, childId = "child-session"): Session {
     },
     config: { cwd: projectRoot },
     services: {
+      admissionRequired: false,
       agentControl: {
         spawn: async () => ({
           agentId: childId,
@@ -158,7 +166,92 @@ function makeSession(sessionId: string, childId = "child-session"): Session {
         }),
       },
     },
+    nextInternalSubId: () => `sub-${sessionId}-${nextSubId++}`,
   } as unknown as Session;
+}
+
+function makeAdmissionHarness(
+  sessionId: string,
+  options: {
+    readonly acquireError?: Error;
+    readonly leaseSignal?: AbortSignal;
+  } = {},
+) {
+  const acquire = vi.fn(
+    async (
+      input: AdmissionAcquireInput,
+      _signal?: AbortSignal,
+    ): Promise<AdmissionLease> => {
+      if (options.acquireError !== undefined) throw options.acquireError;
+      return {
+        decision: "allow",
+        reservation: {
+          reservationId: `reservation-${sessionId}`,
+          step: { runId: `run-${sessionId}`, stepId: input.stepId },
+          reservedCostUsd: input.maxCostUsd ?? 0,
+          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+          reservedAt: "2026-07-18T00:00:00.000Z",
+        },
+        request: {
+          step: { runId: `run-${sessionId}`, stepId: input.stepId },
+          kind: input.kind,
+          estimate: {
+            maxInputTokens: input.maxInputTokens,
+            maxOutputTokens: input.maxOutputTokens,
+            maxCostUsd: input.maxCostUsd,
+          },
+          workspaceId: "workspace-session-memory",
+          sessionId,
+          parentScopeId: input.parentScopeId,
+          autonomous: false,
+        },
+        signal: options.leaseSignal ?? new AbortController().signal,
+      };
+    },
+  );
+  const markDispatched = vi.fn();
+  const reconcile = vi.fn(() => ({
+    applied: true as const,
+    outcome: "reconciled" as const,
+  }));
+  const holdUnknown = vi.fn();
+  const acknowledgeCompletion = vi.fn();
+  const admission = {
+    scope: {
+      runId: `run-${sessionId}`,
+      workspaceId: "workspace-session-memory",
+      sessionId,
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown,
+    void: vi.fn(),
+    acknowledgeCompletion,
+    recordFallback: vi.fn(),
+    forSession: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  } as unknown as ExecutionAdmissionClient;
+  const base = makeSession(sessionId) as unknown as {
+    readonly services: Record<string, unknown>;
+  };
+  const session = {
+    ...base,
+    services: {
+      ...base.services,
+      admissionRequired: true,
+      executionAdmission: admission,
+    },
+  } as unknown as Session;
+  return {
+    acknowledgeCompletion,
+    acquire,
+    holdUnknown,
+    markDispatched,
+    reconcile,
+    session,
+  };
 }
 
 describe("session memory prompts", () => {
@@ -270,9 +363,8 @@ describe("session memory extraction thresholds", () => {
 
 describe("session memory runtime", () => {
   it("creates the notes file under the session-scoped AgenC project directory", async () => {
-    const setup = await setupSessionMemoryFile({
+    const setup = await setupSessionMemoryFile(makeSession("session-1"), {
       cwd: projectRoot,
-      sessionId: "session-1",
       configHomeDir: tempRoot,
     });
     const expected = resolveSessionMemoryPath({
@@ -296,12 +388,160 @@ describe("session memory runtime", () => {
     await writeFile(memoryPath, "x".repeat(1024 * 1024 + 1), "utf8");
 
     await expect(
-      setupSessionMemoryFile({
+      setupSessionMemoryFile(makeSession("session-large"), {
         cwd: projectRoot,
-        sessionId: "session-large",
         configHomeDir: tempRoot,
       }),
     ).rejects.toThrow("Session memory file exceeds maximum size");
+  });
+
+  it("admits one zero-priced setup boundary before creating or reading notes", async () => {
+    const harness = makeAdmissionHarness("session-admitted");
+    const setup = await setupSessionMemoryFile(harness.session, {
+      cwd: projectRoot,
+      configHomeDir: tempRoot,
+    });
+
+    expect(harness.acquire).toHaveBeenCalledOnce();
+    expect(harness.acquire.mock.calls[0]?.[0]).toMatchObject({
+      stepId:
+        "tool:session-memory:session-admitted:sub-session-admitted-1",
+      kind: "tool_exec",
+      sessionId: "session-admitted",
+      parentScopeId: "session-memory:session-admitted",
+      maxInputTokens: 0,
+      maxOutputTokens: 0,
+      maxCostUsd: 0,
+    });
+    expect(harness.markDispatched).toHaveBeenCalledWith(
+      "reservation-session-admitted",
+      expect.objectContaining({
+        boundary: "tool_effect",
+        details: expect.objectContaining({
+          toolName: "internal.session-memory.setup",
+          recoveryCategory: "side-effecting",
+          maxCostUsd: 0,
+        }),
+      }),
+    );
+    expect(harness.reconcile).toHaveBeenCalledWith(
+      "reservation-session-admitted",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(harness.acknowledgeCompletion).toHaveBeenCalledWith(
+      "reservation-session-admitted",
+    );
+    expect(await readFile(setup.memoryPath, "utf8")).toContain("# Current State");
+  });
+
+  it("does not execute setup effects when admission denies the boundary", async () => {
+    const denial = new AdmissionDeniedError("run_budget_exceeded");
+    const harness = makeAdmissionHarness("session-denied", {
+      acquireError: denial,
+    });
+    const memoryPath = resolveSessionMemoryPath({
+      cwd: projectRoot,
+      sessionId: "session-denied",
+      configHomeDir: tempRoot,
+    });
+
+    await expect(
+      setupSessionMemoryFile(harness.session, {
+        cwd: projectRoot,
+        configHomeDir: tempRoot,
+      }),
+    ).rejects.toBe(denial);
+    await expect(stat(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(harness.markDispatched).not.toHaveBeenCalled();
+    expect(harness.reconcile).not.toHaveBeenCalled();
+    expect(harness.acknowledgeCompletion).not.toHaveBeenCalled();
+  });
+
+  it("fails closed without a live session or required admission kernel", async () => {
+    const missingSessionPath = resolveSessionMemoryPath({
+      cwd: projectRoot,
+      sessionId: "session-missing",
+      configHomeDir: tempRoot,
+    });
+    await expect(
+      setupSessionMemoryFile(undefined as unknown as Session, {
+        cwd: projectRoot,
+        configHomeDir: tempRoot,
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "session_memory_admission_session_unavailable",
+    });
+
+    const base = makeSession("session-missing") as unknown as {
+      readonly services: Record<string, unknown>;
+    };
+    const requiredSession = {
+      ...base,
+      services: {
+        ...base.services,
+        admissionRequired: true,
+      },
+    } as unknown as Session;
+    await expect(
+      setupSessionMemoryFile(requiredSession, {
+        cwd: projectRoot,
+        configHomeDir: tempRoot,
+      }),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "admission_kernel_unavailable",
+    });
+    await expect(stat(missingSessionPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("forwards lease cancellation and settles the dispatched setup as unknown", async () => {
+    const controller = new AbortController();
+    const cancellation = new AdmissionDeniedError(
+      "parent_cancelled",
+      "cancelled",
+    );
+    controller.abort(cancellation);
+    const harness = makeAdmissionHarness("session-cancelled", {
+      leaseSignal: controller.signal,
+    });
+    const memoryPath = resolveSessionMemoryPath({
+      cwd: projectRoot,
+      sessionId: "session-cancelled",
+      configHomeDir: tempRoot,
+    });
+
+    await expect(
+      setupSessionMemoryFile(harness.session, {
+        cwd: projectRoot,
+        configHomeDir: tempRoot,
+      }),
+    ).rejects.toBe(cancellation);
+    await expect(stat(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(harness.markDispatched).toHaveBeenCalledOnce();
+    expect(harness.holdUnknown).toHaveBeenCalledWith(
+      "reservation-session-cancelled",
+      "tool_cancelled_after_dispatch",
+    );
+    expect(harness.reconcile).not.toHaveBeenCalled();
+    expect(harness.acknowledgeCompletion).toHaveBeenCalledWith(
+      "reservation-session-cancelled",
+    );
+  });
+
+  it("does not wrap the later updater spawn in the setup admission", async () => {
+    const harness = makeAdmissionHarness("session-single-boundary");
+
+    await runSessionMemoryPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      session: harness.session,
+    });
+
+    expect(harness.acquire).toHaveBeenCalledOnce();
+    expect(runAgentMockState.calls).toHaveLength(1);
   });
 
   it("runs an Edit-only subagent and seeds the notes file read state", async () => {

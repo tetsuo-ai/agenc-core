@@ -75,6 +75,7 @@ const MAX_REFERENCE_IMAGES = 7;
 async function imageRefToUrl(
   value: string,
   workspaceRoot: string,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const ref = value.trim();
   if (!ref) return undefined;
@@ -88,7 +89,7 @@ async function imageRefToUrl(
   }
   const path = isAbsolute(ref) ? ref : join(workspaceRoot, ref);
   if (!existsSync(path)) return undefined;
-  const bytes = await readFile(path);
+  const bytes = await readFile(path, { signal });
   const ext = path.toLowerCase();
   const mime = ext.endsWith(".png")
     ? "image/png"
@@ -98,8 +99,31 @@ async function imageRefToUrl(
   return `data:${mime};base64,${bytes.toString("base64")}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        signal?.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function abortSignalFromArgs(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const signal = args.__abortSignal;
+  return signal instanceof AbortSignal ? signal : undefined;
 }
 
 export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
@@ -113,6 +137,11 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
     recoveryCategory: "side-effecting",
+    admissionEstimate: () => ({
+      maxInputTokens: 0,
+      maxOutputTokens: 0,
+      maxCostUsd: null,
+    }),
     inputSchema: {
       type: "object",
       properties: {
@@ -143,6 +172,8 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       additionalProperties: false,
     },
     execute: async (args) => {
+      const admittedSignal = abortSignalFromArgs(args);
+      admittedSignal?.throwIfAborted();
       const session = opts.getSession();
       const provider = session?.services?.provider;
       if (readProviderIdentity(provider as never) !== "grok") {
@@ -184,7 +215,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
 
       const imageUrlRaw = stringValue(args.image_url);
       const imageUrl = imageUrlRaw
-        ? await imageRefToUrl(imageUrlRaw, opts.workspaceRoot)
+        ? await imageRefToUrl(imageUrlRaw, opts.workspaceRoot, admittedSignal)
         : undefined;
 
       const refRaw = Array.isArray(args.reference_image_urls)
@@ -211,11 +242,12 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       }
       const reference_images: { url: string }[] = [];
       for (const r of refRaw) {
-        const url = await imageRefToUrl(r, opts.workspaceRoot);
+        const url = await imageRefToUrl(r, opts.workspaceRoot, admittedSignal);
         if (url) reference_images.push({ url });
       }
 
-      const modality = imageUrl || reference_images.length > 0 ? "image" : "text";
+      const modality =
+        imageUrl || reference_images.length > 0 ? "image" : "text";
       let model = stringValue(args.model);
       if (!model) {
         model =
@@ -265,6 +297,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
             "x-idempotency-key": randomUUID(),
           },
           body: JSON.stringify(body),
+          ...(admittedSignal !== undefined
+            ? { signal: admittedSignal }
+            : {}),
         });
         const submitJson = (await submitRes.json()) as {
           request_id?: string;
@@ -298,6 +333,9 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
           const pollRes = await fetchImpl(`${baseURL}/videos/${requestId}`, {
             method: "GET",
             headers,
+            ...(admittedSignal !== undefined
+              ? { signal: admittedSignal }
+              : {}),
           });
           const pollJson = (await pollRes.json()) as Record<string, unknown> & {
             status?: string;
@@ -336,7 +374,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
               true,
             );
           }
-          await sleep(pollInterval);
+          await sleep(pollInterval, admittedSignal);
           elapsed += pollInterval;
         }
 
@@ -368,7 +406,10 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
         await mkdir(outDir, { recursive: true });
         const path = join(outDir, `imagine-video-${randomUUID()}.mp4`);
 
-        const videoRes = await fetchImpl(videoUrl);
+        const videoRes = await fetchImpl(
+          videoUrl,
+          admittedSignal === undefined ? {} : { signal: admittedSignal },
+        );
         if (!videoRes.ok) {
           return json(
             {
@@ -380,7 +421,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
           );
         }
         const buf = Buffer.from(await videoRes.arrayBuffer());
-        await writeFile(path, buf);
+        await writeFile(path, buf, { signal: admittedSignal });
 
         return json({
           model,
@@ -393,6 +434,7 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
           modality,
         });
       } catch (error) {
+        admittedSignal?.throwIfAborted();
         return json(
           {
             error:

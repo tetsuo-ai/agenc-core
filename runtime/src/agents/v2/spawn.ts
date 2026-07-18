@@ -34,6 +34,7 @@ import {
   getSessionOrError,
   hideSpawnAgentMetadata,
   json,
+  localZeroAdmissionEstimate,
   strictArgs,
   stringValue,
   toolMetadata,
@@ -794,6 +795,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }),
     requiresApproval: true,
     recoveryCategory: "side-effecting",
+    admissionEstimate: localZeroAdmissionEstimate,
     inputSchema: spawnAgentSchema,
     execute,
   };

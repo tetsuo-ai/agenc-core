@@ -61,7 +61,12 @@ import { isPlanMode } from "../session/plan-mode.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
-import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
+import type {
+  AssistantMessage,
+  ToolUseBlock,
+  TurnState,
+} from "../session/turn-state.js";
+import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
   readonly input: ReadonlyArray<LLMMessage>;
@@ -228,8 +233,7 @@ function emitThinkingSpoofWarnings(
       type: "warning",
       payload: {
         cause: "model_ui_spoof_pattern",
-        message:
-          `model thinking output matched spoof pattern(s): ${unseen.join(", ")}`,
+        message: `model thinking output matched spoof pattern(s): ${unseen.join(", ")}`,
       },
     },
   });
@@ -367,7 +371,10 @@ export class IncrementalSpoofSanitizer {
   private pendingStartsLine = true;
   private atBufferStart = true;
 
-  push(delta: string): { readonly text: string; readonly newMatches: string[] } {
+  push(delta: string): {
+    readonly text: string;
+    readonly newMatches: string[];
+  } {
     if (delta.length === 0) return { text: "", newMatches: [] };
     this.carry += delta;
     const settledLen = settledSpoofPrefixLen(
@@ -387,9 +394,10 @@ export class IncrementalSpoofSanitizer {
     return this.sanitizeAndRecord(remaining);
   }
 
-  private sanitizeAndRecord(
-    segment: string,
-  ): { readonly text: string; readonly newMatches: string[] } {
+  private sanitizeAndRecord(segment: string): {
+    readonly text: string;
+    readonly newMatches: string[];
+  } {
     if (segment.length === 0) return { text: "", newMatches: [] };
     const startsLine = this.pendingStartsLine;
     // The agenc spoof pattern is multiline-anchored (`^\s*agenc...`). When this
@@ -534,7 +542,7 @@ function assistantMessageFromResponse(
   // validator sees them (provider-family quirks collapsed here).
   const normalizedToolCalls = normalizeToolCallsForProvider(
     providerName,
-    allowToolCalls ? response.toolCalls ?? [] : [],
+    allowToolCalls ? (response.toolCalls ?? []) : [],
   );
   // A pre-output refusal carries no content at all; give the message a
   // clear user-visible body so the renderer doesn't show a blank turn.
@@ -788,9 +796,7 @@ export async function streamModel(
   signal?: AbortSignal,
 ): Promise<TurnState> {
   if (signal?.aborted) {
-    throw new StreamModelError(
-      new Error("aborted before provider call"),
-    );
+    throw new StreamModelError(new Error("aborted before provider call"));
   }
 
   const planMode = isPlanMode(ctx);
@@ -917,8 +923,13 @@ export async function streamModel(
         streamedToolCalls.set(call.id, call);
         streamedToolBlocks.set(block.id, block);
         if (queueStreamingToolCall(executor, block, call, session)) {
-          (executor as { dispatchPending?: (opts?: { readonly safeOnly?: boolean }) => void })
-            .dispatchPending?.({ safeOnly: true });
+          (
+            executor as {
+              dispatchPending?: (opts?: {
+                readonly safeOnly?: boolean;
+              }) => void;
+            }
+          ).dispatchPending?.({ safeOnly: true });
         }
       }
       state.toolUseBlocks = [...streamedToolBlocks.values()];
@@ -927,14 +938,64 @@ export async function streamModel(
   };
 
   let response: LLMResponse;
-  const callProvider = (
+  const callProvider = async (
     provider: Pick<LLMProvider, "chatStream">,
-  ): Promise<LLMResponse> =>
-    provider.chatStream(
-      buildProviderMessages(request),
-      onChunk,
-      buildProviderOptions(request, ctx, scoped.signal),
-    );
+    attempt: "primary" | "prewarm" | "prewarm_fallback",
+  ): Promise<LLMResponse> => {
+    const messages = buildProviderMessages(request);
+    const options = buildProviderOptions(request, ctx, scoped.signal);
+    const recoveryFallback = state.pendingAdmissionFallback;
+    const clearRecoveryFallback = (): void => {
+      // Do not clear a newer recovery decision installed while this attempt
+      // was pending. The captured object identifies the decision handed to
+      // the admission boundary below.
+      if (state.pendingAdmissionFallback === recoveryFallback) {
+        state.pendingAdmissionFallback = undefined;
+      }
+    };
+    const model =
+      recoveryFallback?.toModel ?? session.config?.model ?? ctx.config.model;
+    const response = await runAdmittedModelCall({
+      session,
+      provider: session.services.provider,
+      messages,
+      options,
+      stepId: `model:${ctx.subId}:${state.turnCount}:${state.recoveryReentryCount}:${attempt}`,
+      sessionId: session.conversationId,
+      model,
+      providerName,
+      signal: scoped.signal,
+      ...(recoveryFallback !== undefined
+        ? {
+            fallback: {
+              fromModel: recoveryFallback.fromModel,
+              ...(recoveryFallback.fromProvider !== undefined
+                ? { fromProvider: recoveryFallback.fromProvider }
+                : {}),
+              reason: recoveryFallback.reason,
+            },
+            onFallbackRecorded: clearRecoveryFallback,
+          }
+        : attempt === "prewarm_fallback"
+        ? {
+            fallback: {
+              fromModel: model,
+              fromProvider: providerName,
+              reason: "startup_prewarm_failed_before_first_chunk",
+            },
+          }
+        : {}),
+      invoke: (admittedOptions) =>
+        provider.chatStream(messages, onChunk, admittedOptions),
+    });
+    // Admission can be explicitly disabled for legacy callers. In that case
+    // there is no durable evidence callback, but a completed wire call still
+    // consumes the one-shot recovery decision.
+    if (recoveryFallback !== undefined) {
+      clearRecoveryFallback();
+    }
+    return response;
+  };
   const startupPrewarmHandle =
     await session.services.startupPrewarm?.consumeProviderHandle({
       signal: scoped.signal,
@@ -943,8 +1004,8 @@ export async function streamModel(
   try {
     response =
       startupPrewarmHandle !== undefined
-        ? await callProvider(startupPrewarmHandle)
-        : await callProvider(session.services.provider);
+        ? await callProvider(startupPrewarmHandle, "prewarm")
+        : await callProvider(session.services.provider, "primary");
   } catch (error) {
     if (
       startupPrewarmHandle !== undefined &&
@@ -958,7 +1019,10 @@ export async function streamModel(
         /* disposal is best-effort before direct provider fallback */
       }
       try {
-        response = await callProvider(session.services.provider);
+        response = await callProvider(
+          session.services.provider,
+          "prewarm_fallback",
+        );
       } catch (fallbackError) {
         throw new StreamModelError(fallbackError);
       }
@@ -1088,7 +1152,11 @@ export async function streamModel(
   // block on the response. The TUI bridge dedupes against `lastThinkingText`
   // so a streamed-then-flushed turn does not double-render. Skip on
   // truncated responses to match the existing `agent_message` guard.
-  if (!maxOutputTruncated && response.thinking && response.thinking.length > 0) {
+  if (
+    !maxOutputTruncated &&
+    response.thinking &&
+    response.thinking.length > 0
+  ) {
     for (const block of response.thinking) {
       if (block.text.length === 0 && !block.redacted) continue;
       const sanitized = block.redacted
@@ -1117,6 +1185,8 @@ export async function streamModel(
     const cacheCreation = response.usage.cacheCreationInputTokens;
     const reasoning = response.usage.reasoningOutputTokens;
     const webSearch = response.usage.webSearchRequests;
+    const availability = response.usage.availability;
+    const provenance = response.usage.provenance;
     state.lastResponseUsage = {
       promptTokens: response.usage.promptTokens,
       completionTokens: response.usage.completionTokens,
@@ -1125,10 +1195,10 @@ export async function streamModel(
       ...(cacheCreation !== undefined
         ? { cacheCreationInputTokens: cacheCreation }
         : {}),
-      ...(reasoning !== undefined
-        ? { reasoningOutputTokens: reasoning }
-        : {}),
+      ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
       ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
+      ...(availability !== undefined ? { availability } : {}),
+      ...(provenance !== undefined ? { provenance } : {}),
     };
     // Cross-turn token accumulator — agenc runtime
     // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
@@ -1143,21 +1213,22 @@ export async function streamModel(
     const reasoningForTotal = last.reasoningOutputTokens ?? 0;
     await session.state.with((s) => {
       const current = s.totalTokenUsage;
-      const prev = typeof current === "number"
-        ? {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: current,
-            cachedInputTokens: 0,
-            reasoningOutputTokens: 0,
-          }
-        : current ?? {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            cachedInputTokens: 0,
-            reasoningOutputTokens: 0,
-          };
+      const prev =
+        typeof current === "number"
+          ? {
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: current,
+              cachedInputTokens: 0,
+              reasoningOutputTokens: 0,
+            }
+          : (current ?? {
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: 0,
+              cachedInputTokens: 0,
+              reasoningOutputTokens: 0,
+            });
       s.totalTokenUsage = {
         promptTokens: prev.promptTokens + last.promptTokens,
         completionTokens: prev.completionTokens + last.completionTokens,

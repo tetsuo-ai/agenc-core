@@ -27,6 +27,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "../../wire/mcp-tool-naming.js";
+import { coerceUsage } from "../../wire/shared.js";
 
 const DEFAULT_REGION = "us-east-1";
 const BEDROCK_SERVICE = "bedrock";
@@ -519,19 +520,13 @@ function requestMetrics(
 
 function usageFromResponse(response: BedrockResponse): LLMUsage {
   const usage = response.usage;
-  const promptTokens = usage?.inputTokens ?? 0;
-  const completionTokens = usage?.outputTokens ?? 0;
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens: usage?.totalTokens ?? promptTokens + completionTokens,
-    ...(usage?.cacheReadInputTokens !== undefined
-      ? { cachedInputTokens: usage.cacheReadInputTokens }
-      : {}),
-    ...(usage?.cacheWriteInputTokens !== undefined
-      ? { cacheCreationInputTokens: usage.cacheWriteInputTokens }
-      : {}),
-  };
+  return coerceUsage({
+    promptTokens: usage?.inputTokens,
+    completionTokens: usage?.outputTokens,
+    totalTokens: usage?.totalTokens,
+    cachedInputTokens: usage?.cacheReadInputTokens,
+    cacheCreationInputTokens: usage?.cacheWriteInputTokens,
+  });
 }
 
 function finishReasonFromStopReason(stopReason: string | undefined): LLMResponse["finishReason"] {
@@ -1071,6 +1066,8 @@ export class BedrockProvider implements LLMProvider {
     return {
       provider: this.name,
       model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
       ...(positiveInteger(this.config.maxTokens) !== undefined
         ? { maxOutputTokens: positiveInteger(this.config.maxTokens) }
         : {}),

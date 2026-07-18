@@ -20,6 +20,7 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../llm/registry/provider-info.js";
 import {
+  roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
   type TokenEstimationContent,
   type TokenEstimationMessage,
@@ -216,58 +217,22 @@ export async function countMessagesTokensWithAPI(
 export async function countTokensViaHaikuFallback(
   messages: readonly BetaMessageParam[],
   tools: readonly BetaToolUnion[],
-  options: CountTokensViaSmallModelOptions = {},
+  _options: CountTokensViaSmallModelOptions = {},
 ): Promise<number | null> {
-  try {
-    const containsThinking = hasThinkingBlocks(messages);
-    const model = resolveFallbackTokenCountModel(options, containsThinking);
-    const client = await resolveAnthropicClient({ ...options, model });
-    const create = client?.beta.messages.create;
-    if (!create) {
-      return null;
-    }
-
-    const normalizedMessages = stripToolSearchFieldsFromMessages(messages);
-    const messagesToSend =
-      normalizedMessages.length > 0
-        ? normalizedMessages
-        : [{ role: "user", content: "count" } satisfies BetaMessageParam];
-    const betas =
-      (options.provider ?? "anthropic") === "vertex"
-        ? (options.betas ?? []).filter((beta) =>
-          VERTEX_COUNT_TOKENS_ALLOWED_BETAS.has(beta),
-        )
-        : (options.betas ?? []);
-
-    const response = await create({
-      model,
-      max_tokens: containsThinking ? TOKEN_COUNT_MAX_TOKENS : 1,
-      messages: messagesToSend,
-      ...(tools.length > 0 ? { tools } : {}),
-      ...(betas.length > 0 ? { betas } : {}),
-      ...(containsThinking
-        ? {
-          thinking: {
-            type: "enabled",
-            budget_tokens: TOKEN_COUNT_THINKING_BUDGET,
-          },
-        }
-        : {}),
-    });
-
-    const usage = response.usage;
-    if (!usage) {
-      return null;
-    }
-    return (
-      (usage.input_tokens ?? 0) +
-      (usage.cache_creation_input_tokens ?? 0) +
-      (usage.cache_read_input_tokens ?? 0)
-    );
-  } catch (error) {
-    options.logError?.(error);
-    return null;
-  }
+  // Historical callers use this as a last-resort estimate. A small-model
+  // completion would be a paid provider wire call without a Session/run
+  // identity, so M3 replaces it with a deterministic local estimate. The
+  // provider count-tokens endpoint remains the authoritative first choice.
+  const normalizedMessages = stripToolSearchFieldsFromMessages(messages);
+  return roughTokenCountEstimation(
+    JSON.stringify({
+      messages:
+        normalizedMessages.length > 0
+          ? normalizedMessages
+          : [{ role: "user", content: "count" }],
+      tools,
+    }),
+  );
 }
 
 export function roughTokenCountEstimationForServiceMessages(

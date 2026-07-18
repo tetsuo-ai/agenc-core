@@ -1,10 +1,18 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { RolloutStore } from "../session/rollout-store.js";
-import { FileThreadStore } from "../thread-store/store.js";
+import {
+  FileThreadStore,
+  ThreadStoreInvalidRequestError,
+} from "../thread-store/store.js";
+import type {
+  ListThreadsParams,
+  StoredThread,
+  ThreadStore,
+} from "../thread-store/store.js";
 import {
   AgenCDaemonSessionManager,
   AgenCSessionLifecycleError,
@@ -32,6 +40,24 @@ function sequence(values: readonly string[]): () => string {
 }
 
 describe("AgenC daemon session lifecycle", () => {
+  it("uses the indexed thread count for health instead of listing history", async () => {
+    const listThreads = vi.fn(() => {
+      throw new Error("health must not materialize persisted threads");
+    });
+    const countThreads = vi.fn(() => 100_000);
+    const manager = new AgenCDaemonSessionManager({
+      threadStore: { listThreads, countThreads } as unknown as ThreadStore,
+    });
+
+    await expect(manager.countSessions()).resolves.toEqual({
+      active: 100_000,
+      closed: 0,
+      total: 100_000,
+    });
+    expect(countThreads).toHaveBeenCalledOnce();
+    expect(listThreads).not.toHaveBeenCalled();
+  });
+
   it("creates server-owned sessions keyed by sessionId and lists them by agent", async () => {
     const manager = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1", "session_2", "session_3"]),
@@ -89,6 +115,81 @@ describe("AgenC daemon session lifecycle", () => {
         },
       ],
     });
+  });
+
+  it("bounds persisted session listing to one requested page and advances an opaque cursor", async () => {
+    const calls: ListThreadsParams[] = [];
+    const persisted = [
+      storedThread("persisted-3", "2026-05-01T10:03:00.000Z"),
+      storedThread("persisted-2", "2026-05-01T10:02:00.000Z"),
+      storedThread("persisted-1", "2026-05-01T10:01:00.000Z"),
+    ];
+    const threadStore = {
+      listThreads: (params: ListThreadsParams) => {
+        calls.push(params);
+        // Revert-sensitive: the previous implementation requested pageSize
+        // 500 and drained every nextCursor while holding the session lock.
+        expect(params.pageSize).toBe(2);
+        if (params.cursor === undefined) {
+          return { items: persisted.slice(0, 2), nextCursor: "thread-page-2" };
+        }
+        expect(params.cursor).toBe("thread-page-2");
+        return { items: persisted.slice(2) };
+      },
+    } as Partial<ThreadStore> as ThreadStore;
+    const manager = new AgenCDaemonSessionManager({ threadStore });
+
+    const first = await manager.listSessions({ limit: 2 });
+    expect(first.sessions.map((session) => session.sessionId)).toEqual([
+      "persisted-3",
+      "persisted-2",
+    ]);
+    expect(first.nextCursor).toMatch(/^agenc-session-list-v1:/);
+    expect(calls).toHaveLength(1);
+
+    const second = await manager.listSessions({
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    expect(second.sessions.map((session) => session.sessionId)).toEqual([
+      "persisted-1",
+    ]);
+    expect(second.nextCursor).toBeUndefined();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("binds persisted cursors to their agent filter", async () => {
+    const threadStore = {
+      listThreads: () => ({
+        items: [storedThread("persisted-filtered", "2026-05-01T10:01:00.000Z")],
+        nextCursor: "more",
+      }),
+    } as Partial<ThreadStore> as ThreadStore;
+    const manager = new AgenCDaemonSessionManager({ threadStore });
+    const first = await manager.listSessions({ agentId: "agent-a", limit: 1 });
+    expect(first.nextCursor).toBeDefined();
+    await expect(
+      manager.listSessions({ agentId: "agent-b", cursor: first.nextCursor }),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+  });
+
+  it("maps an invalid nested thread cursor to the public session cursor error", async () => {
+    const threadStore = {
+      listThreads: (params: ListThreadsParams) => {
+        if (params.cursor !== undefined) {
+          throw new ThreadStoreInvalidRequestError("expired cursor");
+        }
+        return {
+          items: [storedThread("persisted-cursor", "2026-05-01T10:01:00.000Z")],
+          nextCursor: "invalid-next-page",
+        };
+      },
+    } as Partial<ThreadStore> as ThreadStore;
+    const manager = new AgenCDaemonSessionManager({ threadStore });
+    const first = await manager.listSessions({ limit: 1 });
+    await expect(
+      manager.listSessions({ limit: 1, cursor: first.nextCursor }),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
   });
 
   it("rejects malformed present role provenance on create and restore", async () => {
@@ -482,4 +583,14 @@ function openRollout(cwd: string, sessionId: string): RolloutStore {
     modelProvider: "xai",
   });
   return rollout;
+}
+
+function storedThread(threadId: string, createdAt: string): StoredThread {
+  return {
+    threadId,
+    createdAt,
+    updatedAt: createdAt,
+    modelProvider: "test",
+    source: "cli_main",
+  };
 }

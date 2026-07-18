@@ -162,12 +162,15 @@ describe('Web search result count improvements', () => {
     expect(content).toMatch(/count.*['"]10['"]/)
   })
 
-  test('Native provider web search max_uses increased to 15', async () => {
+  test('unadmitted model-backed web search paths fail closed', async () => {
     const content = await file(
       'tools/WebSearchTool/WebSearchTool.ts',
     ).text()
 
-    expect(content).toMatch(/max_uses:\s*15/)
+    expect(content).toContain(
+      "throw new AdmissionDeniedError('legacy_web_search_model_path_disabled')",
+    )
+    expect(content).not.toContain('queryModelWithStreaming({')
   })
 
   test('providerCode web search path guarantees a non-empty result body', async () => {

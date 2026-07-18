@@ -3,6 +3,10 @@ import { resolve } from "node:path";
 
 import { resolveToolAllowedPaths } from "./filesystem.js";
 import {
+  clearCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "src/session/current-session.js";
+import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ALLOWED_ROOTS_SIG_ARG,
   SESSION_ID_ARG,
@@ -168,6 +172,10 @@ describe("canonicalToolSurface — authoritative signed session id", () => {
   let getSessionId: typeof import("src/bootstrap/state.js").getSessionId;
   let CanonicalFileReadTool: typeof import("src/tools/canonicalToolSurface.js").CanonicalFileReadTool;
   let restoreSessionId: string;
+  const legacyTestSession = {
+    conversationId: "signed-roots-test-session",
+    services: { admissionRequired: false },
+  } as never;
 
   beforeEach(async () => {
     capturedExecuteArgs.length = 0;
@@ -176,9 +184,11 @@ describe("canonicalToolSurface — authoritative signed session id", () => {
     getSessionId = state.getSessionId;
     restoreSessionId = getSessionId();
     ({ CanonicalFileReadTool } = await import("src/tools/canonicalToolSurface.js"));
+    setCurrentRuntimeSession(legacyTestSession);
   });
 
   afterEach(() => {
+    clearCurrentRuntimeSession(legacyTestSession);
     switchSession(restoreSessionId as never);
   });
 

@@ -83,7 +83,7 @@ async function countTokensWithFallback(
       return result
     }
     logForDebugging(
-      `countTokensWithFallback: API returned null, trying haiku fallback (${tools.length} tools)`,
+      `countTokensWithFallback: API returned null, using local fallback (${tools.length} tools)`,
     )
   } catch (err) {
     logForDebugging(`countTokensWithFallback: API failed: ${errorMessage(err)}`)
@@ -94,13 +94,13 @@ async function countTokensWithFallback(
     const fallbackResult = await countTokensViaHaikuFallback(messages, tools)
     if (fallbackResult === null) {
       logForDebugging(
-        `countTokensWithFallback: haiku fallback also returned null (${tools.length} tools)`,
+        `countTokensWithFallback: local fallback also returned null (${tools.length} tools)`,
       )
     }
     return fallbackResult
   } catch (err) {
     logForDebugging(
-      `countTokensWithFallback: haiku fallback failed: ${errorMessage(err)}`,
+      `countTokensWithFallback: local fallback failed: ${errorMessage(err)}`,
     )
     logError(err)
     return null

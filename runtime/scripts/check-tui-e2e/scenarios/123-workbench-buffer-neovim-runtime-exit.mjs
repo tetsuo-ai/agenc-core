@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  anchorWorkbenchProjectRoot,
   frameText,
   listDescendantNeovimPids,
   waitForFrameText,
@@ -26,6 +27,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-buffer-neovim-runtime-exit-"));
   try {
+    await anchorWorkbenchProjectRoot(cwd);
     await writeFile(join(cwd, "target.txt"), "alpha\nbeta\n", "utf8");
     session.cwd = cwd;
     await session.start();
@@ -65,7 +67,12 @@ export default async function (session) {
     await session.type("q!", { perCharMs: 80 });
     session.send("\r");
     await waitForPidsGone(neovimPids, 8_000, "embedded Neovim after :q!");
-    await waitForFrameText(session, /TRANSCRIPT/u, "Workbench transcript after embedded Neovim :q!", 8_000);
+    await waitForFrameText(
+      session,
+      /Surface:\s*ctrl\+w h explorer/u,
+      "Workbench transcript after embedded Neovim :q!",
+      8_000,
+    );
     const frame = frameText(session);
     if (/Buffer:\s*embedded nvim|embedded Neovim|BUFFER/u.test(frame)) {
       throw new Error(`Workbench stayed on BUFFER after embedded Neovim :q!:\n${frame.slice(-1200)}`);

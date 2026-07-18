@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { renderPtyRows } from "../harness.mjs";
 import {
   listDescendantNeovimPids,
+  anchorWorkbenchProjectRoot,
   waitForPidsGone,
   waitForFrameText,
   waitForScreen,
@@ -27,6 +28,7 @@ export const meta = {
 export default async function (session) {
   const cwd = await mkdtemp(join(tmpdir(), "agenc-buffer-neovim-e2e-"));
   try {
+    await anchorWorkbenchProjectRoot(cwd);
     await writeFile(join(cwd, "target.txt"), "alpha\nbeta\n", "utf8");
     session.cwd = cwd;
     await session.start();

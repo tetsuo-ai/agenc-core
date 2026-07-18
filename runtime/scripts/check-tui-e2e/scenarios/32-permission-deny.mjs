@@ -10,6 +10,7 @@ import path from "node:path";
 
 const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-deny-"));
 writeFileSync(path.join(slimCwd, "README.md"), "permission deny cwd\n", "utf8");
+writeFileSync(path.join(slimCwd, "package.json"), '{"private":true}\n', "utf8");
 
 const marker = "agenc-permission-deny-marker-fe17";
 const markerFile = "permission-deny-output.txt";
@@ -23,6 +24,8 @@ export const meta = {
   description: "Permission overlay (default mode): deny path closes overlay cleanly.",
   timeoutMs: 120_000,
   useTempHome: true,
+  sandboxMode: "danger-full-access",
+  args: ["--permission-mode", "default"],
   cwd: slimCwd,
 };
 

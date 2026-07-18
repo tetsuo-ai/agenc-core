@@ -19,6 +19,11 @@ import type {
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
 import { parseAnthropicMessagesResponse } from "../llm/wire/messages-anthropic.js";
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 
 const streamedDispatchCalls: string[] = [];
 
@@ -170,6 +175,7 @@ function mkSession(
     eventLog,
     services: {
       provider,
+      admissionRequired: false,
       ...(registry !== undefined ? { registry } : {}),
     },
     budgetTracker,
@@ -1201,5 +1207,183 @@ describe("streamModel — refusal stop reason (task 28)", () => {
     const assistant = state.assistantMessages.at(-1);
     expect(assistant?.apiError).toBe("refusal");
     expect(assistant?.text).toContain("partial answer");
+  });
+});
+
+describe("streamModel — execution admission identity", () => {
+  test("retains a recovery fallback when execution-profile resolution rejects before admission", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const pendingFallback = {
+      fromModel: "primary-model",
+      toModel: "fallback-model",
+      fromProvider: "primary-provider",
+      toProvider: "stub-provider",
+      reason: "provider_fallback_ladder",
+    } as const;
+    state.pendingAdmissionFallback = pendingFallback;
+
+    const chatStream = vi.fn(async () => {
+      throw new Error("wire call must not run");
+    });
+    const getExecutionProfile = vi.fn(async () => {
+      throw new Error("profile resolution unavailable");
+    });
+    const provider = {
+      ...mkProvider(chatStream),
+      getExecutionProfile,
+    } as LLMProvider;
+    const acquire = vi.fn();
+    const recordFallback = vi.fn();
+    const voidReservation = vi.fn();
+    const acknowledgeCompletion = vi.fn();
+    const admission = {
+      scope: {
+        runId: "run-1",
+        workspaceId: "workspace-1",
+        sessionId: "conv-stream",
+        autonomous: false,
+      },
+      acquire,
+      markDispatched: vi.fn(),
+      reconcile: vi.fn(),
+      holdUnknown: vi.fn(),
+      cancelRun: vi.fn(),
+      void: voidReservation,
+      acknowledgeCompletion,
+      recordFallback,
+      forSession: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    } as unknown as ExecutionAdmissionClient;
+    const { session } = mkSession(provider);
+    (session.services as { executionAdmission?: ExecutionAdmissionClient })
+      .executionAdmission = admission;
+    (session.services as { admissionRequired?: boolean }).admissionRequired = true;
+
+    await expect(
+      streamModel(
+        state,
+        ctx,
+        session,
+        {
+          ...mkRequest([{ role: "user", content: "retry" }]),
+          maxOutputTokens: 8,
+        },
+      ),
+    ).rejects.toThrow("profile resolution unavailable");
+
+    expect(getExecutionProfile).toHaveBeenCalledOnce();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(recordFallback).toHaveBeenCalledWith({
+      stepId: "model:turn-stream:1:0:primary",
+      fromModel: "primary-model",
+      toModel: "fallback-model",
+      fromProvider: "primary-provider",
+      toProvider: "stub-provider",
+      reason: "provider_fallback_ladder",
+    });
+    expect(chatStream).not.toHaveBeenCalled();
+    expect(voidReservation).not.toHaveBeenCalled();
+    expect(acknowledgeCompletion).not.toHaveBeenCalled();
+    expect(state.pendingAdmissionFallback).toEqual(pendingFallback);
+  });
+
+  test("fallback re-entry gets a distinct durable step and routing event", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    state.recoveryReentryCount = 2;
+    state.pendingAdmissionFallback = {
+      fromModel: "primary-model",
+      toModel: "fallback-model",
+      fromProvider: "primary-provider",
+      toProvider: "stub-provider",
+      reason: "provider_fallback_ladder",
+    };
+    const acquire = vi.fn(
+      async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
+        decision: "allow",
+        reservation: {
+          reservationId: "model-fallback-reservation",
+          step: { runId: "run-1", stepId: input.stepId },
+          reservedCostUsd: input.maxCostUsd ?? 0,
+          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+          reservedAt: "2026-07-18T00:00:00.000Z",
+        },
+        request: {
+          step: { runId: "run-1", stepId: input.stepId },
+          kind: input.kind,
+          estimate: {
+            maxInputTokens: input.maxInputTokens,
+            maxOutputTokens: input.maxOutputTokens,
+            maxCostUsd: input.maxCostUsd,
+          },
+          workspaceId: "workspace-1",
+          sessionId: "conv-stream",
+          parentScopeId: "conv-stream",
+          autonomous: false,
+        },
+        signal: new AbortController().signal,
+      }),
+    );
+    const recordFallback = vi.fn();
+    const admission = {
+      scope: {
+        runId: "run-1",
+        workspaceId: "workspace-1",
+        sessionId: "conv-stream",
+        autonomous: false,
+      },
+      acquire,
+      markDispatched: vi.fn(),
+      reconcile: vi.fn(() => ({ applied: true, outcome: "reconciled" })),
+      holdUnknown: vi.fn(),
+      void: vi.fn(),
+      acknowledgeCompletion: vi.fn(),
+      recordFallback,
+      forSession: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    } as unknown as ExecutionAdmissionClient;
+    const provider = mkProvider(async (_messages, _onChunk, options) => {
+      expect(options?.singleWireAttempt).toBe(true);
+      return {
+        content: "fallback ok",
+        toolCalls: [],
+        usage: {
+          promptTokens: 3,
+          completionTokens: 2,
+          totalTokens: 5,
+          availability: "reported",
+          provenance: "provider",
+        },
+        model: "fallback-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+    (session.services as { executionAdmission?: ExecutionAdmissionClient })
+      .executionAdmission = admission;
+    (session.services as { admissionRequired?: boolean }).admissionRequired = true;
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      { ...mkRequest([{ role: "user", content: "retry" }]), maxOutputTokens: 8 },
+    );
+
+    expect(acquire.mock.calls[0]?.[0]).toMatchObject({
+      stepId: "model:turn-stream:1:2:primary",
+      model: "fallback-model",
+      provider: "stub-provider",
+    });
+    expect(recordFallback).toHaveBeenCalledWith({
+      stepId: "model:turn-stream:1:2:primary",
+      fromModel: "primary-model",
+      toModel: "fallback-model",
+      fromProvider: "primary-provider",
+      toProvider: "stub-provider",
+      reason: "provider_fallback_ladder",
+    });
+    expect(state.pendingAdmissionFallback).toBeUndefined();
   });
 });

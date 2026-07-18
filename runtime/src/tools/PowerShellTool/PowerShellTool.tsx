@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link } from 'fs/promises';
+import { runAdmittedLegacyToolCall } from '../../budget/admitted-legacy-tool-call.js';
 import type { CanUseToolFn } from 'src/tui/hooks/useCanUseTool.js';
 import type { AppState } from '../../tui/state/AppState.js';
 import { z } from 'zod/v4';
@@ -8,6 +9,7 @@ import { getKairosActive } from '../../bootstrap/state.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import type { SetToolJSXFn, Tool, ToolCallProgress, ValidationResult } from '../Tool.js';
 import { buildTool, type ToolDef } from '../Tool.js';
+import type { Tool as RuntimeTool } from '../types.js';
 import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
 import type { AgentId } from '../../types/ids.js';
 import type { AssistantMessage } from '../../types/message.js';
@@ -269,8 +271,24 @@ type OutputSchema = ReturnType<typeof outputSchema>;
 export type Out = z.infer<OutputSchema>;
 import type { PowerShellProgress } from '../../types/tools.js';
 export type { PowerShellProgress } from '../../types/tools.js';
+const powerShellAdmissionTool: RuntimeTool = {
+  name: POWERSHELL_TOOL_NAME,
+  description: 'Run a PowerShell command',
+  inputSchema: { type: 'object' },
+  recoveryCategory: 'side-effecting',
+  admissionEstimate: () => ({
+    maxInputTokens: 0,
+    maxOutputTokens: 0,
+    maxCostUsd: 0
+  }),
+  execute: async () => {
+    throw new Error('PowerShell admission descriptor cannot execute directly');
+  }
+};
 export const PowerShellTool = buildTool({
   name: POWERSHELL_TOOL_NAME,
+  recoveryCategory: 'side-effecting',
+  admissionEstimate: powerShellAdmissionTool.admissionEstimate,
   searchHint: 'execute Windows PowerShell commands',
   maxResultSizeChars: 30_000,
   strict: true,
@@ -441,6 +459,15 @@ export const PowerShellTool = buildTool({
   async call(input: PowerShellToolInput, toolUseContext: Parameters<Tool['call']>[1], _canUseTool?: CanUseToolFn, _parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<PowerShellProgress>): Promise<{
     data: Out;
   }> {
+    return runAdmittedLegacyToolCall({
+      tool: powerShellAdmissionTool,
+      input,
+      context: toolUseContext,
+      invoke: async ({ abortController: admittedAbortController }) => {
+        toolUseContext = {
+          ...toolUseContext,
+          abortController: admittedAbortController
+        };
     // Load-bearing guard: promptShellExecution.ts and processBashCommand.tsx
     // call PowerShellTool.call() directly, bypassing validateInput. This is
     // the check that covers ALL callers. See isWindowsSandboxPolicyViolation
@@ -667,6 +694,9 @@ export const PowerShellTool = buildTool({
     } finally {
       if (setToolJSX) setToolJSX(null);
     }
+      },
+      toDispatchResult: result => ({ content: JSON.stringify(result.data) })
+    });
   },
   isResultTruncated(output: Out): boolean {
     return isOutputLineTruncated(output.stdout) || isOutputLineTruncated(output.stderr);

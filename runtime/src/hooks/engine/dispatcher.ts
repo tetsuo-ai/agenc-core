@@ -13,6 +13,7 @@ import { hookEventIgnoresConfiguredMatcher } from "../../permissions/hook-event-
 import { redactSecrets } from "../../secrets/index.js";
 import { runHookCommand } from "./command-runner.js";
 import { flattenHooks } from "./discovery.js";
+import { AdmissionDeniedError } from "../../budget/admission-client.js";
 import type {
   CommandRunResult,
   HookCommandRunDiagnostic,
@@ -78,7 +79,9 @@ export class HookEngine {
         if (matcherInputs.length === 0) {
           return matchesPattern("", hook.matcher);
         }
-        return matcherInputs.some((input) => matchesPattern(input, hook.matcher));
+        return matcherInputs.some((input) =>
+          matchesPattern(input, hook.matcher),
+        );
       });
   }
 
@@ -116,25 +119,79 @@ export class HookEngine {
         startedAtUnixMs,
       );
     }
-    const result = await runHookCommand({
-      command: hook.command.command,
-      cwd: cwd ?? this.opts.cwd,
-      env: this.opts.env,
-      shellPath: this.opts.shellPath,
-      stdin: `${JSON.stringify(input)}\n`,
-      timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
-      signal,
-      ...(this.opts.sandboxExecutionBroker !== undefined
-        ? { sandboxExecutionBroker: this.opts.sandboxExecutionBroker }
-        : {}),
-    });
+    const invoke = (effectSignal: AbortSignal | undefined) =>
+      runHookCommand({
+        command: hook.command.command,
+        cwd: cwd ?? this.opts.cwd,
+        env: this.opts.env,
+        shellPath: this.opts.shellPath,
+        stdin: `${JSON.stringify(input)}\n`,
+        timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
+        signal: effectSignal,
+        ...(this.opts.sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker: this.opts.sandboxExecutionBroker }
+          : {}),
+      });
+    const admission = this.opts.executionAdmission;
+    if (admission === undefined && this.opts.admissionRequired !== false) {
+      throw new AdmissionDeniedError("hook_admission_unavailable");
+    }
+    let result: CommandRunResult;
+    if (admission === undefined) {
+      result = await invoke(signal);
+    } else {
+      const lease = await admission.acquire(
+        {
+          stepId: `hook:${hook.event}:${randomUUID()}`,
+          kind: "tool_exec",
+          sessionId: admission.scope.sessionId,
+          parentScopeId: `hook:${hook.event}`,
+          maxInputTokens: 0,
+          maxOutputTokens: 0,
+          // This admission accounts for the local subprocess effect itself.
+          // Any paid provider invoked by that process must perform its own
+          // admitted request; never classify this local boundary as unpriced
+          // and then reconcile it as free.
+          maxCostUsd: 0,
+        },
+        signal,
+      );
+      const reservationId = lease.reservation.reservationId;
+      let dispatched = false;
+      try {
+        admission.markDispatched(reservationId, {
+          boundary: "tool_effect",
+          details: { hookEvent: hook.event, hookIndex: hook.index },
+        });
+        dispatched = true;
+        result = await invoke(lease.signal);
+        if (lease.signal.aborted) {
+          admission.holdUnknown(reservationId, "hook_cancelled_after_dispatch");
+        } else {
+          admission.reconcile(reservationId, {
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+          });
+        }
+      } catch (error) {
+        if (dispatched) {
+          admission.holdUnknown(reservationId, "hook_failed_after_dispatch");
+        } else {
+          admission.void(reservationId, "hook_failed_before_dispatch");
+        }
+        throw error;
+      } finally {
+        // Settlement/journal faults must not retain the daemon's live slot
+        // after the hook subprocess has physically stopped (or failed before
+        // spawn). Durable recovery can classify the reservation separately.
+        admission.acknowledgeCompletion(reservationId);
+      }
+    }
     return this.recordDiagnostic(hook, result, startedAtUnixMs);
   }
 
-  recordHookOutputIssue(
-    run: HookCommandRunDiagnostic,
-    message: string,
-  ): void {
+  recordHookOutputIssue(run: HookCommandRunDiagnostic, message: string): void {
     this.diagnostics = this.diagnostics.map((diagnostic) => {
       if (diagnostic.id !== run.id) return diagnostic;
       const existing = diagnostic.error;
@@ -166,7 +223,9 @@ export class HookEngine {
       durationMs: sanitizedResult.durationMs,
       stdout: sanitizedResult.stdout,
       stderr: sanitizedResult.stderr,
-      ...(sanitizedResult.error !== undefined ? { error: sanitizedResult.error } : {}),
+      ...(sanitizedResult.error !== undefined
+        ? { error: sanitizedResult.error }
+        : {}),
       startedAtUnixMs,
     };
     this.diagnostics = [diagnostic, ...this.diagnostics].slice(
@@ -196,7 +255,10 @@ export function matchesPattern(matchQuery: string, matcher?: string): boolean {
   }
   if (/^[a-zA-Z0-9_.|-]+$/.test(matcher)) {
     if (matcher.includes("|")) {
-      return matcher.split("|").map((p) => p.trim()).includes(matchQuery);
+      return matcher
+        .split("|")
+        .map((p) => p.trim())
+        .includes(matchQuery);
     }
     return matchQuery === matcher;
   }
@@ -219,6 +281,8 @@ function sanitizeCommandRunResult(result: CommandRunResult): CommandRunResult {
     ...result,
     stdout: redactSecrets(result.stdout),
     stderr: redactSecrets(result.stderr),
-    ...(result.error !== undefined ? { error: redactSecrets(result.error) } : {}),
+    ...(result.error !== undefined
+      ? { error: redactSecrets(result.error) }
+      : {}),
   };
 }

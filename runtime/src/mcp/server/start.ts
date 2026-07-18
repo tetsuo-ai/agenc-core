@@ -25,7 +25,6 @@ import { VERSION } from "../../index.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";
-import { mcpToolRegistryFromAgenCTools } from "../../mcp-server/tools.js";
 import type {
   McpCallToolResult,
   McpToolCallContext,
@@ -33,10 +32,14 @@ import type {
   McpToolDefinition,
   McpToolProvider,
 } from "../../mcp-server/types.js";
-import {
-  buildToolRegistry,
-  type ToolRegistry,
-} from "../../tool-registry.js";
+import type { ToolRegistry } from "../../tool-registry.js";
+
+export const MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE =
+  "ADMISSION_IDENTITY_REQUIRED";
+export const MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON =
+  "mcp_session_admission_identity_missing";
+export const MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE =
+  "Inbound MCP tool execution requires a daemon session-bound admission identity; this server exposes prompts and resources only.";
 
 export interface McpServerStartIo {
   readonly stdin: Readable;
@@ -47,6 +50,10 @@ export interface McpServerStartIo {
 export interface McpServerStartOptions {
   readonly cwd?: string;
   readonly io?: McpServerStartIo;
+  /**
+   * Retained for source compatibility. It is never materialized until inbound
+   * MCP can bind requests to a daemon session-owned admission identity.
+   */
   readonly toolRegistry?: ToolRegistry;
 }
 
@@ -177,10 +184,7 @@ export async function runMcpStdioServe(
   options: McpServerStartOptions = {},
 ): Promise<void> {
   const pinnedOptions = await pinMcpServerStartOptions(options);
-  const server = createMcpFramework(
-    createLazyMcpToolProvider(pinnedOptions),
-    pinnedOptions.cwd,
-  );
+  const server = createMcpFramework(pinnedOptions.cwd);
   await new Promise<void>((resolve, reject) => {
     const transport = new McpStdioServerTransport({
       input: io.stdin,
@@ -299,7 +303,7 @@ async function pinMcpServerStartOptions(
   options: McpServerStartOptions,
 ): Promise<McpServerStartOptions & { readonly cwd: string }> {
   // Capture before the first await so process.chdir() cannot change the scope
-  // between transport startup and lazy provider/session creation.
+  // between transport startup and provider/session creation.
   const requestedCwd = options.cwd ?? processCwd();
   const cwd = await resolveMcpServeWorkspace(requestedCwd);
   return { ...options, cwd };
@@ -313,53 +317,51 @@ function normalizeMcpSseLoopbackHost(host: string): string {
   throw new Error("AgenC MCP SSE transport only binds to loopback hosts");
 }
 
-function resolveToolRegistry(options: McpServerStartOptions): ToolRegistry {
-  return options.toolRegistry ?? buildToolRegistry({
-    workspaceRoot: options.cwd ?? processCwd(),
-    // Symbol indexing persists snapshots and git reads may refresh index state.
-    // Neither family belongs on a literally non-mutating inbound boundary.
-    codeIntelligenceTools: false,
-  });
-}
-
 function createMcpFrameworkFactory(
   options: McpServerStartOptions,
 ): () => McpServerFramework {
-  // Snapshot and audit the tool instances before a prepared reload is applied.
-  // The returned function is allocation-only and cannot rebind tool names.
-  const toolProvider = mcpToolRegistryFromAgenCTools(resolveToolRegistry(options));
-  return () => createMcpFramework(toolProvider, options.cwd);
+  return () => createMcpFramework(options.cwd);
 }
 
-function createLazyMcpToolProvider(
-  options: McpServerStartOptions,
-): McpToolProvider {
-  let provider: McpToolProvider | null = null;
-  const getProvider = (): McpToolProvider => {
-    provider ??= mcpToolRegistryFromAgenCTools(resolveToolRegistry(options));
-    return provider;
-  };
-  return {
-    listTools(): readonly McpToolDefinition[] {
-      return getProvider().listTools();
-    },
-    callTool(
-      params: McpToolCallParams,
-      context: McpToolCallContext,
-    ): Promise<McpCallToolResult> {
-      return getProvider().callTool(params, context);
-    },
-  };
-}
+const UNADMITTED_MCP_TOOL_PROVIDER: McpToolProvider = {
+  // An empty catalog prevents clients from planning executable MCP calls. A
+  // direct tools/call still receives the same explicit denial instead of
+  // being misreported as an unknown tool.
+  listTools(): readonly McpToolDefinition[] {
+    return [];
+  },
+  async callTool(
+    _params: McpToolCallParams,
+    _context: McpToolCallContext,
+  ): Promise<McpCallToolResult> {
+    return {
+      content: [
+        {
+          type: "text",
+          text: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE,
+        },
+      ],
+      structuredContent: {
+        code: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE,
+        reason: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON,
+      },
+      isError: true,
+    };
+  },
+};
 
-function createMcpFramework(
-  toolProvider: McpToolProvider,
-  cwd?: string,
-): McpServerFramework {
+function createMcpFramework(cwd?: string): McpServerFramework {
   const workspaceRoot = cwd ?? processCwd();
   return new McpServerFramework({
     serverInfo: { version: VERSION },
-    toolProvider,
+    // No tools capability is advertised without a session-bound admission
+    // identity. The provider remains installed solely to give callers that
+    // send tools/call anyway a stable machine-readable denial.
+    capabilities: {
+      prompts: { listChanged: false },
+      resources: { listChanged: false, subscribe: false },
+    },
+    toolProvider: UNADMITTED_MCP_TOOL_PROVIDER,
     promptProvider: createSkillPromptProvider({
       scopeRoot: workspaceRoot,
       skillRoots: [

@@ -15,6 +15,10 @@
     "agent.attach",
     "agent.stop",
     "agent.logs",
+    "run.status",
+    "run.result",
+    "run.replay",
+    "run.evidence",
     "run.cancel",
     "session.create",
     "session.list",
@@ -290,6 +294,68 @@
         }
       },
       "required": ["agentId"]
+    },
+    "RunStatusParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["runId"]
+    },
+    "RunResultParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["runId"]
+    },
+    "RunReplayParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "afterSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "required": ["runId"]
+    },
+    "RunEvidenceParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "afterSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "required": ["runId"]
     },
     "RunCancelParams": {
       "type": "object",
@@ -1627,6 +1693,18 @@
           "$ref": "#/definitions/AgentLogsRequest"
         },
         {
+          "$ref": "#/definitions/RunStatusRequest"
+        },
+        {
+          "$ref": "#/definitions/RunResultRequest"
+        },
+        {
+          "$ref": "#/definitions/RunReplayRequest"
+        },
+        {
+          "$ref": "#/definitions/RunEvidenceRequest"
+        },
+        {
           "$ref": "#/definitions/RunCancelRequest"
         },
         {
@@ -2170,6 +2248,82 @@
         },
         "params": {
           "$ref": "#/definitions/AgentLogsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunStatusRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.status"
+        },
+        "params": {
+          "$ref": "#/definitions/RunStatusParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunResultRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.result"
+        },
+        "params": {
+          "$ref": "#/definitions/RunResultParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunReplayRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.replay"
+        },
+        "params": {
+          "$ref": "#/definitions/RunReplayParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunEvidenceRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.evidence"
+        },
+        "params": {
+          "$ref": "#/definitions/RunEvidenceParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

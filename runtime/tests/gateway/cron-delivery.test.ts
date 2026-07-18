@@ -4,10 +4,16 @@
  * Delivery-tagged cron tasks run in isolated gateway daemon sessions and
  * route their result to a channel adapter and/or webhook POST. Restart
  * re-arms from the persisted `.agenc/scheduled_tasks.json` and delivery
- * still routes. Budget refusal pauses the fire instead of running the turn.
+ * still routes. A daemon admission refusal pauses the fire visibly.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -30,7 +36,6 @@ import {
   normalizeDelivery,
 } from "../../src/utils/cronTasks.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
-import { BudgetLedger } from "../../src/budget/ledger.js";
 
 class EchoSession implements GatewaySession {
   readonly sessionId: string;
@@ -314,7 +319,7 @@ describe("startCronDelivery", () => {
     await handle.stop();
   });
 
-  test("BUDGET REFUSAL: the turn does NOT run; a paused notice is delivered", async () => {
+  test("daemon admission refusal is surfaced as a paused notice", async () => {
     const startMs = Date.parse("2026-07-09T10:00:30Z");
     writeTasks([
       {
@@ -327,6 +332,9 @@ describe("startCronDelivery", () => {
       },
     ]);
     const client = new RecordingClient("should never run");
+    client.throwOnPrompt = new Error(
+      "execution admission deny: budget_exceeded",
+    );
     const mem = new InMemoryChannelAdapter({ id: "mem" });
     const { clock, advance } = manualClock(startMs);
     const handle = startCronDelivery({
@@ -338,14 +346,17 @@ describe("startCronDelivery", () => {
     });
 
     await advance(90_000);
-    // No session, no turn — the refusal happened before any daemon work.
-    expect(client.created).toBe(0);
+    // The daemon session is the admission authority; no gateway-side
+    // preflight rejects before the request reaches it.
+    expect(client.created).toBe(1);
     const last = mem.lastText("ops") ?? "";
     expect(last).toContain("paused");
+    expect(last).toContain("budget_exceeded");
+    expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
     await handle.stop();
   });
 
-  test("GW-06: turn throw refunds hold (ledger tokens/usd back to 0)", async () => {
+  test("turn failure does not create the retired surface budget ledger", async () => {
     const startMs = Date.parse("2026-07-09T10:00:30Z");
     writeTasks([
       {
@@ -373,11 +384,7 @@ describe("startCronDelivery", () => {
     await advance(90_000);
     // Turn path was entered (session created / prompt attempted).
     expect(client.created).toBeGreaterThan(0);
-    // Hold must be fully refunded after throw (zeros reconcile).
-    const ledger = new BudgetLedger({ agencHome: home });
-    const snap = ledger.snapshot("cron:cronch-throw");
-    expect(snap.day.tokens).toBe(0);
-    expect(snap.day.usd).toBe(0);
+    expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
     await handle.stop();
   });
 

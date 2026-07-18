@@ -60,8 +60,8 @@ export interface HeartbeatFileReader {
 }
 
 /**
- * Budget gate the heartbeat consults per tick. Mirrors the task-15
- * BudgetEnforcer's admit/reconcile so it can be injected directly or faked.
+ * Optional compatibility/test budget gate. Production heartbeat accounting
+ * is owned by the daemon execution-admission kernel.
  */
 export interface HeartbeatBudgetGate {
   admit(input: {

@@ -164,6 +164,7 @@ function mkSession(opts: {
   const breaker = opts.breaker ?? createGuardianRejectionCircuitBreaker();
   const models = opts.models ?? [mkModelInfo()];
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

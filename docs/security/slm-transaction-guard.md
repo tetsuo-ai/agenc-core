@@ -114,5 +114,5 @@ and then submits one bounded DevNet transfer through the guarded path.
 
 ## Related
 
-- Budget bounds for autonomous spend: [`../design/budget-enforcement.md`](../design/budget-enforcement.md)
+- Budget bounds for autonomous spend: [`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md)
 - Tools / permissions / sandbox overview: [`../reference/tools-permissions-sandbox.md`](../reference/tools-permissions-sandbox.md)

@@ -99,6 +99,151 @@ describe("GrokProvider incremental continuation", () => {
     { role: "user", content: "follow up" },
   ];
 
+  test("single-wire chat disables SDK and OAuth-refresh retries", async () => {
+    const refreshBearer = vi.fn().mockResolvedValue({
+      kind: "refreshed",
+      bearer: "xai-refreshed",
+    });
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    }).withAuthRefreshCallbacks({ refreshBearer });
+    const unauthorized = Object.assign(new Error("unauthorized"), {
+      status: 401,
+    });
+    const create = vi.fn().mockImplementation(
+      (_params: Record<string, unknown>, requestOptions: Record<string, unknown>) => {
+        expect(requestOptions).toMatchObject({ maxRetries: 0 });
+        throw unauthorized;
+      },
+    );
+    (provider as any).client = { responses: { create } };
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(refreshBearer).not.toHaveBeenCalled();
+  });
+
+  test("single-wire chat does not retry an expired continuation", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      emitWarning: (warning) => warnings.push(warning),
+    });
+    (provider as any).incrementalTracker.recordRequest(
+      (provider as any).buildIncrementalRequestShape({
+        model: "grok-4-fast",
+        store: false,
+      }),
+      previousMessages,
+    );
+    (provider as any).incrementalTracker.recordResponse({
+      previousResponseId: "resp_single_wire",
+      itemsAdded: [{ role: "assistant", content: "hi" }],
+      recordedAtMs: Date.now(),
+    });
+    const create = vi.fn().mockImplementation(
+      (params: Record<string, unknown>, requestOptions: Record<string, unknown>) => {
+        expect(params.previous_response_id).toBe("resp_single_wire");
+        expect(requestOptions).toMatchObject({ maxRetries: 0 });
+        throw Object.assign(new Error("previous_response_id expired"), {
+          status: 404,
+        });
+      },
+    );
+    (provider as any).client = { responses: { create } };
+
+    await expect(
+      provider.chat(currentMessages, { singleWireAttempt: true }),
+    ).rejects.toBeDefined();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(warnings).not.toContainEqual(
+      expect.objectContaining({ cause: "previous_response_id_expired" }),
+    );
+  });
+
+  test("single-wire stream hands fallback outward after one SDK request", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      providerFallback: {
+        provider: "grok",
+        model: "grok-4-fast",
+        targets: [{ provider: "openai", model: "gpt-5" }],
+      },
+    });
+    const overloaded = Object.assign(new Error("overloaded"), { status: 529 });
+    const create = vi.fn().mockImplementation(
+      (_params: Record<string, unknown>, requestOptions: Record<string, unknown>) => {
+        expect(requestOptions).toMatchObject({ maxRetries: 0 });
+        return withResponse(streamFromEventsThenThrow([], overloaded));
+      },
+    );
+    (provider as any).client = { responses: { create } };
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toMatchObject({ name: "FallbackTriggeredError" });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  test("stream cancellation waits for the pending physical read after return settles", async () => {
+    const pendingRead = Promise.withResolvers<
+      IteratorResult<Record<string, unknown>>
+    >();
+    const iterator = {
+      next: vi.fn(() => pendingRead.promise),
+      return: vi.fn(async () => ({
+        done: true as const,
+        value: undefined,
+      })),
+    };
+    const stream: AsyncIterable<Record<string, unknown>> = {
+      [Symbol.asyncIterator]: () => iterator,
+    };
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    });
+    (provider as any).client = {
+      responses: { create: vi.fn(() => withResponse(stream)) },
+    };
+    const controller = new AbortController();
+    let settled = false;
+
+    const running = provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { signal: controller.signal, singleWireAttempt: true },
+    );
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(iterator.next).toHaveBeenCalledTimes(1));
+    controller.abort("cancel stream");
+    await vi.waitFor(() => expect(iterator.return).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    pendingRead.resolve({ done: true, value: undefined });
+    await expect(running).rejects.toBeDefined();
+  });
+
   test("triggers configured fallback after repeated chat overloads", async () => {
     const restoreTimers = useDeterministicFallbackTimers();
     const provider = new GrokProvider({
@@ -619,6 +764,10 @@ describe("GrokProvider incremental continuation", () => {
     expect(result.finishReason).toBe("error");
     expect(result.error?.name).toBe("LLMServerError");
     expect(result.error?.message).toContain("model is at capacity");
-    expect(result.usage.totalTokens).toBe(0);
+    expect(result.usage).toMatchObject({
+      totalTokens: 0,
+      availability: "unknown",
+      provenance: "synthetic",
+    });
   });
 });

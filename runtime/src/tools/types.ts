@@ -19,16 +19,10 @@ import type { PermissionDefaultMode } from "../config/schema.js";
 export type JSONSchema = Record<string, unknown>;
 
 export type ToolSource =
-  | "builtin"
-  | "mcp"
-  | "plugin"
-  | "skill"
-  | "provider_native";
+  "builtin" | "mcp" | "plugin" | "skill" | "provider_native";
 
 export type ToolRecoveryCategory =
-  | "idempotent"
-  | "side-effecting"
-  | "interactive";
+  "idempotent" | "side-effecting" | "interactive";
 
 export interface ToolMetadata {
   /** Coarse tool family for discovery/ranking. */
@@ -77,7 +71,10 @@ export interface ToolCatalogEntry {
   readonly description: string;
   readonly inputSchema: JSONSchema;
   readonly metadata: Required<
-    Pick<ToolMetadata, "family" | "source" | "hiddenByDefault" | "mutating" | "deferred">
+    Pick<
+      ToolMetadata,
+      "family" | "source" | "hiddenByDefault" | "mutating" | "deferred"
+    >
   > &
     Pick<ToolMetadata, "keywords" | "preferredProfiles">;
 }
@@ -99,6 +96,21 @@ export interface ToolResult {
   contentItems?: readonly FunctionCallOutputContentItem[];
   /** Optional metadata for logging — not sent to LLMs */
   metadata?: Record<string, unknown>;
+  /** Authoritative metered usage for this tool invocation, when charged. */
+  admissionUsage?: ToolAdmissionUsage;
+}
+
+export interface ToolAdmissionEstimate {
+  readonly maxInputTokens: number;
+  readonly maxOutputTokens: number;
+  /** Null records an explicitly unpriced external charge. */
+  readonly maxCostUsd: number | null;
+}
+
+export interface ToolAdmissionUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costUsd: number;
 }
 
 /**
@@ -137,6 +149,14 @@ export interface Tool {
   readonly metadata?: ToolMetadata;
   /** Execute the tool with the given arguments */
   execute(args: Record<string, unknown>): Promise<ToolResult>;
+  /**
+   * Conservative per-invocation charge bound for the execution kernel.
+   * Omit only for locally executed, non-metered tools. Returning a null cost
+   * keeps the operation visible but makes it fail closed under a hard USD cap.
+   */
+  readonly admissionEstimate?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => ToolAdmissionEstimate;
 
   // ── T7 concurrency + limits ──────────────────────────────────────
   /**

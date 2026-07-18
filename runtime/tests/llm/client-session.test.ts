@@ -279,6 +279,29 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test("singleWireAttempt disables the TLS handshake retry", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(
+      Object.assign(new Error("certificate has expired"), {
+        code: "CERT_HAS_EXPIRED",
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: { maxRetries: 5, retryTransport: true },
+      fetchImpl,
+    });
+
+    await expect(
+      session.requestJson({
+        body: { ping: "pong" },
+        singleWireAttempt: true,
+      }),
+    ).rejects.toBeInstanceOf(LLMCertificateError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("does not retry 429 unless the retry budget enables it", async () => {
     const session = new ProviderHttpClientSession({
       providerName: "openai",
@@ -1271,6 +1294,50 @@ describe("ProviderHttpClientSession", () => {
         cause: "previous_response_id_expired",
       }),
     );
+  });
+
+  test("singleWireAttempt surfaces an expired continuation without retrying", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { message: "previous_response_id expired" } }),
+        {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+      responsesContinuationState: {
+        conversationId: "conv-single",
+        lastRequest: {
+          model: "gpt-5",
+          input: [{ role: "user", content: "hello" }],
+          stream: false,
+        },
+        lastResponseId: "resp_expired",
+        lastResponseOutput: [{ role: "assistant", content: "hi" }],
+      },
+    });
+
+    await expect(
+      session.requestJson({
+        body: {
+          model: "gpt-5",
+          input: [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "hi" },
+            { role: "user", content: "follow up" },
+          ],
+          stream: false,
+        },
+        singleWireAttempt: true,
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test("I-14: requestStream retries once with full history when previous_response_id expires", async () => {

@@ -21,6 +21,7 @@ import path from "node:path";
 
 const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-always-"));
 writeFileSync(path.join(slimCwd, "README.md"), "permission always cwd\n", "utf8");
+writeFileSync(path.join(slimCwd, "package.json"), '{"private":true}\n', "utf8");
 
 const marker = "agenc-permission-always-marker-bc42";
 const prompt = [
@@ -36,6 +37,8 @@ export const meta = {
   description: "Permission overlay (default mode): session approval runs the tool.",
   timeoutMs: 120_000,
   useTempHome: true,
+  sandboxMode: "danger-full-access",
+  args: ["--permission-mode", "default"],
   cwd: slimCwd,
 };
 

@@ -84,6 +84,8 @@ import {
   shutdownLspServerManager,
 } from "../services/lsp/manager.js";
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -143,6 +145,11 @@ export type ChildToolPolicy = (
   tool: Pick<Tool, "name">,
   input: Record<string, unknown>,
 ) => ChildToolPolicyDecision | Promise<ChildToolPolicyDecision>;
+
+/** Isolated legacy-test seam; production child registries must never use it. */
+export const TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH = Symbol(
+  "test-only-allow-unadmitted-child-registry-dispatch",
+);
 
 export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
@@ -310,7 +317,9 @@ interface McpManagerLike {
 }
 
 function readParentServices(parent: Session): Record<string, unknown> | null {
-  return asRecord((parent as unknown as { readonly services?: unknown }).services);
+  return asRecord(
+    (parent as unknown as { readonly services?: unknown }).services,
+  );
 }
 
 function readMcpManager(parent: Session): McpManagerLike | undefined {
@@ -481,7 +490,8 @@ function wrapProviderForAgentSummary(
     },
     ...(provider.getExecutionProfile !== undefined
       ? {
-          getExecutionProfile: () => provider.getExecutionProfile!(),
+          getExecutionProfile: (options) =>
+            provider.getExecutionProfile!(options),
         }
       : {}),
     ...(provider.prewarmStartup !== undefined
@@ -590,6 +600,7 @@ interface AgentRunContext {
   readonly clearProviderResponseId: () => void;
   readonly rolloutStore?: unknown;
   readonly session?: { readonly rolloutStore?: unknown };
+  readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
 }
@@ -643,7 +654,8 @@ function buildAgentRunContext(
   const providerOverride = buildAgentProviderOverride(session, model.model);
   const surface = readAgentSessionSurface(session);
   const agentDefinitions = {
-    ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !== undefined
+    ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !==
+    undefined
       ? {
           agentRoleWorkspaceId: firstNonEmpty(
             surface.agentDefinitions?.agentRoleWorkspaceId,
@@ -718,6 +730,7 @@ function buildAgentRunContext(
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
+    admissionSession: session,
     provider: session.services.provider,
     cwd,
   };
@@ -804,9 +817,7 @@ function readAgentSessionSurface(session: Session): SessionSurface {
       readonly activeAgents?: readonly unknown[];
       readonly allAgents?: readonly unknown[];
       readonly allowedAgentTypes?: readonly unknown[];
-    }>(
-      "agentDefinitions",
-    ),
+    }>("agentDefinitions"),
     tasks: read<Record<string, unknown>>("tasks"),
     queryTracking: read<{ readonly chainId?: string; readonly depth?: number }>(
       "queryTracking",
@@ -1180,14 +1191,17 @@ export function buildFilteredRegistry(
     readonly disabledTools?: ReadonlySet<string>;
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    /** Live child authority for callers that invoke `registry.dispatch`. */
+    readonly getSession?: () => Session | null | undefined;
+    /** Isolated legacy-test seam; production must never provide this token. */
+    readonly unadmittedDispatchOverride?:
+      typeof TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH;
   },
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
   const disabled = opts.disabledTools ?? new Set<string>();
   const mcpOriginToolNames = new Set(
-    base.tools
-      .filter(isMcpOriginTool)
-      .map((tool) => tool.name),
+    base.tools.filter(isMcpOriginTool).map((tool) => tool.name),
   );
   const isEligible = (name: string): boolean =>
     !disabled.has(name) &&
@@ -1198,6 +1212,11 @@ export function buildFilteredRegistry(
     .filter((tool) => isEligible(tool.name))
     .map((tool) => wrapToolForChild(tool, opts));
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
+  const baseByName = new Map(
+    base.tools
+      .filter((tool) => isEligible(tool.name))
+      .map((tool) => [tool.name, tool]),
+  );
   const fallbackAdvertisedTools = () =>
     wrappedTools.map((tool) => ({
       type: "function" as const,
@@ -1267,14 +1286,61 @@ export function buildFilteredRegistry(
       const parsedArgs = stripModelSuppliedChildArgs(parseResult.args);
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
-        const result = await wrappedTool.execute(parsedArgs);
-        return {
-          content: result.content,
-          ...(result.isError !== undefined ? { isError: result.isError } : {}),
-          ...(result.metadata !== undefined
-            ? { metadata: result.metadata }
-            : {}),
-        };
+        const baseTool = baseByName.get(toolCall.name);
+        if (baseTool === undefined) {
+          throw new AdmissionDeniedError(
+            "child_tool_admission_descriptor_unavailable",
+          );
+        }
+        const prepared = await prepareChildToolCall(baseTool, parsedArgs, opts);
+        if ("result" in prepared) return prepared.result;
+        const session = opts.getSession?.() ?? null;
+        if (session === null) {
+          if (
+            opts.unadmittedDispatchOverride !==
+            TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH
+          ) {
+            throw new AdmissionDeniedError(
+              "child_tool_admission_session_unavailable",
+            );
+          }
+          return childToolResultToDispatchResult(
+            await baseTool.execute(prepared.args),
+          );
+        }
+        if (session.services.executionAdmission === undefined) {
+          if (
+            opts.unadmittedDispatchOverride !==
+            TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH
+          ) {
+            throw new AdmissionDeniedError(
+              "child_tool_admission_kernel_unavailable",
+            );
+          }
+          return childToolResultToDispatchResult(
+            await baseTool.execute(prepared.args),
+          );
+        }
+        return runAdmittedToolCall({
+          session,
+          turnId: `registry:${session.conversationId}`,
+          callId:
+            typeof toolCall.id === "string" && toolCall.id.length > 0
+              ? toolCall.id
+              : session.nextInternalSubId(),
+          tool: baseTool,
+          args: prepared.args,
+          invoke: async ({ signal }) => {
+            Object.defineProperty(prepared.args, "__abortSignal", {
+              value: signal,
+              enumerable: false,
+              configurable: true,
+            });
+            return childToolResultToDispatchResult(
+              await baseTool.execute(prepared.args),
+            );
+          },
+        });
       }
 
       const policyResult = await applyChildToolPolicy(
@@ -1285,6 +1351,14 @@ export function buildFilteredRegistry(
       if ("result" in policyResult) {
         return policyResult.result;
       }
+      if (
+        opts.unadmittedDispatchOverride !==
+        TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH
+      ) {
+        throw new AdmissionDeniedError(
+          "child_tool_admission_descriptor_unavailable",
+        );
+      }
       return base.dispatch({
         ...toolCall,
         arguments: safeStringify(
@@ -1292,6 +1366,19 @@ export function buildFilteredRegistry(
         ),
       });
     },
+  };
+}
+
+function childToolResultToDispatchResult(
+  result: Awaited<ReturnType<Tool["execute"]>>,
+): ToolDispatchResult {
+  return {
+    content: result.content,
+    ...(result.isError !== undefined ? { isError: result.isError } : {}),
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+    ...(result.admissionUsage !== undefined
+      ? { admissionUsage: result.admissionUsage }
+      : {}),
   };
 }
 
@@ -1374,8 +1461,7 @@ function resolveSessionMaxAgentDepth(parent: Session): number {
     asDepth(
       (
         parent.sessionConfiguration.originalConfigDoNotUse as
-          | { agent_max_depth?: unknown }
-          | undefined
+          { agent_max_depth?: unknown } | undefined
       )?.agent_max_depth,
     ) ??
     DEFAULT_MAX_AGENT_DEPTH
@@ -1556,32 +1642,41 @@ function wrapToolForChild(
   return {
     ...tool,
     async execute(args) {
-      // SECURITY: strip model-supplied `__agenc*` keys before the child
-      // policy/injection runs (idempotent if the caller already stripped).
-      const sanitizedArgs = stripModelSuppliedChildArgs(args);
-      const policyResult = await applyChildToolPolicy(
-        tool,
-        sanitizedArgs,
-        opts,
-      );
-      if ("result" in policyResult) {
-        return policyResult.result;
-      }
-      const childArgs = injectChildToolArgs(
-        policyResult.args,
-        tool.name,
-        opts,
-      );
-      if (opts.sandboxExecutionBroker !== undefined) {
-        attachSandboxExecutionBroker(
-          childArgs,
-          opts.sandboxExecutionBroker,
-          "child_agent",
-        );
-      }
-      return tool.execute(childArgs);
+      const prepared = await prepareChildToolCall(tool, args, opts);
+      return "result" in prepared
+        ? prepared.result
+        : tool.execute(prepared.args);
     },
   };
+}
+
+async function prepareChildToolCall(
+  tool: Tool,
+  args: Record<string, unknown>,
+  opts: {
+    readonly childConversationId: string;
+    readonly worktree?: WorktreeHandle;
+    readonly childToolPolicy?: ChildToolPolicy;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  },
+): Promise<
+  | { readonly args: Record<string, unknown> }
+  | { readonly result: ToolDispatchResult }
+> {
+  // SECURITY: strip model-supplied `__agenc*` keys before the child
+  // policy/injection runs (idempotent if the caller already stripped).
+  const sanitizedArgs = stripModelSuppliedChildArgs(args);
+  const policyResult = await applyChildToolPolicy(tool, sanitizedArgs, opts);
+  if ("result" in policyResult) return policyResult;
+  const childArgs = injectChildToolArgs(policyResult.args, tool.name, opts);
+  if (opts.sandboxExecutionBroker !== undefined) {
+    attachSandboxExecutionBroker(
+      childArgs,
+      opts.sandboxExecutionBroker,
+      "child_agent",
+    );
+  }
+  return { args: childArgs };
 }
 
 function recoveryCategoryForTool(
@@ -1790,9 +1885,7 @@ function prepareChildSessionAuthority(
     );
   return {
     sessionConfiguration,
-    ...(sandboxExecutionBroker !== undefined
-      ? { sandboxExecutionBroker }
-      : {}),
+    ...(sandboxExecutionBroker !== undefined ? { sandboxExecutionBroker } : {}),
   };
 }
 
@@ -1809,6 +1902,7 @@ function buildChildSession(
       sessionConfiguration.cwd,
     );
   }
+  let childSession: ChildSession | undefined;
   const registry = buildFilteredRegistry(params.parent.services.registry, {
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
@@ -1824,20 +1918,18 @@ function buildChildSession(
     ...(params.childToolPolicy !== undefined
       ? { childToolPolicy: params.childToolPolicy }
       : {}),
-    ...(sandboxExecutionBroker !== undefined
-      ? { sandboxExecutionBroker }
-      : {}),
+    ...(sandboxExecutionBroker !== undefined ? { sandboxExecutionBroker } : {}),
+    getSession: () => childSession,
   });
 
-  const childSession = new ChildSession({
+  childSession = new ChildSession({
     conversationId: params.live.agentId,
     roleWorkspace: params.parent.roleWorkspace,
     // A worktree changes execution cwd, never the role trust domain or its
     // canonical executable catalog. Clone the complete parent envelope so a
     // nested Agent call cannot silently fall back to built-ins/config roles.
     agentDefinitions: {
-      agentRoleWorkspaceId:
-        params.parent.agentDefinitions.agentRoleWorkspaceId,
+      agentRoleWorkspaceId: params.parent.agentDefinitions.agentRoleWorkspaceId,
       activeAgents: [...params.parent.agentDefinitions.activeAgents],
       ...(params.parent.agentDefinitions.allAgents !== undefined
         ? { allAgents: [...params.parent.agentDefinitions.allAgents] }
@@ -1859,6 +1951,18 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      ...(params.parent.services.executionAdmission !== undefined
+        ? {
+            executionAdmission:
+              params.parent.services.executionAdmission.forSession({
+                runId: params.live.agentId,
+                sessionId: params.live.agentId,
+                parentRunId:
+                  params.parent.services.executionAdmission.scope.runId,
+                parentScopeId: params.parent.conversationId,
+              }),
+          }
+        : {}),
       // A child has no independently owned MCP transport in this path. Never
       // retain the parent's manager or its live tool closures under a forked
       // sandbox authority; refresh is deliberately inert and local.
@@ -2151,7 +2255,7 @@ export async function* runAgent(
     }
     const childProviderBase =
       childAuthority.sandboxExecutionBroker !== undefined &&
-        provider.forkForSession !== undefined
+      provider.forkForSession !== undefined
         ? provider.forkForSession({
             cwd: childAuthority.sessionConfiguration.cwd,
             sandboxExecutionBroker: childAuthority.sandboxExecutionBroker,
@@ -2534,7 +2638,10 @@ export async function* runAgent(
       params.externalSignal.removeEventListener("abort", onExternalAbort);
     }
     if (cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, "subagent resource cleanup failed");
+      throw new AggregateError(
+        cleanupErrors,
+        "subagent resource cleanup failed",
+      );
     }
   }
 }

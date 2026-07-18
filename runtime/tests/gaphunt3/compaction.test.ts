@@ -7,6 +7,7 @@ import {
 import { autoCompactIfNeeded } from "src/services/compact/autoCompact.js";
 import { compactConversation } from "src/services/compact/compact.js";
 import type { RuntimeMessage } from "src/services/compact/types.js";
+import type { Session } from "src/session/session.js";
 
 /**
  * Revert-sensitive regression tests for gaphunt #3 compaction findings.
@@ -92,6 +93,7 @@ describe("gaphunt3 #10 — oversized transcript is summarized whole (map-reduce)
 
     await compactConversation(messages, {
       provider: provider as never,
+      admissionSession: admissionSessionFor(provider),
       options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
     });
 
@@ -116,6 +118,7 @@ describe("gaphunt3 #10 — oversized transcript is summarized whole (map-reduce)
       [makeMessage("short history"), makeMessage("recent", "assistant")],
       {
         provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
         options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
       },
     );
@@ -153,6 +156,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
         [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
         {
           provider: provider as never,
+          admissionSession: admissionSessionFor(provider),
           abortController,
           options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
         },
@@ -180,6 +184,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
         [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
         {
           provider: provider as never,
+          admissionSession: admissionSessionFor(provider),
           options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
         },
         undefined,
@@ -205,6 +210,7 @@ describe("gaphunt3 #41 — auto-compaction does not count aborts as failures", (
       [makeMessage("x".repeat(10_000)), makeMessage("recent request")],
       {
         provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
         options: { contextWindowTokens: 100, mainLoopModel: "qwen3:8b" },
         deps: {
           createHookResults: () => {
@@ -234,6 +240,18 @@ function makeMessage(
     content,
     message: { role, content },
   };
+}
+
+function admissionSessionFor(provider: unknown): Session {
+  return {
+    conversationId: "gaphunt-compact-test",
+    nextInternalSubId: () => "compact-step",
+    modelInfo: { slug: "test-model" },
+    services: {
+      provider,
+      admissionRequired: false,
+    },
+  } as unknown as Session;
 }
 
 function standaloneToolResult(

@@ -11,6 +11,7 @@ import {
   resolveAtomicSliceIndex,
 } from "./compact.js";
 import type { CompactionResult, RuntimeMessage } from "./types.js";
+import type { Session } from "../../session/session.js";
 
 describe("compact service", () => {
   test("builds post-compact history in deterministic order", () => {
@@ -123,6 +124,7 @@ describe("compact service", () => {
     };
     const result = await manualCompactCall("keep image notes", {
       provider: provider as never,
+      admissionSession: admissionSessionFor(provider),
       messages: [
         {
           ...message(""),
@@ -194,6 +196,7 @@ describe("compact service", () => {
 
     const result = await manualCompactCall("keep media references", {
       provider: provider as never,
+      admissionSession: admissionSessionFor(provider),
       messages: [
         message([
           { type: "text", text: "summarize older image" },
@@ -209,6 +212,21 @@ describe("compact service", () => {
     expect(seen.some((payload) => payload.includes("[image]"))).toBe(true);
     expect(result.compactionResult.messagesToKeep?.at(-1)?.content)
       .toEqual(keptContent);
+  });
+
+  test("provider-backed compaction fails closed without an admission session", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "must not run" })),
+    };
+
+    await expect(
+      manualCompactCall("", {
+        provider: provider as never,
+        messages: [message("older"), message("recent", "assistant")],
+      }),
+    ).rejects.toThrow("compaction_session_unavailable");
+    expect(provider.chat).not.toHaveBeenCalled();
   });
 
   test("preserves prefix and suffix ordering for partial compact projections", () => {
@@ -233,7 +251,10 @@ describe("compact service", () => {
     const result = await partialCompactConversationAsync(
       [message("keep"), message("summarize me"), message("tail", "assistant")],
       1,
-      { provider: provider as never },
+      {
+        provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
+      },
       { direction: "from" },
     );
 
@@ -267,7 +288,10 @@ describe("compact service", () => {
     const result = await partialCompactConversationAsync(
       [message(keptContent), message("summarize me")],
       1,
-      { provider: provider as never },
+      {
+        provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
+      },
       { direction: "from" },
     );
 
@@ -283,7 +307,10 @@ describe("compact service", () => {
     const result = await partialCompactConversationAsync(
       [message("older"), message("selected"), message("tail", "assistant")],
       1,
-      { provider: provider as never },
+      {
+        provider: provider as never,
+        admissionSession: admissionSessionFor(provider),
+      },
       { direction: "up_to", feedback: "keep constraints" },
     );
 
@@ -496,6 +523,18 @@ function message(
     content,
     message: { role, content },
   };
+}
+
+function admissionSessionFor(provider: unknown): Session {
+  return {
+    conversationId: "compact-test",
+    nextInternalSubId: () => "compact-step",
+    modelInfo: { slug: "test-model" },
+    services: {
+      provider,
+      admissionRequired: false,
+    },
+  } as unknown as Session;
 }
 
 function toolResultMessage(toolCallId: string, content: string): RuntimeMessage {

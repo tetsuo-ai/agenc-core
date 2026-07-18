@@ -110,6 +110,7 @@ function createRecoveredSession(
     subscribeToEvents: () => () => {},
     emitPhaseEvent: () => {},
     services: {
+      admissionRequired: false,
       conversationThreadManager: {
         hasThread: (id: string) => id === threadId,
         getThread: (id: string) => {
@@ -1369,7 +1370,7 @@ token_cap = 123
     }
   });
 
-  it("reload reuses a fixed MCP listener, revokes old sessions, and applies the new workspace", async () => {
+  it("reload reuses a fixed MCP listener, revokes old sessions, and keeps direct tools fail-closed", async () => {
     const agencHome = await tempAgencHome();
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-mcp-reload-"));
     const workspaceA = join(workspaceRoot, "workspace-a");
@@ -1408,7 +1409,8 @@ workspace = ${JSON.stringify(workspaceA)}
       const oldSession = await initializeMcpHttpSession(url);
       const initialRead = await callMcpListDir(url, oldSession, workspaceA);
       expect(initialRead.status).toBe(200);
-      expect(initialRead.body).toContain("only-a.txt");
+      expect(initialRead.body).toContain("ADMISSION_IDENTITY_REQUIRED");
+      expect(initialRead.body).not.toContain("only-a.txt");
 
       await writeFile(
         join(agencHome, "config.toml"),
@@ -1443,16 +1445,15 @@ workspace = ${JSON.stringify(workspaceB)}
         4,
       );
       expect(workspaceBRead.status).toBe(200);
-      expect(workspaceBRead.body).toContain("only-b.txt");
+      expect(workspaceBRead.body).toContain("ADMISSION_IDENTITY_REQUIRED");
+      expect(workspaceBRead.body).not.toContain("only-b.txt");
       const workspaceARead = await callMcpListDir(
         url,
         newSession,
         workspaceA,
         5,
       );
-      expect(workspaceARead.body).toContain(
-        "Path is outside allowed directories",
-      );
+      expect(workspaceARead.body).toContain("ADMISSION_IDENTITY_REQUIRED");
 
       signalProcess.emit("SIGTERM");
       stopped = true;
@@ -1865,7 +1866,7 @@ backend = "local"
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("foreground daemon routes realtime start through runner-backed thread state", async () => {
+  it("foreground daemon fails realtime start closed before unadmitted provider traffic", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -1955,27 +1956,11 @@ backend = "local"
           },
         })}\n`,
       );
-      await expect(readSocketLine(socket)).resolves.toContain('"result":{}');
-      await waitForCondition(
-        () => transportRequests.length === 1,
-        "runner realtime transport request",
-      );
-      expect(resolvedThreadIds).toEqual(["agent-realtime"]);
-      expect(transportRequests[0]).toMatchObject({
-        requestedSessionId: "agent-realtime",
-        transport: { type: "websocket" },
-      });
-      events.send({
-        type: "session_updated",
-        realtimeSessionId: "rt_agent_realtime",
-      });
-      await expect(readSocketLine(socket)).resolves.toContain(
-        '"method":"thread/realtime/started"',
-      );
-      events.close();
-      await expect(readSocketLine(socket)).resolves.toContain(
-        '"method":"thread/realtime/closed"',
-      );
+      const denied = await readSocketLine(socket);
+      expect(denied).toContain('"code":"EXECUTION_ADMISSION_REQUIRED"');
+      expect(denied).toContain("thread/realtime/start is disabled");
+      expect(transportRequests).toEqual([]);
+      expect(resolvedThreadIds).toEqual([]);
       socket.end();
     } finally {
       signalProcess.emit("SIGTERM");

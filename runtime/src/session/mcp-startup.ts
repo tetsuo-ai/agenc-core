@@ -41,6 +41,11 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../llm/types.js";
+import {
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
+import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
 import {
@@ -508,10 +513,28 @@ export function createSessionMcpSamplingHandlers(
 
       let response: Awaited<ReturnType<Session["provider"]["chat"]>>;
       try {
-        response = await session.provider.chat(
-          samplingRequestToLlmMessages(request),
-          mcpSamplingChatOptions(request, signal),
-        );
+        const provider = session.provider;
+        const messages = samplingRequestToLlmMessages(request);
+        const options = mcpSamplingChatOptions(request, signal);
+        response = await runAdmittedModelCall({
+          session,
+          provider,
+          messages,
+          options,
+          stepId:
+            `mcp_sampling:${serverName}:${requestId ?? "unknown"}:` +
+            session.nextInternalSubId(),
+          sessionId: session.conversationId,
+          model:
+            options.model ??
+            readProviderFactoryOptions(provider).model ??
+            session.modelInfo?.slug ??
+            "unknown",
+          providerName: readProviderIdentity(provider) ?? provider.name,
+          ...(signal !== undefined ? { signal } : {}),
+          invoke: (admittedOptions) =>
+            provider.chat(messages, admittedOptions),
+        });
       } catch (err) {
         emitSessionEvent(session, {
           type: "mcp_tool_call_end",

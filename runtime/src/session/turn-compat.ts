@@ -2,6 +2,7 @@ import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/index.mjs";
 import { randomUUID, type UUID } from "node:crypto";
 import type { z } from "zod/v4";
 
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { LLMContentPart, LLMMessage, LLMTool, LLMToolCall } from "../llm/types.js";
 import type { LLMUsage } from "../llm/types.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role.js";
@@ -94,7 +95,10 @@ export type TurnCompatRunEvent =
 export async function createTurnCompatSession(
   parent: Session,
   params: TurnCompatParams,
-  opts: { readonly conversationId?: string } = {},
+  opts: {
+    readonly conversationId?: string;
+    readonly executionAdmission?: ExecutionAdmissionClient;
+  } = {},
 ): Promise<TurnCompatSession> {
   assertTurnCompatAgentCatalog(parent, params.toolUseContext);
   const catalogWorkspaceId =
@@ -166,6 +170,9 @@ export async function createTurnCompatSession(
     services: {
       ...parent.services,
       registry,
+      ...(opts.executionAdmission !== undefined
+        ? { executionAdmission: opts.executionAdmission }
+        : {}),
       ...(sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker }
         : {}),
@@ -411,11 +418,15 @@ export async function* runTurnCompat(
   opts: {
     readonly conversationId?: string;
     readonly signal?: AbortSignal;
+    readonly executionAdmission?: ExecutionAdmissionClient;
   } = {},
 ): AsyncGenerator<TurnCompatRunEvent, void> {
   const turn = await createTurnCompatSession(parent, params, {
     ...(opts.conversationId !== undefined
       ? { conversationId: opts.conversationId }
+      : {}),
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
       : {}),
   });
   let assistantText = "";
@@ -1034,9 +1045,13 @@ function runtimeToolFromOldTool(
     name: tool.name,
     description: llmTool.function.description,
     inputSchema: llmTool.function.parameters,
-    isReadOnly: true,
+    isReadOnly: tool.recoveryCategory === "idempotent",
     requiresApproval: false,
-    metadata: { mutating: false },
+    recoveryCategory: tool.recoveryCategory ?? "side-effecting",
+    ...(tool.admissionEstimate !== undefined
+      ? { admissionEstimate: (args) => tool.admissionEstimate!(args) }
+      : {}),
+    metadata: { mutating: tool.recoveryCategory !== "idempotent" },
     async execute(args) {
       const callId = typeof args.__callId === "string"
         ? args.__callId
@@ -1090,24 +1105,58 @@ function runtimeToolFromOldTool(
       }
       const callInput = permission.updatedInput ?? input;
       copyExecutionBoundary(input, callInput);
-      const result = await tool.call(
-        callInput,
-        toolContext,
-        canUseTool,
-        parentMessage,
-        (progress) => {
-          emitLegacyProgress(
-            injectedProgress,
-            createProgressMessage({
-              toolUseID: progress.toolUseID,
-              parentToolUseID: callId,
-              data: progress.data,
-            }),
-          );
-        },
-      );
-      return oldToolResultToDispatchResult(tool, result, callId, toolUseContext);
+      const admittedAbort = legacyToolAbortController(args, toolUseContext);
+      const admittedToolContext = {
+        ...toolContext,
+        abortController: admittedAbort.abortController,
+      };
+      try {
+        const result = await tool.call(
+          callInput,
+          admittedToolContext,
+          canUseTool,
+          parentMessage,
+          (progress) => {
+            emitLegacyProgress(
+              injectedProgress,
+              createProgressMessage({
+                toolUseID: progress.toolUseID,
+                parentToolUseID: callId,
+                data: progress.data,
+              }),
+            );
+          },
+        );
+        return oldToolResultToDispatchResult(tool, result, callId, toolUseContext);
+      } finally {
+        admittedAbort.cleanup();
+      }
     },
+  };
+}
+
+function legacyToolAbortController(
+  args: Record<string, unknown>,
+  context: ToolUseContext,
+): { readonly abortController: AbortController; readonly cleanup: () => void } {
+  const injected =
+    readToolRuntimeContext(args) !== undefined &&
+    args.__abortSignal instanceof AbortSignal
+      ? args.__abortSignal
+      : undefined;
+  if (injected === undefined || injected === context.abortController.signal) {
+    return { abortController: context.abortController, cleanup: () => {} };
+  }
+  const abortController = new AbortController();
+  const forwardAbort = (): void => abortController.abort(injected.reason);
+  if (injected.aborted) {
+    forwardAbort();
+  } else {
+    injected.addEventListener("abort", forwardAbort, { once: true });
+  }
+  return {
+    abortController,
+    cleanup: () => injected.removeEventListener("abort", forwardAbort),
   };
 }
 
@@ -1168,6 +1217,9 @@ function oldToolResultToDispatchResult(
   return {
     content: toolResultContentToText(block.content),
     isError: messageBlock.is_error,
+    ...(result.admissionUsage !== undefined
+      ? { admissionUsage: result.admissionUsage }
+      : {}),
     metadata: {
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
       ...(structuredOutput !== undefined

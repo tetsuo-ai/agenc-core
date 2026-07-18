@@ -25,9 +25,6 @@ import {
   type HeartbeatTurnRunner,
   type HeartbeatUsage,
 } from "../../src/heartbeat/types.js";
-import { BudgetEnforcer } from "../../src/budget/enforcer.js";
-import { BudgetLedger } from "../../src/budget/ledger.js";
-import { budgetGate } from "../../src/heartbeat/wire.js";
 
 // ---- config ---------------------------------------------------------------
 
@@ -274,35 +271,6 @@ describe("HeartbeatRunner turn + budget wire-in", () => {
     expect(budget.admits).toBe(1);
     expect(budget.reconciles).toHaveLength(1);
     expect(budget.reconciles[0]).toEqual({ inputTokens: 42, outputTokens: 7 });
-  });
-
-  test("GW-07 ledger: turn throw refunds hold on real BudgetEnforcer+Ledger", async () => {
-    const home = mkdtempSync(join(tmpdir(), "agenc-hb-ledger-"));
-    try {
-      const ledger = new BudgetLedger({ agencHome: home });
-      const enforcer = new BudgetEnforcer({
-        policy: {
-          enabled: true,
-          softThreshold: 0.8,
-          enforceInteractive: false,
-          caps: { dailyTokens: 1_000_000 },
-        },
-        ledger,
-        priceOf: () => null,
-      });
-      const budget = budgetGate(enforcer);
-      const runner = new FakeRunner();
-      runner.throwOnRun = new Error("turn exploded");
-      const { hb } = makeRunner({ agentId: "hb-ledger" }, { budget, runner });
-      const outcome = await hb.tick();
-      expect(outcome).toMatchObject({ kind: "error" });
-      // Re-open ledger to prove disk conservation (same as cron GW-06 test).
-      const snap = new BudgetLedger({ agencHome: home }).snapshot("hb-ledger");
-      expect(snap.day.tokens).toBe(0);
-      expect(snap.day.usd).toBe(0);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
   });
 
   test("the utility model flows through to the turn runner", async () => {

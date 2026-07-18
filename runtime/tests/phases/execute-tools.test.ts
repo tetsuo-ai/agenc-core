@@ -165,6 +165,7 @@ function mkSession(opts: MkSessionOpts): Session {
     msg: { type: string; payload?: unknown };
   }> = [];
   const servicesRecord: Record<string, unknown> = {
+    admissionRequired: false,
     registry: opts.registry,
     provider: opts.provider ?? { name: "stub-provider" },
     hooks: {

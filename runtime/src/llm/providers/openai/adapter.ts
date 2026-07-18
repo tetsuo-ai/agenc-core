@@ -47,6 +47,7 @@ import {
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { coerceUsage } from "../../wire/shared.js";
 import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
@@ -496,9 +497,14 @@ export class OpenAIProvider implements LLMProvider {
 
   private providerFallbackForModel(
     model: string,
+    singleWireAttempt = false,
   ): OpenAIProviderConfig["providerFallback"] {
     return this.config.providerFallback
-      ? { ...this.config.providerFallback, model }
+      ? {
+          ...this.config.providerFallback,
+          model,
+          ...(singleWireAttempt ? { maxFailures: 1 } : {}),
+        }
       : undefined;
   }
 
@@ -554,7 +560,11 @@ export class OpenAIProvider implements LLMProvider {
             body: request,
             timeoutMs,
             signal: options?.signal,
-            providerFallback: this.providerFallbackForModel(model),
+            providerFallback: this.providerFallbackForModel(
+              model,
+              options?.singleWireAttempt,
+            ),
+            singleWireAttempt: options?.singleWireAttempt,
           });
           return parseOpenAIResponsesResponse(
             model,
@@ -593,7 +603,11 @@ export class OpenAIProvider implements LLMProvider {
           body: request,
           timeoutMs,
           signal: options?.signal,
-          providerFallback: this.providerFallbackForModel(model),
+          providerFallback: this.providerFallbackForModel(
+            model,
+            options?.singleWireAttempt,
+          ),
+          singleWireAttempt: options?.singleWireAttempt,
         });
         return parseChatCompletionsResponse(model, response.data, {
           model,
@@ -603,7 +617,7 @@ export class OpenAIProvider implements LLMProvider {
           maxTokens: this.resolveRequestMaxTokens(options),
           maxTokenField: this.resolveChatCompletionsMaxTokenField(),
         });
-      });
+      }, { singleWireAttempt: options?.singleWireAttempt });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
@@ -647,7 +661,7 @@ export class OpenAIProvider implements LLMProvider {
           options,
           timeoutMs,
         );
-      });
+      }, { singleWireAttempt: options?.singleWireAttempt });
     } catch (error) {
       if (isFallbackTriggeredError(error)) {
         throw error;
@@ -692,6 +706,8 @@ export class OpenAIProvider implements LLMProvider {
     return {
       provider: this.name,
       model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),
@@ -907,7 +923,11 @@ export class OpenAIProvider implements LLMProvider {
           body: request,
           timeoutMs,
           signal: options?.signal,
-          providerFallback: this.providerFallbackForModel(model),
+          providerFallback: this.providerFallbackForModel(
+            model,
+            options?.singleWireAttempt,
+          ),
+          singleWireAttempt: options?.singleWireAttempt,
         });
       } catch (error) {
         if (isFallbackTriggeredError(error)) throw error;
@@ -917,6 +937,7 @@ export class OpenAIProvider implements LLMProvider {
           model,
         );
         if (
+          options?.singleWireAttempt !== true &&
           fallbackDecision?.kind === "wait" &&
           await this.waitForConfiguredFallbackRetry(
             fallbackDecision,
@@ -1006,11 +1027,7 @@ export class OpenAIProvider implements LLMProvider {
               return {
                 content: streamedContent,
                 toolCalls: recoveredToolCalls,
-                usage: {
-                  promptTokens: 0,
-                  completionTokens: 0,
-                  totalTokens: 0,
-                },
+                usage: coerceUsage({}),
                 model,
                 finishReason: "error",
                 error: partialError,
@@ -1066,6 +1083,7 @@ export class OpenAIProvider implements LLMProvider {
               model,
             );
             if (
+              options?.singleWireAttempt !== true &&
               fallbackDecision?.kind === "wait" &&
               await this.waitForConfiguredFallbackRetry(
                 fallbackDecision,
@@ -1165,7 +1183,11 @@ export class OpenAIProvider implements LLMProvider {
           body: request,
           timeoutMs,
           signal: options?.signal,
-          providerFallback: this.providerFallbackForModel(requestModel),
+          providerFallback: this.providerFallbackForModel(
+            requestModel,
+            options?.singleWireAttempt,
+          ),
+          singleWireAttempt: options?.singleWireAttempt,
         });
       } catch (error) {
         if (isFallbackTriggeredError(error)) throw error;
@@ -1175,6 +1197,7 @@ export class OpenAIProvider implements LLMProvider {
           requestModel,
         );
         if (
+          options?.singleWireAttempt !== true &&
           fallbackDecision?.kind === "wait" &&
           await this.waitForConfiguredFallbackRetry(
             fallbackDecision,
@@ -1221,6 +1244,7 @@ export class OpenAIProvider implements LLMProvider {
               requestModel,
             );
             if (
+              options?.singleWireAttempt !== true &&
               fallbackDecision?.kind === "wait" &&
               await this.waitForConfiguredFallbackRetry(
                 fallbackDecision,
@@ -1433,6 +1457,7 @@ export class OpenAIProvider implements LLMProvider {
     readonly timeoutMs?: number;
     readonly signal?: AbortSignal;
     readonly providerFallback?: OpenAIProviderConfig["providerFallback"];
+    readonly singleWireAttempt?: boolean;
   }): Promise<ProviderHttpStreamResponse> {
     const session = this.client.createTurnSession({
       wireApi: args.api,
@@ -1446,6 +1471,7 @@ export class OpenAIProvider implements LLMProvider {
       timeoutMs: normalizeTimeoutMs(args.timeoutMs),
       signal: args.signal,
       providerFallback: args.providerFallback,
+      singleWireAttempt: args.singleWireAttempt,
       // Provider SSE streams do not expose resumable cursors; keep the
       // shared session contract but preserve single-attempt stream semantics.
       retryBudget: { maxRetries: 0 },

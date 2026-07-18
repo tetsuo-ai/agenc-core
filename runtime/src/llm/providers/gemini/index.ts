@@ -25,6 +25,7 @@ import type {
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
 import { coerceUsage } from "../../wire/shared.js";
+import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import {
   resolveGeminiCredential,
@@ -651,6 +652,9 @@ function withMetrics(
 }
 
 function mapProviderError(error: unknown): never {
+  if (isFallbackTriggeredError(error)) {
+    throw error;
+  }
   if (error instanceof ProviderHttpError) {
     throw new LLMProviderError("gemini", error.message, error.status);
   }
@@ -882,7 +886,13 @@ export class GeminiProvider implements LLMProvider {
         body,
         timeoutMs: options?.timeoutMs,
         signal: options?.signal,
-        providerFallback: this.config.providerFallback,
+        providerFallback: this.config.providerFallback
+          ? {
+              ...this.config.providerFallback,
+              ...(options?.singleWireAttempt ? { maxFailures: 1 } : {}),
+            }
+          : undefined,
+        singleWireAttempt: options?.singleWireAttempt,
       });
       return withMetrics(parseGeminiResponse(model, response.data), metrics);
     } catch (error) {
@@ -916,7 +926,13 @@ export class GeminiProvider implements LLMProvider {
         body,
         timeoutMs: options?.timeoutMs,
         signal: options?.signal,
-        providerFallback: this.config.providerFallback,
+        providerFallback: this.config.providerFallback
+          ? {
+              ...this.config.providerFallback,
+              ...(options?.singleWireAttempt ? { maxFailures: 1 } : {}),
+            }
+          : undefined,
+        singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
       const state = new GeminiStreamState(model);
@@ -949,6 +965,8 @@ export class GeminiProvider implements LLMProvider {
     return {
       provider: this.name,
       model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),

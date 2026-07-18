@@ -100,6 +100,7 @@ import type {
   AuthSubscriptionTier,
 } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 
 interface BootstrapShellSnapshot {
   readonly cwd: string;
@@ -130,6 +131,8 @@ export interface BootstrapSessionServicesOptions {
   readonly model: string;
   readonly sessionConfiguration: SessionConfiguration;
   readonly codeModeService?: CodeModeService;
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  readonly admissionRequired?: boolean;
 }
 
 export interface BootstrapRolloutBinding {
@@ -152,6 +155,27 @@ export interface BootstrapSessionServicesHandle {
   bindSession(session: Session): void;
   bindRolloutStore(binding: BootstrapRolloutBinding): LiveThread;
   shutdown(): Promise<void>;
+}
+
+/**
+ * Project every live M3 admission decision into the session rollout. The
+ * SQLite admission journal remains authoritative across restart; this durable
+ * projection makes queue/reservation/reconcile/cancel/fallback decisions
+ * visible through the same session event stream operators already inspect.
+ */
+export function bindExecutionAdmissionJournal(
+  session: Session,
+  admission: ExecutionAdmissionClient,
+): () => void {
+  return admission.subscribe((event) => {
+    session.emit(
+      {
+        id: session.nextInternalSubId(),
+        msg: { type: "execution_admission", payload: event },
+      },
+      { durable: true },
+    );
+  });
 }
 
 export class BootstrapRolloutRecorderFacade implements RolloutRecorder {
@@ -696,6 +720,10 @@ export function buildBootstrapSessionServices(
     agencHome: opts.agencHome,
     shellPath: opts.env.SHELL ?? "/bin/sh",
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
+      : {}),
+    admissionRequired: opts.admissionRequired !== false,
   });
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
@@ -733,6 +761,7 @@ export function buildBootstrapSessionServices(
       sandboxExecutionBroker: opts.sandboxExecutionBroker,
     });
   });
+  let unsubscribeExecutionAdmission: (() => void) | undefined;
 
   const services: SessionServices = {
     mcpConnectionManager,
@@ -811,6 +840,12 @@ export function buildBootstrapSessionServices(
     codeModeService,
     provider: opts.provider,
     registry: opts.registry,
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
+      : {}),
+    ...(opts.admissionRequired !== undefined
+      ? { admissionRequired: opts.admissionRequired }
+      : {}),
     permissionAuditLogger: createPermissionAuditFileLogger({
       agencHome: opts.agencHome,
     }),
@@ -828,6 +863,11 @@ export function buildBootstrapSessionServices(
     threadStore: fileThreadStore,
     bindSession: (session: Session) => {
       execPolicy.bindSession(session);
+      unsubscribeExecutionAdmission?.();
+      unsubscribeExecutionAdmission =
+        opts.executionAdmission === undefined
+          ? undefined
+          : bindExecutionAdmissionJournal(session, opts.executionAdmission);
     },
     bindRolloutStore: (binding: BootstrapRolloutBinding) => {
       rolloutRecorder.attach(binding.rolloutStore);
@@ -862,6 +902,8 @@ export function buildBootstrapSessionServices(
       return liveThread;
     },
     shutdown: async () => {
+      unsubscribeExecutionAdmission?.();
+      unsubscribeExecutionAdmission = undefined;
       unsubscribeHooksConfig();
       await skillsServices.skillsWatcher.stop?.();
       await shutdownBootstrapLspServers(opts.sandboxExecutionBroker);

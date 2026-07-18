@@ -64,6 +64,22 @@ function runSuiteOnce(): Promise<TrustRunResult> {
 }
 
 describe("trust-conformance executor", () => {
+  it("keeps live trust budget probes on the M3 admission authority", () => {
+    const source = readFileSync(
+      path.resolve(__dirname, "../../src/eval-executor/trust-run.ts"),
+      "utf8",
+    );
+    expect(source).toContain(
+      'from "../budget/execution-admission-kernel.js"',
+    );
+    expect(source).toContain(
+      'from "../state/execution-admission.js"',
+    );
+    expect(source).not.toMatch(
+      /from\s+["']\.\.\/budget\/(?:enforcer|ledger)\.js["']/u,
+    );
+  });
+
   it("evaluates every scenario with zero infrastructure-invalid attempts", async () => {
     const { summary, attempts } = await runSuiteOnce();
     expect(attempts).toHaveLength(7);
@@ -130,6 +146,52 @@ describe("trust-conformance executor", () => {
         ).toContain(required);
       }
     }
+  }, 120_000);
+
+  it("records durable M3 recovery and exactly-once budget evidence", async () => {
+    const { attempts } = await runSuiteOnce();
+    const restart = attempts.find(
+      (attempt) => attempt.report.scenarioId === "restart-after-reservation",
+    );
+    const restartPassOne = restart?.rawEvidence.find(
+      (event) =>
+        event.type === "recovery.assessed" &&
+        (event.payload as { readonly pass?: number }).pass === 1,
+    );
+    const restartPassTwo = restart?.rawEvidence.find(
+      (event) =>
+        event.type === "recovery.assessed" &&
+        (event.payload as { readonly pass?: number }).pass === 2,
+    );
+    expect(restartPassOne?.payload).toMatchObject({
+      admissionHeldUnknown: 1,
+      reservationStatus: "held_unknown",
+    });
+    expect(restartPassTwo?.payload).toMatchObject({
+      admissionHeldUnknown: 0,
+      reservationStatus: "held_unknown",
+    });
+
+    const budget = attempts.find(
+      (attempt) =>
+        attempt.report.scenarioId === "budget-sibling-reservation-race",
+    );
+    const reserved = budget?.rawEvidence.find(
+      (event) => event.type === "budget.reserved",
+    );
+    const duplicate = budget?.rawEvidence.find(
+      (event) => event.type === "budget.duplicate_reconcile_probe",
+    );
+    expect(reserved?.payload).toMatchObject({
+      admitted: 2,
+      refusedThird: true,
+      authority: "execution_admission_sqlite",
+    });
+    expect(duplicate?.payload).toMatchObject({
+      firstOutcome: "reconciled",
+      duplicateOutcome: "duplicate",
+      duplicateStatus: "reconciled",
+    });
   }, 120_000);
 
   it("rejects aggregation across mismatched seed slots and duplicate fault classes", async () => {

@@ -266,21 +266,36 @@ export function coerceUsage(usage: {
   readonly cacheCreationInputTokens?: unknown;
   readonly reasoningOutputTokens?: unknown;
   readonly webSearchRequests?: unknown;
+  readonly availability?: LLMUsage["availability"];
+  readonly provenance?: LLMUsage["provenance"];
 }): LLMUsage {
-  const promptTokens = toOptionalNumber(usage.promptTokens) ?? 0;
-  const completionTokens = toOptionalNumber(usage.completionTokens) ?? 0;
+  const reportedPromptTokens = toOptionalNumber(usage.promptTokens);
+  const reportedCompletionTokens = toOptionalNumber(usage.completionTokens);
+  const reportedTotalTokens = toOptionalNumber(usage.totalTokens);
+  const hasProviderTokenUsage =
+    reportedPromptTokens !== undefined ||
+    reportedCompletionTokens !== undefined ||
+    reportedTotalTokens !== undefined;
+  const promptTokens = reportedPromptTokens ?? 0;
+  const completionTokens = reportedCompletionTokens ?? 0;
   const totalTokens =
-    toOptionalNumber(usage.totalTokens) ?? promptTokens + completionTokens;
+    reportedTotalTokens ?? promptTokens + completionTokens;
   const cachedInputTokens = toOptionalNumber(usage.cachedInputTokens);
   const cacheCreationInputTokens = toOptionalNumber(
     usage.cacheCreationInputTokens,
   );
   const reasoningOutputTokens = toOptionalNumber(usage.reasoningOutputTokens);
   const webSearchRequests = toOptionalNumber(usage.webSearchRequests);
+  const availability = usage.availability ??
+    (hasProviderTokenUsage ? "reported" : "unknown");
+  const provenance = usage.provenance ??
+    (availability === "reported" ? "provider" : "synthetic");
   return {
     promptTokens,
     completionTokens,
     totalTokens,
+    availability,
+    provenance,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(cacheCreationInputTokens !== undefined
       ? { cacheCreationInputTokens }

@@ -66,6 +66,12 @@ import {
 import { newDefaultTurnWithSubId } from "./turn-context.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import * as providerFactory from "../llm/provider.js";
+import {
+  AdmissionDeniedError,
+  type AdmissionAcquireInput,
+  type ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixtures (mirrors tasks.test.ts::buildSession and review.test.ts)
@@ -206,6 +212,7 @@ function mkSession(
   serviceOverrides?: Partial<SessionServices>,
 ): Session {
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -237,6 +244,102 @@ function mkSession(
     eventQueue: new AsyncQueue<Event>(),
   };
   return new Session(sessionOpts);
+}
+
+function delegateAdmissionHarness(opts?: {
+  readonly abortOnDispatch?: boolean;
+  readonly reconcileError?: Error;
+}): {
+  readonly client: ExecutionAdmissionClient;
+  readonly child: ExecutionAdmissionClient;
+  readonly acquire: ReturnType<typeof vi.fn>;
+  readonly markDispatched: ReturnType<typeof vi.fn>;
+  readonly reconcile: ReturnType<typeof vi.fn>;
+  readonly voidReservation: ReturnType<typeof vi.fn>;
+  readonly holdUnknown: ReturnType<typeof vi.fn>;
+  readonly acknowledgeCompletion: ReturnType<typeof vi.fn>;
+  readonly forSession: ReturnType<typeof vi.fn>;
+} {
+  const leaseAbort = new AbortController();
+  const child = {
+    scope: {
+      runId: "root-review-run",
+      workspaceId: "workspace",
+      sessionId: "review-child-session",
+      autonomous: false,
+    },
+  } as ExecutionAdmissionClient;
+  const acquire = vi.fn(
+    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
+      decision: "allow",
+      reservation: {
+        reservationId: "review-spawn-reservation",
+        step: { runId: "root-review-run", stepId: input.stepId },
+        reservedCostUsd: 0,
+        reservedTokens: 0,
+        reservedAt: "2026-07-18T00:00:00.000Z",
+      },
+      request: {
+        step: { runId: "root-review-run", stepId: input.stepId },
+        kind: input.kind,
+        estimate: {
+          maxInputTokens: input.maxInputTokens,
+          maxOutputTokens: input.maxOutputTokens,
+          maxCostUsd: input.maxCostUsd,
+        },
+        workspaceId: "workspace",
+        sessionId: input.sessionId ?? "parent-session",
+        parentScopeId: input.parentScopeId,
+        autonomous: false,
+      },
+      signal: leaseAbort.signal,
+    }),
+  );
+  const markDispatched = vi.fn(() => {
+    if (opts?.abortOnDispatch === true) {
+      leaseAbort.abort(new AdmissionDeniedError("run_cancelled", "cancelled"));
+    }
+  });
+  const reconcile = vi.fn(() => {
+    if (opts?.reconcileError !== undefined) throw opts.reconcileError;
+    return {
+      applied: true as const,
+      outcome: "reconciled" as const,
+    };
+  });
+  const voidReservation = vi.fn();
+  const holdUnknown = vi.fn();
+  const acknowledgeCompletion = vi.fn();
+  const forSession = vi.fn(() => child);
+  const client = {
+    scope: {
+      runId: "root-review-run",
+      workspaceId: "workspace",
+      sessionId: "conv-delegate-test",
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    void: voidReservation,
+    holdUnknown,
+    cancelRun: vi.fn(),
+    acknowledgeCompletion,
+    recordFallback: vi.fn(),
+    forSession,
+    subscribe: vi.fn(() => () => {}),
+  } satisfies ExecutionAdmissionClient;
+  return {
+    client,
+    child,
+    acquire,
+    markDispatched,
+    reconcile,
+    voidReservation,
+    holdUnknown,
+    acknowledgeCompletion,
+    forSession,
+  };
 }
 
 function mkReviewRequest(overrides?: Partial<ReviewRequest>): ReviewRequest {
@@ -406,6 +509,152 @@ async function exerciseDelegateProviderOwnership(
 // Happy-path one-shot review
 // ─────────────────────────────────────────────────────────────────────
 
+describe("review delegate spawn admission", () => {
+  it("journals the spawn commit and keeps the child session on the root run", async () => {
+    const admission = delegateAdmissionHarness();
+    const session = mkSession(mkScriptedProvider({ content: "ok" }), {
+      executionAdmission: admission.client,
+      admissionRequired: true,
+    });
+    const req = mkOneShotRequest(session);
+    const controller = new AbortController();
+
+    const thread = await spawnAgenCDelegateThread(
+      session,
+      req,
+      req.parentContext.modelInfo.slug,
+      req.parentContext.modelInfo,
+      controller,
+    );
+
+    expect(admission.acquire).toHaveBeenCalledWith(
+      {
+        stepId: "review-spawn:parent-ctx:review-delegate-A",
+        kind: "spawn",
+        sessionId: "conv-delegate-test",
+        parentScopeId: "conv-delegate-test",
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      },
+      controller.signal,
+    );
+    expect(admission.markDispatched).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+      {
+        boundary: "spawn_commit",
+        details: {
+          childSessionId: "conv-delegate-test:review:review-delegate-A",
+          parentSessionId: "conv-delegate-test",
+          rootRunId: "root-review-run",
+          reviewerDelegate: true,
+        },
+      },
+    );
+    expect(admission.reconcile).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(admission.forSession).toHaveBeenCalledWith({
+      sessionId: "conv-delegate-test:review:review-delegate-A",
+      parentScopeId: "conv-delegate-test",
+    });
+    expect(thread.childSession.services.executionAdmission).toBe(
+      admission.child,
+    );
+    expect(admission.child.scope.runId).toBe(admission.client.scope.runId);
+    expect(admission.voidReservation).not.toHaveBeenCalled();
+    expect(admission.holdUnknown).not.toHaveBeenCalled();
+    expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+    );
+
+    await thread.shutdown("test complete");
+  });
+
+  it("prevents child construction when cancellation races the spawn commit", async () => {
+    const admission = delegateAdmissionHarness({ abortOnDispatch: true });
+    const session = mkSession(mkScriptedProvider({ content: "unused" }), {
+      executionAdmission: admission.client,
+      admissionRequired: true,
+    });
+    const req = mkOneShotRequest(session);
+
+    await expect(
+      spawnAgenCDelegateThread(
+        session,
+        req,
+        req.parentContext.modelInfo.slug,
+        req.parentContext.modelInfo,
+        new AbortController(),
+      ),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      decision: "cancelled",
+      reason: "run_cancelled",
+    });
+
+    expect(admission.forSession).toHaveBeenCalledWith({
+      sessionId: "conv-delegate-test:review:review-delegate-A",
+      parentScopeId: "conv-delegate-test",
+    });
+    expect(admission.reconcile).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(admission.voidReservation).not.toHaveBeenCalled();
+    expect(admission.holdUnknown).not.toHaveBeenCalled();
+    expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+    );
+  });
+
+  it("releases spawn capacity when reconciliation journaling fails", async () => {
+    const admission = delegateAdmissionHarness({
+      reconcileError: new Error("forced review spawn journal failure"),
+    });
+    const session = mkSession(mkScriptedProvider({ content: "unused" }), {
+      executionAdmission: admission.client,
+      admissionRequired: true,
+    });
+    const req = mkOneShotRequest(session);
+
+    await expect(
+      spawnAgenCDelegateThread(
+        session,
+        req,
+        req.parentContext.modelInfo.slug,
+        req.parentContext.modelInfo,
+        new AbortController(),
+      ),
+    ).rejects.toThrow("forced review spawn journal failure");
+    expect(admission.holdUnknown).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+      "review_spawn_commit_outcome_unknown",
+    );
+    expect(admission.acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "review-spawn-reservation",
+    );
+  });
+
+  it("fails closed and drains the parent task when the kernel is required but missing", async () => {
+    const onChat = vi.fn();
+    const session = mkSession(mkScriptedProvider({ onChat }), {
+      admissionRequired: true,
+    });
+
+    await expect(
+      runAgenCReviewOneShot(session, mkOneShotRequest(session)),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "admission_kernel_unavailable",
+    });
+    expect(onChat).not.toHaveBeenCalled();
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+});
+
 describe("runAgenCReviewOneShot happy-path review", () => {
   it.each([
     ["success", "pass"],
@@ -455,7 +704,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       mcpManager: parentMcpManager,
     });
     const req = mkOneShotRequest(session);
-    const thread = spawnAgenCDelegateThread(
+    const thread = await spawnAgenCDelegateThread(
       session,
       req,
       req.parentContext.modelInfo.slug,
@@ -747,7 +996,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     session.eventLog.subscribe((event) => parentEvents.push(event.msg));
     const req = mkOneShotRequest(session);
     const parentContext = req.parentContext;
-    const thread = spawnAgenCDelegateThread(
+    const thread = await spawnAgenCDelegateThread(
       session,
       req,
       parentContext.modelInfo.slug,

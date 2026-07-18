@@ -16,13 +16,24 @@ async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown
   }
 }
 
-function hangingStreamAfterFirstChunk(): {
+function hangingStreamAfterFirstChunk(options: {
+  readonly settleOnAbort?: boolean;
+  readonly settleOnReturn?: boolean;
+} = {}): {
   readonly stream: AsyncIterable<unknown> & { abort: () => void };
   readonly abortSpy: ReturnType<typeof vi.fn>;
   readonly returnSpy: ReturnType<typeof vi.fn>;
+  readonly settlePendingNext: () => void;
 } {
-  const abortSpy = vi.fn();
-  const returnSpy = vi.fn(async () => ({ done: true, value: undefined }));
+  let settlePendingNext: (() => void) | undefined;
+  const settle = (): void => settlePendingNext?.();
+  const abortSpy = vi.fn(() => {
+    if (options.settleOnAbort !== false) settle();
+  });
+  const returnSpy = vi.fn(async () => {
+    if (options.settleOnReturn !== false) settle();
+    return { done: true, value: undefined };
+  });
   const stream: AsyncIterable<unknown> & { abort: () => void } = {
     abort: abortSpy,
     [Symbol.asyncIterator]() {
@@ -41,13 +52,16 @@ function hangingStreamAfterFirstChunk(): {
               },
             };
           }
-          return await new Promise<IteratorResult<unknown>>(() => {});
+          return await new Promise<IteratorResult<unknown>>((resolve) => {
+            settlePendingNext = () =>
+              resolve({ done: true, value: undefined });
+          });
         },
         return: returnSpy,
       };
     },
   };
-  return { stream, abortSpy, returnSpy };
+  return { stream, abortSpy, returnSpy, settlePendingNext: settle };
 }
 
 afterEach(() => {
@@ -113,6 +127,7 @@ describe("providers/ollama entrypoint", () => {
         systemPrompt: "Be terse.",
         temperature: 0.1,
         stopSequences: ["END"],
+        singleWireAttempt: true,
       },
     );
 
@@ -122,6 +137,8 @@ describe("providers/ollama entrypoint", () => {
       promptTokens: 8,
       completionTokens: 2,
       totalTokens: 10,
+      availability: "reported",
+      provenance: "provider",
     });
     expect(chat).toHaveBeenCalledTimes(1);
     const [params] = chat.mock.calls[0] ?? [];
@@ -337,6 +354,8 @@ describe("providers/ollama entrypoint", () => {
       promptTokens: 5,
       completionTokens: 2,
       totalTokens: 7,
+      availability: "reported",
+      provenance: "provider",
     });
     expect(chunks).toEqual([
       { content: "hel", done: false },
@@ -404,6 +423,8 @@ describe("providers/ollama entrypoint", () => {
       promptTokens: 4,
       completionTokens: 2,
       totalTokens: 6,
+      availability: "reported",
+      provenance: "provider",
     });
     expect(response.toolCalls).toEqual([
       {
@@ -465,6 +486,50 @@ describe("providers/ollama entrypoint", () => {
     expect(list).toHaveBeenCalledTimes(2);
     expect(abortSpy).toHaveBeenCalledTimes(1);
     expect(returnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("retains the model boundary until an abort-ignoring stream read settles", async () => {
+    vi.useFakeTimers();
+    const { stream, abortSpy, returnSpy, settlePendingNext } =
+      hangingStreamAfterFirstChunk({
+        settleOnAbort: false,
+        settleOnReturn: false,
+      });
+    const provider = new OllamaProvider({ model: "llama3.3" });
+    setClient(provider, {
+      chat: vi.fn().mockResolvedValue(stream),
+      list: vi.fn().mockResolvedValue({ models: [] }),
+    });
+    const controller = new AbortController();
+    let settled = false;
+
+    const running = provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+      { signal: controller.signal },
+    );
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort(new Error("caller cancelled"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(abortSpy).toHaveBeenCalledOnce();
+    expect(returnSpy).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    settlePendingNext();
+    await expect(running).resolves.toMatchObject({
+      content: "hel",
+      partial: true,
+      finishReason: "error",
+    });
   });
 
   test("healthCheck probes the local SDK model list", async () => {

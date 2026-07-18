@@ -218,6 +218,9 @@ function createScenarioSession(scenario, slimCwd) {
   return new TuiSession({
     args: scenario.meta.args ?? [],
     useTempHome: scenario.meta.useTempHome === true,
+    ...(scenario.meta.sandboxMode
+      ? { sandboxMode: scenario.meta.sandboxMode }
+      : {}),
     ...(scenario.meta.env ? { env: scenario.meta.env } : {}),
     ...(scenario.meta.cwd
       ? { cwd: scenario.meta.cwd }

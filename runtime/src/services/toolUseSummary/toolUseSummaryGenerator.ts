@@ -9,7 +9,17 @@
  *     structured failures through their own event surfaces.
  */
 
-import type { LLMProvider } from "../../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMMessage,
+  LLMProvider,
+} from "../../llm/types.js";
+import type { Session } from "../../session/session.js";
+import { runAdmittedModelCall } from "../../budget/admitted-model-call.js";
+import {
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../../llm/provider.js";
 import { safeStringify } from "../../tools/types.js";
 import {
   classifyUntrustedToolResult,
@@ -57,6 +67,8 @@ export type GenerateToolUseSummaryParams = {
   readonly signal: AbortSignal;
   readonly isNonInteractiveSession: boolean;
   readonly provider: Pick<LLMProvider, "chat">;
+  /** Live owner; production callers provide it so this side-call is admitted. */
+  readonly session: Session;
   readonly lastAssistantText?: string;
   readonly model?: string;
   readonly logError?: ToolUseSummaryErrorLogger;
@@ -134,6 +146,7 @@ export async function generateToolUseSummary({
   signal,
   isNonInteractiveSession,
   provider,
+  session,
   lastAssistantText,
   model = TOOL_USE_SUMMARY_DEFAULT_MODEL,
   logError,
@@ -143,26 +156,42 @@ export async function generateToolUseSummary({
   }
 
   try {
-    const response = await provider.chat(
-      [
-        {
-          role: "user",
-          content: buildToolUseSummaryPrompt(tools, lastAssistantText),
-        },
-      ],
+    const messages: LLMMessage[] = [
       {
-        model,
-        systemPrompt: TOOL_USE_SUMMARY_SYSTEM_PROMPT,
-        signal,
-        maxOutputTokens: TOOL_USE_SUMMARY_MAX_OUTPUT_TOKENS,
-        promptCacheKey: isNonInteractiveSession
-          ? `${TOOL_USE_SUMMARY_QUERY_SOURCE}:non_interactive`
-          : TOOL_USE_SUMMARY_QUERY_SOURCE,
-        tools: [],
-        toolChoice: "none",
-        parallelToolCalls: false,
+        role: "user",
+        content: buildToolUseSummaryPrompt(tools, lastAssistantText),
       },
-    );
+    ];
+    const options: LLMChatOptions = {
+      model,
+      systemPrompt: TOOL_USE_SUMMARY_SYSTEM_PROMPT,
+      signal,
+      maxOutputTokens: TOOL_USE_SUMMARY_MAX_OUTPUT_TOKENS,
+      promptCacheKey: isNonInteractiveSession
+        ? `${TOOL_USE_SUMMARY_QUERY_SOURCE}:non_interactive`
+        : TOOL_USE_SUMMARY_QUERY_SOURCE,
+      tools: [],
+      toolChoice: "none",
+      parallelToolCalls: false,
+    };
+    const response = await runAdmittedModelCall({
+      session,
+      provider: session.services.provider,
+      messages,
+      options,
+      stepId: `tool_summary:${session.nextInternalSubId()}`,
+      sessionId: session.conversationId,
+      model:
+        options.model ??
+        readProviderFactoryOptions(session.services.provider).model ??
+        session.modelInfo.slug ??
+        "unknown",
+      providerName:
+        readProviderIdentity(session.services.provider) ??
+        session.services.provider.name,
+      signal,
+      invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+    });
 
     const summary = response.content.trim();
     return summary.length > 0 ? summary : null;
