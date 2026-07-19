@@ -114,6 +114,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
     expect(workflow).toContain('NODE_VERSION: "25.9.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
+    expect(workflow).toContain("libatomic-8.5.0-28.el8_10");
     expect(workflow).toContain("gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10");
     expect(workflow).toContain("python3.12-3.12.13-2.el8_10");
     expect(workflow).toContain('["rpmContentInventory"]');
@@ -137,7 +138,32 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("Assert-Exact 'ImageVersion'");
     expect(workflow).toContain("Assert-Exact 'active MSVC tools version'");
     expect(workflow).toContain("MSVC compiler identity");
+    const linuxInstall = workflow.slice(
+      workflow.indexOf("Install digest-pinned Node, headers, and npm"),
+      workflow.indexOf("Build from two isolated worktrees and compare bytes"),
+    );
+    expect(linuxInstall).toContain("rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic");
+    expect(linuxInstall).toContain('ldd "$node_root/bin/node"');
+    expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
+    expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
+      linuxInstall.indexOf('"$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js"'),
+    );
     const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
+    const macosValidation = nativeJob.slice(
+      nativeJob.indexOf("Validate the reviewed macOS runner"),
+      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+    );
+    expect(macosValidation).toContain('capture("xcrun", "--sdk", "macosx", "--show-sdk-path")');
+    expect(macosValidation).toContain('functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")');
+    expect(macosValidation).toContain('probe_environment["SDKROOT"] = sdk_path');
+    expect(macosValidation).toContain('environment.write(f\'SDKROOT={sdk_path}\\n\')');
+    const windowsValidation = nativeJob.slice(
+      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (macOS)"),
+    );
+    expect(windowsValidation).toMatch(
+      /\$compilerLines = @\(& \$cl \/Bv[\s\S]*?\$global:LASTEXITCODE = 0[\s\S]*?MSVC compiler identity/,
+    );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
       nativeJob.indexOf("npm ci --prefix"),
     );
@@ -171,6 +197,7 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, "packages/agenc/scripts/build-runtime-tarball.mjs"),
       "utf8",
     );
+    expect(builder).toContain('"MACOSX_DEPLOYMENT_TARGET", "SDKROOT"');
     expect(builder).toContain('"ci"');
     expect(builder).toContain('"--workspace=@tetsuo-ai/runtime"');
     expect(builder).toContain("writeCanonicalArchive");
@@ -182,6 +209,7 @@ describe("reproducible install and release contract", () => {
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
       linux: {
+        builderPackages: Record<string, string>;
         rpmContentInventory: {
           schemaVersion: number;
           signatureKeyIds: string[];
@@ -215,6 +243,9 @@ describe("reproducible install and release contract", () => {
         windowsSdkVersion: "10.0.26100.0",
       },
     });
+    expect(nativeContract.linux.builderPackages.libatomic).toBe(
+      "libatomic-8.5.0-28.el8_10",
+    );
     expect(nativeContract.linux.rpmContentInventory).toEqual({
       schemaVersion: 1,
       format:

@@ -131,6 +131,7 @@
   "linux": {
     "containerImage": "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
     "builderPackages": {
+      "libatomic": "libatomic-8.5.0-28.el8_10",
       "gcc-toolset-12-gcc-c++": "gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10",
       "gcc-toolset-12-binutils": "gcc-toolset-12-binutils-2.38-17.el8",
       "python3.12": "python3.12-3.12.13-2.el8_10",

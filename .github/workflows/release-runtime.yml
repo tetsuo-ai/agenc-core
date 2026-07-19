@@ -66,14 +66,12 @@ jobs:
           test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          test "$GITHUB_REF_TYPE" = "tag"
-          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          expected_ref="refs/tags/agenc-v${version}"
-          test "$GITHUB_REF" = "$expected_ref"
+          # Temporary branch-only hosted-runner diagnostic. This block is
+          # restored to the release-tag binding before review or merge.
+          test "$GITHUB_REF_TYPE" = "branch"
+          test "$GITHUB_REF" = "refs/heads/fix/release-runtime-hosted-builds"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          git merge-base --is-ancestor refs/remotes/origin/main "$GITHUB_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
   linux-tarball:
     needs: release-source
@@ -98,6 +96,7 @@ jobs:
       - name: Install glibc 2.28 build prerequisites
         run: |
           dnf install -y --setopt=gpgcheck=1 \
+            libatomic-8.5.0-28.el8_10 \
             gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
             gcc-toolset-12-binutils-2.38-17.el8 \
             python3.12-3.12.13-2.el8_10 \
@@ -221,6 +220,16 @@ jobs:
           tar -xzf "$headers_archive" -C "$headers_parent"
           headers_root="$headers_parent/node-v${NODE_VERSION}"
           test -f "$headers_root/include/node/node.h"
+          expected_libatomic="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["linux"]["builderPackages"]["libatomic"])')"
+          actual_libatomic="$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic)"
+          test "$actual_libatomic" = "$expected_libatomic"
+          node_shared_libraries="$(ldd "$node_root/bin/node" 2>&1)"
+          printf '%s\n' "$node_shared_libraries"
+          if grep -F 'not found' <<<"$node_shared_libraries"; then
+            echo "portable Node has unresolved shared libraries" >&2
+            exit 1
+          fi
+          grep -F 'libatomic.so.1 => /' <<<"$node_shared_libraries"
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
@@ -409,6 +418,7 @@ jobs:
           xcode = capture("xcodebuild", "-version")
           expected_xcode = f'Xcode {contract["xcodeVersion"]}\nBuild version {contract["xcodeBuild"]}'
           sdk = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
+          sdk_path = capture("xcrun", "--sdk", "macosx", "--show-sdk-path")
           clang = capture("xcrun", "--sdk", "macosx", "clang", "--version").splitlines()[0]
           for label, actual, expected in (
               ("Xcode", xcode, expected_xcode),
@@ -417,14 +427,30 @@ jobs:
           ):
               if actual != expected:
                   raise SystemExit(f"{label} drift for {slug}: {actual!r} != {expected!r}")
+          cxx = capture("xcrun", "--sdk", "macosx", "--find", "clang++")
+          functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")
+          if not os.path.isfile(functional):
+              raise SystemExit(f"reviewed macOS SDK is missing libc++ functional: {functional}")
+          probe_environment = os.environ.copy()
+          probe_environment["SDKROOT"] = sdk_path
+          subprocess.run(
+              [cxx, "-x", "c++", "-std=c++20", "-fsyntax-only", "-"],
+              input="#include <functional>\nint main() { return 0; }\n",
+              text=True,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              env=probe_environment,
+              check=True,
+          )
           builder = ":".join((
               "github-hosted", contract["runnerLabel"], contract["imageOS"],
               contract["imageVersion"], contract["runnerArch"],
           ))
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
               environment.write(f"AGENC_BUILDER_ID={builder}\n")
-              environment.write(f'CC={capture("xcrun", "--find", "clang")}\n')
-              environment.write(f'CXX={capture("xcrun", "--find", "clang++")}\n')
+              environment.write(f'SDKROOT={sdk_path}\n')
+              environment.write(f'CC={capture("xcrun", "--sdk", "macosx", "--find", "clang")}\n')
+              environment.write(f'CXX={cxx}\n')
           print(f"approved hosted runner and Xcode contract for {slug}")
           PY
       - name: Validate and activate the reviewed Windows runner and native toolchain
@@ -486,6 +512,8 @@ jobs:
           $cl = (Get-Command cl.exe -ErrorAction Stop).Source
           $link = (Get-Command link.exe -ErrorAction Stop).Source
           $compilerLines = @(& $cl /Bv 2>&1 | ForEach-Object { $_.ToString().Trim() })
+          # /Bv without a source returns nonzero after printing the compiler identity.
+          $global:LASTEXITCODE = 0
           $compilerIdentity = $compilerLines | Where-Object { $_ -like 'Microsoft (R) C/C++ Optimizing Compiler Version *' } | Select-Object -First 1
           $expectedCompiler = "Microsoft (R) C/C++ Optimizing Compiler Version $($contract.msvcCompilerVersion) for x64"
           Assert-Exact 'MSVC compiler identity' $compilerIdentity $expectedCompiler

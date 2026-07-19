@@ -280,7 +280,8 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     buildFlags: Object.fromEntries(
       [
         "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "LINK",
-        "MACOSX_DEPLOYMENT_TARGET", "npm_config_build_from_source", "npm_config_python",
+        "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "npm_config_build_from_source",
+        "npm_config_python",
       ]
         .filter((name) => buildEnvironment[name] !== undefined)
         .map((name) => [name, buildEnvironment[name]]),
