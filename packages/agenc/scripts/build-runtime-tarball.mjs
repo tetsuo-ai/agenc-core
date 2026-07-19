@@ -1007,7 +1007,8 @@ function darwinNativeCompatibility(nodeModules, releaseLimits) {
   return { minimumMacosVersion };
 }
 
-export function installedNativeModuleSmokeProgram() {
+export function installedNativeModuleSmokeProgram(platform = process.platform) {
+  const windowsSmoke = platform === "win32";
   return String.raw`
     const { createRequire } = require("node:module");
     const { join } = require("node:path");
@@ -1017,11 +1018,33 @@ export function installedNativeModuleSmokeProgram() {
     if (db.prepare("select 42 as value").get().value !== 42) process.exit(20);
     db.close();
     const pty = requireFromArtifact("node-pty");
+    const childEnvironment = {};
+    if (${JSON.stringify(windowsSmoke)}) {
+      // node-pty passes an exact custom environment block to CreateProcessW,
+      // bypassing libuv's restoration of these Node 25.9 required variables.
+      const requiredNames = [
+        "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE",
+        "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR",
+      ];
+      const parentEnvironment = new Map(
+        Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value]),
+      );
+      for (const name of requiredNames) {
+        const value = parentEnvironment.get(name);
+        if (typeof value === "string" && value.length > 0) childEnvironment[name] = value;
+      }
+      if (childEnvironment.SYSTEMROOT === undefined) {
+        process.stderr.write("node-pty smoke requires SystemRoot on Windows\n");
+        process.exit(24);
+      }
+    } else {
+      childEnvironment.PATH = process.env.PATH || "";
+    }
     const child = pty.spawn(process.execPath, ["-e", "process.stdout.write('pty-ok')"], {
       cols: 80,
       rows: 24,
       cwd: process.cwd(),
-      env: { PATH: process.env.PATH || "" },
+      env: childEnvironment,
     });
     let output = "";
     let exitEvent;

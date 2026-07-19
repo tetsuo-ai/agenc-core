@@ -463,9 +463,27 @@ test("native packaging applies explicit Linux, Darwin, and Windows output contra
   }
 });
 
-test("native smoke drains PTY output that arrives after the exit event", () => {
+test("native smoke inherits required process state and drains output after exit", () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-native-smoke-test-"));
   try {
+    const requiredWindowsNames = [
+      "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE",
+      "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR",
+    ];
+    const windowsParentEnvironment = {
+      HOMEDRIVE: "C:",
+      HOMEPATH: "\\Users\\runner",
+      LOGONSERVER: "\\\\runner",
+      PATH: "C:\\tools",
+      SYSTEMDRIVE: "C:",
+      SystemRoot: "C:\\Windows",
+      TEMP: "C:\\Temp",
+      USERDOMAIN: "RUNNER",
+      USERNAME: "runner",
+      USERPROFILE: "C:\\Users\\runner",
+      WINDIR: "C:\\Windows",
+      AGENC_PTY_SMOKE_SECRET: "must-not-forward",
+    };
     const sqliteRoot = join(work, "node_modules", "better-sqlite3");
     const ptyRoot = join(work, "node_modules", "node-pty");
     mkdirSync(sqliteRoot, { recursive: true });
@@ -479,7 +497,15 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
     );
     writeFileSync(
       join(ptyRoot, "index.js"),
-      `module.exports.spawn = () => {
+      `module.exports.spawn = (_file, _args, options) => {
+        const expectedNames = ${JSON.stringify(requiredWindowsNames)};
+        const parentEnvironment = new Map(
+          Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value]),
+        );
+        const requiredStatePresent =
+          JSON.stringify(Object.keys(options.env)) === JSON.stringify(expectedNames) &&
+          expectedNames.every((name) => options.env[name] === parentEnvironment.get(name)) &&
+          options.env.AGENC_PTY_SMOKE_SECRET === undefined;
         let onData;
         let onExit;
         const child = {
@@ -489,7 +515,9 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
         };
         queueMicrotask(() => {
           onExit({
-            exitCode: process.env.AGENC_PTY_SMOKE_EXIT_CODE === "9" ? 9 : 0,
+            exitCode: process.env.AGENC_PTY_SMOKE_EXIT_CODE === "9"
+              ? 9
+              : requiredStatePresent ? 0 : 8,
             signal: process.env.AGENC_PTY_SMOKE_SIGNAL === "9" ? 9 : undefined,
           });
           queueMicrotask(() => onData("pty-ok"));
@@ -499,10 +527,10 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
     );
     assert.doesNotThrow(() => execFileSync(
       process.execPath,
-      ["-e", installedNativeModuleSmokeProgram()],
+      ["-e", installedNativeModuleSmokeProgram("win32")],
       {
         cwd: work,
-        env: { ...process.env },
+        env: windowsParentEnvironment,
         stdio: "pipe",
         timeout: 5_000,
       },
@@ -510,10 +538,13 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
     assert.throws(
       () => execFileSync(
         process.execPath,
-        ["-e", installedNativeModuleSmokeProgram()],
+        ["-e", installedNativeModuleSmokeProgram("win32")],
         {
           cwd: work,
-          env: { ...process.env, AGENC_PTY_SMOKE_EXIT_CODE: "9" },
+          env: {
+            ...windowsParentEnvironment,
+            AGENC_PTY_SMOKE_EXIT_CODE: "9",
+          },
           stdio: "pipe",
           timeout: 5_000,
         },
@@ -527,10 +558,13 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
     assert.throws(
       () => execFileSync(
         process.execPath,
-        ["-e", installedNativeModuleSmokeProgram()],
+        ["-e", installedNativeModuleSmokeProgram("win32")],
         {
           cwd: work,
-          env: { ...process.env, AGENC_PTY_SMOKE_SIGNAL: "9" },
+          env: {
+            ...windowsParentEnvironment,
+            AGENC_PTY_SMOKE_SIGNAL: "9",
+          },
           stdio: "pipe",
           timeout: 5_000,
         },
@@ -541,6 +575,21 @@ test("native smoke drains PTY output that arrives after the exit event", () => {
         return true;
       },
     );
+    if (process.platform !== "win32") {
+      const { SystemRoot: _systemRoot, ...missingSystemRoot } = windowsParentEnvironment;
+      assert.throws(
+        () => execFileSync(
+          process.execPath,
+          ["-e", installedNativeModuleSmokeProgram("win32")],
+          { cwd: work, env: missingSystemRoot, stdio: "pipe", timeout: 5_000 },
+        ),
+        (error) => {
+          assert.equal(error.status, 24);
+          assert.match(error.stderr.toString(), /requires SystemRoot on Windows/);
+          return true;
+        },
+      );
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
