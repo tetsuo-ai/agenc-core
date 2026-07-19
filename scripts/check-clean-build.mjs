@@ -48,8 +48,9 @@ const PLAN = Object.freeze({
 });
 
 function usage() {
-  return `Usage: node scripts/check-clean-build.mjs [--skip-docker] [--keep-temp] [--plan]\n\n` +
+  return `Usage: node scripts/check-clean-build.mjs [--skip-docker] [--buildkit-network=host] [--keep-temp] [--plan]\n\n` +
     `Default behavior performs two clean, compared builds and two Docker builds.\n` +
+    `--buildkit-network=host retains full Docker acceptance when bridge DNS is unavailable.\n` +
     `--skip-docker is for focused development only and is not M0 acceptance.\n`;
 }
 
@@ -803,7 +804,7 @@ function compareOciLayouts(first, second) {
   );
 }
 
-async function dockerSmoke({ sources, metadata, work }) {
+async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
   if (!Array.isArray(sources) || sources.length !== 2) {
     throw new Error("Docker reproducibility requires exactly two pristine source trees");
   }
@@ -876,6 +877,9 @@ async function dockerSmoke({ sources, metadata, work }) {
         "docker-container",
         "--driver-opt",
         `image=${dockerToolchain.buildkit.image}`,
+        ...(buildkitHostNetwork
+          ? ["--driver-opt", "network=host"]
+          : []),
       ],
       { env: dockerEnv },
     );
@@ -1286,7 +1290,16 @@ async function dockerSmoke({ sources, metadata, work }) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   for (const arg of args) {
-    if (!["--help", "-h", "--plan", "--skip-docker", "--keep-temp"].includes(arg)) {
+    if (
+      ![
+        "--help",
+        "-h",
+        "--plan",
+        "--skip-docker",
+        "--buildkit-network=host",
+        "--keep-temp",
+      ].includes(arg)
+    ) {
       throw new Error(`unknown argument: ${arg}\n${usage()}`);
     }
   }
@@ -1344,7 +1357,12 @@ async function main() {
       ];
       checkoutIndex(dockerSources[0], 0o022);
       checkoutIndex(dockerSources[1], 0o077);
-      await dockerSmoke({ sources: dockerSources, metadata, work });
+      await dockerSmoke({
+        sources: dockerSources,
+        metadata,
+        work,
+        buildkitHostNetwork: args.has("--buildkit-network=host"),
+      });
     }
     process.stdout.write(
       `clean build reproducible (${first.dependencyTree.length} installed packages, ` +

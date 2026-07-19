@@ -565,6 +565,13 @@ describe("reproducible install and release contract", () => {
     );
     expect(plan.docker).toContain("two pristine-context");
     expect(plan.docker).toContain("byte-identical recursive OCI layouts");
+    const help = execFileSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts/check-clean-build.mjs"), "--help"],
+      { encoding: "utf8" },
+    );
+    expect(help).toContain("--buildkit-network=host");
+    expect(help).toContain("retains full Docker acceptance");
     const dockerfile = readFileSync(
       join(REPO_ROOT, "packaging/docker/Dockerfile"),
       "utf8",
