@@ -199,6 +199,9 @@ describe("reproducible install and release contract", () => {
     expect(windowsInstall).toContain(
       "Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes",
     );
+    expect(windowsInstall).toContain(
+      "& $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot",
+    );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
       nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
@@ -233,8 +236,8 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(builder).toContain('"MACOSX_DEPLOYMENT_TARGET", "SDKROOT"');
-    expect(builder).toContain('"-Wl,-no_uuid"');
     expect(builder).toContain('"-Wl,-S"');
+    expect(builder).not.toContain('"-Wl,-no_uuid"');
     expect(builder).not.toContain('"-Wl,-oso_prefix,."');
     expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
     expect(builder).toContain("runNpm(buildExecutables");

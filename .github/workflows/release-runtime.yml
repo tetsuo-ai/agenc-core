@@ -639,14 +639,18 @@ jobs:
           Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary
           Assert-Sha256 $headersNodeImportLibrary $importLibrary.sha256
           Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes
-          & (Join-Path $nodeRoot 'npm.cmd') install --global $npmArchive --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
           $nodeExecutablePath = Join-Path $nodeRoot 'node.exe'
           $npmCliPath = Join-Path $nodeRoot 'node_modules\npm\bin\npm-cli.js'
           if (-not (Test-Path -LiteralPath $nodeExecutablePath -PathType Leaf)) { throw 'pinned Node executable is missing' }
+          if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'bundled npm CLI is missing' }
+          & $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
           if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'pinned npm CLI is missing' }
           if ((& $nodeExecutablePath --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
-          if ((& $nodeExecutablePath $npmCliPath --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
+          $actualNpmVersion = (& $nodeExecutablePath $npmCliPath --version).Trim()
+          if ($actualNpmVersion -cne $env:NPM_VERSION) {
+            throw "npm version mismatch at ${npmCliPath}: '$actualNpmVersion' != '$env:NPM_VERSION'"
+          }
           $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "AGENC_NODE_EXECUTABLE_PATH=$nodeExecutablePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_CLI_PATH=$npmCliPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

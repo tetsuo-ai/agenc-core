@@ -1235,9 +1235,9 @@ async function main() {
     releaseEnv.MACOSX_DEPLOYMENT_TARGET = releaseToolchain.macos.minimumVersion;
     releaseEnv.LDFLAGS = [
       releaseEnv.LDFLAGS,
-      "-Wl,-no_uuid",
       // Remove unusable linker debug-map entries before they can retain the
-      // per-build staging directory. Runtime/global symbols remain intact.
+      // per-build staging directory. Keep the linker's default content-hashed
+      // LC_UUID: loadable Mach-O images require it and it is reproducible.
       "-Wl,-S",
     ].filter(Boolean).join(" ");
   }
