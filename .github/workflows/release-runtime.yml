@@ -98,6 +98,7 @@ jobs:
       - name: Install glibc 2.28 build prerequisites
         run: |
           dnf install -y --setopt=gpgcheck=1 \
+            libatomic-8.5.0-28.el8_10 \
             gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
             gcc-toolset-12-binutils-2.38-17.el8 \
             python3.12-3.12.13-2.el8_10 \
@@ -221,12 +222,26 @@ jobs:
           tar -xzf "$headers_archive" -C "$headers_parent"
           headers_root="$headers_parent/node-v${NODE_VERSION}"
           test -f "$headers_root/include/node/node.h"
+          expected_libatomic="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["linux"]["builderPackages"]["libatomic"])')"
+          actual_libatomic="$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic)"
+          test "$actual_libatomic" = "$expected_libatomic"
+          node_shared_libraries="$(ldd "$node_root/bin/node" 2>&1)"
+          printf '%s\n' "$node_shared_libraries"
+          if grep -F 'not found' <<<"$node_shared_libraries"; then
+            echo "portable Node has unresolved shared libraries" >&2
+            exit 1
+          fi
+          grep -F 'libatomic.so.1 => /' <<<"$node_shared_libraries"
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
-          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
-          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          node_executable="$node_root/bin/node"
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_executable" --version)" = "v$NODE_VERSION"
+          test "$("$node_executable" "$npm_cli" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "AGENC_NODE_EXECUTABLE_PATH=$node_executable" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -244,9 +259,13 @@ jobs:
           ld --version | head -1 | grep -F '2.38'
           test "$(python3.12 -c 'import platform; print(platform.python_version())')" = "3.12.13"
           test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
-          test "$(node --version)" = "v$NODE_VERSION"
-          test "$(npm --version)" = "$NPM_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" --version)" = "v$NODE_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
+          # actions/checkout registers this bind-mounted path only in its
+          # temporary HOME; register the exact path for subsequent container
+          # steps so Git's ownership check remains enabled everywhere else.
+          git config --global --add safe.directory "$source_root"
           owned_root="$RUNNER_TEMP/agenc-owned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
           first_source="$owned_root/source-first"
           second_source="$owned_root/source-second"
@@ -273,11 +292,14 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+              --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              "$AGENC_NODE_EXECUTABLE_PATH" \
+                "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"
           done
-          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
             --output "$source_root/packages/agenc/release-artifacts"
       - name: Select the canonical runtime subject and bundle path
@@ -290,7 +312,7 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
@@ -409,6 +431,7 @@ jobs:
           xcode = capture("xcodebuild", "-version")
           expected_xcode = f'Xcode {contract["xcodeVersion"]}\nBuild version {contract["xcodeBuild"]}'
           sdk = capture("xcrun", "--sdk", "macosx", "--show-sdk-version")
+          sdk_path = capture("xcrun", "--sdk", "macosx", "--show-sdk-path")
           clang = capture("xcrun", "--sdk", "macosx", "clang", "--version").splitlines()[0]
           for label, actual, expected in (
               ("Xcode", xcode, expected_xcode),
@@ -417,14 +440,30 @@ jobs:
           ):
               if actual != expected:
                   raise SystemExit(f"{label} drift for {slug}: {actual!r} != {expected!r}")
+          cxx = capture("xcrun", "--sdk", "macosx", "--find", "clang++")
+          functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")
+          if not os.path.isfile(functional):
+              raise SystemExit(f"reviewed macOS SDK is missing libc++ functional: {functional}")
+          probe_environment = os.environ.copy()
+          probe_environment["SDKROOT"] = sdk_path
+          subprocess.run(
+              [cxx, "-x", "c++", "-std=c++20", "-fsyntax-only", "-"],
+              input="#include <functional>\nint main() { return 0; }\n",
+              text=True,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              env=probe_environment,
+              check=True,
+          )
           builder = ":".join((
               "github-hosted", contract["runnerLabel"], contract["imageOS"],
               contract["imageVersion"], contract["runnerArch"],
           ))
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8", newline="\n") as environment:
               environment.write(f"AGENC_BUILDER_ID={builder}\n")
-              environment.write(f'CC={capture("xcrun", "--find", "clang")}\n')
-              environment.write(f'CXX={capture("xcrun", "--find", "clang++")}\n')
+              environment.write(f'SDKROOT={sdk_path}\n')
+              environment.write(f'CC={capture("xcrun", "--sdk", "macosx", "--find", "clang")}\n')
+              environment.write(f'CXX={cxx}\n')
           print(f"approved hosted runner and Xcode contract for {slug}")
           PY
       - name: Validate and activate the reviewed Windows runner and native toolchain
@@ -469,6 +508,7 @@ jobs:
             if ($separator -le 0) { continue }
             $name = $line.Substring(0, $separator)
             if ($required -notcontains $name) { continue }
+            if ($name -ieq 'PATH') { $name = 'PATH' }
             $value = $line.Substring($separator + 1)
             $captured[$name] = $value
             Set-Item -Path "Env:$name" -Value $value
@@ -486,6 +526,8 @@ jobs:
           $cl = (Get-Command cl.exe -ErrorAction Stop).Source
           $link = (Get-Command link.exe -ErrorAction Stop).Source
           $compilerLines = @(& $cl /Bv 2>&1 | ForEach-Object { $_.ToString().Trim() })
+          # /Bv without a source returns nonzero after printing the compiler identity.
+          $global:LASTEXITCODE = 0
           $compilerIdentity = $compilerLines | Where-Object { $_ -like 'Microsoft (R) C/C++ Optimizing Compiler Version *' } | Select-Object -First 1
           $expectedCompiler = "Microsoft (R) C/C++ Optimizing Compiler Version $($contract.msvcCompilerVersion) for x64"
           Assert-Exact 'MSVC compiler identity' $compilerIdentity $expectedCompiler
@@ -538,9 +580,13 @@ jobs:
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
-          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
-          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          node_executable="$node_root/bin/node"
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_executable" --version)" = "v$NODE_VERSION"
+          test "$("$node_executable" "$npm_cli" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "AGENC_NODE_EXECUTABLE_PATH=$node_executable" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -555,19 +601,29 @@ jobs:
           $toolchain = Get-Content -Raw release-toolchain.json | ConvertFrom-Json
           $distribution = $toolchain.nodeDistributions.PSObject.Properties[$env:AGENC_RELEASE_SLUG].Value
           if ($null -eq $distribution) { throw "missing Node distribution for $env:AGENC_RELEASE_SLUG" }
+          $importLibrary = $toolchain.nodeImportLibraries.PSObject.Properties[$env:AGENC_RELEASE_SLUG].Value
+          if ($null -eq $importLibrary) { throw "missing Node import library for $env:AGENC_RELEASE_SLUG" }
           $nodeArchive = Join-Path $env:RUNNER_TEMP $distribution.file
           $headersArchive = Join-Path $env:RUNNER_TEMP $toolchain.nodeHeaders.file
           $npmArchive = Join-Path $env:RUNNER_TEMP $toolchain.npmDistribution.file
+          $nodeImportLibrary = Join-Path $env:RUNNER_TEMP $importLibrary.file
           Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/$($distribution.file)" -OutFile $nodeArchive
           Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_VERSION/$($toolchain.nodeHeaders.file)" -OutFile $headersArchive
           Invoke-WebRequest -Uri $toolchain.npmDistribution.url -OutFile $npmArchive
+          Invoke-WebRequest -Uri $importLibrary.url -OutFile $nodeImportLibrary
           function Assert-Sha256([string]$Path, [string]$Expected) {
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
             if ($actual -cne $Expected) { throw "digest mismatch for ${Path}: $actual != $Expected" }
           }
+          function Assert-Bytes([string]$Path, [long]$Expected) {
+            $actual = (Get-Item -LiteralPath $Path).Length
+            if ($actual -ne $Expected) { throw "byte count mismatch for ${Path}: $actual != $Expected" }
+          }
           Assert-Sha256 $nodeArchive $distribution.sha256
           Assert-Sha256 $headersArchive $toolchain.nodeHeaders.sha256
           Assert-Sha256 $npmArchive $toolchain.npmDistribution.sha256
+          Assert-Sha256 $nodeImportLibrary $importLibrary.sha256
+          Assert-Bytes $nodeImportLibrary $importLibrary.bytes
           $distributionParent = Join-Path $env:RUNNER_TEMP 'node-distribution'
           $headersParent = Join-Path $env:RUNNER_TEMP 'node-headers'
           New-Item -ItemType Directory -Force -Path $distributionParent, $headersParent | Out-Null
@@ -579,22 +635,46 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $headersRoot 'include\node\node.h') -PathType Leaf)) {
             throw 'extracted Node headers are incomplete'
           }
-          & (Join-Path $nodeRoot 'npm.cmd') install --global $npmArchive --ignore-scripts --no-audit --no-fund
+          $headersRelease = Join-Path $headersRoot 'Release'
+          New-Item -ItemType Directory -Force -Path $headersRelease | Out-Null
+          $headersNodeImportLibrary = Join-Path $headersRelease $importLibrary.file
+          Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary
+          Assert-Sha256 $headersNodeImportLibrary $importLibrary.sha256
+          Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes
+          $nodeExecutablePath = Join-Path $nodeRoot 'node.exe'
+          $npmCliPath = Join-Path $nodeRoot 'node_modules\npm\bin\npm-cli.js'
+          if (-not (Test-Path -LiteralPath $nodeExecutablePath -PathType Leaf)) { throw 'pinned Node executable is missing' }
+          if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'bundled npm CLI is missing' }
+          & $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
-          if ((& (Join-Path $nodeRoot 'node.exe') --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
-          if ((& (Join-Path $nodeRoot 'npm.cmd') --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
+          if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'pinned npm CLI is missing' }
+          if ((& $nodeExecutablePath --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
+          $actualNpmVersion = (& $nodeExecutablePath $npmCliPath --version).Trim()
+          if ($actualNpmVersion -cne $env:NPM_VERSION) {
+            throw "npm version mismatch at ${npmCliPath}: '$actualNpmVersion' != '$env:NPM_VERSION'"
+          }
+          $headerProof = & $nodeExecutablePath packages/agenc/scripts/prepare-windows-node-headers.mjs --root $headersRoot | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'failed to prepare deterministic Windows Node headers' }
+          if ($headerProof.sha256 -cne $toolchain.nodeHeaders.windowsCommonGypi.releaseSha256) {
+            throw 'sanitized Node common.gypi digest mismatch'
+          }
           $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "AGENC_NODE_EXECUTABLE_PATH=$nodeExecutablePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NPM_CLI_PATH=$npmCliPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "npm_config_nodedir=$headersRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_DISTRIBUTION_SHA256=$($distribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_HEADERS_SHA256=$($toolchain.nodeHeaders.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_IMPORT_LIBRARY_SHA256=$($importLibrary.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_IMPORT_LIBRARY_BYTES=$($importLibrary.bytes)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build from two isolated worktrees and compare bytes
         shell: bash
         run: |
           set -euo pipefail
           umask 022
-          test "$(node --version)" = "v$NODE_VERSION"
-          test "$(npm --version)" = "$NPM_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" --version)" = "v$NODE_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
           runner_temp="$RUNNER_TEMP"
           if command -v cygpath >/dev/null 2>&1; then
@@ -626,13 +706,32 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+              --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              "$AGENC_NODE_EXECUTABLE_PATH" \
+                "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"
           done
-          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+          if ! "$AGENC_NODE_EXECUTABLE_PATH" \
+            "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
-            --output "$source_root/packages/agenc/release-artifacts"
+            --output "$source_root/packages/agenc/release-artifacts"; then
+            diagnostics="$runner_temp/agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
+            rm -rf "$diagnostics"
+            mkdir -p "$diagnostics/first" "$diagnostics/second"
+            cp "$first"/* "$diagnostics/first/"
+            cp "$second"/* "$diagnostics/second/"
+            exit 1
+          fi
+      - name: Upload failed reproducibility inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repro-diagnostics-${{ matrix.slug }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agenc-repro-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slug }}/
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 1
       - name: Select the canonical runtime subject and bundle path
         id: runtime-artifact
         shell: bash
@@ -643,7 +742,7 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"

@@ -460,6 +460,7 @@ function expectedBuildContract() {
     npmVersion: npmMatch[1],
     nodeDistributions: releaseToolchain.nodeDistributions,
     nodeHeaders: releaseToolchain.nodeHeaders,
+    nodeImportLibraries: releaseToolchain.nodeImportLibraries,
     npmDistribution: releaseToolchain.npmDistribution,
     linux: releaseToolchain.linux,
     macos: releaseToolchain.macos,
@@ -543,6 +544,21 @@ function requireNativeToolchain(value, key, artifactProfile, platform) {
       requireString(value.sdk, `${key} SDK version`, /^[0-9]+(?:\.[0-9]+){1,3}$/);
     }
     if (platform === "win") {
+      requireString(
+        value.nodeImportLibraryFile,
+        `${key} Node import library file`,
+        /^[A-Za-z0-9._-]{1,255}$/,
+      );
+      requireString(
+        value.nodeImportLibrarySha256,
+        `${key} Node import library sha256`,
+        /^[0-9a-f]{64}$/,
+      );
+      requireSafeInteger(
+        value.nodeImportLibraryBytes,
+        `${key} Node import library byte count`,
+        1,
+      );
       for (const field of [
         "visualStudioVersion", "visualStudioInstallPath", "msvcToolsVersion",
         "windowsSdkVersion", "compilerDetails",
@@ -552,6 +568,22 @@ function requireNativeToolchain(value, key, artifactProfile, platform) {
       for (const field of ["msvcCompilerSha256", "msvcLinkerSha256"]) {
         requireString(value[field], `${key} ${field}`, /^[0-9a-f]{64}$/);
       }
+      requireString(
+        value.nodeCommonGypiFile,
+        `${key} sanitized Node common.gypi path`,
+        /^[A-Za-z0-9._/-]{1,255}$/,
+      );
+      for (const field of [
+        "nodeCommonGypiSourceSha256",
+        "nodeCommonGypiReleaseSha256",
+      ]) {
+        requireString(value[field], `${key} ${field}`, /^[0-9a-f]{64}$/);
+      }
+      requireString(
+        value.nodeCommonGypiTransformation,
+        `${key} Node common.gypi transformation`,
+        /^[a-z0-9-]{1,128}$/,
+      );
     }
   }
   return JSON.parse(JSON.stringify(value));
@@ -868,6 +900,30 @@ export async function generateManifest({
         nativeToolchain.npmDistributionSha256 !== expectedBuild.npmDistribution?.sha256
       ) {
         throw new Error(`${key} npm distribution evidence does not match release-toolchain.json`);
+      }
+      if (platform === "win") {
+        const expectedImportLibrary = expectedBuild.nodeImportLibraries?.[key];
+        const expectedCommonGypi = expectedBuild.nodeHeaders?.windowsCommonGypi;
+        if (
+          nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
+          nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256 ||
+          nativeToolchain.nodeImportLibraryBytes !== expectedImportLibrary?.bytes
+        ) {
+          throw new Error(
+            `${key} Node import library evidence does not match release-toolchain.json`,
+          );
+        }
+        if (
+          nativeToolchain.nodeCommonGypiFile !== expectedCommonGypi?.path ||
+          nativeToolchain.nodeCommonGypiSourceSha256 !== expectedCommonGypi?.sourceSha256 ||
+          nativeToolchain.nodeCommonGypiReleaseSha256 !==
+            expectedCommonGypi?.releaseSha256 ||
+          nativeToolchain.nodeCommonGypiTransformation !== expectedCommonGypi?.transformation
+        ) {
+          throw new Error(
+            `${key} sanitized Node common.gypi evidence does not match release-toolchain.json`,
+          );
+        }
       }
       if (platform === "darwin" || platform === "win") {
         requireHostedRunnerToolchain(nativeToolchain, key, expectedBuild);

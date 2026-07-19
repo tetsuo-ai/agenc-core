@@ -105,15 +105,45 @@ describe("reproducible install and release contract", () => {
     );
   });
 
+  test("every workspace package bin checks out with canonical LF endings", () => {
+    const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+      workspaces: string[];
+    };
+    const binSubjects = root.workspaces.flatMap((workspace) => {
+      const manifest = JSON.parse(
+        readFileSync(join(REPO_ROOT, workspace, "package.json"), "utf8"),
+      ) as { bin?: string | Record<string, string> };
+      const targets = typeof manifest.bin === "string"
+        ? [manifest.bin]
+        : Object.values(manifest.bin ?? {});
+      return targets.map((target) => join(workspace, target).replaceAll("\\", "/"));
+    });
+    const attributes = execFileSync(
+      "git",
+      ["check-attr", "eol", "--", ...binSubjects],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    for (const subject of binSubjects) {
+      expect(attributes).toContain(`${subject}: eol: lf`);
+    }
+  });
+
   test("the active release workflow uses pinned inputs and proves two native builds match", () => {
     const workflow = readFileSync(
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
     );
-    expect(workflow).toMatch(/npm ci --prefix .* --no-audit --no-fund/);
+    expect(
+      workflow.match(/"\$AGENC_NODE_EXECUTABLE_PATH" "\$AGENC_NPM_CLI_PATH" ci --prefix/g),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/"\$build_source\/packages\/agenc\/scripts\/build-runtime-tarball\.mjs"/g),
+    ).toHaveLength(2);
+    expect(workflow).not.toContain('require(\\"./runtime/package.json');
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
     expect(workflow).toContain('NODE_VERSION: "25.9.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
+    expect(workflow).toContain("libatomic-8.5.0-28.el8_10");
     expect(workflow).toContain("gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10");
     expect(workflow).toContain("python3.12-3.12.13-2.el8_10");
     expect(workflow).toContain('["rpmContentInventory"]');
@@ -126,23 +156,93 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("AGENC_BUILDER_ID=");
     expect(workflow).toContain("AGENC_NODE_DISTRIBUTION_SHA256=");
     expect(workflow).toContain("AGENC_NODE_HEADERS_SHA256=");
+    expect(workflow).toContain("AGENC_NODE_COMMON_GYPI_SHA256=");
     expect(workflow).toContain("AGENC_NPM_DISTRIBUTION_SHA256=");
+    expect(workflow).toContain("AGENC_NODE_EXECUTABLE_PATH=");
+    expect(workflow).toContain("AGENC_NPM_CLI_PATH=");
     expect(workflow).toContain("npm_config_nodedir=");
     expect(workflow).toContain("nodeDistributions");
     expect(workflow).toContain("nodeHeaders");
     expect(workflow).toContain("Get-FileHash -Algorithm SHA256");
+    expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_SHA256=");
+    expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_BYTES=");
+    expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
     expect(workflow).toContain("Validate the reviewed macOS runner and native toolchain");
     expect(workflow).toContain("Validate and activate the reviewed Windows runner and native toolchain");
     expect(workflow).toContain("hostedRunners");
     expect(workflow).toContain("Assert-Exact 'ImageVersion'");
     expect(workflow).toContain("Assert-Exact 'active MSVC tools version'");
     expect(workflow).toContain("MSVC compiler identity");
+    const linuxInstall = workflow.slice(
+      workflow.indexOf("Install digest-pinned Node, headers, and npm"),
+      workflow.indexOf("Build from two isolated worktrees and compare bytes"),
+    );
+    expect(linuxInstall).toContain("rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic");
+    expect(linuxInstall).toContain('ldd "$node_root/bin/node"');
+    expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
+    expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
+      linuxInstall.indexOf('"$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js"'),
+    );
+    const linuxBuild = workflow.slice(
+      workflow.indexOf("Build from two isolated worktrees and compare bytes"),
+      workflow.indexOf("Select the canonical runtime subject and bundle path"),
+    );
+    expect(linuxBuild).toContain('git config --global --add safe.directory "$source_root"');
+    expect(linuxBuild).not.toContain("safe.directory '*'");
+    expect(linuxBuild.indexOf("safe.directory")).toBeLessThan(
+      linuxBuild.indexOf("git worktree add"),
+    );
     const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
+    const macosValidation = nativeJob.slice(
+      nativeJob.indexOf("Validate the reviewed macOS runner"),
+      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+    );
+    expect(macosValidation).toContain('capture("xcrun", "--sdk", "macosx", "--show-sdk-path")');
+    expect(macosValidation).toContain('functional = os.path.join(sdk_path, "usr", "include", "c++", "v1", "functional")');
+    expect(macosValidation).toContain('probe_environment["SDKROOT"] = sdk_path');
+    expect(macosValidation).toContain('environment.write(f\'SDKROOT={sdk_path}\\n\')');
+    const windowsValidation = nativeJob.slice(
+      nativeJob.indexOf("Validate and activate the reviewed Windows runner"),
+      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (macOS)"),
+    );
+    expect(windowsValidation).toMatch(
+      /\$compilerLines = @\(& \$cl \/Bv[\s\S]*?\$global:LASTEXITCODE = 0[\s\S]*?MSVC compiler identity/,
+    );
+    expect(windowsValidation).toContain("if ($name -ieq 'PATH') { $name = 'PATH' }");
+    const windowsInstall = nativeJob.slice(
+      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (Windows)"),
+      nativeJob.indexOf("Build from two isolated worktrees and compare bytes"),
+    );
+    expect(windowsInstall).toContain("$headersRelease = Join-Path $headersRoot 'Release'");
+    expect(windowsInstall).toContain(
+      "Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary",
+    );
+    expect(windowsInstall).toContain(
+      "Assert-Sha256 $headersNodeImportLibrary $importLibrary.sha256",
+    );
+    expect(windowsInstall).toContain(
+      "Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes",
+    );
+    expect(windowsInstall).toContain(
+      "packages/agenc/scripts/prepare-windows-node-headers.mjs --root $headersRoot",
+    );
+    expect(windowsInstall).toContain(
+      "$headerProof.sha256 -cne $toolchain.nodeHeaders.windowsCommonGypi.releaseSha256",
+    );
+    expect(windowsInstall).toContain(
+      '"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"',
+    );
+    expect(windowsInstall).toContain(
+      "& $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot",
+    );
+    expect(windowsInstall.indexOf("prepare-windows-node-headers.mjs")).toBeLessThan(
+      windowsInstall.indexOf('"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"'),
+    );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
-      nativeJob.indexOf("npm ci --prefix"),
+      nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
     expect(nativeJob.indexOf("Validate and activate the reviewed Windows runner")).toBeLessThan(
-      nativeJob.indexOf("npm ci --prefix"),
+      nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
     expect(workflow.match(/artifact-metadata: write/g)).toHaveLength(2);
     expect(workflow).toMatch(/^permissions:\n  contents: read\n\nenv:/m);
@@ -157,6 +257,10 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(4);
     expect(workflow.match(/git -C .* worktree remove --force/g)).toHaveLength(4);
+    expect(workflow).toContain("Upload failed reproducibility inputs");
+    expect(workflow).toContain("if-no-files-found: ignore");
+    expect(workflow).toContain("retention-days: 1");
+    expect(workflow).toContain("agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
     expect(workflow).toContain('npm-cache-$build');
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
@@ -171,17 +275,60 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, "packages/agenc/scripts/build-runtime-tarball.mjs"),
       "utf8",
     );
+    expect(builder).toContain('"MACOSX_DEPLOYMENT_TARGET", "SDKROOT"');
+    expect(builder).toContain('"-Wl,-S"');
+    expect(builder).not.toContain('"-Wl,-no_uuid"');
+    expect(builder).not.toContain('"-Wl,-oso_prefix,."');
+    expect(builder).toContain('"/PDBALTPATH:%_PDB%"');
+    expect(builder).toContain('append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"])');
+    expect(builder).toContain("`/d1trimfile:${buildRoot}\\\\`");
+    expect(builder).toContain('WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>"');
+    expect(builder).toContain('"CL", "LINK", "_LINK_"');
+    expect(builder).toContain("? canonicalWindowsNativeBuildRoot(stage)");
+    expect(builder).toContain(
+      "releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, nativeBuildRoot)",
+    );
+    expect(builder).toContain(
+      "windowsReproducibleNativeFlagProvenance(releaseEnv, nativeBuildRoot)",
+    );
+    expect(builder).not.toContain("Object.assign(releaseEnv, withWindowsReproducibleNativeFlags");
+    expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
+    expect(builder).toContain("release-toolchain.json has no valid Windows common.gypi contract");
+    expect(builder).toContain("AGENC_NODE_COMMON_GYPI_SHA256");
+    expect(builder).toContain("metadata.nodeCommonGypiSourceSha256");
+    expect(builder).toContain("metadata.nodeCommonGypiReleaseSha256");
+    expect(builder).toContain("metadata.nodeCommonGypiTransformation");
+    expect(builder).toContain("runNpm(buildExecutables");
+    expect(builder).toContain("captureNpm(buildExecutables");
+    expect(builder).toContain("release build process is not running under the verified Node executable");
+    expect(builder).not.toContain("shell: IS_WINDOWS");
     expect(builder).toContain('"ci"');
     expect(builder).toContain('"--workspace=@tetsuo-ai/runtime"');
     expect(builder).toContain("writeCanonicalArchive");
     expect(builder).toContain("release Linux signed RPM content inventory does not match");
     expect(builder).toContain("assertHostedRunnerContract");
+    expect(builder).toContain("metadata.nodeImportLibraryFile = expectedImportLibrary.file");
+    expect(builder).toContain("metadata.nodeImportLibraryBytes = importLibraryBytes");
     expect(builder).not.toMatch(/\[\s*"install",\s*runtimeTgz/);
     const nativeContract = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
+      nodeHeaders: {
+        windowsCommonGypi: {
+          schemaVersion: number;
+          path: string;
+          sourceSha256: string;
+          releaseSha256: string;
+          transformation: string;
+        };
+      };
+      nodeImportLibraries: Record<
+        string,
+        { file: string; url: string; sha256: string; bytes: number }
+      >;
       linux: {
+        builderPackages: Record<string, string>;
         rpmContentInventory: {
           schemaVersion: number;
           signatureKeyIds: string[];
@@ -215,14 +362,30 @@ describe("reproducible install and release contract", () => {
         windowsSdkVersion: "10.0.26100.0",
       },
     });
+    expect(nativeContract.linux.builderPackages.libatomic).toBe(
+      "libatomic-8.5.0-28.el8_10",
+    );
+    expect(nativeContract.nodeImportLibraries["win-x64"]).toEqual({
+      file: "node.lib",
+      url: "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
+      sha256: "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
+      bytes: 2_995_712,
+    });
+    expect(nativeContract.nodeHeaders.windowsCommonGypi).toEqual({
+      schemaVersion: 1,
+      path: "include/node/common.gypi",
+      sourceSha256: "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
+      releaseSha256: "8a9331b700e6cdd52e611d249a78e02513d70dd45f4be314bf6f1e301d4bbd2d",
+      transformation: "disable-debug-information-and-full-paths",
+    });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
       schemaVersion: 1,
       format:
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "567dfb68497d822260d8d5fd7c56da9b3fdfede77b2a12fe1d63730772b396d8",
-        arm64: "94bc59ce600773d42f1a70a7e3a6c1a33027ab1747719a3c27039503ba8f23cc",
+        x64: "b218a774252c748c748d0e18837b7ca655c8e657bc20b1213a9f8cbb177b58bb",
+        arm64: "cd2f3fb1aa51e2142ca74e202d9403b2861d47fc82cb036150ecb92ee62306d2",
       },
     });
   });

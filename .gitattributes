@@ -1,0 +1,5 @@
+# npm normalizes package-bin shebangs to LF while linking workspaces. Keep the
+# tracked bin subjects canonical so a Windows install cannot dirty the source.
+packages/agenc/bin/agenc text eol=lf
+runtime/bin/agenc text eol=lf
+runtime/bin/agenc-linux-sandbox text eol=lf

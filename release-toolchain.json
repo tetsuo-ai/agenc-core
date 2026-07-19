@@ -77,7 +77,22 @@
   },
   "nodeHeaders": {
     "file": "node-v25.9.0-headers.tar.gz",
-    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a"
+    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a",
+    "windowsCommonGypi": {
+      "schemaVersion": 1,
+      "path": "include/node/common.gypi",
+      "sourceSha256": "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
+      "releaseSha256": "8a9331b700e6cdd52e611d249a78e02513d70dd45f4be314bf6f1e301d4bbd2d",
+      "transformation": "disable-debug-information-and-full-paths"
+    }
+  },
+  "nodeImportLibraries": {
+    "win-x64": {
+      "file": "node.lib",
+      "url": "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
+      "sha256": "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
+      "bytes": 2995712
+    }
   },
   "docker": {
     "dockerfileFrontend": "docker/dockerfile:1.25.0@sha256:0adf442eae370b6087e08edc7c50b552d80ddf261576f4ebd6421006b2461f12",
@@ -131,6 +146,7 @@
   "linux": {
     "containerImage": "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
     "builderPackages": {
+      "libatomic": "libatomic-8.5.0-28.el8_10",
       "gcc-toolset-12-gcc-c++": "gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10",
       "gcc-toolset-12-binutils": "gcc-toolset-12-binutils-2.38-17.el8",
       "python3.12": "python3.12-3.12.13-2.el8_10",
@@ -144,8 +160,8 @@
       "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       "signatureKeyIds": ["15af5dac6d745a60"],
       "sha256": {
-        "x64": "567dfb68497d822260d8d5fd7c56da9b3fdfede77b2a12fe1d63730772b396d8",
-        "arm64": "94bc59ce600773d42f1a70a7e3a6c1a33027ab1747719a3c27039503ba8f23cc"
+        "x64": "b218a774252c748c748d0e18837b7ca655c8e657bc20b1213a9f8cbb177b58bb",
+        "arm64": "cd2f3fb1aa51e2142ca74e202d9403b2861d47fc82cb036150ecb92ee62306d2"
       }
     },
     "compilerVersion": "12.2.1",

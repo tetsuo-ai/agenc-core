@@ -34,6 +34,7 @@ import {
   openSync,
   readSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -44,7 +45,7 @@ import {
 } from "node:fs";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep, win32 as win32Path } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { create as createTar, extract as extractTar } from "tar";
@@ -58,16 +59,10 @@ const rootPackagePath = join(repoRoot, "package.json");
 const lockfilePath = join(repoRoot, "package-lock.json");
 const releaseToolchainPath = join(repoRoot, "release-toolchain.json");
 
-// On Windows, npm/tar-style launchers are .cmd shims that spawnSync cannot
-// exec directly (ENOENT surfaces as a null status — exactly the CI matrix
-// failure mode). `shell: true` resolves them through cmd.exe; argv here is
-// always static, never user input.
-const IS_WINDOWS = process.platform === "win32";
-
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     stdio: "inherit",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.status !== 0) {
@@ -81,7 +76,7 @@ function run(cmd, args, opts = {}) {
 function capture(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.status !== 0) {
@@ -95,7 +90,7 @@ function capture(cmd, args, opts = {}) {
 function captureOptional(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   return res.status === 0 ? res.stdout.trim() : undefined;
@@ -104,7 +99,7 @@ function captureOptional(cmd, args, opts = {}) {
 function captureCombined(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.error?.code === "ENOENT") return undefined;
@@ -120,6 +115,171 @@ function captureCombined(cmd, args, opts = {}) {
     return undefined;
   }
   return output || undefined;
+}
+
+function requireAbsoluteRegularFile(value, label) {
+  if (
+    typeof value !== "string" ||
+    !isAbsolute(value) ||
+    !existsSync(value) ||
+    !statSync(value).isFile()
+  ) {
+    throw new Error(`${label} must name an absolute regular file`);
+  }
+  return realpathSync(value);
+}
+
+export function resolveBuildExecutables({
+  artifactProfile,
+  environment = process.env,
+  currentNodeExecutable = process.execPath,
+  platform = process.platform,
+}) {
+  const configuredNode = environment.AGENC_NODE_EXECUTABLE_PATH?.trim();
+  const configuredNpm = environment.AGENC_NPM_CLI_PATH?.trim();
+  if (artifactProfile === "release" && (!configuredNode || !configuredNpm)) {
+    throw new Error(
+      "release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH",
+    );
+  }
+  const nodeExecutablePath = requireAbsoluteRegularFile(
+    configuredNode || currentNodeExecutable,
+    "Node executable",
+  );
+  const npmCliPath = requireAbsoluteRegularFile(
+    configuredNpm || environment.npm_execpath?.trim(),
+    "npm CLI",
+  );
+  if (artifactProfile === "release") {
+    const currentNodePath = realpathSync(currentNodeExecutable);
+    const normalize = (value) => platform === "win32" ? value.toLowerCase() : value;
+    if (normalize(nodeExecutablePath) !== normalize(currentNodePath)) {
+      throw new Error("release build process is not running under the verified Node executable");
+    }
+  }
+  return { nodeExecutablePath, npmCliPath };
+}
+
+export function withPinnedExecutablePath(environment, nodeExecutablePath, platform = process.platform) {
+  const result = { ...environment };
+  const pathDelimiter = platform === "win32" ? ";" : ":";
+  const executableDirectory = platform === "win32"
+    ? win32Path.dirname(nodeExecutablePath)
+    : dirname(nodeExecutablePath);
+  const pathValues = [];
+  for (const [name, value] of Object.entries(result)) {
+    if (name.toLowerCase() !== "path") continue;
+    delete result[name];
+    if (typeof value === "string" && value.length > 0) pathValues.push(value);
+  }
+  const normalize = (value) => platform === "win32" ? value.toLowerCase() : value;
+  const seen = new Set();
+  const entries = [
+    executableDirectory,
+    ...pathValues.flatMap((value) => value.split(pathDelimiter)),
+  ].filter((value) => {
+    if (!value) return false;
+    const key = normalize(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  result.PATH = entries.join(pathDelimiter);
+  return result;
+}
+
+const WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>";
+
+function windowsNativeBuildRoot(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Windows reproducible native builds require an absolute build root");
+  }
+  if (!win32Path.isAbsolute(value.trim())) {
+    throw new Error("Windows reproducible native build root must be absolute");
+  }
+  const root = win32Path.resolve(value).replace(/[\\/]+$/u, "");
+  if (/\s/u.test(root)) {
+    throw new Error("Windows reproducible native build root cannot contain whitespace");
+  }
+  return root;
+}
+
+function withoutWindowsNamespacePrefix(value) {
+  if (value.startsWith("\\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;
+  if (value.startsWith("\\\\?\\")) return value.slice(4);
+  return value;
+}
+
+export function canonicalWindowsNativeBuildRoot(
+  value,
+  resolver = realpathSync.native,
+) {
+  const root = windowsNativeBuildRoot(value);
+  if (typeof resolver !== "function") {
+    throw new TypeError("Windows native build root resolver must be a function");
+  }
+  let canonical;
+  try {
+    canonical = resolver(root);
+  } catch (error) {
+    throw new Error("Windows native build root could not be canonicalized", {
+      cause: error,
+    });
+  }
+  return windowsNativeBuildRoot(withoutWindowsNamespacePrefix(canonical));
+}
+
+export function withWindowsReproducibleNativeFlags(environment, nativeBuildRoot) {
+  const result = { ...environment };
+  const append = (canonicalName, flags) => {
+    const inherited = [];
+    for (const [name, value] of Object.entries(result)) {
+      if (name.toUpperCase() !== canonicalName.toUpperCase()) continue;
+      delete result[name];
+      if (typeof value === "string" && value.trim()) inherited.push(value.trim());
+    }
+    result[canonicalName] = [...inherited, ...flags].join(" ");
+  };
+  const buildRoot = windowsNativeBuildRoot(nativeBuildRoot);
+  // MSVC derives anonymous-namespace identities from the physical source
+  // path. Every release build intentionally uses a fresh staging directory,
+  // so trim that prefix before /Brepro hashes the native objects.
+  append("CL", ["/Brepro", `/d1trimfile:${buildRoot}\\`]);
+  append("LINK", ["/Brepro", "/PDBALTPATH:%_PDB%"]);
+  // Node's pinned upstream common.gypi normally emits /Z7 objects and places
+  // /DEBUG on every native link. Release header preparation disables /Z7;
+  // LINK is still prepended before project options, so use _LINK_ to append
+  // the final linker override and keep PDB/CodeView state out of shipped PEs.
+  append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"]);
+  return result;
+}
+
+export function windowsReproducibleNativeFlagProvenance(environment, nativeBuildRoot) {
+  const result = { ...environment };
+  const buildRoot = windowsNativeBuildRoot(nativeBuildRoot);
+  if (typeof result.CL === "string") {
+    result.CL = result.CL.replace(
+      `/d1trimfile:${buildRoot}\\`,
+      `/d1trimfile:${WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE}\\`,
+    );
+  }
+  return result;
+}
+
+function runNpm(executables, args, opts = {}) {
+  return run(
+    executables.nodeExecutablePath,
+    [executables.npmCliPath, ...args],
+    { ...opts, shell: false },
+  );
+}
+
+function captureNpm(executables, args, opts = {}) {
+  return capture(
+    executables.nodeExecutablePath,
+    [executables.npmCliPath, ...args],
+    { ...opts, shell: false },
+  );
 }
 
 function firstLine(value) {
@@ -279,8 +439,9 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     make: firstLine(captureCombined("make", ["--version"])),
     buildFlags: Object.fromEntries(
       [
-        "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "LINK",
-        "MACOSX_DEPLOYMENT_TARGET", "npm_config_build_from_source", "npm_config_python",
+        "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "LINK", "_LINK_",
+        "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "npm_config_build_from_source",
+        "npm_config_python",
       ]
         .filter((name) => buildEnvironment[name] !== undefined)
         .map((name) => [name, buildEnvironment[name]]),
@@ -290,6 +451,7 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
   const slug = `${os}-${process.arch}`;
   const expectedDistribution = releaseToolchain.nodeDistributions?.[slug];
   const expectedHeaders = releaseToolchain.nodeHeaders;
+  const expectedImportLibrary = releaseToolchain.nodeImportLibraries?.[slug];
   const expectedNpm = releaseToolchain.npmDistribution;
   if (artifactProfile === "release") {
     if (
@@ -321,6 +483,66 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     metadata.nodeDistributionSha256 = distributionSha256;
     metadata.nodeHeadersFile = expectedHeaders.file;
     metadata.nodeHeadersSha256 = headersSha256;
+    if (process.platform === "win32") {
+      const commonGypiContract = expectedHeaders.windowsCommonGypi;
+      if (
+        typeof expectedImportLibrary?.file !== "string" ||
+        typeof expectedImportLibrary?.url !== "string" ||
+        !/^[0-9a-f]{64}$/.test(expectedImportLibrary.sha256 ?? "") ||
+        !Number.isSafeInteger(expectedImportLibrary.bytes) ||
+        expectedImportLibrary.bytes <= 0
+      ) {
+        throw new Error(`release-toolchain.json has no valid Node import library for ${slug}`);
+      }
+      if (
+        commonGypiContract?.schemaVersion !== 1 ||
+        commonGypiContract.path !== "include/node/common.gypi" ||
+        commonGypiContract.transformation !==
+          "disable-debug-information-and-full-paths" ||
+        !/^[0-9a-f]{64}$/.test(commonGypiContract.sourceSha256 ?? "") ||
+        !/^[0-9a-f]{64}$/.test(commonGypiContract.releaseSha256 ?? "")
+      ) {
+        throw new Error("release-toolchain.json has no valid Windows common.gypi contract");
+      }
+      const importLibrarySha256 =
+        buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_SHA256?.trim();
+      const importLibraryBytes = Number(
+        buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_BYTES?.trim(),
+      );
+      if (importLibrarySha256 !== expectedImportLibrary.sha256) {
+        throw new Error(
+          `release Node import library digest does not match release-toolchain.json for ${slug}`,
+        );
+      }
+      if (importLibraryBytes !== expectedImportLibrary.bytes) {
+        throw new Error(
+          `release Node import library byte count does not match release-toolchain.json for ${slug}`,
+        );
+      }
+      metadata.nodeImportLibraryFile = expectedImportLibrary.file;
+      metadata.nodeImportLibrarySha256 = importLibrarySha256;
+      metadata.nodeImportLibraryBytes = importLibraryBytes;
+      const commonGypiPath = join(
+        buildEnvironment.npm_config_nodedir,
+        ...commonGypiContract.path.split("/"),
+      );
+      if (!existsSync(commonGypiPath) || !statSync(commonGypiPath).isFile()) {
+        throw new Error(`sanitized Node common.gypi is missing: ${commonGypiPath}`);
+      }
+      const commonGypiSha256 = sha256Bytes(readFileSync(commonGypiPath));
+      const reportedCommonGypiSha256 =
+        buildEnvironment.AGENC_NODE_COMMON_GYPI_SHA256?.trim();
+      if (
+        commonGypiSha256 !== commonGypiContract.releaseSha256 ||
+        reportedCommonGypiSha256 !== commonGypiSha256
+      ) {
+        throw new Error("sanitized Node common.gypi does not match release-toolchain.json");
+      }
+      metadata.nodeCommonGypiFile = commonGypiContract.path;
+      metadata.nodeCommonGypiSourceSha256 = commonGypiContract.sourceSha256;
+      metadata.nodeCommonGypiReleaseSha256 = commonGypiSha256;
+      metadata.nodeCommonGypiTransformation = commonGypiContract.transformation;
+    }
     metadata.npmDistributionFile = expectedNpm.file;
     metadata.npmDistributionSha256 = npmDistributionSha256;
   }
@@ -695,6 +917,10 @@ export function pruneNativeBuildIntermediates(
     // pty.node alone (see node-pty's binding.gyp OS guards).
     retainRuntimeBuildFiles(nodePty, ["Release/pty.node"]);
   }
+  // node-gyp generates platform-specific Makefiles or MSBuild obj/tlog state
+  // here while resolving node-addon-api targets. No file in this directory is
+  // needed after the loadable node-pty binaries have been retained.
+  rmSync(join(nodePty, "node-addon-api"), { recursive: true, force: true });
   // Source builds must never retain vendored prebuilds for another ABI or OS.
   rmSync(join(nodePty, "prebuilds"), { recursive: true, force: true });
 }
@@ -890,8 +1116,9 @@ function darwinNativeCompatibility(nodeModules, releaseLimits) {
   return { minimumMacosVersion };
 }
 
-function smokeInstalledNativeModules(installRoot, env) {
-  const script = String.raw`
+export function installedNativeModuleSmokeProgram(platform = process.platform) {
+  const windowsSmoke = platform === "win32";
+  return String.raw`
     const { createRequire } = require("node:module");
     const { join } = require("node:path");
     const requireFromArtifact = createRequire(join(process.cwd(), "smoke.cjs"));
@@ -900,26 +1127,89 @@ function smokeInstalledNativeModules(installRoot, env) {
     if (db.prepare("select 42 as value").get().value !== 42) process.exit(20);
     db.close();
     const pty = requireFromArtifact("node-pty");
+    const childEnvironment = {};
+    if (${JSON.stringify(windowsSmoke)}) {
+      // node-pty passes an exact custom environment block to CreateProcessW,
+      // bypassing libuv's restoration of these Node 25.9 required variables.
+      const requiredNames = [
+        "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE",
+        "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR",
+      ];
+      const parentEnvironment = new Map(
+        Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value]),
+      );
+      for (const name of requiredNames) {
+        const value = parentEnvironment.get(name);
+        if (typeof value === "string" && value.length > 0) childEnvironment[name] = value;
+      }
+      if (childEnvironment.SYSTEMROOT === undefined) {
+        process.stderr.write("node-pty smoke requires SystemRoot on Windows\n");
+        process.exit(24);
+      }
+    } else {
+      childEnvironment.PATH = process.env.PATH || "";
+    }
     const child = pty.spawn(process.execPath, ["-e", "process.stdout.write('pty-ok')"], {
       cols: 80,
       rows: 24,
       cwd: process.cwd(),
-      env: { PATH: process.env.PATH || "" },
+      env: childEnvironment,
     });
     let output = "";
-    const timeout = setTimeout(() => { child.kill(); process.exit(21); }, 10000);
-    child.onData((chunk) => { output += chunk; });
-    child.onExit(() => {
+    let exitEvent;
+    const fail = () => {
+      process.stderr.write("node-pty smoke failed: " + JSON.stringify({
+        exitCode: exitEvent?.exitCode,
+        signal: exitEvent?.signal,
+        output,
+      }) + "\n");
+      process.exit(22);
+    };
+    const finish = () => {
+      if (exitEvent === undefined || !output.includes("pty-ok")) return;
       clearTimeout(timeout);
-      if (!output.includes("pty-ok")) process.exit(22);
+      if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+      // This script is a standalone smoke process. On Windows, ConPTY may
+      // retain a native/libuv handle after delivering both exit and output;
+      // finish explicitly once every success invariant has been observed.
+      process.exit(0);
+    };
+    const timeout = setTimeout(() => {
+      if (exitEvent === undefined) {
+        child.kill();
+        process.exit(21);
+      }
+      fail();
+    }, 10000);
+    child.onData((chunk) => {
+      output += chunk;
+      finish();
+    });
+    child.onExit((event) => {
+      exitEvent = event;
+      if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
+      // Windows ConPTY can report process exit before its final output event.
+      // The existing hard timeout bounds the drain and fails closed.
+      finish();
     });
   `;
+}
+
+function smokeInstalledNativeModules(installRoot, env) {
+  const script = installedNativeModuleSmokeProgram();
   run(process.execPath, ["-e", script], { cwd: installRoot, env });
 }
 
 function isDeveloperSpecificPath(value) {
   if (typeof value !== "string" || value.length < 4) return false;
   const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (/^agenc-runtime-build-[A-Za-z0-9_-]{6,}$/.test(normalized)) return true;
+  // A runner/user home root is not unique enough to attribute to this build.
+  // Prebuilt dependencies may legitimately retain their upstream builder's
+  // generic home while deeper repo, stage, and cache paths remain strong
+  // local-leak sentinels.
+  if (/^\/(?:Users|home)\/[^/]+$/.test(normalized)) return false;
+  if (/^[A-Za-z]:\/Users\/[^/]+$/i.test(normalized)) return false;
   if (/^[A-Za-z]:\//.test(normalized)) {
     return normalized.slice(3).split("/").filter(Boolean).length >= 2;
   }
@@ -930,14 +1220,47 @@ function isDeveloperSpecificPath(value) {
 }
 
 export function assertNoLocalPathLeaks(root, localPaths) {
-  const needles = [...new Set(
-    localPaths
+  const identities = localPaths.flatMap((value) => {
+    const resolved = [value];
+    if (typeof value !== "string" || !isAbsolute(value) || !existsSync(value)) {
+      return resolved;
+    }
+    for (const resolver of [realpathSync, realpathSync.native]) {
+      try {
+        resolved.push(resolver(value));
+      } catch {
+        // The original identity is still scanned; release inputs are checked
+        // separately before this defense-in-depth path leak pass.
+      }
+    }
+    return resolved;
+  });
+  const pathVariants = [...new Set(
+    identities
       // Top-level roots such as /root, /src, or C:\\src are too generic to
       // identify a developer machine and occur legitimately in dependency
       // source. Build stages use deeper, unique paths; scan only those paths.
       .filter(isDeveloperSpecificPath)
-      .flatMap((value) => [value, value.split("\\").join("/"), value.split("/").join("\\")]),
-  )].map((value) => Buffer.from(value));
+      .flatMap((value) => {
+        const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+        const basename = normalized.split("/").pop();
+        return [
+          value,
+          value.split("\\").join("/"),
+          value.split("/").join("\\"),
+          ...(/^agenc-runtime-build-[A-Za-z0-9_-]{6,}$/.test(basename ?? "")
+            ? [basename]
+            : []),
+        ];
+      }),
+  )];
+  const needles = pathVariants.flatMap((display) => [
+    { bytes: Buffer.from(display), display },
+    // MSVC's /FC expansion of __FILE__ is commonly widened by the CRT's
+    // assertion macros. Scan the actual UTF-16LE representation as well as
+    // ordinary UTF-8/ASCII so random native staging roots cannot hide in PEs.
+    { bytes: Buffer.from(display, "utf16le"), display },
+  ]);
   const visit = (directory) => {
     for (const name of readdirSync(directory)) {
       const path = join(directory, name);
@@ -946,10 +1269,10 @@ export function assertNoLocalPathLeaks(root, localPaths) {
         visit(path);
       } else if (metadata.isFile()) {
         const bytes = readFileSync(path);
-        const leaked = needles.find((needle) => bytes.includes(needle));
+        const leaked = needles.find((needle) => bytes.includes(needle.bytes));
         if (leaked !== undefined) {
           throw new Error(
-            `release artifact embeds a developer-local path in ${path}: ${leaked.toString()}`,
+            `release artifact embeds a developer-local path in ${path}: ${leaked.display}`,
           );
         }
       }
@@ -1031,11 +1354,16 @@ async function main() {
     throw new Error("root package-lock.json must be v3 and contain the runtime workspace");
   }
   assertRootLockSnapshot(rootPackage, lockfile);
+  const artifactProfile = process.env.AGENC_ARTIFACT_PROFILE?.trim() || "release";
+  if (!/^(release|clean-local|container-local)$/.test(artifactProfile)) {
+    throw new Error(`unsupported AGENC_ARTIFACT_PROFILE: ${artifactProfile}`);
+  }
+  const buildExecutables = resolveBuildExecutables({ artifactProfile });
   const expectedNpmVersion = pinnedNpmVersion(rootPackage);
   if (expectedNpmVersion !== releaseToolchain.npmVersion) {
     throw new Error("root packageManager and release-toolchain npm versions differ");
   }
-  const npmVersion = capture("npm", ["--version"], { cwd: repoRoot });
+  const npmVersion = captureNpm(buildExecutables, ["--version"], { cwd: repoRoot });
   if (npmVersion !== expectedNpmVersion) {
     throw new Error(
       `release build requires npm ${expectedNpmVersion}; found ${npmVersion}`,
@@ -1063,10 +1391,6 @@ async function main() {
     throw new Error("current Node native ABI does not match release-toolchain.json");
   }
   const source = sourceMetadata();
-  const artifactProfile = process.env.AGENC_ARTIFACT_PROFILE?.trim() || "release";
-  if (!/^(release|clean-local|container-local)$/.test(artifactProfile)) {
-    throw new Error(`unsupported AGENC_ARTIFACT_PROFILE: ${artifactProfile}`);
-  }
   const nodeHeadersRoot = process.env.npm_config_nodedir?.trim();
   if (!nodeHeadersRoot || !isAbsolute(nodeHeadersRoot)) {
     throw new Error("native runtime builds require an absolute npm_config_nodedir");
@@ -1093,7 +1417,7 @@ async function main() {
   }
   const version = runtimePkg.version;
   const { os, arch, slug } = platformSlug();
-  const releaseEnv = {
+  let releaseEnv = withPinnedExecutablePath({
     ...process.env,
     AGENC_BUILD_COMMIT: source.sourceCommit,
     AGENC_BUILD_TIME: source.buildTime,
@@ -1105,7 +1429,7 @@ async function main() {
     LC_ALL: "C",
     SOURCE_DATE_EPOCH: String(source.sourceDateEpoch),
     TZ: "UTC",
-  };
+  }, buildExecutables.nodeExecutablePath);
   if (process.platform === "linux") {
     releaseEnv.AGENC_MAX_GLIBC = releaseToolchain.linux.maximumGlibcVersion;
     releaseEnv.AGENC_MAX_GLIBCXX = releaseToolchain.linux.maximumGlibcxxVersion;
@@ -1113,18 +1437,14 @@ async function main() {
   }
   if (process.platform === "darwin") {
     releaseEnv.MACOSX_DEPLOYMENT_TARGET = releaseToolchain.macos.minimumVersion;
-    releaseEnv.LDFLAGS = [releaseEnv.LDFLAGS, "-Wl,-no_uuid"].filter(Boolean).join(" ");
+    releaseEnv.LDFLAGS = [
+      releaseEnv.LDFLAGS,
+      // Remove unusable linker debug-map entries before they can retain the
+      // per-build staging directory. Keep the linker's default content-hashed
+      // LC_UUID: loadable Mach-O images require it and it is reproducible.
+      "-Wl,-S",
+    ].filter(Boolean).join(" ");
   }
-  if (process.platform === "win32") {
-    releaseEnv.CL = [releaseEnv.CL, "/Brepro"].filter(Boolean).join(" ");
-    releaseEnv.LINK = [releaseEnv.LINK, "/Brepro"].filter(Boolean).join(" ");
-  }
-  const nativeToolchain = nativeToolchainMetadata(
-    releaseToolchain,
-    artifactProfile,
-    releaseEnv,
-  );
-
   const outDir = resolve(
     process.env.AGENC_RELEASE_OUT_DIR ?? join(launcherDir, "release-artifacts"),
   );
@@ -1132,13 +1452,30 @@ async function main() {
 
   const stage = mkdtempSync(join(tmpdir(), "agenc-runtime-build-"));
   try {
+    // GitHub's Windows TEMP can use an 8.3 alias (RUNNER~1), while MSVC
+    // expands __FILE__ through the canonical long path. /d1trimfile only
+    // applies when its prefix matches that compiler identity exactly.
+    const nativeBuildRoot = process.platform === "win32"
+      ? canonicalWindowsNativeBuildRoot(stage)
+      : stage;
+    if (process.platform === "win32") {
+      releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, nativeBuildRoot);
+    }
+    const nativeToolchain = nativeToolchainMetadata(
+      releaseToolchain,
+      artifactProfile,
+      process.platform === "win32"
+        ? windowsReproducibleNativeFlagProvenance(releaseEnv, nativeBuildRoot)
+        : releaseEnv,
+    );
+
     // 1. Build the runtime (produces dist/).
     console.error(`[build] runtime ${version} (${slug})`);
-    run("npm", ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
+    runNpm(buildExecutables, ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
 
     // 2. Pack the runtime package into a tgz (honors runtime's `files`).
-    const packed = capture(
-      "npm",
+    const packed = captureNpm(
+      buildExecutables,
       ["pack", "--silent", "--ignore-scripts", "--pack-destination", stage],
       { cwd: runtimeDir, env: releaseEnv },
     )
@@ -1180,8 +1517,8 @@ async function main() {
       strict: true,
       strip: 1,
     });
-    run(
-      "npm",
+    runNpm(
+      buildExecutables,
       [
         "ci",
         "--omit=dev",
