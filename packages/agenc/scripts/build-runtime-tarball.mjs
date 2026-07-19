@@ -327,19 +327,30 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
       if (
         typeof expectedImportLibrary?.file !== "string" ||
         typeof expectedImportLibrary?.url !== "string" ||
-        !/^[0-9a-f]{64}$/.test(expectedImportLibrary.sha256 ?? "")
+        !/^[0-9a-f]{64}$/.test(expectedImportLibrary.sha256 ?? "") ||
+        !Number.isSafeInteger(expectedImportLibrary.bytes) ||
+        expectedImportLibrary.bytes <= 0
       ) {
         throw new Error(`release-toolchain.json has no valid Node import library for ${slug}`);
       }
       const importLibrarySha256 =
         buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_SHA256?.trim();
+      const importLibraryBytes = Number(
+        buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_BYTES?.trim(),
+      );
       if (importLibrarySha256 !== expectedImportLibrary.sha256) {
         throw new Error(
           `release Node import library digest does not match release-toolchain.json for ${slug}`,
         );
       }
+      if (importLibraryBytes !== expectedImportLibrary.bytes) {
+        throw new Error(
+          `release Node import library byte count does not match release-toolchain.json for ${slug}`,
+        );
+      }
       metadata.nodeImportLibraryFile = expectedImportLibrary.file;
       metadata.nodeImportLibrarySha256 = importLibrarySha256;
+      metadata.nodeImportLibraryBytes = importLibraryBytes;
     }
     metadata.npmDistributionFile = expectedNpm.file;
     metadata.npmDistributionSha256 = npmDistributionSha256;

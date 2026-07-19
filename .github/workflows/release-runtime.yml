@@ -597,10 +597,15 @@ jobs:
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
             if ($actual -cne $Expected) { throw "digest mismatch for ${Path}: $actual != $Expected" }
           }
+          function Assert-Bytes([string]$Path, [long]$Expected) {
+            $actual = (Get-Item -LiteralPath $Path).Length
+            if ($actual -ne $Expected) { throw "byte count mismatch for ${Path}: $actual != $Expected" }
+          }
           Assert-Sha256 $nodeArchive $distribution.sha256
           Assert-Sha256 $headersArchive $toolchain.nodeHeaders.sha256
           Assert-Sha256 $npmArchive $toolchain.npmDistribution.sha256
           Assert-Sha256 $nodeImportLibrary $importLibrary.sha256
+          Assert-Bytes $nodeImportLibrary $importLibrary.bytes
           $distributionParent = Join-Path $env:RUNNER_TEMP 'node-distribution'
           $headersParent = Join-Path $env:RUNNER_TEMP 'node-headers'
           New-Item -ItemType Directory -Force -Path $distributionParent, $headersParent | Out-Null
@@ -617,6 +622,7 @@ jobs:
           $headersNodeImportLibrary = Join-Path $headersRelease $importLibrary.file
           Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary
           Assert-Sha256 $headersNodeImportLibrary $importLibrary.sha256
+          Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes
           & (Join-Path $nodeRoot 'npm.cmd') install --global $npmArchive --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
           if ((& (Join-Path $nodeRoot 'node.exe') --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
@@ -626,6 +632,7 @@ jobs:
           "AGENC_NODE_DISTRIBUTION_SHA256=$($distribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_HEADERS_SHA256=$($toolchain.nodeHeaders.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_IMPORT_LIBRARY_SHA256=$($importLibrary.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_IMPORT_LIBRARY_BYTES=$($importLibrary.bytes)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build from two isolated worktrees and compare bytes
         shell: bash

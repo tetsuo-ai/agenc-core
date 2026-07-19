@@ -83,7 +83,8 @@
     "win-x64": {
       "file": "node.lib",
       "url": "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
-      "sha256": "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9"
+      "sha256": "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
+      "bytes": 2995712
     }
   },
   "docker": {

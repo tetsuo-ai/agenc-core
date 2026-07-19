@@ -554,6 +554,11 @@ function requireNativeToolchain(value, key, artifactProfile, platform) {
         `${key} Node import library sha256`,
         /^[0-9a-f]{64}$/,
       );
+      requireSafeInteger(
+        value.nodeImportLibraryBytes,
+        `${key} Node import library byte count`,
+        1,
+      );
       for (const field of [
         "visualStudioVersion", "visualStudioInstallPath", "msvcToolsVersion",
         "windowsSdkVersion", "compilerDetails",
@@ -884,7 +889,8 @@ export async function generateManifest({
         const expectedImportLibrary = expectedBuild.nodeImportLibraries?.[key];
         if (
           nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
-          nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256
+          nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256 ||
+          nativeToolchain.nodeImportLibraryBytes !== expectedImportLibrary?.bytes
         ) {
           throw new Error(
             `${key} Node import library evidence does not match release-toolchain.json`,

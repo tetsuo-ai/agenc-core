@@ -133,6 +133,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("nodeHeaders");
     expect(workflow).toContain("Get-FileHash -Algorithm SHA256");
     expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_SHA256=");
+    expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_BYTES=");
     expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
     expect(workflow).toContain("Validate the reviewed macOS runner and native toolchain");
     expect(workflow).toContain("Validate and activate the reviewed Windows runner and native toolchain");
@@ -165,6 +166,20 @@ describe("reproducible install and release contract", () => {
     );
     expect(windowsValidation).toMatch(
       /\$compilerLines = @\(& \$cl \/Bv[\s\S]*?\$global:LASTEXITCODE = 0[\s\S]*?MSVC compiler identity/,
+    );
+    const windowsInstall = nativeJob.slice(
+      nativeJob.indexOf("Install digest-pinned Node, headers, and npm (Windows)"),
+      nativeJob.indexOf("Build from two isolated worktrees and compare bytes"),
+    );
+    expect(windowsInstall).toContain("$headersRelease = Join-Path $headersRoot 'Release'");
+    expect(windowsInstall).toContain(
+      "Copy-Item -LiteralPath $nodeImportLibrary -Destination $headersNodeImportLibrary",
+    );
+    expect(windowsInstall).toContain(
+      "Assert-Sha256 $headersNodeImportLibrary $importLibrary.sha256",
+    );
+    expect(windowsInstall).toContain(
+      "Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes",
     );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
       nativeJob.indexOf("npm ci --prefix"),
@@ -205,12 +220,17 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain("writeCanonicalArchive");
     expect(builder).toContain("release Linux signed RPM content inventory does not match");
     expect(builder).toContain("assertHostedRunnerContract");
+    expect(builder).toContain("metadata.nodeImportLibraryFile = expectedImportLibrary.file");
+    expect(builder).toContain("metadata.nodeImportLibraryBytes = importLibraryBytes");
     expect(builder).not.toMatch(/\[\s*"install",\s*runtimeTgz/);
     const nativeContract = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
-      nodeImportLibraries: Record<string, { file: string; url: string; sha256: string }>;
+      nodeImportLibraries: Record<
+        string,
+        { file: string; url: string; sha256: string; bytes: number }
+      >;
       linux: {
         builderPackages: Record<string, string>;
         rpmContentInventory: {
@@ -253,6 +273,7 @@ describe("reproducible install and release contract", () => {
       file: "node.lib",
       url: "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
       sha256: "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
+      bytes: 2_995_712,
     });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
       schemaVersion: 1,

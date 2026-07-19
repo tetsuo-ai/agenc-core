@@ -248,6 +248,7 @@ function addArtifact(directory, platform, arch, body) {
         ? {
             nodeImportLibraryFile: releaseToolchain.nodeImportLibraries[key].file,
             nodeImportLibrarySha256: releaseToolchain.nodeImportLibraries[key].sha256,
+            nodeImportLibraryBytes: releaseToolchain.nodeImportLibraries[key].bytes,
             visualStudioVersion: hostedRunner.visualStudioVersion,
             visualStudioInstallPath: hostedRunner.visualStudioInstallPath,
             msvcToolsVersion: hostedRunner.msvcToolsVersion,
@@ -924,6 +925,21 @@ test("full release manifest covers the exact five-platform matrix and enforces t
     );
     writeFileSync(outputPath, validManifestText);
 
+    const detachedImportLibraryManifest = JSON.parse(validManifestText);
+    const windowsArtifact = detachedImportLibraryManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    windowsArtifact.nativeToolchain.nodeImportLibraryBytes += 1;
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(detachedImportLibraryManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /Node import library evidence does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
     const darwinMeta = readdirSync(work).find((name) => name.includes("darwin-arm64") && name.endsWith(".meta.json"));
     const darwinMetaPath = join(work, darwinMeta);
     const meta = JSON.parse(readFileSync(darwinMetaPath, "utf8"));
@@ -1083,6 +1099,12 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "linker-hash", (meta) => { meta.nativeToolchain.msvcLinkerSha256 = "0"; }, /msvcLinkerSha256/],
     ["win", "x64", "node-import-library", (meta) => {
       meta.nativeToolchain.nodeImportLibrarySha256 = "0".repeat(64);
+    }, /Node import library evidence/],
+    ["win", "x64", "node-import-library-file", (meta) => {
+      meta.nativeToolchain.nodeImportLibraryFile = "detached.lib";
+    }, /Node import library evidence/],
+    ["win", "x64", "node-import-library-bytes", (meta) => {
+      meta.nativeToolchain.nodeImportLibraryBytes += 1;
     }, /Node import library evidence/],
   ];
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-native-toolchain-binding-"));

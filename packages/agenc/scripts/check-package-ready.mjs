@@ -338,7 +338,8 @@ export function validateLauncherManifest({
         const expectedImportLibrary = releaseToolchain.nodeImportLibraries?.[key];
         if (
           artifact.nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
-          artifact.nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256
+          artifact.nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256 ||
+          artifact.nativeToolchain.nodeImportLibraryBytes !== expectedImportLibrary?.bytes
         ) {
           fail(`${key} Node import library evidence does not match release-toolchain.json`);
         }
