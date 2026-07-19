@@ -105,6 +105,29 @@ describe("reproducible install and release contract", () => {
     );
   });
 
+  test("every workspace package bin checks out with canonical LF endings", () => {
+    const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+      workspaces: string[];
+    };
+    const binSubjects = root.workspaces.flatMap((workspace) => {
+      const manifest = JSON.parse(
+        readFileSync(join(REPO_ROOT, workspace, "package.json"), "utf8"),
+      ) as { bin?: string | Record<string, string> };
+      const targets = typeof manifest.bin === "string"
+        ? [manifest.bin]
+        : Object.values(manifest.bin ?? {});
+      return targets.map((target) => join(workspace, target).replaceAll("\\", "/"));
+    });
+    const attributes = execFileSync(
+      "git",
+      ["check-attr", "eol", "--", ...binSubjects],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    for (const subject of binSubjects) {
+      expect(attributes).toContain(`${subject}: eol: lf`);
+    }
+  });
+
   test("the active release workflow uses pinned inputs and proves two native builds match", () => {
     const workflow = readFileSync(
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
