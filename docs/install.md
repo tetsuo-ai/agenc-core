@@ -1,8 +1,7 @@
 # Installing AgenC
 
-**In-tree release target (not yet published): 0.6.2.** Public one-line and npm
-commands below become available only after the operator completes the reviewed
-immutable release workflow.
+**Current release: 0.6.2.** The public one-line installer and npm package use
+the same reviewed immutable runtime release.
 
 Three interchangeable install paths share one runtime contract. Each verified
 runtime lives at:
@@ -31,8 +30,8 @@ The script (source: `scripts/install/install.sh`):
    used for uniform JSON, compatibility, sha256, and archive validation across
    platforms); official macOS installs also require the system `unzip`,
 2. fetches the release manifest (`agenc-runtime-manifest-v2.json`) for the latest
-   published release, or a pinned one with `--version` (the current in-tree
-   release target is `0.6.2`),
+   published release, or a pinned one with `--version` (the current release is
+   `0.6.2`),
 3. selects exactly one platform/architecture/native-ABI entry and rejects an
    incompatible host before downloading the runtime,
 4. downloads only the manifest's canonical HTTPS release URL, rejects an
@@ -286,9 +285,23 @@ resolved package inventory is stored at
    ! git rev-parse --verify --quiet "refs/tags/$tag"
    npm run release:preflight
    git tag --annotate "$tag" --message "AgenC $version"
+   # Complete the exact-tag detached-checkout gates and human review described
+   # in docs/ci-required-gates.md before pushing this tag.
+   tested_sha="$(git rev-parse "${tag}^{commit}")"
+   evidence_path="${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json"
+   test -f "$evidence_path"
+   evidence_sha256="$(sha256sum "$evidence_path" | cut -d ' ' -f 1)"
+   [[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
    git push origin "refs/tags/$tag"
-   gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core --ref "$tag"
+   gh workflow run release-runtime.yml --repo tetsuo-ai/agenc-core \
+     --ref "$tag" \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256"
    ```
+
+   The source tag remains local until the exact-tag evidence has passed human
+   review. The workflow dispatch is invalid if either evidence input is
+   omitted.
 
    Wait for all five jobs (Linux x64/arm64, macOS x64/arm64, Windows x64).
    Publishing stays operator-driven; the workflow has no cross-repository
@@ -360,6 +373,8 @@ resolved package inventory is stored at
 
    ```bash
    source_sha="$(git rev-parse "${tag}^{commit}")"
+   release_notes="docs/releases/${version}.md"
+   test -f "$release_notes"
    release_branch="$(gh api repos/tetsuo-ai/agenc-releases --jq .default_branch)"
    release_head="$(gh api \
      "repos/tetsuo-ai/agenc-releases/git/ref/heads/$release_branch" --jq .object.sha)"
@@ -372,7 +387,8 @@ resolved package inventory is stored at
      --raw-field ref="refs/tags/$tag" \
      --raw-field sha="$release_tag_object"
    gh release create "$tag" --repo tetsuo-ai/agenc-releases \
-     --verify-tag --draft --title "AgenC $version"
+     --verify-tag --draft --title "AgenC $version" \
+     --notes-file "$release_notes"
    gh release upload "$tag" --repo tetsuo-ai/agenc-releases \
      "$tmp/upload"/*
    ```
@@ -435,13 +451,22 @@ resolved package inventory is stored at
    approval gate, publishes with npm OIDC, and verifies the registry receipt:
 
    ```bash
+   tested_sha="$(git rev-parse "${tag}^{commit}")"
+   evidence_path="${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json"
+   test -f "$evidence_path"
+   evidence_sha256="$(sha256sum "$evidence_path" | cut -d ' ' -f 1)"
+   [[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
    gh workflow run publish-npm.yml --repo tetsuo-ai/agenc-core \
-     --ref "$tag"
+     --ref "$tag" \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256"
    ```
 
-5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json}` 307-redirect
-   to those release assets — Vercel project `agenc-get`, source in
-   `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from that dir).
+5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json,manifest.json}`
+   307-redirect to the release assets. The site root serves the versioned
+   installer landing page. Vercel project `agenc-get` has its complete tracked
+   source in `packaging/get-agenc-ag/` (redeploy: `vercel deploy --prod` from
+   that directory).
 6. Docker publication is intentionally disabled, remains outside the hosted M0
    quality-gate scope, and stays unauthorized until measured environment drift
    earns that work. Do not publish from an ambient local `docker buildx` invocation: a
