@@ -17,6 +17,7 @@ import type {
   LLMResponse,
 } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Tool } from "../../src/tools/types.js";
 
 let agencHome = "";
@@ -62,8 +63,12 @@ function sessionFor(
   executionAdmission: ExecutionAdmissionClient,
   overrides: Partial<Session> = {},
 ): Session {
+  const eventLog = new EventLog();
   return {
     conversationId: executionAdmission.scope.sessionId,
+    eventLog,
+    rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+    emit: (event: Event) => eventLog.emit(event),
     services: {
       executionAdmission,
       admissionRequired: true,

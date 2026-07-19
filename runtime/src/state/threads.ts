@@ -43,6 +43,59 @@ interface ThreadRow {
 export class StateThreadRepository {
   constructor(private readonly driver: StateSqliteDriver) {}
 
+  /**
+   * Relocate every live SQLite reference when a rollout JSONL is archived or
+   * restored. The filesystem rename is owned by FileThreadStore; keeping this
+   * projection move in one immediate transaction prevents replay, retention,
+   * and terminal-epoch checks from retaining a stale source path.
+   */
+  relocateRolloutSource(sourcePath: string, targetPath: string): void {
+    if (sourcePath === targetPath) return;
+    this.driver.transactionImmediate(() => {
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE thread_rollout_items SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE rollout_receipts SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE backfill_files SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE thread_spawn_edges SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE run_journal_bindings SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+    });
+  }
+
+  /**
+   * Commit one bounded rollout projection and validate its filesystem identity
+   * at the final synchronous boundary before SQLite commits. Any failed
+   * validation rolls back both thread metadata and rollout/receipt rows.
+   */
+  commitRolloutProjection<T>(
+    apply: () => T,
+    validateCanonical: () => void,
+  ): T {
+    return this.driver.transactionImmediate(() => {
+      const result = apply();
+      validateCanonical();
+      return result;
+    });
+  }
+
   upsertThread(record: IndexedThreadRecord): void {
     this.driver
       .prepareState(

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import { admissionRecordKey } from "../../src/budget/admission-types.js";
 import type { RuntimeAdmissionRequest } from "../../src/budget/admission-types.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
   type StateDatabasePaths,
@@ -422,6 +423,32 @@ describe("durable run inspection", () => {
     expect(new Set(observed).size).toBe(observed.length);
   });
 
+  it("reports a legacy replay cursor beyond the durable journal tail", () => {
+    const expectedSequences = seedDurableRuns();
+    const lastAvailableSequence = Math.max(...expectedSequences);
+
+    expect(
+      service.replay({
+        runId: "run-complete",
+        afterSequence: lastAvailableSequence + 10,
+        limit: 20,
+      }),
+    ).toMatchObject({
+      events: [],
+      hasMore: false,
+      nextAfterSequence: lastAvailableSequence + 10,
+      lastAvailableSequence,
+      gap: {
+        kind: "cursor_ahead",
+        runId: "run-complete",
+        afterSequence: lastAvailableSequence + 10,
+        lastAvailableSequence,
+        reason: "cursor_ahead",
+      },
+      source: { sequenceScope: "project_state_database" },
+    });
+  });
+
   it("returns only durable terminal results and labels absent output honestly", () => {
     seedDurableRuns();
 
@@ -439,6 +466,193 @@ describe("durable run inspection", () => {
         code: "RUN_NOT_TERMINAL",
       }),
     );
+  });
+
+  it("returns the committed M4 terminal result after the original connection is gone", () => {
+    seedDurableRuns();
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.ensureInitialEpoch({ runId: "run-complete", openedAt: NOW });
+    durability.recordTerminalResult({
+      epoch: 1,
+      eventId: "terminal-event-44",
+      result: {
+        runId: "run-complete",
+        status: "completed",
+        exitCode: 0,
+        stopReason: "turn_completed",
+        finalMessage: "Durable final answer",
+        usage: {
+          inputTokens: 30,
+          outputTokens: 12,
+          totalTokens: 42,
+          costUsd: 0.004,
+        },
+        lastSequence: 44,
+        finishedAt: "2026-07-18T12:05:00.000Z",
+      },
+    });
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(service.result({ runId: "run-complete" })).toMatchObject({
+      runId: "run-complete",
+      status: "completed",
+      terminal: true,
+      terminalAt: "2026-07-18T12:05:00.000Z",
+      epoch: 1,
+      output: {
+        available: true,
+        exitCode: 0,
+        stopReason: "turn_completed",
+        finalMessage: "Durable final answer",
+        usage: {
+          inputTokens: 30,
+          outputTokens: 12,
+          totalTokens: 42,
+          costUsd: 0.004,
+        },
+        lastSequence: 44,
+      },
+    });
+  });
+
+  it("locates and returns a canonical terminal without a legacy agent_runs row", () => {
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.ensureInitialEpoch({ runId: "canonical-only", openedAt: NOW });
+    durability.recordTerminalResult({
+      epoch: 1,
+      eventId: "terminal-canonical-only",
+      result: {
+        runId: "canonical-only",
+        status: "completed",
+        exitCode: 0,
+        stopReason: "completed",
+        finalMessage: "canonical answer",
+        usage: null,
+        lastSequence: 1,
+        finishedAt: "2026-07-18T12:05:00.000Z",
+      },
+    });
+
+    expect(service.status({ runId: "canonical-only" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "run_terminal_result",
+    });
+    expect(service.result({ runId: "canonical-only" })).toEqual(
+      expect.objectContaining({
+        runId: "canonical-only",
+        terminal: true,
+        epoch: 1,
+        output: expect.objectContaining({
+          available: true,
+          finalMessage: "canonical answer",
+          lastSequence: 1,
+        }),
+      }),
+    );
+    expect(service.result({ runId: "canonical-only" })).not.toHaveProperty(
+      "durableRun",
+    );
+  });
+
+  it("does not expose an earlier epoch terminal after an explicit reopen", () => {
+    seedDurableRuns();
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.ensureInitialEpoch({ runId: "run-complete", openedAt: NOW });
+    durability.recordTerminalResult({
+      epoch: 1,
+      eventId: "terminal-before-reopen",
+      result: {
+        runId: "run-complete",
+        status: "completed",
+        exitCode: 0,
+        stopReason: "turn_completed",
+        finalMessage: "stale after reopen",
+        usage: null,
+        lastSequence: 4,
+        finishedAt: "2026-07-18T12:05:00.000Z",
+      },
+    });
+    durability.reopenRun({
+      runId: "run-complete",
+      fromEpoch: 1,
+      openedAt: "2026-07-18T12:06:00.000Z",
+      eventId: "reopen-event-2",
+      reason: "operator_retry",
+    });
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "running",
+      terminal: false,
+      statusSource: "run_lifecycle_epoch",
+    });
+    expect(() => service.result({ runId: "run-complete" })).toThrowError(
+      expect.objectContaining<AgenCDaemonRunInspectionError>({
+        code: "RUN_NOT_TERMINAL",
+      }),
+    );
+  });
+
+  it("rebuilds a missing terminal projection from the canonical JSONL event", () => {
+    seedDurableRuns();
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+      runId: "run-complete",
+      openedAt: NOW,
+    });
+    const sessionDir = join(paths.projectDir, "sessions", "run-complete");
+    mkdirSync(sessionDir, { recursive: true });
+    const rolloutPath = join(sessionDir, "rollout-terminal.jsonl");
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: {
+          eventId: "terminal-from-jsonl",
+          id: "terminal-from-jsonl",
+          seq: 9,
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId: "run-complete",
+              epoch: 1,
+              status: "completed",
+              exitCode: 0,
+              stopReason: "turn_completed",
+              finalMessage: "Recovered from the journal",
+              usage: {
+                inputTokens: 5,
+                outputTokens: 3,
+                totalTokens: 8,
+                costUsd: 0.001,
+              },
+              lastSequenceBeforeTerminal: 8,
+              finishedAt: "2026-07-18T12:05:00.000Z",
+            },
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    expect(service.result({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      epoch: 1,
+      durableRun: { status: "completed" },
+      output: {
+        available: true,
+        finalMessage: "Recovered from the journal",
+        lastSequence: 9,
+      },
+    });
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-complete",
+      ),
+    ).toMatchObject({ eventId: "terminal-from-jsonl", lastSequence: 9 });
   });
 
   it("exports bounded hashes and explicitly excludes workflow evidence", () => {
@@ -461,6 +675,7 @@ describe("durable run inspection", () => {
     for (const digest of [
       partial.hashes.runStateSha256,
       partial.hashes.admissionSummarySha256,
+      partial.hashes.gapSha256,
       partial.hashes.bundleSha256,
       partial.hashes.eventHashes[0]?.sha256,
     ]) {
@@ -473,6 +688,15 @@ describe("durable run inspection", () => {
     });
     expect(complete.hasMore).toBe(false);
     expect(complete.source.completeness).toBe("complete");
+
+    const cursorAhead = service.evidence({
+      runId: "run-complete",
+      afterSequence: complete.cursor.nextAfterSequence + 100,
+      limit: 20,
+    });
+    expect(cursorAhead.source.completeness).toBe("journal_gap");
+    expect(cursorAhead.gap).toMatchObject({ kind: "cursor_ahead" });
+    expect(cursorAhead.hashes.gapSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("advertises, validates, and maps typed dispatcher errors", async () => {

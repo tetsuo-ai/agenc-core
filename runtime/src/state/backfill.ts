@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  fstatSync,
   openSync,
   readSync,
   readdirSync,
-  readFileSync,
   type Stats,
   statSync,
 } from "node:fs";
@@ -61,61 +61,151 @@ export function backfillRolloutFile(options: {
   readonly archived?: boolean;
   readonly threads: StateThreadRepository;
 }): { readonly itemsIndexed: number } {
-  const stat = statSync(options.rolloutPath);
-  const existing = options.threads.getBackfillFile(options.rolloutPath);
+  const snapshotFd = openSync(options.rolloutPath, "r");
+  try {
+    const stat = fstatSync(snapshotFd);
+    assertRolloutRecordBoundary(snapshotFd, options.rolloutPath, stat.size);
+    const existing = options.threads.getBackfillFile(options.rolloutPath);
 
-  // Fast path 1 — file unchanged since last index. The rollout file is an
-  // append-only log; identical size and mtime means nothing was appended, so
-  // there is no work to do. Avoids re-reading and re-hashing the whole file
-  // on every `appendItems` call.
-  if (
-    existing !== undefined &&
-    existing.size === stat.size &&
-    existing.mtimeMs === stat.mtimeMs
-  ) {
-    return { itemsIndexed: 0 };
-  }
-
-  // Fast path 2 — file grew (pure append). Read and parse only the appended
-  // tail and INSERT only the new lines, leaving prior rows untouched. This
-  // keeps each append O(bytes appended) instead of O(file size), avoiding the
-  // O(N^2) re-index that an unconditional DELETE-all + re-INSERT-all causes.
-  if (existing !== undefined && stat.size > existing.size) {
-    const appended = readAppendedTail(options.rolloutPath, existing.size);
-    if (appended !== undefined) {
-      return indexAppendedTail({
-        rolloutPath: options.rolloutPath,
-        archived: options.archived,
-        threads: options.threads,
-        stat,
-        priorSize: existing.size,
-        existing,
-        tail: appended,
-      });
+    // Fast path 1 — file unchanged since last index. The rollout file is an
+    // append-only log; identical size and mtime means nothing was appended, so
+    // there is no work to do. Avoids re-reading and re-hashing the whole file
+    // on every `appendItems` call.
+    if (
+      existing !== undefined &&
+      existing.size === stat.size &&
+      existing.mtimeMs === stat.mtimeMs
+    ) {
+      assertSnapshotStillCanonical(options.rolloutPath, stat);
+      return { itemsIndexed: 0 };
     }
-    // The tail read was unusable (e.g. a partial line straddling the prior
-    // size boundary); fall through to a full reconcile below.
-  }
 
-  // Full reconcile path — first index, truncation, rewrite, or any case the
-  // incremental fast paths could not safely handle. Preserves crash/resume
-  // correctness by rebuilding the file's rows from scratch.
-  return reindexWholeRolloutFile({
-    rolloutPath: options.rolloutPath,
-    archived: options.archived,
-    threads: options.threads,
-    stat,
-  });
+    // Fast path 2 — file grew (pure append). Read and parse only the appended
+    // tail and INSERT only the new lines, leaving prior rows untouched. This
+    // keeps each append O(bytes appended) instead of O(file size), avoiding the
+    // O(N^2) re-index that an unconditional DELETE-all + re-INSERT-all causes.
+    if (existing !== undefined && stat.size > existing.size) {
+      const appended = readAppendedTail(
+        snapshotFd,
+        options.rolloutPath,
+        existing.size,
+        stat.size,
+      );
+      if (appended !== undefined) {
+        return indexAppendedTail({
+          rolloutPath: options.rolloutPath,
+          archived: options.archived,
+          threads: options.threads,
+          stat,
+          priorSize: existing.size,
+          existing,
+          tail: appended,
+        });
+      }
+      // The tail read was unusable (e.g. a partial line straddling the prior
+      // size boundary); fall through to a full reconcile below.
+    }
+
+    // Full reconcile path — first index, truncation, rewrite, or any case the
+    // incremental fast paths could not safely handle. Preserves crash/resume
+    // correctness by rebuilding the file's rows from scratch.
+    return reindexWholeRolloutFile({
+      snapshotFd,
+      rolloutPath: options.rolloutPath,
+      archived: options.archived,
+      threads: options.threads,
+      stat,
+    });
+  } finally {
+    closeSync(snapshotFd);
+  }
+}
+
+/**
+ * Project bytes already read through a descriptor-pinned offline rollout
+ * lease. Unlike {@link backfillRolloutFile}, this entry point never reopens
+ * the canonical source by pathname. The caller-supplied validation runs at
+ * the final boundary of the same SQLite transaction as the projection.
+ */
+export function backfillPinnedRolloutContent(options: {
+  readonly rolloutPath: string;
+  readonly raw: string;
+  readonly archived?: boolean;
+  readonly threads: StateThreadRepository;
+  readonly mtimeMs: number;
+  readonly validateCanonical: () => void;
+}): { readonly itemsIndexed: number } {
+  const { rolloutPath, raw, threads } = options;
+  assertTerminatedJsonl(raw, rolloutPath);
+  const threadId = threadIdFromRolloutPath(rolloutPath);
+  const items: RolloutItemRow[] = [];
+  let byteOffset = 0;
+  let itemIndex = 0;
+  let firstMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  let latestMeta: Extract<RolloutItem, { type: "session_meta" }> | undefined;
+  const lines = raw.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    const lineBytes = Buffer.byteLength(line) + 1;
+    if (line.trim().length === 0) {
+      byteOffset += lineBytes;
+      continue;
+    }
+    let parsed: RolloutItem | null;
+    try {
+      parsed = parseRolloutLine(line);
+    } catch {
+      byteOffset += lineBytes;
+      continue;
+    }
+    if (parsed !== null) {
+      if (parsed.type === "session_meta") {
+        firstMeta ??= parsed;
+        latestMeta = parsed;
+      }
+      items.push(rolloutItemRow(parsed, i + 1, byteOffset, itemIndex, line));
+      itemIndex += 1;
+    }
+    byteOffset += lineBytes;
+  }
+  const now = new Date(options.mtimeMs).toISOString();
+  threads.commitRolloutProjection(
+    () => {
+      mergeThreadFromMeta({
+        threads,
+        threadId,
+        rolloutPath,
+        archived: options.archived,
+        now,
+        createdAt: firstMeta?.payload.timestamp,
+        metaForUpdate: latestMeta?.payload,
+        metaForCreate: firstMeta?.payload,
+      });
+      threads.replaceRolloutItems({
+        threadId,
+        sourcePath: rolloutPath,
+        items,
+        mtimeMs: options.mtimeMs,
+        size: Buffer.byteLength(raw),
+        sha256: createHash("sha256").update(raw).digest("hex"),
+        lineCount: lines.length,
+      });
+    },
+    options.validateCanonical,
+  );
+  return { itemsIndexed: items.length };
 }
 
 function reindexWholeRolloutFile(args: {
+  readonly snapshotFd: number;
   readonly rolloutPath: string;
   readonly archived?: boolean;
   readonly threads: StateThreadRepository;
   readonly stat: Stats;
 }): { readonly itemsIndexed: number } {
   const { rolloutPath, threads, stat } = args;
-  const raw = readFileSync(rolloutPath, "utf8");
+  const raw = readRolloutSnapshot(args.snapshotFd, rolloutPath, 0, stat.size);
+  assertTerminatedJsonl(raw, rolloutPath);
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
   let byteOffset = 0;
@@ -150,25 +240,30 @@ function reindexWholeRolloutFile(args: {
     byteOffset += lineBytes;
   }
   const now = new Date(stat.mtimeMs).toISOString();
-  mergeThreadFromMeta({
-    threads,
-    threadId,
-    rolloutPath,
-    archived: args.archived,
-    now,
-    createdAt: firstMeta?.payload.timestamp,
-    metaForUpdate: latestMeta?.payload,
-    metaForCreate: firstMeta?.payload,
-  });
-  threads.replaceRolloutItems({
-    threadId,
-    sourcePath: rolloutPath,
-    items,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    sha256: createHash("sha256").update(raw).digest("hex"),
-    lineCount: lines.length,
-  });
+  threads.commitRolloutProjection(
+    () => {
+      mergeThreadFromMeta({
+        threads,
+        threadId,
+        rolloutPath,
+        archived: args.archived,
+        now,
+        createdAt: firstMeta?.payload.timestamp,
+        metaForUpdate: latestMeta?.payload,
+        metaForCreate: firstMeta?.payload,
+      });
+      threads.replaceRolloutItems({
+        threadId,
+        sourcePath: rolloutPath,
+        items,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        sha256: createHash("sha256").update(raw).digest("hex"),
+        lineCount: lines.length,
+      });
+    },
+    () => assertSnapshotStillCanonical(rolloutPath, stat),
+  );
   return { itemsIndexed: items.length };
 }
 
@@ -186,6 +281,7 @@ function indexAppendedTail(args: {
   readonly tail: string;
 }): { readonly itemsIndexed: number } {
   const { rolloutPath, threads, stat, existing, tail } = args;
+  assertTerminatedJsonl(tail, rolloutPath);
   const threadId = threadIdFromRolloutPath(rolloutPath);
   const items: RolloutItemRow[] = [];
   // Prior content occupied line numbers 1..(lineCount-1) plus a trailing empty
@@ -228,6 +324,7 @@ function indexAppendedTail(args: {
     lineNumber += 1;
   }
   const now = new Date(stat.mtimeMs).toISOString();
+  assertSnapshotStillCanonical(rolloutPath, stat);
   // mergeThread overwrites createdAt/updatedAt unconditionally with whatever we
   // pass, so carry the already-recorded values forward. The first session_meta
   // (the source of createdAt) lives in the unchanged prefix we did not re-read,
@@ -236,33 +333,71 @@ function indexAppendedTail(args: {
   // an append and then jump back on the next full reconcile. Carry the prior
   // updatedAt forward so it only advances when a newer meta timestamp appears,
   // matching the full-reconcile semantics.
-  const prior = threads.getThread(threadId);
-  mergeThreadFromMeta({
-    threads,
-    threadId,
-    rolloutPath,
-    archived: args.archived,
-    now,
-    createdAt: firstMeta?.payload.timestamp ?? prior?.createdAt,
-    updatedAt: prior?.updatedAt,
-    metaForUpdate: latestMeta?.payload,
-    metaForCreate: firstMeta?.payload,
-  });
-  threads.appendRolloutItems({
-    threadId,
-    sourcePath: rolloutPath,
-    items,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    // Carry the prior full-file digest forward rather than re-hashing the whole
-    // file on every append (which would reintroduce the O(N^2) behaviour). The
-    // canonical full-file hash is re-established whenever a full reconcile runs.
-    // Change detection here relies on mtime+size, not this digest.
-    sha256: existing.sha256,
-    lineCount: existing.lineCount + (lines.length - 1),
-    totalItemCount: itemIndex,
-  });
+  threads.commitRolloutProjection(
+    () => {
+      const prior = threads.getThread(threadId);
+      mergeThreadFromMeta({
+        threads,
+        threadId,
+        rolloutPath,
+        archived: args.archived,
+        now,
+        createdAt: firstMeta?.payload.timestamp ?? prior?.createdAt,
+        updatedAt: prior?.updatedAt,
+        metaForUpdate: latestMeta?.payload,
+        metaForCreate: firstMeta?.payload,
+      });
+      threads.appendRolloutItems({
+        threadId,
+        sourcePath: rolloutPath,
+        items,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        // Carry the prior full-file digest forward rather than re-hashing the whole
+        // file on every append (which would reintroduce the O(N^2) behaviour). The
+        // canonical full-file hash is re-established whenever a full reconcile runs.
+        // Change detection here relies on mtime+size, not this digest.
+        sha256: existing.sha256,
+        lineCount: existing.lineCount + (lines.length - 1),
+        totalItemCount: itemIndex,
+      });
+    },
+    () => assertSnapshotStillCanonical(rolloutPath, stat),
+  );
   return { itemsIndexed: items.length };
+}
+
+/**
+ * A newline is the rollout commit boundary. Backfill runs without the session
+ * writer lease, so it must never bless a crash-complete-but-unterminated JSON
+ * object as canonical evidence. SessionStore owns repair/truncation under the
+ * lease; callers retry projection after that recovery succeeds.
+ */
+function assertRolloutRecordBoundary(
+  snapshotFd: number,
+  rolloutPath: string,
+  size: number,
+): void {
+  if (size === 0) return;
+  const boundary = Buffer.allocUnsafe(1);
+  if (
+    readSync(snapshotFd, boundary, 0, 1, size - 1) !== 1 ||
+    boundary[0] !== 0x0a
+  ) {
+    throw unterminatedRollout(rolloutPath);
+  }
+}
+
+function assertTerminatedJsonl(content: string, rolloutPath: string): void {
+  if (content.length > 0 && !content.endsWith("\n")) {
+    throw unterminatedRollout(rolloutPath);
+  }
+}
+
+function unterminatedRollout(rolloutPath: string): Error {
+  return new Error(
+    `refusing to index unterminated canonical rollout without its session lease: ${rolloutPath}`,
+  );
 }
 
 function rolloutItemRow(
@@ -278,11 +413,32 @@ function rolloutItemRow(
     itemIndex,
     itemType: parsed.type,
     eventVersion: parsed.eventVersion,
-    eventId: parsed.type === "event_msg" ? parsed.payload.id : undefined,
+    eventId:
+      parsed.type === "event_msg"
+        ? canonicalProjectedEventId(parsed.payload)
+        : undefined,
     eventSeq: parsed.type === "event_msg" ? parsed.payload.seq : undefined,
     payloadJson: JSON.stringify(parsed.payload),
     lineHash: createHash("sha256").update(line).digest("hex"),
   };
+}
+
+function canonicalProjectedEventId(
+  event: Extract<RolloutItem, { readonly type: "event_msg" }>[
+    "payload"
+  ],
+): string {
+  if (typeof event.eventId === "string" && event.eventId.length > 0) {
+    return event.eventId;
+  }
+  if (
+    typeof event.seq === "number" &&
+    Number.isSafeInteger(event.seq) &&
+    event.seq > 0
+  ) {
+    return `legacy-event:${event.seq}:${event.id}`;
+  }
+  return event.id;
 }
 
 function mergeThreadFromMeta(args: {
@@ -331,35 +487,94 @@ function mergeThreadFromMeta(args: {
  * truncation/rewrite that must go through a full reconcile).
  */
 function readAppendedTail(
+  snapshotFd: number,
   rolloutPath: string,
   priorSize: number,
+  snapshotSize: number,
 ): string | undefined {
-  const fd = openSync(rolloutPath, "r");
+  if (snapshotSize < priorSize) return undefined;
+  const length = snapshotSize - priorSize;
+  if (length === 0) return "";
+  // The incremental append path numbers new lines starting at the prior line
+  // count, which is only valid when the previously indexed content ended on a
+  // line boundary. Verify the byte just before the new region is a newline;
+  // otherwise the tail straddles a prior line and must go through a full
+  // reconcile to renumber correctly.
+  if (priorSize > 0) {
+    const boundary = Buffer.allocUnsafe(1);
+    if (readSync(snapshotFd, boundary, 0, 1, priorSize - 1) !== 1) {
+      return undefined;
+    }
+    if (boundary[0] !== 0x0a) return undefined;
+  }
+  const buffer = Buffer.allocUnsafe(length);
+  let read = 0;
+  while (read < length) {
+    const n = readSync(
+      snapshotFd,
+      buffer,
+      read,
+      length - read,
+      priorSize + read,
+    );
+    if (n === 0) break;
+    read += n;
+  }
+  if (read !== length) throw changedDuringSnapshot(rolloutPath);
+  return buffer.toString("utf8");
+}
+
+function readRolloutSnapshot(
+  snapshotFd: number,
+  rolloutPath: string,
+  start: number,
+  end: number,
+): string {
+  const length = end - start;
+  if (length < 0) throw changedDuringSnapshot(rolloutPath);
+  if (length === 0) return "";
+  const buffer = Buffer.allocUnsafe(length);
+  let read = 0;
+  while (read < length) {
+    const count = readSync(
+      snapshotFd,
+      buffer,
+      read,
+      length - read,
+      start + read,
+    );
+    if (count === 0) break;
+    read += count;
+  }
+  if (read !== length) throw changedDuringSnapshot(rolloutPath);
+  return buffer.toString("utf8");
+}
+
+function changedDuringSnapshot(rolloutPath: string): Error {
+  return new Error(
+    `canonical rollout changed while capturing a bounded projection snapshot: ${rolloutPath}`,
+  );
+}
+
+function assertSnapshotStillCanonical(
+  rolloutPath: string,
+  snapshot: Stats,
+): void {
+  let current: Stats;
   try {
-    const stat = statSync(rolloutPath);
-    if (stat.size < priorSize) return undefined;
-    const length = stat.size - priorSize;
-    if (length === 0) return "";
-    // The incremental append path numbers new lines starting at the prior line
-    // count, which is only valid when the previously indexed content ended on a
-    // line boundary. Verify the byte just before the new region is a newline;
-    // otherwise the tail straddles a prior line and must go through a full
-    // reconcile to renumber correctly.
-    if (priorSize > 0) {
-      const boundary = Buffer.allocUnsafe(1);
-      if (readSync(fd, boundary, 0, 1, priorSize - 1) !== 1) return undefined;
-      if (boundary[0] !== 0x0a) return undefined;
-    }
-    const buffer = Buffer.allocUnsafe(length);
-    let read = 0;
-    while (read < length) {
-      const n = readSync(fd, buffer, read, length - read, priorSize + read);
-      if (n === 0) break;
-      read += n;
-    }
-    return buffer.subarray(0, read).toString("utf8");
-  } finally {
-    closeSync(fd);
+    current = statSync(rolloutPath);
+  } catch (error) {
+    throw new Error(changedDuringSnapshot(rolloutPath).message, {
+      cause: error,
+    });
+  }
+  if (
+    current.dev !== snapshot.dev ||
+    current.ino !== snapshot.ino ||
+    current.size < snapshot.size ||
+    (current.size === snapshot.size && current.mtimeMs !== snapshot.mtimeMs)
+  ) {
+    throw changedDuringSnapshot(rolloutPath);
   }
 }
 

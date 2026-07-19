@@ -18,8 +18,8 @@ import {
 } from "../state/sqlite-driver.js";
 import {
   listUnresolvedUnknownOutcomeEffects,
-  resolveUnknownOutcomeEffect,
 } from "../state/unknown-outcome-gate.js";
+import { resolveDurableEffectReview } from "../state/effect-review.js";
 
 export type AgenCStateCliCommand =
   | { readonly kind: "export"; readonly agentId: string }
@@ -162,11 +162,18 @@ function runStateResolveToolCall(
 ): number {
   try {
     return withStateDriver(options, (driver) => {
-      const resolved = resolveUnknownOutcomeEffect(driver, {
+      const resolved = resolveDurableEffectReview(driver, {
         sessionId: command.sessionId,
         toolCallId: command.toolCallId,
+        reviewedAt: options.now?.() ?? new Date().toISOString(),
+        reviewedBy:
+          options.env?.AGENC_REVIEWER_ID?.trim() ||
+          options.env?.USER?.trim() ||
+          options.env?.USERNAME?.trim() ||
+          "local_operator",
+        resolution: "human_verified",
       });
-      if (!resolved) {
+      if (resolved.kind === "not_found") {
         const unresolved = listUnresolvedUnknownOutcomeEffects(
           driver,
           command.sessionId,
@@ -182,7 +189,11 @@ function runStateResolveToolCall(
         return 1;
       }
       io.stdout.write(
-        `Resolved unknown-outcome tool call ${command.toolCallId} in session ${command.sessionId}; the side-effecting mutation gate lifts once no unresolved effects remain.\n`,
+        `Resolved unknown-outcome tool call ${command.toolCallId} in session ${command.sessionId}` +
+          (resolved.durable
+            ? ` with canonical review event ${resolved.eventId} at sequence ${resolved.sequence}`
+            : "") +
+          `; the side-effecting mutation gate lifts once no unresolved effects remain.\n`,
       );
       return 0;
     });

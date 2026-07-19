@@ -152,6 +152,39 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
 }
 
 describe("ExecutionAdmissionKernel recovery", () => {
+  it("stops admission work when canonical journal projection fails and retries the same evidence", async () => {
+    const value = kernel("critical-projection");
+    const client = bind(value, "critical-run");
+    const projectedSequences: number[] = [];
+    let rejectProjection = true;
+    const unsubscribe = client.subscribeCritical?.((event) => {
+      projectedSequences.push(event.sequence);
+      if (rejectProjection) throw new Error("canonical projection unavailable");
+    });
+
+    expect(() => acquire(client)).toThrow("canonical projection unavailable");
+    expect(value.activeCount).toBe(0);
+    expect(
+      value
+        .listJournal({ cwd, runId: "critical-run" })
+        .map((event) => event.event),
+    ).toEqual(["queued"]);
+
+    // The workspace cursor stays on the failed record. Once projection is
+    // available, retrying the same step replays that exact journal sequence
+    // before a reservation can become active.
+    rejectProjection = false;
+    const lease = await acquire(client);
+    expect(projectedSequences[1]).toBe(projectedSequences[0]);
+    expect(lease.request.step.stepId).toBe("step-1");
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    unsubscribe?.();
+  });
+
   it("ages an old low-priority row ahead of fresh high-priority work", async () => {
     await leaveDetachedQueues(["aged-low", "fresh-high"]);
     let clock = new Date();
@@ -285,9 +318,7 @@ describe("ExecutionAdmissionKernel recovery", () => {
     const allowed = after
       .listJournal({ cwd })
       .filter((event) => event.event === "allowed")
-      .filter((event) =>
-        ["recovered-run", "fresh-run"].includes(event.runId),
-      );
+      .filter((event) => ["recovered-run", "fresh-run"].includes(event.runId));
     expect(allowed.map((event) => event.runId)).toEqual([
       "fresh-run",
       "recovered-run",
@@ -390,9 +421,7 @@ describe("ExecutionAdmissionKernel recovery", () => {
     before.close();
     const closed = await Promise.all(beforeOutcomes);
     expect(closed.filter((result) => result.kind === "lease")).toHaveLength(4);
-    expect(closed.filter((result) => result.kind === "error")).toHaveLength(
-      96,
-    );
+    expect(closed.filter((result) => result.kind === "error")).toHaveLength(96);
 
     const after = kernel("fanout-after", fanoutLimits);
     expect(after.initializeExistingState()).toMatchObject({
@@ -569,6 +598,55 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     expect(value.activeCount).toBe(0);
   });
 
+  it("cancels admissions synchronously without advancing the agent-run projection", async () => {
+    const seededAt = "2026-07-18T12:00:00.000Z";
+    const setup = openStateDatabases({ cwd, agencHome: home });
+    try {
+      upsertAgentRun(setup, {
+        id: "two-phase-root",
+        objective: "remain running until terminal",
+        status: "running",
+        startedAt: seededAt,
+        lastActiveAt: seededAt,
+        currentSessionId: "two-phase-root",
+      });
+    } finally {
+      setup.close();
+    }
+    const value = kernel("two-phase-cancel");
+    const client = bind(value, "two-phase-root");
+    const lease = await acquire(client);
+    client.markDispatched(lease.reservation.reservationId, {
+      boundary: "provider_wire",
+    });
+    const projected: string[] = [];
+    const unsubscribe = client.subscribeCritical?.((event) => {
+      projected.push(event.event);
+    });
+
+    const result = client.cancelAdmissions!("operator_cancel");
+
+    expect(result).toMatchObject({
+      affectedRunIds: ["two-phase-root"],
+      heldUnknownReservations: 1,
+    });
+    expect(projected).toEqual(["held_unknown", "cancelled"]);
+    const inspect = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(
+        inspect
+          .prepareState<[string], { readonly status: string }>(
+            "SELECT status FROM agent_runs WHERE id = ?",
+          )
+          .get("two-phase-root")?.status,
+      ).toBe("running");
+    } finally {
+      inspect.close();
+    }
+    unsubscribe?.();
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+  });
+
   it("rolls provider-overrun accounting back when the canonical cascade fails", async () => {
     const seededAt = "2026-07-18T12:00:00.000Z";
     const setup = openStateDatabases({ cwd, agencHome: home });
@@ -606,14 +684,16 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
 
     const inspection = openStateDatabases({ cwd, agencHome: home });
     try {
-      inspection.prepareState(
-        `CREATE TRIGGER reject_provider_overrun_cascade
+      inspection
+        .prepareState(
+          `CREATE TRIGGER reject_provider_overrun_cascade
          BEFORE UPDATE OF status ON agent_runs
          WHEN NEW.status = 'cancelled' AND OLD.status <> 'cancelled'
          BEGIN
            SELECT RAISE(ABORT, 'fault-injected canonical cascade failure');
          END`,
-      ).run();
+        )
+        .run();
 
       expect(() =>
         client.reconcile(lease.reservation.reservationId, {
@@ -821,13 +901,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
       value
         .listJournal({ cwd, runId: "active-abort-run" })
         .map((event) => event.event),
-    ).toEqual([
-      "queued",
-      "allowed",
-      "dispatched",
-      "held_unknown",
-      "cancelled",
-    ]);
+    ).toEqual(["queued", "allowed", "dispatched", "held_unknown", "cancelled"]);
 
     let followUpSettled = false;
     const followUpPending = acquire(client, "follow-up-turn").finally(() => {
@@ -922,7 +996,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     expect(
       value
         .listJournal({ cwd, runId: "dispatch-deadline-race" })
-      .map((event) => event.event),
+        .map((event) => event.event),
     ).toEqual(["queued", "allowed", "voided", "cancelled"]);
     client.acknowledgeCompletion(lease.reservation.reservationId);
     expect(value.activeCount).toBe(0);
@@ -1013,13 +1087,7 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
       value
         .listJournal({ cwd, runId: "long-deadline-run" })
         .map((event) => event.event),
-    ).toEqual([
-      "queued",
-      "allowed",
-      "dispatched",
-      "held_unknown",
-      "cancelled",
-    ]);
+    ).toEqual(["queued", "allowed", "dispatched", "held_unknown", "cancelled"]);
   });
 
   it("rolls daily budget scopes for a long-lived client at UTC midnight", async () => {

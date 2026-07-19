@@ -87,6 +87,15 @@ export interface InFlightToolCallProgressParams {
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
 
+export interface InFlightToolCallUnknownOutcomeParams {
+  readonly sessionId: string;
+  readonly agentId?: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly observedAt: string;
+  readonly recoveryCategory: Exclude<ToolRecoveryCategory, "idempotent">;
+}
+
 const DEFAULT_TOOL_OUTPUT_ROTATION_POLICY = Object.freeze({
   outputPartialMaxBytes: 32_768,
   logMaxBytes: 1_048_576,
@@ -317,6 +326,52 @@ export function recordInFlightToolCallCompletion(
       rotated.outputLogBytes,
       params.completedAt,
       normalizeToolRecoveryCategory(params.recoveryCategory),
+    );
+}
+
+/**
+ * Project a canonical effect_unknown_outcome event into the existing recovery
+ * gate. The journal event is the authority; this row is the restart/query
+ * index used to block dependent side-effecting calls until explicit review.
+ */
+export function recordInFlightToolCallUnknownOutcome(
+  driver: StateSqliteDriver,
+  params: InFlightToolCallUnknownOutcomeParams,
+): void {
+  const update = driver
+    .prepareState<[string, string, string]>(
+      `UPDATE in_flight_tool_calls
+       SET status = 'poisoned', recovery_category = ?
+       WHERE session_id = ? AND tool_call_id = ?
+         AND status <> 'unknown_resolved'`,
+    )
+    .run(
+      params.recoveryCategory,
+      params.sessionId,
+      params.toolCallId,
+    );
+  if (update.changes > 0) return;
+  driver
+    .prepareState<
+      [string, string, string, string, string, null, null, number, string, string]
+    >(
+      `INSERT OR IGNORE INTO in_flight_tool_calls (
+        session_id, tool_call_id, tool_name, args_json, status,
+        output_partial, output_log_path, output_log_bytes, started_at,
+        recovery_category
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      params.sessionId,
+      params.toolCallId,
+      params.toolName,
+      "null",
+      "poisoned",
+      null,
+      null,
+      0,
+      params.observedAt,
+      params.recoveryCategory,
     );
 }
 

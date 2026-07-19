@@ -1530,7 +1530,6 @@ export async function bootstrapLocalRuntimeSession(
       onBeforeSessionConfigured: async (s) => {
         sessionRef = s;
         sessionForShutdown = s;
-        bootstrapServices.bindSession(s);
         const agentRegistry = new AgentRegistry({
           ...(startup.config.agent_max_threads !== undefined
             ? { maxThreads: startup.config.agent_max_threads }
@@ -1609,9 +1608,22 @@ export async function bootstrapLocalRuntimeSession(
           },
         });
 
+        // Resume must restore the canonical rollout coordinates before the
+        // SQLite admission journal subscribes and catches up decisions that
+        // landed while this Session was detached. Binding earlier either has
+        // no store to persist into or allocates catch-up events from sequence
+        // one, colliding with resumed history. These three boundaries are
+        // intentionally fail-closed; continuing without the admission
+        // projection would make later execution evidence incomplete.
+        const existingItems = rolloutStore.readAll();
+        s.eventLog.seedCanonicalHistory(
+          existingItems.flatMap((item) =>
+            item.type === "event_msg" ? [item.payload] : [],
+          ),
+        );
+        bootstrapServices.bindSession(s);
+
         try {
-          const existingItems = rolloutStore.readAll();
-          s.eventLog.seedLastSeq(maxRolloutEventSeq(existingItems));
           if (existingItems.length > 0) {
             const indexSnapshot = readIndexSnapshot(
               join(
@@ -1894,16 +1906,4 @@ export async function bootstrapLocalRuntimeSession(
     }
     throw err;
   }
-}
-
-function maxRolloutEventSeq(items: readonly RolloutItem[]): number {
-  let maxSeq = 0;
-  for (const item of items) {
-    if (item.type !== "event_msg") continue;
-    const seq = (item.payload as { readonly seq?: unknown }).seq;
-    if (typeof seq === "number" && Number.isSafeInteger(seq) && seq > maxSeq) {
-      maxSeq = seq;
-    }
-  }
-  return maxSeq;
 }

@@ -27,6 +27,7 @@ import {
 import type { AdmissionLease } from "../../budget/admission-types.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
+import { EventLog, type Event } from "../../session/event-log.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -215,6 +216,7 @@ function makeAdmissionHarness(
     outcome: "reconciled" as const,
   }));
   const holdUnknown = vi.fn();
+  const voidReservation = vi.fn();
   const acknowledgeCompletion = vi.fn();
   const admission = {
     scope: {
@@ -227,7 +229,7 @@ function makeAdmissionHarness(
     markDispatched,
     reconcile,
     holdUnknown,
-    void: vi.fn(),
+    void: voidReservation,
     acknowledgeCompletion,
     recordFallback: vi.fn(),
     forSession: vi.fn(),
@@ -236,8 +238,16 @@ function makeAdmissionHarness(
   const base = makeSession(sessionId) as unknown as {
     readonly services: Record<string, unknown>;
   };
+  const eventLog = new EventLog();
+  const effectEvents: Event[] = [];
   const session = {
     ...base,
+    eventLog,
+    rolloutStore: {
+      assertToolAdmissionAllowed: () => {},
+      recordEffectEvent: (event: Event) => effectEvents.push(event),
+    },
+    emit: (event: Event) => eventLog.emit(event),
     services: {
       ...base.services,
       admissionRequired: true,
@@ -251,6 +261,8 @@ function makeAdmissionHarness(
     markDispatched,
     reconcile,
     session,
+    effectEvents,
+    voidReservation,
   };
 }
 
@@ -431,6 +443,18 @@ describe("session memory runtime", () => {
     expect(harness.acknowledgeCompletion).toHaveBeenCalledWith(
       "reservation-session-admitted",
     );
+    expect(harness.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+    ]);
+    expect(
+      harness.effectEvents.every(
+        (event) =>
+          (event.msg.type === "effect_intent" ||
+            event.msg.type === "effect_result") &&
+          event.msg.payload.runId === "run-session-admitted",
+      ),
+    ).toBe(true);
     expect(await readFile(setup.memoryPath, "utf8")).toContain("# Current State");
   });
 
@@ -497,7 +521,7 @@ describe("session memory runtime", () => {
     });
   });
 
-  it("forwards lease cancellation and settles the dispatched setup as unknown", async () => {
+  it("forwards lease cancellation and durably voids setup before dispatch", async () => {
     const controller = new AbortController();
     const cancellation = new AdmissionDeniedError(
       "parent_cancelled",
@@ -520,10 +544,11 @@ describe("session memory runtime", () => {
       }),
     ).rejects.toBe(cancellation);
     await expect(stat(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(harness.markDispatched).toHaveBeenCalledOnce();
-    expect(harness.holdUnknown).toHaveBeenCalledWith(
+    expect(harness.markDispatched).not.toHaveBeenCalled();
+    expect(harness.holdUnknown).not.toHaveBeenCalled();
+    expect(harness.voidReservation).toHaveBeenCalledWith(
       "reservation-session-cancelled",
-      "tool_cancelled_after_dispatch",
+      "tool_cancelled_before_dispatch",
     );
     expect(harness.reconcile).not.toHaveBeenCalled();
     expect(harness.acknowledgeCompletion).toHaveBeenCalledWith(

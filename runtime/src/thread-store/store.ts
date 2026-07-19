@@ -1140,7 +1140,7 @@ export class FileThreadStore implements ThreadStore {
         `${Date.now()}-${basename(entry.rolloutPath)}`,
       );
     }
-    renameSync(entry.rolloutPath, targetPath);
+    this.relocateRolloutFile(entry.rolloutPath, targetPath);
     return targetPath;
   }
 
@@ -1153,8 +1153,25 @@ export class FileThreadStore implements ThreadStore {
       entry.rolloutPath ??
       join(this.projectDir, "sessions", entry.threadId, basename(archivedPath));
     mkdirSync(dirname(restoredPath), { recursive: true });
-    renameSync(archivedPath, restoredPath);
+    this.relocateRolloutFile(archivedPath, restoredPath);
     return restoredPath;
+  }
+
+  private relocateRolloutFile(sourcePath: string, targetPath: string): void {
+    renameSync(sourcePath, targetPath);
+    try {
+      this.threadIndex.relocateRolloutSource(sourcePath, targetPath);
+    } catch (error) {
+      try {
+        renameSync(targetPath, sourcePath);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `rollout relocation failed and filesystem rollback could not restore ${sourcePath}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private liveRecorderOrThrow(threadId: ThreadId): RolloutStore {

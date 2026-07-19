@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
@@ -26,6 +26,7 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import { Session, type SessionServices } from "../session/session.js";
+import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
 import {
@@ -54,8 +55,12 @@ import { addFunctionHook } from "../utils/hooks/sessionHooks.js";
 import { runWithCwdOverride } from "../utils/cwd.js";
 
 const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
+const testCleanup: Array<() => Promise<void> | void> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  while (testCleanup.length > 0) {
+    await testCleanup.pop()?.();
+  }
   clearCurrentRuntimeSession();
   resetCommandQueue();
 });
@@ -105,25 +110,29 @@ describe("execAgentHook run-turn integration", () => {
       arguments: JSON.stringify({ ok: true }),
     });
     const parent = createParentSession(provider);
+    await mountTestParentRollout(parent);
     Object.assign(parent.modelInfo, { maxOutputTokens: 128 });
 
     let childReservationSequence = 0;
+    let admittedChildScope: ExecutionAdmissionClient["scope"] = {
+      runId: "hook-child-run",
+      workspaceId: "workspace",
+      sessionId: "hook-child-session",
+      autonomous: false,
+    };
     const childAcquire = vi.fn(
       async (input: AdmissionAcquireInput, signal?: AbortSignal) =>
         allowAdmissionLease(
           input,
           `child-reservation-${++childReservationSequence}`,
-          "hook-child-run",
+          admittedChildScope.runId,
           signal ?? new AbortController().signal,
         ),
     );
     let childAdmission: ExecutionAdmissionClient;
     childAdmission = {
-      scope: {
-        runId: "hook-child-run",
-        workspaceId: "workspace",
-        sessionId: "hook-child-session",
-        autonomous: false,
+      get scope() {
+        return admittedChildScope;
       },
       acquire: childAcquire,
       markDispatched: vi.fn(),
@@ -158,7 +167,22 @@ describe("execAgentHook run-turn integration", () => {
       outcome: "reconciled" as const,
     }));
     const spawnVoid = vi.fn();
-    const forSession = vi.fn(() => childAdmission);
+    const forSession = vi.fn(
+      (scope: Parameters<ExecutionAdmissionClient["forSession"]>[0]) => {
+        admittedChildScope = {
+          ...admittedChildScope,
+          runId: scope.runId,
+          sessionId: scope.sessionId,
+          ...(scope.parentRunId !== undefined
+            ? { parentRunId: scope.parentRunId }
+            : {}),
+          ...(scope.parentScopeId !== undefined
+            ? { parentScopeId: scope.parentScopeId }
+            : {}),
+        };
+        return childAdmission;
+      },
+    );
     const parentAdmission: ExecutionAdmissionClient = {
       scope: {
         runId: "parent-run",
@@ -1787,6 +1811,44 @@ function createAgentDefinitions(roleWorkspace: AgentRoleWorkspace) {
     allAgents: [],
     allowedAgentTypes: [],
   };
+}
+
+async function mountTestParentRollout(parent: Session): Promise<void> {
+  const agencHome = await mkdtemp(join(tmpdir(), "agenc-hook-rollout-"));
+  const previousAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  let store: RolloutStore | undefined;
+  try {
+    store = new RolloutStore({
+      cwd: parent.sessionConfiguration.cwd,
+      sessionId: parent.conversationId,
+      agencVersion: "test",
+    });
+    store.open({
+      sessionId: parent.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd: parent.sessionConfiguration.cwd,
+      originator: "hook-agent-test",
+      agencVersion: "test",
+      model: parent.sessionConfiguration.collaborationMode.model,
+      modelProvider: parent.services.provider.name,
+    });
+    parent.mountRolloutStore(store);
+  } catch (error) {
+    if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
+    else process.env.AGENC_HOME = previousAgencHome;
+    await rm(agencHome, { recursive: true, force: true });
+    throw error;
+  }
+  testCleanup.push(async () => {
+    try {
+      store?.close();
+    } finally {
+      if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousAgencHome;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
 }
 
 function createParentSession(

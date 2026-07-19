@@ -55,7 +55,12 @@ import {
   withSignedSessionId,
 } from "./_deps/filesystem-args.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
-import { RolloutStore } from "../session/rollout-store.js";
+import {
+  mountChildRunJournal,
+  recordUnconstructedChildRunTerminal,
+  type ChildRunTerminalResult,
+} from "../session/child-run-journal.js";
+import { TerminalRunEpochOpenError } from "../session/rollout-store.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   threadConfigSnapshot,
@@ -115,7 +120,10 @@ export interface RunAgentParams {
   readonly querySource?: string;
   /** Optional per-child turn cap. */
   readonly maxTurns?: number;
-  /** Suppress parent mailbox notifications and child rollout recording. */
+  /**
+   * Suppress parent mailbox/progress relays. Canonical child recording remains
+   * enabled because silent internal agents can still perform admitted work.
+   */
   readonly silent?: boolean;
   /** Captured once the child turn has the exact cache-safe request state. */
   readonly onCacheSafeParams?: (params: CacheSafeParams) => void;
@@ -1194,8 +1202,7 @@ export function buildFilteredRegistry(
     /** Live child authority for callers that invoke `registry.dispatch`. */
     readonly getSession?: () => Session | null | undefined;
     /** Isolated legacy-test seam; production must never provide this token. */
-    readonly unadmittedDispatchOverride?:
-      typeof TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH;
+    readonly unadmittedDispatchOverride?: typeof TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH;
   },
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
@@ -1755,38 +1762,6 @@ function cloneSessionConfiguration(
   };
 }
 
-function createChildRolloutStore(
-  parent: Session,
-  sessionConfiguration: Session["sessionConfiguration"],
-  childConversationId: string,
-): RolloutStore | null {
-  const parentRollout = parent.rolloutStore;
-  if (!parentRollout) {
-    return null;
-  }
-
-  const store = new RolloutStore({
-    cwd: sessionConfiguration.cwd,
-    sessionId: childConversationId,
-    agencVersion: parentRollout.store.agencVersion,
-    ...(parentRollout.projectRootMarkers !== undefined
-      ? { projectRootMarkers: parentRollout.projectRootMarkers }
-      : {}),
-  });
-  store.open({
-    sessionId: childConversationId,
-    timestamp: new Date().toISOString(),
-    cwd: sessionConfiguration.cwd,
-    originator: "agenc-subagent",
-    agencVersion: parentRollout.store.agencVersion,
-    model: sessionConfiguration.collaborationMode.model,
-    modelProvider:
-      readProviderIdentity(parent.services.provider) ??
-      parent.services.provider.name,
-  });
-  return store;
-}
-
 function buildChildConfig(
   parent: Session,
   sessionConfiguration: Session["sessionConfiguration"],
@@ -1839,6 +1814,39 @@ function splitInitialMessages(
 interface ChildSessionAuthority {
   readonly sessionConfiguration: Session["sessionConfiguration"];
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
+function terminalResultForLiveAgent(live: LiveAgent): ChildRunTerminalResult {
+  const status = live.status.value;
+  switch (status.status) {
+    case "completed":
+      return {
+        status: "completed",
+        stopReason: "turn_completed",
+        finalMessage: status.lastMessage ?? null,
+      };
+    case "errored":
+      return {
+        status: "failed",
+        stopReason: status.error,
+        finalMessage: null,
+      };
+    case "interrupted":
+      return {
+        status: "cancelled",
+        stopReason: status.reason,
+        finalMessage: null,
+      };
+    case "pending_init":
+    case "running":
+    case "shutdown":
+    case "not_found":
+      return {
+        status: "failed",
+        stopReason: `subagent_shutdown_from_${status.status}`,
+        finalMessage: null,
+      };
+  }
 }
 
 function createInertChildMcpManager(): Session["services"]["mcpManager"] {
@@ -1987,24 +1995,30 @@ function buildChildSession(
     sessionConfiguration,
   ) as unknown as Record<string, unknown>;
 
-  if (!params.silent) {
-    try {
-      const childRolloutStore = createChildRolloutStore(
-        params.parent,
-        sessionConfiguration,
-        params.live.agentId,
-      );
-      if (childRolloutStore) {
-        childSession.mountRolloutStore(childRolloutStore);
-        params.live.rolloutPath = childRolloutStore.rolloutPath;
-      }
-    } catch (err) {
+  try {
+    const childRolloutStore = mountChildRunJournal({
+      parent: params.parent,
+      child: childSession,
+      originator: "agenc-subagent",
+      terminalResult: () => terminalResultForLiveAgent(params.live),
+    });
+    if (childRolloutStore) {
+      params.live.rolloutPath = childRolloutStore.rolloutPath;
+    }
+  } catch (err) {
+    if (err instanceof TerminalRunEpochOpenError) throw err;
+    const requiresCanonicalJournal =
+      childSession.services.executionAdmission !== undefined ||
+      childSession.services.admissionRequired !== false;
+    if (!requiresCanonicalJournal) {
       emitWarning(
         params.parent.eventLog,
         params.parent.nextInternalSubId(),
         "subagent_rollout_init_failed",
         err instanceof Error ? err.message : String(err),
       );
+    } else {
+      throw err;
     }
   }
 
@@ -2604,6 +2618,7 @@ export async function* runAgent(
       merged.signal.removeEventListener("abort", forwardMergedAbort);
     }
     const cleanupErrors: unknown[] = [];
+    let durableCloseError: unknown;
     if (childSandboxExecutionBroker !== undefined) {
       try {
         await shutdownLspServerManager(childSandboxExecutionBroker);
@@ -2615,7 +2630,32 @@ export async function* runAgent(
       try {
         await childSession.shutdown();
       } catch (error) {
-        cleanupErrors.push(error);
+        durableCloseError = error;
+      }
+    } else {
+      try {
+        const rolloutPath = recordUnconstructedChildRunTerminal({
+          parent,
+          childRunId: live.agentId,
+          cwd: params.worktree?.path ?? parent.sessionConfiguration.cwd,
+          model:
+            params.model ??
+            live.role.config.model ??
+            parent.sessionConfiguration.collaborationMode.model,
+          modelProvider:
+            readProviderIdentity(parent.services.provider) ??
+            parent.services.provider.name,
+          originator: "agenc-subagent-preconstruction",
+          result: terminalResultForLiveAgent(live),
+        });
+        if (rolloutPath !== null) live.rolloutPath = rolloutPath;
+      } catch (error) {
+        // A duplicate same-ID invocation is refused before it becomes a new
+        // lifecycle epoch. The existing terminal is already the complete
+        // durable account for that identity, so no competing tail is needed.
+        if (!(error instanceof TerminalRunEpochOpenError)) {
+          durableCloseError = error;
+        }
       }
     }
     if (childSandboxExecutionBroker !== undefined) {
@@ -2638,9 +2678,35 @@ export async function* runAgent(
       params.externalSignal.removeEventListener("abort", onExternalAbort);
     }
     if (cleanupErrors.length > 0) {
+      try {
+        emitWarning(
+          parent.eventLog,
+          parent.nextInternalSubId(),
+          "subagent_resource_cleanup_failed",
+          cleanupErrors
+            .map((error) =>
+              error instanceof Error ? error.message : String(error),
+            )
+            .join("; "),
+        );
+      } catch {
+        // Diagnostics must not retroactively turn a durable run result into a
+        // different public outcome after the child journal has been sealed.
+      }
+    }
+    if (durableCloseError !== undefined) {
+      const message =
+        durableCloseError instanceof Error
+          ? durableCloseError.message
+          : String(durableCloseError);
+      live.status.markErrored(
+        turnId,
+        `subagent durable close failed: ${message}`,
+      );
+      sendParentNotification();
       throw new AggregateError(
-        cleanupErrors,
-        "subagent resource cleanup failed",
+        [durableCloseError, ...cleanupErrors],
+        "subagent durable close failed",
       );
     }
   }

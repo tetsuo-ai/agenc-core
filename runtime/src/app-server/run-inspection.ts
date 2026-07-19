@@ -17,7 +17,12 @@ import type {
   RunStatusResult,
 } from "./protocol/index.js";
 import { isTerminalAgentRunStatus } from "../state/run-cancellation.js";
-import type { StateDatabasePaths } from "../state/sqlite-driver.js";
+import {
+  openStateDatabasePaths,
+  type StateDatabasePaths,
+} from "../state/sqlite-driver.js";
+import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
+import { buildCanonicalRunReplay } from "./run-journal-replay.js";
 
 export const DEFAULT_RUN_REPLAY_LIMIT = 100;
 export const MAX_RUN_REPLAY_LIMIT = 200;
@@ -62,6 +67,19 @@ interface AgentRunRow {
 interface LocatedRun {
   readonly paths: StateDatabasePaths;
   readonly run?: AgentRunRow;
+}
+
+interface RunTerminalRow {
+  readonly run_id: string;
+  readonly epoch: number;
+  readonly status: string;
+  readonly exit_code: number | null;
+  readonly stop_reason: string | null;
+  readonly final_message: string | null;
+  readonly usage_json: string | null;
+  readonly last_sequence: number | null;
+  readonly finished_at: string;
+  readonly event_id: string;
 }
 
 interface CountByStatusRow {
@@ -138,6 +156,7 @@ export class AgenCDaemonRunInspectionService {
   status(params: RunStatusParams): RunStatusResult {
     const runId = normalizeRunId(params.runId, "run.status");
     const located = this.#locate(runId);
+    refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) =>
       buildRunStatus(db, located, runId),
     );
@@ -148,6 +167,7 @@ export class AgenCDaemonRunInspectionService {
     const afterSequence = normalizeAfterSequence(params.afterSequence);
     const limit = normalizeReplayLimit(params.limit);
     const located = this.#locate(runId);
+    refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) =>
       buildRunReplay(db, located, runId, afterSequence, limit),
     );
@@ -156,13 +176,47 @@ export class AgenCDaemonRunInspectionService {
   result(params: RunResultParams): RunResultResult {
     const runId = normalizeRunId(params.runId, "run.result");
     const located = this.#locate(runId);
+    refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) => {
-      const run = located.run;
+      const run = readAgentRun(db, runId) ?? located.run;
+      const durableTerminal = readCurrentTerminalResult(db, runId);
       const status = buildRunStatus(db, located, runId);
-      if (run === undefined || !status.terminal) {
+      if (
+        durableTerminal === undefined &&
+        (run === undefined || !status.terminal)
+      ) {
         throw new AgenCDaemonRunInspectionError(
           "RUN_NOT_TERMINAL",
           `run.result: run ${runId} is not durably terminal (status: ${status.status})`,
+        );
+      }
+      if (durableTerminal !== undefined) {
+        return {
+          runId,
+          status: durableTerminal.status,
+          terminal: true,
+          terminalAt: durableTerminal.finished_at,
+          outcome: terminalOutcome(durableTerminal.status),
+          epoch: durableTerminal.epoch,
+          ...(run !== undefined ? { durableRun: durableRunFromRow(run) } : {}),
+          output: {
+            available: true,
+            exitCode: durableTerminal.exit_code,
+            stopReason: durableTerminal.stop_reason,
+            finalMessage: durableTerminal.final_message,
+            usage: parseRunUsage(durableTerminal.usage_json),
+            lastSequence: durableTerminal.last_sequence,
+          },
+          source: runStateSource(located.paths),
+        };
+      }
+      if (run === undefined) {
+        // The guard above makes this unreachable, but keep the fallback branch
+        // explicitly narrowed so canonical-only terminal rows never require a
+        // fabricated legacy agent_runs record.
+        throw new AgenCDaemonRunInspectionError(
+          "RUN_NOT_TERMINAL",
+          `run.result: run ${runId} has no legacy terminal projection`,
         );
       }
       return {
@@ -186,6 +240,7 @@ export class AgenCDaemonRunInspectionService {
     const afterSequence = normalizeAfterSequence(params.afterSequence);
     const limit = normalizeReplayLimit(params.limit);
     const located = this.#locate(runId);
+    refreshRunJournalProjection(located.paths, runId);
     return withReadonlyStateDatabase(located.paths, (db) => {
       // A single read transaction gives the status summary and journal page a
       // coherent SQLite snapshot without taking a write reservation.
@@ -203,29 +258,40 @@ export class AgenCDaemonRunInspectionService {
           terminal: status.terminal,
         });
         const admissionSummarySha256 = sha256(status.admission);
+        const gapSha256 = sha256(replay.gap);
+        const canonicalJournal =
+          replay.source.available && replay.source.kind === "run_journal";
         const completeness: RunEvidenceResult["source"]["completeness"] =
           !replay.source.available
             ? "admission_source_unavailable"
+            : replay.gap !== null
+              ? "journal_gap"
             : afterSequence > 0 || replay.hasMore
               ? "partial"
               : "complete";
         const bundleDocument = {
           runId,
-          source: "existing_m3_admission_state",
+          source: canonicalJournal
+            ? "canonical_run_journal"
+            : "existing_m3_admission_state",
           completeness,
           afterSequence,
           nextAfterSequence: replay.nextAfterSequence,
           runStateSha256,
           admissionSummarySha256,
+          gap: replay.gap,
+          gapSha256,
           eventHashes,
         } as const;
         const result: RunEvidenceResult = {
           runId,
           source: {
-            kind: "existing_m3_admission_state",
+            kind: canonicalJournal
+              ? "canonical_run_journal"
+              : "existing_m3_admission_state",
             projectDir: located.paths.projectDir,
-            admissionJournal: replay.source.available,
-            workflowEvidenceIncluded: false,
+            admissionJournal: status.admission.sources.journal,
+            workflowEvidenceIncluded: canonicalJournal,
             completeness,
           },
           cursor: {
@@ -234,11 +300,13 @@ export class AgenCDaemonRunInspectionService {
             limit,
           },
           hasMore: replay.hasMore,
+          gap: replay.gap,
           events: replay.events,
           hashes: {
             algorithm: "sha256",
             runStateSha256,
             admissionSummarySha256,
+            gapSha256,
             eventHashes,
             bundleSha256: sha256(bundleDocument),
           },
@@ -257,7 +325,9 @@ export class AgenCDaemonRunInspectionService {
       if (!existsSync(paths.stateDbPath)) continue;
       const match = withReadonlyStateDatabase(paths, (db) => {
         const run = readAgentRun(db, runId);
-        return run !== undefined || hasAdmissionState(db, runId)
+        return run !== undefined ||
+          hasAdmissionState(db, runId) ||
+          hasCanonicalRunState(db, runId)
           ? { paths, ...(run !== undefined ? { run } : {}) }
           : undefined;
       });
@@ -279,21 +349,59 @@ export class AgenCDaemonRunInspectionService {
   }
 }
 
+function hasCanonicalRunState(
+  db: BetterSqlite3.Database,
+  runId: string,
+): boolean {
+  for (const [table, column] of [
+    ["run_lifecycle_epochs", "run_id"],
+    ["run_terminal_results", "run_id"],
+    ["run_effects", "run_id"],
+    ["run_journal_bindings", "run_id"],
+  ] as const) {
+    if (!tableExists(db, table)) continue;
+    const row = db
+      .prepare<[string], { readonly present: number }>(
+        `SELECT 1 AS present FROM ${table} WHERE ${column} = ? LIMIT 1`,
+      )
+      .get(runId);
+    if (row !== undefined) return true;
+  }
+  return false;
+}
+
 function buildRunStatus(
   db: BetterSqlite3.Database,
   located: LocatedRun,
   runId: string,
 ): RunStatusResult {
   const admission = admissionSummary(db, runId);
-  const run = located.run;
+  const run = readAgentRun(db, runId) ?? located.run;
+  const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
+  const durableTerminal = readCurrentTerminalResult(db, runId);
+  const reopenedWithoutTerminal =
+    currentLifecycleEpoch !== undefined && durableTerminal === undefined;
   return {
     runId,
-    status: run?.status ?? "admission_only",
+    status:
+      durableTerminal?.status ??
+      (reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
+        ? "running"
+        : run?.status ?? "admission_only"),
     terminal:
-      run === undefined
-        ? false
-        : isTerminalAgentRunStatus(run.status) && !admission.active,
-    statusSource: run === undefined ? "admission_state" : "agent_run",
+      durableTerminal !== undefined ||
+      (currentLifecycleEpoch === undefined &&
+        run !== undefined &&
+        isTerminalAgentRunStatus(run.status) &&
+        !admission.active),
+    statusSource:
+      durableTerminal !== undefined
+        ? "run_terminal_result"
+        : currentLifecycleEpoch !== undefined
+          ? "run_lifecycle_epoch"
+        : run === undefined
+          ? "admission_state"
+          : "agent_run",
     ...(run !== undefined ? { durableRun: durableRunFromRow(run) } : {}),
     admission,
     source: runStateSource(located.paths),
@@ -307,7 +415,52 @@ function buildRunReplay(
   afterSequence: number,
   limit: number,
 ): RunReplayResult {
+  const canonical = buildCanonicalRunReplay(
+    db,
+    located.paths,
+    runId,
+    afterSequence,
+    limit,
+  );
+  if (canonical.source.available) return canonical;
+  return buildLegacyAdmissionReplay(
+    db,
+    located,
+    runId,
+    afterSequence,
+    limit,
+  );
+}
+
+/** Pre-M4 compatibility reader. New writes are projected into the rollout. */
+function buildLegacyAdmissionReplay(
+  db: BetterSqlite3.Database,
+  located: LocatedRun,
+  runId: string,
+  afterSequence: number,
+  limit: number,
+): RunReplayResult {
   if (!tableExists(db, "execution_admission_journal")) {
+    return buildCanonicalRunReplay(
+      db,
+      located.paths,
+      runId,
+      afterSequence,
+      limit,
+    );
+  }
+  const runIds = collectRunTreeIds(db, runId);
+  const ids = placeholders(runIds.length);
+  const bounds = db
+    .prepare<unknown[], JournalBoundsRow>(
+      `SELECT MIN(sequence) AS first_sequence,
+              MAX(sequence) AS last_sequence
+       FROM execution_admission_journal
+       WHERE run_id IN (${ids})`,
+    )
+    .get(...runIds) ?? { first_sequence: null, last_sequence: null };
+  const lastAvailableSequence = bounds.last_sequence ?? 0;
+  if (afterSequence > lastAvailableSequence) {
     return {
       runId,
       afterSequence,
@@ -315,28 +468,25 @@ function buildRunReplay(
       events: [],
       hasMore: false,
       nextAfterSequence: afterSequence,
+      ...(bounds.first_sequence !== null
+        ? { firstAvailableSequence: bounds.first_sequence }
+        : {}),
+      lastAvailableSequence,
       gap: {
-        kind: "source_unavailable",
-        reason: "execution_admission_journal_not_present",
+        kind: "cursor_ahead",
+        runId,
+        afterSequence,
+        lastAvailableSequence,
+        reason: "cursor_ahead",
       },
       source: {
         kind: "execution_admission_journal",
-        available: false,
+        available: true,
         sequenceScope: "project_state_database",
         projectDir: located.paths.projectDir,
       },
     };
   }
-  const runIds = collectRunTreeIds(db, runId);
-  const runIdPlaceholders = placeholders(runIds.length);
-  const bounds = db
-    .prepare<unknown[], JournalBoundsRow>(
-      `SELECT MIN(sequence) AS first_sequence,
-              MAX(sequence) AS last_sequence
-       FROM execution_admission_journal
-       WHERE run_id IN (${runIdPlaceholders})`,
-    )
-    .get(...runIds) ?? { first_sequence: null, last_sequence: null };
   const rows = db
     .prepare<unknown[], AdmissionJournalRow>(
       `SELECT sequence, event_id, timestamp, run_id, step_id, kind, event,
@@ -344,28 +494,26 @@ function buildRunReplay(
               reserved_cost_nanos, actual_tokens, actual_cost_nanos,
               details_json
        FROM execution_admission_journal
-       WHERE run_id IN (${runIdPlaceholders}) AND sequence > ?
+       WHERE run_id IN (${ids}) AND sequence > ?
        ORDER BY sequence ASC
        LIMIT ?`,
     )
     .all(...runIds, afterSequence, limit + 1);
-  const hasMore = rows.length > limit;
-  const events = rows.slice(0, limit).map(journalEventFromRow);
-  const last = events.at(-1);
+  const events = rows.slice(0, limit).map(legacyJournalEventFromRow);
   return {
     runId,
     afterSequence,
     limit,
     events,
-    hasMore,
-    nextAfterSequence: last?.sequence ?? afterSequence,
-    gap: null,
+    hasMore: rows.length > limit,
+    nextAfterSequence: events.at(-1)?.sequence ?? afterSequence,
     ...(bounds.first_sequence !== null
       ? { firstAvailableSequence: bounds.first_sequence }
       : {}),
     ...(bounds.last_sequence !== null
       ? { lastAvailableSequence: bounds.last_sequence }
       : {}),
+    gap: null,
     source: {
       kind: "execution_admission_journal",
       available: true,
@@ -538,6 +686,84 @@ function readAgentRun(
     .get(runId);
 }
 
+function readCurrentTerminalResult(
+  db: BetterSqlite3.Database,
+  runId: string,
+): RunTerminalRow | undefined {
+  if (
+    !tableExists(db, "run_lifecycle_epochs") ||
+    !tableExists(db, "run_terminal_results")
+  ) {
+    return undefined;
+  }
+  return db
+    .prepare<[string], RunTerminalRow>(
+      `SELECT terminal.run_id, terminal.epoch, terminal.status,
+              terminal.exit_code, terminal.stop_reason,
+              terminal.final_message, terminal.usage_json,
+              terminal.last_sequence, terminal.finished_at,
+              terminal.event_id
+       FROM run_terminal_results AS terminal
+       JOIN run_lifecycle_epochs AS lifecycle
+         ON lifecycle.run_id = terminal.run_id
+        AND lifecycle.epoch = terminal.epoch
+       WHERE terminal.run_id = ?
+         AND lifecycle.epoch = (
+           SELECT MAX(current.epoch)
+           FROM run_lifecycle_epochs AS current
+           WHERE current.run_id = terminal.run_id
+         )
+       LIMIT 1`,
+    )
+    .get(runId);
+}
+
+function readCurrentLifecycleEpoch(
+  db: BetterSqlite3.Database,
+  runId: string,
+): number | undefined {
+  if (!tableExists(db, "run_lifecycle_epochs")) return undefined;
+  return db
+    .prepare<[string], { readonly epoch: number }>(
+      `SELECT epoch
+       FROM run_lifecycle_epochs
+       WHERE run_id = ?
+       ORDER BY epoch DESC
+       LIMIT 1`,
+    )
+    .get(runId)?.epoch;
+}
+
+function parseRunUsage(
+  json: string | null,
+): Extract<RunResultResult["output"], { readonly available: true }>["usage"] {
+  if (json === null) return null;
+  const value = JSON.parse(json) as {
+    readonly inputTokens?: unknown;
+    readonly outputTokens?: unknown;
+    readonly totalTokens?: unknown;
+    readonly costUsd?: unknown;
+  };
+  if (
+    typeof value.inputTokens !== "number" ||
+    typeof value.outputTokens !== "number" ||
+    typeof value.totalTokens !== "number" ||
+    typeof value.costUsd !== "number" ||
+    !Number.isFinite(value.inputTokens) ||
+    !Number.isFinite(value.outputTokens) ||
+    !Number.isFinite(value.totalTokens) ||
+    !Number.isFinite(value.costUsd)
+  ) {
+    throw new Error("durable run terminal usage is malformed");
+  }
+  return {
+    inputTokens: value.inputTokens,
+    outputTokens: value.outputTokens,
+    totalTokens: value.totalTokens,
+    costUsd: value.costUsd,
+  };
+}
+
 function hasAdmissionState(db: BetterSqlite3.Database, runId: string): boolean {
   if (
     tableExists(db, "agent_jobs") &&
@@ -673,7 +899,7 @@ function durableRunFromRow(
   };
 }
 
-function journalEventFromRow(
+function legacyJournalEventFromRow(
   row: AdmissionJournalRow,
 ): RunReplayResult["events"][number] {
   return {
@@ -682,6 +908,7 @@ function journalEventFromRow(
     timestamp: row.timestamp,
     runId: row.run_id,
     stepId: row.step_id,
+    category: "admission",
     kind: row.kind,
     event: row.event,
     ...(row.reason !== null ? { reason: row.reason } : {}),
@@ -796,6 +1023,23 @@ function columnExists(
     .prepare<[], { readonly name: string }>(`PRAGMA table_info(${table})`)
     .all()
     .some((row) => row.name === column);
+}
+
+/**
+ * Bring the rebuildable SQLite projection up to the fsynced JSONL tail before
+ * a cursor read. The scan is scoped to one run and bounded; the canonical file
+ * is never rewritten here.
+ */
+function refreshRunJournalProjection(
+  paths: StateDatabasePaths,
+  runId: string,
+): void {
+  const driver = openStateDatabasePaths(paths);
+  try {
+    recoverCanonicalRunJournalForRun(driver, runId);
+  } finally {
+    driver.close();
+  }
 }
 
 function withReadonlyStateDatabase<T>(

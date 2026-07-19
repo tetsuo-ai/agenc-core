@@ -11,6 +11,7 @@ import {
   setCurrentRuntimeSession,
 } from '../../src/session/current-session.js'
 import type { Session } from '../../src/session/session.js'
+import { createTestEffectJournal } from '../helpers/test-effect-journal.js'
 import type { MCPServerConnection } from '../../src/services/mcp/types.js'
 import {
   clearSlackChannelCache,
@@ -84,6 +85,7 @@ function admissionHarness(options: {
 
 function installSession(admission?: ExecutionAdmissionClient): void {
   setCurrentRuntimeSession({
+    ...createTestEffectJournal(),
     conversationId: 'session-slack',
     services: {
       ...(admission ? { executionAdmission: admission } : {}),

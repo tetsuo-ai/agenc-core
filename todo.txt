@@ -428,7 +428,7 @@ Why this is mandatory: a daemon-backed engineering agent is only more reliable
 if clients can reconnect and the daemon can recover without hiding loss or
 blindly replaying side effects.
 
-[ ] Add one canonical append-only run journal.
+[x] Add one canonical append-only run journal.
     - Project and converge existing rollout checkpoints, single-writer resume
       leases, dangling-effect recovery, job/task recovery, and bounded
       multiplexer replay. Do not add a parallel state database.
@@ -439,7 +439,7 @@ blindly replaying side effects.
       persist them end to end instead of inventing competing IDs.
     - Make terminal results queryable after the original connection disappears.
 
-[ ] Define honest effect semantics.
+[x] Define honest effect semantics.
     - Preserve the existing `idempotent | side-effecting | interactive`
       `recoveryCategory` contract; add outcome/evidence state instead of a
       competing effect taxonomy.
@@ -450,14 +450,14 @@ blindly replaying side effects.
       the step `unknown_outcome`, stop dependent mutations, and require review.
     - Never claim exactly-once execution for arbitrary shell/network effects.
 
-[ ] Add replay-safe client semantics.
+[x] Add replay-safe client semantics.
     - Extend the existing bounded reconnect buffer into cursor-based durable
       replay with explicit retention gaps, reconnect/reattach, and final-result
       reads.
     - Preserve event IDs and sequence values in the typed SDK.
     - Make duplicate delivery detectable and harmless to supported clients.
 
-[ ] Add failure injection at every critical boundary.
+[x] Add failure injection at every critical boundary.
     - Kill the daemon before and after reservation, model response, tool spawn,
       tool acknowledgement, artifact write, event publish, and terminal commit.
     - Disconnect and reconnect clients at multiple points during streaming and

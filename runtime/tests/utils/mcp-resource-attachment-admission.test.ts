@@ -11,6 +11,7 @@ import {
   setCurrentRuntimeSession,
 } from '../../src/session/current-session.js'
 import type { Session } from '../../src/session/session.js'
+import { createTestEffectJournal } from '../helpers/test-effect-journal.js'
 import type { ToolUseContext } from '../../src/tools/Tool.js'
 import { createEmptyToolPermissionContext } from '../../src/permissions/types.js'
 import { getAttachments } from '../../src/utils/attachments.js'
@@ -81,6 +82,7 @@ function admissionHarness(options: {
 
 function installSession(admission?: ExecutionAdmissionClient): void {
   setCurrentRuntimeSession({
+    ...createTestEffectJournal(),
     conversationId: 'session-resource',
     services: {
       ...(admission ? { executionAdmission: admission } : {}),

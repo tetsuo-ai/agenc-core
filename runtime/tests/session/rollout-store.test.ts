@@ -125,8 +125,11 @@ describe("RolloutStore thread-spawn edges", () => {
       expect(content).not.toContain(opaqueSecret);
       expect(content).not.toContain("abcdefghijklmnop=");
       expect(content).toContain("[REDACTED_SECRET]");
-      expect(store.readAll().some((item) => JSON.stringify(item).includes(rawSecret)))
-        .toBe(false);
+      expect(
+        store
+          .readAll()
+          .some((item) => JSON.stringify(item).includes(rawSecret)),
+      ).toBe(false);
     } finally {
       store.close();
       rmSync(cwd, { recursive: true, force: true });
@@ -186,6 +189,64 @@ describe("RolloutStore thread-spawn edges", () => {
     }
   });
 
+  it.each([
+    ["fresh", false],
+    ["resumed", true],
+  ] as const)(
+    "refuses a %s writer for a terminal epoch without changing canonical sources",
+    (_mode, resume) => {
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+      const sessionId = "terminal-resume-refused";
+      const original = openStore({ cwd, sessionId });
+      try {
+        expect(
+          original.append(
+            {
+              eventId: `run-terminal:${sessionId}:1`,
+              id: `run-terminal:${sessionId}:1`,
+              seq: 1,
+              msg: {
+                type: "run_terminal",
+                payload: {
+                  runId: sessionId,
+                  epoch: 1,
+                  status: "completed",
+                  exitCode: 0,
+                  stopReason: "turn_completed",
+                  finalMessage: "done",
+                  usage: null,
+                  lastSequenceBeforeTerminal: null,
+                  finishedAt: "2026-07-18T00:00:00.000Z",
+                },
+              },
+            },
+            { durable: true },
+          ),
+        ).toBe(true);
+        original.close();
+        const terminalTail = readFileSync(original.rolloutPath, "utf8");
+        const rolloutFilesBefore = readdirSync(
+          original.store.sessionDir,
+        ).filter(
+          (name) => name.startsWith("rollout-") && name.endsWith(".jsonl"),
+        );
+
+        expect(() => openStore({ cwd, sessionId, resume })).toThrow(
+          `refusing to open terminal run ${sessionId} epoch 1; explicit reopen is required`,
+        );
+        expect(readFileSync(original.rolloutPath, "utf8")).toBe(terminalTail);
+        expect(
+          readdirSync(original.store.sessionDir).filter(
+            (name) => name.startsWith("rollout-") && name.endsWith(".jsonl"),
+          ),
+        ).toEqual(rolloutFilesBefore);
+      } finally {
+        original.close();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("fails closed instead of reopening a corrupted persisted edge status", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-invalid-status";
@@ -206,11 +267,13 @@ describe("RolloutStore thread-spawn edges", () => {
 
       const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
       try {
-        raw.prepare(
-          `UPDATE thread_spawn_edges
+        raw
+          .prepare(
+            `UPDATE thread_spawn_edges
            SET status = 'corrupted'
            WHERE child_thread_id = ?`,
-        ).run("child-invalid-status");
+          )
+          .run("child-invalid-status");
       } finally {
         raw.close();
       }
@@ -244,14 +307,16 @@ describe("RolloutStore thread-spawn edges", () => {
       const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
       try {
         expect(() =>
-          raw.prepare(
-            `UPDATE thread_spawn_edges
+          raw
+            .prepare(
+              `UPDATE thread_spawn_edges
              SET metadata_json = ?, status = 'closed'
              WHERE child_thread_id = ?`,
-          ).run(
-            JSON.stringify(metadata("child-legacy", "/root/legacy", 1)),
-            "child-legacy",
-          ),
+            )
+            .run(
+              JSON.stringify(metadata("child-legacy", "/root/legacy", 1)),
+              "child-legacy",
+            ),
         ).toThrow(/identity is immutable/);
       } finally {
         raw.close();
@@ -263,7 +328,9 @@ describe("RolloutStore thread-spawn edges", () => {
           ...metadata("child-legacy", "/root/legacy", 1),
           agentRoleWorkspaceId: cwd,
         });
-        expect(reopened.getThreadSpawnEdge("child-legacy")?.status).toBe("open");
+        expect(reopened.getThreadSpawnEdge("child-legacy")?.status).toBe(
+          "open",
+        );
       } finally {
         reopened.close();
       }
@@ -765,8 +832,9 @@ describe("RolloutStore thread-spawn edges", () => {
     try {
       expect(store.listThreadSpawnChildren("root-1")).toEqual([]);
       const corruptDir = join(getProjectDir(cwd), "state-corrupt");
-      const backups = readdirSync(corruptDir).filter((entry) =>
-        entry.startsWith("thread-spawn-edges-") && entry.endsWith(".json"),
+      const backups = readdirSync(corruptDir).filter(
+        (entry) =>
+          entry.startsWith("thread-spawn-edges-") && entry.endsWith(".json"),
       );
       expect(backups).toHaveLength(1);
       expect(existsSync(snapshotPath)).toBe(true);

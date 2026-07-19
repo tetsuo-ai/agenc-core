@@ -54,7 +54,11 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import { EnvHttpProxyAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
+import {
+  EnvHttpProxyAgent,
+  getGlobalDispatcher,
+  setGlobalDispatcher,
+} from "undici";
 import { clearProxyCache } from "../utils/proxy.js";
 import { clearMTLSCache } from "../utils/mtls.js";
 import { AsyncQueue } from "../utils/async-queue.js";
@@ -76,6 +80,16 @@ function createRecoveredSession(
   },
 ) {
   const state = { history: [] as unknown[] };
+  const rolloutItems: unknown[] = [];
+  const eventLog = { lastSeq: 0 };
+  const rolloutStore = {
+    rolloutPath: join(
+      tmpdir(),
+      `agenc-recovered-${process.pid}-${threadId.replaceAll("/", "_")}.jsonl`,
+    ),
+    readAll: () => [...rolloutItems],
+    assertToolAdmissionAllowed: () => {},
+  };
   const managedThread = {
     threadId,
     agentPath: "/root",
@@ -99,6 +113,20 @@ function createRecoveredSession(
   };
   return {
     conversationId: threadId,
+    rolloutStore,
+    eventLog,
+    emit: (event: {
+      readonly eventId?: string;
+      readonly id?: string;
+      readonly msg: unknown;
+    }) => {
+      const seq = eventLog.lastSeq + 1;
+      const eventId = event.eventId ?? event.id ?? `recovered-event-${seq}`;
+      const stamped = { ...event, eventId, id: eventId, seq };
+      eventLog.lastSeq = seq;
+      rolloutItems.push({ type: "event_msg", payload: stamped });
+      return stamped;
+    },
     permissionModeRegistry,
     state: {
       unsafePeek: () => state,
@@ -114,7 +142,8 @@ function createRecoveredSession(
       conversationThreadManager: {
         hasThread: (id: string) => id === threadId,
         getThread: (id: string) => {
-          if (id !== threadId) throw new Error(`missing recovered thread ${id}`);
+          if (id !== threadId)
+            throw new Error(`missing recovered thread ${id}`);
           return managedThread;
         },
       },
@@ -655,10 +684,14 @@ describe("AgenC daemon CLI", () => {
 
     try {
       await expect(
-        waitForPid(resolveAgenCDaemonPidPath(firstHost.env, firstHost.userHome)),
+        waitForPid(
+          resolveAgenCDaemonPidPath(firstHost.env, firstHost.userHome),
+        ),
       ).resolves.toBe(4100);
       await expect(
-        waitForPid(resolveAgenCDaemonPidPath(secondHost.env, secondHost.userHome)),
+        waitForPid(
+          resolveAgenCDaemonPidPath(secondHost.env, secondHost.userHome),
+        ),
       ).resolves.toBe(4100);
       const firstUrl = await waitForDaemonWebSocketUrl(firstIo);
       const secondUrl = await waitForDaemonWebSocketUrl(secondIo);
@@ -1705,9 +1738,7 @@ backend = "local"
         "CONNECTION_AUTHENTICATION_FAILED",
       );
     }
-    await expect(waitForSocketClose(wrongCookieSocket)).resolves.toBe(
-      "closed",
-    );
+    await expect(waitForSocketClose(wrongCookieSocket)).resolves.toBe("closed");
     const missingCookieSocket = createConnection(socketPath);
     await once(missingCookieSocket, "connect");
     missingCookieSocket.write(
@@ -1937,7 +1968,11 @@ backend = "local"
           jsonrpc: "2.0",
           id: "create",
           method: "agent.create",
-          params: {cwd: process.cwd(),  cwd: process.cwd(),  objective: "realtime thread state" },
+          params: {
+            cwd: process.cwd(),
+            cwd: process.cwd(),
+            objective: "realtime thread state",
+          },
         })}\n`,
       );
       const created = JSON.parse(await readSocketLine(socket)) as {
@@ -2104,7 +2139,8 @@ backend = "local"
         timeoutMs: 1000,
       });
 
-      const created = await writerClient.request("agent.create", { cwd: process.cwd(),
+      const created = await writerClient.request("agent.create", {
+        cwd: process.cwd(),
         objective: "health state",
       });
       if (created.sessionId === undefined)
@@ -2206,7 +2242,8 @@ backend = "local"
         timeoutMs: 1000,
       });
 
-      const created = await client.request("agent.create", { cwd: process.cwd(),
+      const created = await client.request("agent.create", {
+        cwd: process.cwd(),
         objective: "prove dispatcher boot injection",
       });
       expect(created.agentId).toBe("agent_boot_injection");
@@ -2518,12 +2555,14 @@ snapshot_max_bytes = 64
         bootstrap: (async (options) => {
           const conversationId = options.conversationId ?? "daemon-recovery";
           restoredConversationIds.push(conversationId);
+          const session = createRecoveredSession(
+            conversationId,
+            permissionModeRegistry,
+          );
           return {
-            session: createRecoveredSession(
-              conversationId,
-              permissionModeRegistry,
-            ),
-          shutdown: async () => {},
+            session,
+            rolloutStore: session.rolloutStore,
+            shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
@@ -2720,21 +2759,22 @@ snapshot_max_bytes = 64
           restoredSessions.set(conversationId, session);
           return {
             session,
-          registry: {
-            tools: [
-              {
-                name: "FileRead",
-                description: "Read a file.",
-                inputSchema: { type: "object" },
-                recoveryCategory: "idempotent",
-                isReadOnly: true,
-                execute,
-              },
-            ],
-            toLLMTools: () => [],
-            dispatch,
-          },
-          shutdown: async () => {},
+            rolloutStore: session.rolloutStore,
+            registry: {
+              tools: [
+                {
+                  name: "FileRead",
+                  description: "Read a file.",
+                  inputSchema: { type: "object" },
+                  recoveryCategory: "idempotent",
+                  isReadOnly: true,
+                  execute,
+                },
+              ],
+              toLLMTools: () => [],
+              dispatch,
+            },
+            shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
@@ -2768,7 +2808,9 @@ snapshot_max_bytes = 64
       expect.objectContaining({ file_path: "README.md" }),
     );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(restoredSessions.get("run-replay")?.state.unsafePeek().history).toEqual([
+    expect(
+      restoredSessions.get("run-replay")?.state.unsafePeek().history,
+    ).toEqual([
       { role: "assistant", content: "state" },
       {
         role: "assistant",
@@ -2838,7 +2880,8 @@ snapshot_max_bytes = 64
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
-          const conversationId = options.conversationId ?? "daemon-completed-tool";
+          const conversationId =
+            options.conversationId ?? "daemon-completed-tool";
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
@@ -2846,6 +2889,7 @@ snapshot_max_bytes = 64
           restoredSessions.set(conversationId, session);
           return {
             session,
+            rolloutStore: session.rolloutStore,
             shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
@@ -2899,7 +2943,8 @@ snapshot_max_bytes = 64
     const recoveredToolContent = String(
       restoredSessions
         .get("run-completed-tool")
-        ?.state.unsafePeek().history.at(-1)?.content,
+        ?.state.unsafePeek()
+        .history.at(-1)?.content,
     );
     expect(recoveredToolContent).not.toContain("<system>");
     expect(
@@ -2955,7 +3000,8 @@ snapshot_max_bytes = 64
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
-          const conversationId = options.conversationId ?? "daemon-replay-poison";
+          const conversationId =
+            options.conversationId ?? "daemon-replay-poison";
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
@@ -2963,12 +3009,15 @@ snapshot_max_bytes = 64
           restoredSessions.set(conversationId, session);
           return {
             session,
-          registry: {
-            tools: [{ name: "FileWrite", recoveryCategory: "side-effecting" }],
-            toLLMTools: () => [],
-            dispatch,
-          },
-          shutdown: async () => {},
+            rolloutStore: session.rolloutStore,
+            registry: {
+              tools: [
+                { name: "FileWrite", recoveryCategory: "side-effecting" },
+              ],
+              toLLMTools: () => [],
+              dispatch,
+            },
+            shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
@@ -3001,9 +3050,7 @@ snapshot_max_bytes = 64
     expect(dispatch).not.toHaveBeenCalled();
     expect(
       restoredSessions.get("run-replay-poison")?.state.unsafePeek().history,
-    ).toEqual([
-      { role: "assistant", content: "state" },
-    ]);
+    ).toEqual([{ role: "assistant", content: "state" }]);
     expect(
       latestSnapshotToolState(
         agencHome,
@@ -3229,8 +3276,7 @@ snapshot_max_bytes = 64
 
     const sendInput = vi.fn(async () => {});
     let restoreBootstrapOptions:
-      | Parameters<AgenCBootstrapFunction>[0]
-      | undefined;
+      Parameters<AgenCBootstrapFunction>[0] | undefined;
     const restoredSessions = new Map<
       string,
       ReturnType<typeof createRecoveredSession>
@@ -3252,6 +3298,7 @@ snapshot_max_bytes = 64
           restoredSessions.set(conversationId, session);
           return {
             session,
+            rolloutStore: session.rolloutStore,
             shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
@@ -3279,9 +3326,7 @@ snapshot_max_bytes = 64
     expect(restoreBootstrapOptions?.resumeConversation).toBe(true);
     expect(
       restoredSessions.get(createdAgentId)?.state.unsafePeek().history,
-    ).toEqual([
-      { role: "user", content: "state before restart" },
-    ]);
+    ).toEqual([{ role: "user", content: "state before restart" }]);
     expect(restoreBootstrapOptions?.argv).toEqual(
       expect.arrayContaining([
         "--provider",
@@ -3874,8 +3919,13 @@ describe("daemon startup proxy configuration", () => {
   // getProxyUrl reads process.env (not host.env), matching production where the
   // spawned daemon's process.env IS the inherited parent CLI env.
   const PROXY_ENV = [
-    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-    "AGENC_CLIENT_CERT", "AGENC_CLIENT_KEY", "NODE_EXTRA_CA_CERTS",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "AGENC_CLIENT_CERT",
+    "AGENC_CLIENT_KEY",
+    "NODE_EXTRA_CA_CERTS",
   ];
   let stashed: Record<string, string | undefined>;
   let originalDispatcher: ReturnType<typeof getGlobalDispatcher>;

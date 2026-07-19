@@ -14,6 +14,7 @@ import {
 } from "./workspace-cwd.js";
 import type {
   AgenCBackgroundAgentSnapshot,
+  AgenCBackgroundAgentTerminalSnapshot,
   AgenCBackgroundAgentRunner,
 } from "./background-agent-runner.js";
 import type {
@@ -161,6 +162,9 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly recordAgentRun?: (
     run: AgenCDaemonAgentRunSnapshot,
   ) => void | Promise<void>;
+  readonly recordRunTerminal?: (
+    terminal: AgenCDaemonRunTerminalSnapshot,
+  ) => void | Promise<void>;
   readonly registerSnapshotSession?: (
     session: AgenCDaemonSnapshotSessionRoute,
   ) => void | Promise<void>;
@@ -168,10 +172,13 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly permissionAuditLogger?: PermissionAuditLogger;
   readonly onPermissionAuditError?: PermissionAuditErrorHandler;
   /**
-   * Durable tree-scoped cancel (run.cancel step 1). Applies
+   * Durable tree-scoped cancellation projection. Applies
    * `cancelAgentRunTree` against every project state DB that holds the run
-   * row; the daemon-cli wiring owns DB discovery. REQUIRED for run.cancel —
-   * the durable record is the authority, the live interrupt is second.
+   * row; the daemon-cli wiring owns DB discovery. REQUIRED for run.cancel.
+   * When a canonical writer is live, the lifecycle first seals its
+   * cancellation terminal in the rollout and only then applies this
+   * rebuildable SQLite projection. Inactive/legacy runs have no writer, so
+   * this callback remains their honest cancellation authority.
    */
   readonly cancelRunTreeDurable?: (params: {
     readonly runId: string;
@@ -225,6 +232,15 @@ export interface AgenCDaemonAgentStatusSnapshot {
 
 export interface AgenCDaemonAgentRunSnapshot
   extends AgenCStateAgentRunRecord {
+  readonly cwd?: string;
+  readonly stateProjectDir?: string;
+}
+
+export interface AgenCDaemonRunTerminalSnapshot
+  extends AgenCBackgroundAgentTerminalSnapshot {
+  readonly agentId: string;
+  /** Canonical rollout session identity (the root managed-thread id). */
+  readonly sessionId: string;
   readonly cwd?: string;
   readonly stateProjectDir?: string;
 }
@@ -292,12 +308,18 @@ interface PendingRunnerTermination {
   readonly transitionAt: string;
 }
 
+interface PendingCanonicalRunCancellation {
+  snapshot?: AgenCBackgroundAgentSnapshot;
+  target?: RunnerTerminationTarget;
+}
+
 interface RunnerTerminationTarget {
   readonly sessionIds: readonly string[];
   readonly route: AgenCDaemonSnapshotRoute;
   readonly status: AgentStatus;
   readonly transitionAt: string;
   readonly metadata?: JsonObject;
+  readonly terminal?: AgenCBackgroundAgentTerminalSnapshot;
 }
 
 export class AgenCDaemonAgentManager {
@@ -331,6 +353,9 @@ export class AgenCDaemonAgentManager {
   readonly #recordAgentRun:
     | ((run: AgenCDaemonAgentRunSnapshot) => void | Promise<void>)
     | undefined;
+  readonly #recordRunTerminal:
+    | ((terminal: AgenCDaemonRunTerminalSnapshot) => void | Promise<void>)
+    | undefined;
   readonly #registerSnapshotSession:
     | ((session: AgenCDaemonSnapshotSessionRoute) => void | Promise<void>)
     | undefined;
@@ -354,6 +379,14 @@ export class AgenCDaemonAgentManager {
     string,
     PendingRunnerTermination
   >();
+  readonly #pendingCanonicalRunCancellations = new Map<
+    string,
+    PendingCanonicalRunCancellation
+  >();
+  readonly #runCancellationTasks = new Map<
+    string,
+    Promise<RunCancelResult>
+  >();
   readonly #state = new AsyncLock<AgentLifecycleState>({
     agents: new Map(),
   });
@@ -371,6 +404,7 @@ export class AgenCDaemonAgentManager {
     this.#recordMessageExchange = options.recordMessageExchange;
     this.#recordAgentStatusTransition = options.recordAgentStatusTransition;
     this.#recordAgentRun = options.recordAgentRun;
+    this.#recordRunTerminal = options.recordRunTerminal;
     this.#registerSnapshotSession = options.registerSnapshotSession;
     this.#onSnapshotError = options.onSnapshotError ?? (() => {});
     this.#permissionAuditLogger = options.permissionAuditLogger;
@@ -951,16 +985,34 @@ export class AgenCDaemonAgentManager {
 
   /**
    * run.cancel (frozen Wave-B method): tree-scoped cancel of the run plus
-   * its queued and running descendants. Durable-first — the state-DB
-   * cascade is the authority and survives a daemon crash (startup recovery
-   * finishes an interrupted cascade); the live interrupt/stop is second
-   * and reuses the existing descendant-cascading primitives. Late status
-   * writes from dying agents lose to cancel-lock stickiness in the state
-   * layer. Idempotent: an already-terminal run reports `alreadyTerminal`.
+   * its queued and running descendants. A live canonical rollout writer is
+   * quiesced first and must return a fsync-committed cancelled terminal;
+   * SQLite is a rebuildable projection of that evidence. If no writer is
+   * active, the durable tree cascade remains the honest offline authority
+   * and `run.result` may report legacy output as unavailable. Concurrent
+   * requests for one run share one cancellation operation so the canonical
+   * terminal is emitted once.
    */
   async cancelRunTree(params: RunCancelParams): Promise<RunCancelResult> {
     const runId = normalizeRequiredAgentId(params.runId, "run.cancel");
     const reason = normalizeNonEmpty(params.reason) ?? "run.cancel";
+    const inFlight = this.#runCancellationTasks.get(runId);
+    if (inFlight !== undefined) return inFlight;
+    const task = this.#cancelRunTreeOnce(runId, reason);
+    this.#runCancellationTasks.set(runId, task);
+    try {
+      return await task;
+    } finally {
+      if (this.#runCancellationTasks.get(runId) === task) {
+        this.#runCancellationTasks.delete(runId);
+      }
+    }
+  }
+
+  async #cancelRunTreeOnce(
+    runId: string,
+    reason: string,
+  ): Promise<RunCancelResult> {
     const cancelDurable = this.#cancelRunTreeDurable;
     if (cancelDurable === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -969,63 +1021,168 @@ export class AgenCDaemonAgentManager {
       );
     }
     const cancelledAt = this.#now();
-    const report = await cancelDurable({ runId, reason, cancelledAt });
-    if (report.missing) {
+    const pendingCanonical: PendingCanonicalRunCancellation = {};
+    this.#pendingCanonicalRunCancellations.set(runId, pendingCanonical);
+    const interruptedLiveAgentIds: string[] = [];
+    let report: CancelAgentRunTreeReport;
+    let preparedLiveCancellation = false;
+    let liveTerminalAlreadyPresent = false;
+    let preparedVoidedHolds = 0;
+    let terminationFinalized = false;
+    try {
+      const liveSnapshot = await this.#liveRunWriterSnapshot(runId);
+      const observedSnapshot =
+        pendingCanonical.snapshot?.terminal !== undefined
+          ? pendingCanonical.snapshot
+          : liveSnapshot;
+      if (observedSnapshot?.terminal !== undefined) {
+        liveTerminalAlreadyPresent = true;
+        if (!isCanonicalRunTerminal(observedSnapshot.terminal, runId)) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "RUN_CANCEL_UNAVAILABLE",
+            `run.cancel observed invalid canonical terminal evidence for ${runId}`,
+          );
+        }
+        pendingCanonical.snapshot = observedSnapshot;
+        // A terminal may become visible between installing the cancellation
+        // marker and reading the runner snapshot. Route it through the same
+        // lifecycle handler so the legacy status cannot be DB-cancelled while
+        // a completed canonical result is waiting to be projected.
+        if (pendingCanonical.target === undefined) {
+          await this.handleRunnerTerminated(runId, observedSnapshot);
+        }
+        if (observedSnapshot.terminal.result.status !== "cancelled") {
+          const target = pendingCanonical.target;
+          if (target !== undefined) {
+            await this.#finalizeRunnerTermination(runId, target);
+            terminationFinalized = true;
+          }
+        }
+      } else if (liveSnapshot !== null) {
+        const runner = this.#runner;
+        const prepareCancellation =
+          runner?.prepareAgentCancellation?.bind(runner);
+        const stopRunner = runner?.stopAgent?.bind(runner);
+        if (prepareCancellation === undefined || stopRunner === undefined) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "RUN_CANCEL_UNAVAILABLE",
+            `run.cancel cannot seal live run ${runId}: two-phase background cancellation is unavailable`,
+          );
+        }
+        const preparation = await prepareCancellation(runId, reason);
+        preparedLiveCancellation = true;
+        preparedVoidedHolds = preparation.voidedHolds;
+        try {
+          const interrupted =
+            (await runner?.interruptAgentTurn?.(runId, reason)) ?? false;
+          if (interrupted) interruptedLiveAgentIds.push(runId);
+        } catch (error) {
+          // Full stop is the authoritative quiescence boundary. Preserve the
+          // failed early interrupt as diagnostics, but do not skip it.
+          this.#onSnapshotError(error);
+        }
+
+        let stopError: unknown;
+        try {
+          await stopRunner(runId, reason);
+        } catch (error) {
+          stopError = error;
+        }
+        if (pendingCanonical.snapshot?.terminal === undefined) {
+          try {
+            const stoppedSnapshot = await runner?.getAgentSnapshot?.(runId);
+            if (stoppedSnapshot?.terminal !== undefined) {
+              pendingCanonical.snapshot = stoppedSnapshot;
+            }
+          } catch (error) {
+            stopError ??= error;
+          }
+        }
+        const terminal = pendingCanonical.snapshot?.terminal;
+        if (!isCanonicalCancellationTerminal(terminal, runId)) {
+          if (stopError !== undefined) throw stopError;
+          throw new AgenCDaemonAgentLifecycleError(
+            "RUN_CANCEL_UNAVAILABLE",
+            `run.cancel stopped live run ${runId} without canonical cancellation evidence`,
+          );
+        }
+        if (stopError !== undefined) {
+          // The terminal event proves quiescence crossed its durable close
+          // boundary. Keep teardown diagnostics without discarding the
+          // canonical cancellation or skipping projection convergence.
+          this.#onSnapshotError(stopError);
+        }
+      }
+
+      // Canonical-first for a live writer; durable-only for an inactive run.
+      // A crash on either side is recoverable: a live terminal rebuilds the
+      // projection, while an offline DB cancellation honestly has no output.
+      report = await cancelDurable({ runId, reason, cancelledAt });
+      if (report.missing) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "RUN_NOT_FOUND",
+          `run.cancel: no agent run found for id: ${runId}`,
+        );
+      }
+
+      const deferredTermination = pendingCanonical.target;
+      if (deferredTermination !== undefined && !terminationFinalized) {
+        // The canonical event is already committed and the DB cascade has now
+        // converged. Only at this point may the ordinary lifecycle writer
+        // advance the legacy status and publish terminal notifications.
+        await this.#finalizeRunnerTermination(runId, deferredTermination);
+      }
+
+      // Live cancellation already settled and canonicalized admissions before
+      // stopAgent sealed the terminal tail. Offline/legacy runs have no writer,
+      // so the compatibility follow-up remains responsible for live leases.
+      let voidedHolds = preparedLiveCancellation
+        ? preparedVoidedHolds
+        : (report.admissionVoidedReservations ?? 0);
+      const voidHolds = this.#voidBudgetHoldsForAgents;
+      if (
+        !preparedLiveCancellation &&
+        !liveTerminalAlreadyPresent &&
+        voidHolds !== undefined &&
+        report.subtreeRunIds.length > 0
+      ) {
+        try {
+          const followupVoids = await voidHolds(report.subtreeRunIds);
+          if (report.admissionVoidedReservations === undefined) {
+            voidedHolds = followupVoids;
+          }
+        } catch (error) {
+          this.#onSnapshotError(error);
+        }
+      }
+
+      return {
+        runId,
+        alreadyTerminal: report.alreadyTerminal,
+        cancelledRunIds: report.cancelledRunIds,
+        closedEdgeChildIds: report.closedEdgeChildIds,
+        interruptedLiveAgentIds,
+        voidedHolds,
+      };
+    } finally {
+      this.#pendingCanonicalRunCancellations.delete(runId);
+    }
+  }
+
+  async #liveRunWriterSnapshot(
+    runId: string,
+  ): Promise<AgenCBackgroundAgentSnapshot | null> {
+    const readSnapshot = this.#runner?.getAgentSnapshot?.bind(this.#runner);
+    if (readSnapshot !== undefined) {
+      return (await readSnapshot(runId)) ?? null;
+    }
+    if (this.#runner !== undefined) {
       throw new AgenCDaemonAgentLifecycleError(
-        "RUN_NOT_FOUND",
-        `run.cancel: no agent run found for id: ${runId}`,
+        "RUN_CANCEL_UNAVAILABLE",
+        `run.cancel cannot prove whether run ${runId} has a live canonical writer`,
       );
     }
-
-    // Live propagation: interrupt cascades to descendants inside the
-    // runner (control.interrupt), then stop tears the root down. Both are
-    // best-effort — the durable cascade above already decided the outcome,
-    // and a dead/absent live agent is not an error for run.cancel.
-    const interruptedLiveAgentIds: string[] = [];
-    const runner = this.#runner;
-    if (runner !== undefined) {
-      // Interrupt and stop are independently best-effort: an interrupt
-      // throw must not skip the stop. No live agent (or one dying midway)
-      // is not an error — the durable record stands either way.
-      try {
-        const interrupted =
-          (await runner.interruptAgentTurn?.(runId, reason)) ?? false;
-        if (interrupted) interruptedLiveAgentIds.push(runId);
-      } catch {
-        // best-effort
-      }
-      try {
-        await runner.stopAgent?.(runId, reason);
-      } catch {
-        // best-effort
-      }
-    }
-
-    // The production durable callback settles admission reservations in the
-    // same SQLite transaction as the run-tree cascade. The follow-up callback
-    // remains responsible for releasing/aborting live in-memory leases and is
-    // idempotent; older injected adapters may still report settlement here.
-    let voidedHolds = report.admissionVoidedReservations ?? 0;
-    const voidHolds = this.#voidBudgetHoldsForAgents;
-    if (voidHolds !== undefined && report.subtreeRunIds.length > 0) {
-      try {
-        const followupVoids = await voidHolds(report.subtreeRunIds);
-        if (report.admissionVoidedReservations === undefined) {
-          voidedHolds = followupVoids;
-        }
-      } catch (error) {
-        this.#onSnapshotError(error);
-      }
-    }
-
-    return {
-      runId,
-      alreadyTerminal: report.alreadyTerminal,
-      cancelledRunIds: report.cancelledRunIds,
-      closedEdgeChildIds: report.closedEdgeChildIds,
-      interruptedLiveAgentIds,
-      voidedHolds,
-    };
+    return null;
   }
 
   /**
@@ -1062,6 +1219,17 @@ export class AgenCDaemonAgentManager {
       }
       return null;
     });
+    const pendingCancellation =
+      this.#pendingCanonicalRunCancellations.get(agentId);
+    if (pendingCancellation !== undefined) {
+      pendingCancellation.snapshot = snapshot;
+      if (target !== null) pendingCancellation.target = target;
+      // run.cancel owns the ordering while this marker is installed:
+      // canonical terminal -> tree cascade -> legacy status/notifications.
+      // Returning here prevents the runner callback from racing a terminal
+      // SQLite status ahead of the descendant cascade.
+      return;
+    }
     if (target === null) return;
     await this.#finalizeRunnerTermination(agentId, target);
   }
@@ -1094,6 +1262,7 @@ export class AgenCDaemonAgentManager {
       status: snapshot.status,
       transitionAt,
       ...(snapshot.metadata !== undefined ? { metadata: snapshot.metadata } : {}),
+      ...(snapshot.terminal !== undefined ? { terminal: snapshot.terminal } : {}),
     };
   }
 
@@ -1101,6 +1270,22 @@ export class AgenCDaemonAgentManager {
     agentId: string,
     target: RunnerTerminationTarget,
   ): Promise<void> {
+    if (target.terminal !== undefined && this.#recordRunTerminal !== undefined) {
+      try {
+        await this.#recordRunTerminal({
+          agentId,
+          sessionId: agentId,
+          ...target.route,
+          ...target.terminal,
+        });
+      } catch (error) {
+        // Do not advance the legacy agent row to a terminal status when the
+        // durable terminal projection failed. The canonical JSONL event can
+        // be replayed on restart/query and remains the recovery authority.
+        this.#onSnapshotError(error);
+        return;
+      }
+    }
     await this.#recordAgentStatusSnapshots(
       target.sessionIds,
       agentId,
@@ -3073,6 +3258,34 @@ function uniqueNonEmptyStrings(values: readonly string[]): string[] {
     result.push(trimmed);
   }
   return result;
+}
+
+function isCanonicalCancellationTerminal(
+  terminal: AgenCBackgroundAgentTerminalSnapshot | undefined,
+  runId: string,
+): terminal is AgenCBackgroundAgentTerminalSnapshot {
+  return (
+    isCanonicalRunTerminal(terminal, runId) &&
+    terminal.result.status === "cancelled"
+  );
+}
+
+function isCanonicalRunTerminal(
+  terminal: AgenCBackgroundAgentTerminalSnapshot | undefined,
+  runId: string,
+): terminal is AgenCBackgroundAgentTerminalSnapshot {
+  return (
+    terminal !== undefined &&
+    terminal.result.runId === runId &&
+    typeof terminal.eventId === "string" &&
+    terminal.eventId.trim().length > 0 &&
+    Number.isSafeInteger(terminal.epoch) &&
+    terminal.epoch > 0 &&
+    typeof terminal.rolloutPath === "string" &&
+    terminal.rolloutPath.trim().length > 0 &&
+    Number.isSafeInteger(terminal.result.lastSequence) &&
+    (terminal.result.lastSequence ?? 0) > 0
+  );
 }
 
 function isThreadLogReadMiss(error: unknown): boolean {

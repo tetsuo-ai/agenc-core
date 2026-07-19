@@ -1,7 +1,9 @@
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -9,11 +11,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCanonicalRunReplay } from "../../src/app-server/run-journal-replay.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { serializeRolloutItem } from "../session/rollout-item.js";
+import { RolloutStore } from "../session/rollout-store.js";
+import { SessionLock, SessionLockedError } from "../session/session-store.js";
 import { backfillProjectRollouts } from "./backfill.js";
 import { pruneRolloutSessions } from "./pruning.js";
+import { StateRunDurabilityRepository } from "./run-durability.js";
 import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
+import { recoverCanonicalRunJournalForRun } from "./startup-run-journal-recovery.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 
 let home = "";
@@ -138,6 +145,276 @@ describe("pruneRolloutSessions", () => {
     expect(mirrorRowCount()).toBe(4);
   });
 
+  it("retires a bound journal before removing its projection and rollout", () => {
+    const runId = "thread-bound-old";
+    const oldPath = seedSession(runId, 60);
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId, openedAt: "2026-01-01T00:00:00.000Z" });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath: oldPath,
+      firstAvailableSequence: 1,
+      lastSequence: 2,
+      boundAt: "2026-01-01T00:00:00.000Z",
+    });
+    driver.prepareState(
+      `INSERT INTO agent_runs (
+         id, objective, status, started_at, last_active_at, current_session_id
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      runId,
+      "retention test",
+      "completed",
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:01.000Z",
+      runId,
+    );
+
+    const report = pruneRolloutSessions(driver, {
+      sessionsDir: join(driver.projectDir, "sessions"),
+      retention_days: 30,
+      now: () => NOW,
+    });
+
+    expect(report).toMatchObject({
+      prunedSessions: 1,
+      prunedRolloutFiles: 1,
+      prunedMirrorRows: 2,
+      prunedSessionIds: [runId],
+    });
+    expect(existsSync(oldPath)).toBe(false);
+    expect(mirrorRowCountForSource(oldPath)).toBe(0);
+    expect(runs.getJournalBinding(oldPath)).toMatchObject({
+      active: false,
+      lastSequence: 2,
+      retiredThroughSequence: 2,
+      gapReason: "retention",
+      gapObservedAt: NOW,
+    });
+    expect(runs.getJournalBinding(oldPath)?.firstAvailableSequence).toBeUndefined();
+
+    // Missing historical sources are valid after explicit retirement. Startup
+    // recovery must not mistake this inactive binding for a lost active journal.
+    expect(() => recoverCanonicalRunJournalForRun(driver, runId)).not.toThrow();
+  });
+
+  it("derives a missing retirement tail from canonical JSONL before deletion", () => {
+    const runId = "thread-bound-without-projection";
+    const oldPath = seedSession(runId, 60);
+    appendFileSync(
+      oldPath,
+      serializeRolloutItem({
+        type: "event_msg",
+        payload: {
+          eventId: "canonical-retained-event",
+          id: "reusable-correlation",
+          seq: 1,
+          msg: {
+            type: "user_message",
+            payload: { message: "must become an explicit retention gap" },
+          },
+        },
+      }),
+    );
+    const when = new Date(NOW_MS - 60 * DAY_MS);
+    utimesSync(oldPath, when, when);
+
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId, openedAt: "2026-01-01T00:00:00.000Z" });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath: oldPath,
+      boundAt: "2026-01-01T00:00:00.000Z",
+    });
+    // Model the normal live-writer path: the binding exists, but no replay or
+    // listing has populated bounds/the rebuildable SQLite mirror yet.
+    driver
+      .prepareState("DELETE FROM thread_rollout_items WHERE source_path = ?")
+      .run(oldPath);
+
+    expect(
+      pruneRolloutSessions(driver, {
+        sessionsDir: join(driver.projectDir, "sessions"),
+        retention_days: 30,
+        now: () => NOW,
+      }),
+    ).toMatchObject({ prunedSessions: 1, prunedMirrorRows: 0 });
+    expect(runs.getJournalBinding(oldPath)).toMatchObject({
+      active: false,
+      lastSequence: 1,
+      retiredThroughSequence: 1,
+      gapReason: "retention",
+    });
+    expect(
+      buildCanonicalRunReplay(
+        driver.state,
+        {
+          projectDir: driver.projectDir,
+          stateDbPath: driver.stateDbPath,
+          logsDbPath: driver.logsDbPath,
+        },
+        runId,
+        0,
+        100,
+      ),
+    ).toMatchObject({
+      events: [],
+      nextAfterSequence: 0,
+      lastAvailableSequence: 1,
+      gap: {
+        kind: "event_gap",
+        afterSequence: 0,
+        firstAvailableSequence: 2,
+        reason: "retention",
+      },
+    });
+  });
+
+  it("never re-indexes an explicitly retired source that still exists", () => {
+    const runId = "thread-retired-present";
+    const sourcePath = seedSession(runId, 60);
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId, openedAt: "2026-01-01T00:00:00.000Z" });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath,
+      firstAvailableSequence: 1,
+      lastSequence: 2,
+      boundAt: "2026-01-01T00:00:00.000Z",
+    });
+    driver.prepareState(
+      `INSERT INTO agent_runs (
+         id, objective, status, started_at, last_active_at, current_session_id
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      runId,
+      "retired source recovery test",
+      "completed",
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:01.000Z",
+      runId,
+    );
+    runs.retireJournalSource({
+      sourcePath,
+      reason: "retention",
+      observedAt: NOW,
+    });
+    driver
+      .prepareState("DELETE FROM thread_rollout_items WHERE source_path = ?")
+      .run(sourcePath);
+
+    expect(existsSync(sourcePath)).toBe(true);
+    expect(recoverCanonicalRunJournalForRun(driver, runId)).toMatchObject({
+      filesScanned: 0,
+      eventsProjected: 0,
+    });
+    expect(mirrorRowCountForSource(sourcePath)).toBe(0);
+  });
+
+  it("refuses to revive a retired source when retention leaves it in place", () => {
+    const runId = "thread-retired-reopen";
+    const sourcePath = seedSession(runId, 60);
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId, openedAt: "2026-01-01T00:00:00.000Z" });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath,
+      lastSequence: 2,
+      boundAt: "2026-01-01T00:00:00.000Z",
+    });
+    runs.retireJournalSource({
+      sourcePath,
+      reason: "retention",
+      observedAt: NOW,
+    });
+
+    const resumed = new RolloutStore({
+      cwd,
+      sessionId: runId,
+      agencVersion: "0.6.2",
+      resume: true,
+      autoStartScheduler: false,
+    });
+    try {
+      expect(() =>
+        resumed.open({
+          sessionId: runId,
+          timestamp: NOW,
+          cwd,
+          originator: "retention-test",
+          agencVersion: "0.6.2",
+        }),
+      ).toThrow(/refusing to reopen inactive canonical journal source/);
+    } finally {
+      resumed.close();
+    }
+    expect(existsSync(sourcePath)).toBe(true);
+  });
+
+  it("rebuilds inactive historical bindings that were superseded, not retired", () => {
+    const runId = "thread-superseded-source";
+    const historicalPath = seedSession(runId, 60);
+    const currentPath = join(
+      join(driver.projectDir, "sessions", runId),
+      `rollout-2026-02-01T00-00-00-000Z-${runId}.jsonl`,
+    );
+    writeFileSync(currentPath, readFileSync(historicalPath));
+
+    const runs = new StateRunDurabilityRepository(driver);
+    runs.ensureInitialEpoch({ runId, openedAt: "2026-01-01T00:00:00.000Z" });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath: historicalPath,
+      boundAt: "2026-01-01T00:00:00.000Z",
+    });
+    runs.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath: currentPath,
+      boundAt: "2026-02-01T00:00:00.000Z",
+    });
+    expect(runs.getJournalBinding(historicalPath)).toMatchObject({ active: false });
+    expect(runs.getJournalBinding(historicalPath)?.gapReason).toBeUndefined();
+    driver.prepareState(
+      `INSERT INTO agent_runs (
+         id, objective, status, started_at, last_active_at, current_session_id
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      runId,
+      "superseded binding recovery test",
+      "running",
+      "2026-01-01T00:00:00.000Z",
+      "2026-02-01T00:00:00.000Z",
+      runId,
+    );
+    driver
+      .prepareState("DELETE FROM thread_rollout_items WHERE source_path = ?")
+      .run(historicalPath);
+    expect(mirrorRowCountForSource(historicalPath)).toBe(0);
+
+    expect(recoverCanonicalRunJournalForRun(driver, runId)).toMatchObject({
+      filesScanned: 2,
+    });
+    expect(mirrorRowCountForSource(historicalPath)).toBe(2);
+  });
+
   it("deletes nothing when no retention window is configured", () => {
     const oldPath = seedSession("thread-old", 365);
     const sessionsDir = join(driver.projectDir, "sessions");
@@ -202,6 +479,53 @@ describe("pruneRolloutSessions", () => {
     expect(report.prunedSessionIds).toEqual([]);
     expect(existsSync(lockedPath)).toBe(true);
     expect(mirrorRowCountForSource(lockedPath)).toBe(2);
+  });
+
+  it("defers retention when a writer wins the lease race after observation", () => {
+    const rolloutPath = seedSession("thread-lock-race", 90);
+    const acquire = vi
+      .spyOn(SessionLock.prototype, "acquire")
+      .mockImplementationOnce(() => {
+        throw new SessionLockedError(process.pid, `${rolloutPath}.lock`);
+      });
+    try {
+      expect(
+        pruneRolloutSessions(driver, {
+          sessionsDir: join(driver.projectDir, "sessions"),
+          retention_days: 30,
+          now: () => NOW,
+        }),
+      ).toMatchObject({ prunedSessions: 0, prunedMirrorRows: 0 });
+      expect(existsSync(rolloutPath)).toBe(true);
+      expect(mirrorRowCountForSource(rolloutPath)).toBe(2);
+    } finally {
+      acquire.mockRestore();
+    }
+  });
+
+  it("skips the whole session when any canonical rollout sibling is corrupt", () => {
+    const sessionId = "thread-corrupt-sibling";
+    const rolloutPath = seedSession(sessionId, 90);
+    const corruptPath = join(
+      driver.projectDir,
+      "sessions",
+      sessionId,
+      `rollout-2026-01-02T00-00-00-000Z-${sessionId}.jsonl`,
+    );
+    writeFileSync(corruptPath, "{ not valid canonical json }\n");
+    const when = new Date(NOW_MS - 90 * DAY_MS);
+    utimesSync(corruptPath, when, when);
+
+    expect(
+      pruneRolloutSessions(driver, {
+        sessionsDir: join(driver.projectDir, "sessions"),
+        retention_days: 30,
+        now: () => NOW,
+      }),
+    ).toMatchObject({ prunedSessions: 0, prunedMirrorRows: 0 });
+    expect(existsSync(rolloutPath)).toBe(true);
+    expect(existsSync(corruptPath)).toBe(true);
+    expect(mirrorRowCountForSource(rolloutPath)).toBe(2);
   });
 });
 

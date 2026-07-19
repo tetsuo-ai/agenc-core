@@ -10,6 +10,7 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
+import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import { createPromptBridge } from "./prompts.js";
 
 const UNTRUSTED_MCP_PROMPT_BOUNDARY =
@@ -54,12 +55,14 @@ function promptLease(
   };
 }
 
-function installPromptAdmission(options: {
-  acquire?: (
-    input: AdmissionAcquireInput,
-    signal?: AbortSignal,
-  ) => Promise<AdmissionLease>;
-} = {}) {
+function installPromptAdmission(
+  options: {
+    acquire?: (
+      input: AdmissionAcquireInput,
+      signal?: AbortSignal,
+    ) => Promise<AdmissionLease>;
+  } = {},
+) {
   clearCurrentRuntimeSession();
   const acquire = vi.fn(
     options.acquire ??
@@ -87,6 +90,7 @@ function installPromptAdmission(options: {
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient;
   setCurrentRuntimeSession({
+    ...createTestEffectJournal(),
     conversationId: "session-prompt",
     services: { executionAdmission: admission, admissionRequired: true },
   } as unknown as Session);
@@ -255,10 +259,12 @@ describe("createPromptBridge", () => {
     const getPrompt = vi.fn();
     const bridge = await createPromptBridge(makeClient({ getPrompt }), "srv");
 
-    await expect(bridge.renderPrompt("missing-identity")).rejects.toMatchObject({
-      code: "ADMISSION_DENIED",
-      reason: "tool_admission_session_unavailable",
-    });
+    await expect(bridge.renderPrompt("missing-identity")).rejects.toMatchObject(
+      {
+        code: "ADMISSION_DENIED",
+        reason: "tool_admission_session_unavailable",
+      },
+    );
     expect(getPrompt).not.toHaveBeenCalled();
   });
 
@@ -276,10 +282,7 @@ describe("createPromptBridge", () => {
       },
     );
     const bridge = await createPromptBridge(makeClient({ getPrompt }), "srv");
-    const cancellation = new AdmissionDeniedError(
-      "run_cancelled",
-      "cancelled",
-    );
+    const cancellation = new AdmissionDeniedError("run_cancelled", "cancelled");
 
     const rendering = bridge.renderPrompt("cancelled");
     const rejection = expect(rendering).rejects.toBe(cancellation);

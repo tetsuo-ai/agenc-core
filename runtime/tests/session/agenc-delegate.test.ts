@@ -28,6 +28,10 @@
  * session-kernel suites.
  */
 
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
@@ -65,6 +69,7 @@ import {
 } from "./agenc-delegate.js";
 import { newDefaultTurnWithSubId } from "./turn-context.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import * as providerFactory from "../llm/provider.js";
 import {
   AdmissionDeniedError,
@@ -72,6 +77,9 @@ import {
   type ExecutionAdmissionClient,
 } from "../budget/admission-client.js";
 import type { AdmissionLease } from "../budget/admission-types.js";
+import { RolloutStore } from "./rollout-store.js";
+import { AgenCDaemonRunInspectionService } from "../app-server/run-inspection.js";
+import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixtures (mirrors tasks.test.ts::buildSession and review.test.ts)
@@ -84,10 +92,10 @@ function mkFeatures(): ManagedFeatures {
   };
 }
 
-function mkConfig(): Config {
+function mkConfig(cwd = "/tmp"): Config {
   return {
     model: "test-model",
-    cwd: "/tmp",
+    cwd,
     features: mkFeatures(),
     multiAgentV2: {
       usageHintEnabled: false,
@@ -119,9 +127,9 @@ function mkModelInfo(slug = "test-model"): ModelInfo {
   };
 }
 
-function mkSessionConfiguration(): SessionConfiguration {
+function mkSessionConfiguration(cwd = "/tmp"): SessionConfiguration {
   return {
-    cwd: "/tmp",
+    cwd,
     approvalPolicy: { value: "never" },
     sandboxPolicy: { value: "read_only" },
     fileSystemSandboxPolicy: {
@@ -210,7 +218,9 @@ function mkScriptedProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
 function mkSession(
   provider: LLMProvider,
   serviceOverrides?: Partial<SessionServices>,
+  options: { readonly cwd?: string } = {},
 ): Session {
+  const cwd = options.cwd ?? "/tmp";
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -233,17 +243,37 @@ function mkSession(
   const sessionOpts: SessionOpts = {
     conversationId: "conv-delegate-test",
     initialState: {
-      sessionConfiguration: mkSessionConfiguration(),
+      sessionConfiguration: mkSessionConfiguration(cwd),
       history: [],
     },
     features: mkFeatures(),
     services,
     jsRepl: { id: "repl-test" },
-    config: mkConfig(),
+    config: mkConfig(cwd),
     modelInfo: mkModelInfo(),
     eventQueue: new AsyncQueue<Event>(),
   };
   return new Session(sessionOpts);
+}
+
+function mountTestRollout(session: Session): RolloutStore {
+  const cwd = session.sessionConfiguration.cwd;
+  const store = new RolloutStore({
+    cwd,
+    sessionId: session.conversationId,
+    agencVersion: "0.2.0",
+  });
+  store.open({
+    sessionId: session.conversationId,
+    timestamp: new Date().toISOString(),
+    cwd,
+    originator: "review-delegate-test",
+    agencVersion: "0.2.0",
+    model: session.modelInfo.slug,
+    modelProvider: session.services.provider.name,
+  });
+  session.mountRolloutStore(store);
+  return store;
 }
 
 function delegateAdmissionHarness(opts?: {
@@ -263,11 +293,13 @@ function delegateAdmissionHarness(opts?: {
   const leaseAbort = new AbortController();
   const child = {
     scope: {
-      runId: "root-review-run",
+      runId: "conv-delegate-test:review:review-delegate-A",
       workspaceId: "workspace",
       sessionId: "review-child-session",
+      parentRunId: "root-review-run",
       autonomous: false,
     },
+    subscribe: vi.fn(() => () => {}),
   } as ExecutionAdmissionClient;
   const acquire = vi.fn(
     async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
@@ -380,14 +412,20 @@ function mkOneShotRequest(
 }
 
 /** Capture `exit_review_mode` payloads from the session event queue. */
-function observeExitReviewMode(session: Session): Promise<ExitReviewModePayload> {
+function observeExitReviewMode(
+  session: Session,
+): Promise<ExitReviewModePayload> {
   return new Promise((resolve) => {
     const unsubscribe = session.eventLog.subscribe((ev) => {
       if ((ev.msg as EventMsg).type === "exit_review_mode") {
         unsubscribe();
         resolve(
-          (ev.msg as { type: "exit_review_mode"; payload: ExitReviewModePayload })
-            .payload,
+          (
+            ev.msg as {
+              type: "exit_review_mode";
+              payload: ExitReviewModePayload;
+            }
+          ).payload,
         );
       }
     });
@@ -510,12 +548,18 @@ async function exerciseDelegateProviderOwnership(
 // ─────────────────────────────────────────────────────────────────────
 
 describe("review delegate spawn admission", () => {
-  it("journals the spawn commit and keeps the child session on the root run", async () => {
+  it("journals the spawn commit and binds a distinct canonical child run", async () => {
     const admission = delegateAdmissionHarness();
-    const session = mkSession(mkScriptedProvider({ content: "ok" }), {
-      executionAdmission: admission.client,
-      admissionRequired: true,
-    });
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-review-admission-"));
+    const session = mkSession(
+      mkScriptedProvider({ content: "ok" }),
+      {
+        executionAdmission: admission.client,
+        admissionRequired: true,
+      },
+      { cwd },
+    );
+    mountTestRollout(session);
     const req = mkOneShotRequest(session);
     const controller = new AbortController();
 
@@ -556,13 +600,18 @@ describe("review delegate spawn admission", () => {
       { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     );
     expect(admission.forSession).toHaveBeenCalledWith({
+      runId: "conv-delegate-test:review:review-delegate-A",
       sessionId: "conv-delegate-test:review:review-delegate-A",
+      parentRunId: "root-review-run",
       parentScopeId: "conv-delegate-test",
     });
     expect(thread.childSession.services.executionAdmission).toBe(
       admission.child,
     );
-    expect(admission.child.scope.runId).toBe(admission.client.scope.runId);
+    expect(admission.child.scope.runId).toBe(
+      "conv-delegate-test:review:review-delegate-A",
+    );
+    expect(thread.childSession.rolloutStore).not.toBeNull();
     expect(admission.voidReservation).not.toHaveBeenCalled();
     expect(admission.holdUnknown).not.toHaveBeenCalled();
     expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
@@ -570,14 +619,22 @@ describe("review delegate spawn admission", () => {
     );
 
     await thread.shutdown("test complete");
+    await session.shutdown();
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("prevents child construction when cancellation races the spawn commit", async () => {
     const admission = delegateAdmissionHarness({ abortOnDispatch: true });
-    const session = mkSession(mkScriptedProvider({ content: "unused" }), {
-      executionAdmission: admission.client,
-      admissionRequired: true,
-    });
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-review-admission-race-"));
+    const session = mkSession(
+      mkScriptedProvider({ content: "unused" }),
+      {
+        executionAdmission: admission.client,
+        admissionRequired: true,
+      },
+      { cwd },
+    );
+    mountTestRollout(session);
     const req = mkOneShotRequest(session);
 
     await expect(
@@ -595,7 +652,9 @@ describe("review delegate spawn admission", () => {
     });
 
     expect(admission.forSession).toHaveBeenCalledWith({
+      runId: "conv-delegate-test:review:review-delegate-A",
       sessionId: "conv-delegate-test:review:review-delegate-A",
+      parentRunId: "root-review-run",
       parentScopeId: "conv-delegate-test",
     });
     expect(admission.reconcile).toHaveBeenCalledWith(
@@ -607,16 +666,43 @@ describe("review delegate spawn admission", () => {
     expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
       "review-spawn-reservation",
     );
+    const childRunId = `${session.conversationId}:review:${req.subId}`;
+    const inspection = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [resolveStateDatabasePaths({ cwd })],
+    });
+    expect(inspection.status({ runId: childRunId })).toMatchObject({
+      runId: childRunId,
+      status: "cancelled",
+      terminal: true,
+    });
+    expect(inspection.result({ runId: childRunId })).toMatchObject({
+      runId: childRunId,
+      status: "cancelled",
+      terminal: true,
+      output: {
+        available: true,
+        stopReason: "execution admission cancelled: run_cancelled",
+        finalMessage: null,
+      },
+    });
+    await session.shutdown();
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("releases spawn capacity when reconciliation journaling fails", async () => {
     const admission = delegateAdmissionHarness({
       reconcileError: new Error("forced review spawn journal failure"),
     });
-    const session = mkSession(mkScriptedProvider({ content: "unused" }), {
-      executionAdmission: admission.client,
-      admissionRequired: true,
-    });
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-review-admission-failure-"));
+    const session = mkSession(
+      mkScriptedProvider({ content: "unused" }),
+      {
+        executionAdmission: admission.client,
+        admissionRequired: true,
+      },
+      { cwd },
+    );
+    mountTestRollout(session);
     const req = mkOneShotRequest(session);
 
     await expect(
@@ -636,6 +722,8 @@ describe("review delegate spawn admission", () => {
     expect(admission.acknowledgeCompletion).toHaveBeenCalledWith(
       "review-spawn-reservation",
     );
+    await session.shutdown();
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("fails closed and drains the parent task when the kernel is required but missing", async () => {
@@ -686,6 +774,217 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       ]);
     },
   );
+
+  it.each([
+    ["completed", "completed", "review_completed", "review passed"],
+    ["failed", "failed", "review failed", null],
+    ["interrupted", "cancelled", "review interrupted", null],
+  ] as const)(
+    "makes a %s reviewer run queryable and replayable by child session id",
+    async (scenario, terminalStatus, stopReason, finalMessage) => {
+      const cwd = mkdtempSync(
+        join(tmpdir(), `agenc-review-${scenario}-terminal-`),
+      );
+      let markProviderStarted: () => void = () => {};
+      const providerStarted = new Promise<void>((resolve) => {
+        markProviderStarted = resolve;
+      });
+      const provider =
+        scenario === "failed"
+          ? mkScriptedProvider({ throwError: new Error("review failed") })
+          : scenario === "interrupted"
+            ? mkScriptedProvider({
+                delayMs: 10_000,
+                onChat: markProviderStarted,
+              })
+            : mkScriptedProvider({ content: "review passed" });
+      const session = mkSession(provider, undefined, { cwd });
+      mountTestRollout(session);
+      const req = mkOneShotRequest(session);
+      const childRunId = `${session.conversationId}:review:${req.subId}`;
+      const childController = new AbortController();
+      let thread:
+        Awaited<ReturnType<typeof spawnAgenCDelegateThread>> | undefined;
+
+      try {
+        thread = await spawnAgenCDelegateThread(
+          session,
+          req,
+          req.parentContext.modelInfo.slug,
+          req.parentContext.modelInfo,
+          childController,
+        );
+        thread.txSub.send({ type: "user_input", input: req.input });
+        if (scenario === "interrupted") {
+          await providerStarted;
+          childController.abort("review interrupted");
+        }
+        await thread.completion;
+
+        const inspection = new AgenCDaemonRunInspectionService({
+          stateDatabasePaths: () => [resolveStateDatabasePaths({ cwd })],
+        });
+        expect(inspection.status({ runId: childRunId })).toMatchObject({
+          runId: childRunId,
+          status: terminalStatus,
+          terminal: true,
+        });
+        expect(inspection.result({ runId: childRunId })).toMatchObject({
+          runId: childRunId,
+          status: terminalStatus,
+          terminal: true,
+          output: {
+            available: true,
+            stopReason,
+            finalMessage,
+          },
+        });
+        const replay = inspection.replay({ runId: childRunId, limit: 200 });
+        expect(replay.events.at(-1)).toMatchObject({
+          runId: childRunId,
+          category: "terminal",
+          kind: "run_terminal",
+        });
+      } finally {
+        if (thread !== undefined && !thread.rxEvent.isClosed) {
+          await thread.shutdown("test cleanup");
+        }
+        await session.shutdown();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps a completed reviewer result when post-terminal provider disposal fails", async () => {
+    const previousAgencHome = process.env.AGENC_HOME;
+    const home = mkdtempSync(join(tmpdir(), "agenc-review-disposal-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-review-disposal-workspace-"));
+    process.env.AGENC_HOME = home;
+    const parentBroker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd,
+    });
+    const childProvider: LLMProvider = {
+      ...mkScriptedProvider({ content: "" }),
+      dispose: vi.fn(async () => {
+        throw new Error("forced reviewer provider disposal failure");
+      }),
+    };
+    const parentProvider: LLMProvider = {
+      ...mkScriptedProvider(),
+      forkForSession: vi.fn(() => childProvider),
+    };
+    const session = mkSession(
+      parentProvider,
+      { sandboxExecutionBroker: parentBroker },
+      { cwd },
+    );
+    mountTestRollout(session);
+    const req = mkOneShotRequest(session);
+    const childRunId = `${session.conversationId}:review:${req.subId}`;
+    const parentEvents: Event[] = [];
+    const unsubscribe = session.eventLog.subscribe((event) => {
+      parentEvents.push(event);
+    });
+
+    try {
+      const outcome = await runAgenCReviewOneShot(session, req);
+      expect(outcome).toMatchObject({
+        verdict: "partial",
+        error: null,
+      });
+      expect(childProvider.dispose).toHaveBeenCalledOnce();
+      expect(parentEvents).toContainEqual(
+        expect.objectContaining({
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "review_delegate_resource_cleanup_failed",
+              message: "forced reviewer provider disposal failure",
+            },
+          },
+        }),
+      );
+
+      const inspection = new AgenCDaemonRunInspectionService({
+        stateDatabasePaths: () => [
+          resolveStateDatabasePaths({ cwd, agencHome: home }),
+        ],
+      });
+      expect(inspection.result({ runId: childRunId })).toMatchObject({
+        runId: childRunId,
+        status: "completed",
+        terminal: true,
+        output: {
+          available: true,
+          stopReason: "review_completed",
+        },
+      });
+    } finally {
+      unsubscribe();
+      await session.shutdown();
+      await disposeSandboxExecutionBroker(parentBroker);
+      if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousAgencHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a fresh reviewer store for an already-terminal child identity", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-review-duplicate-terminal-"));
+    const session = mkSession(
+      mkScriptedProvider({ content: "review complete" }),
+      undefined,
+      { cwd },
+    );
+    const parentStore = mountTestRollout(session);
+    const req = mkOneShotRequest(session);
+    const childRunId = `${session.conversationId}:review:${req.subId}`;
+    const childSessionDir = join(
+      join(parentStore.store.sessionDir, ".."),
+      childRunId,
+    );
+
+    try {
+      const first = await spawnAgenCDelegateThread(
+        session,
+        req,
+        req.parentContext.modelInfo.slug,
+        req.parentContext.modelInfo,
+        new AbortController(),
+      );
+      first.txSub.send({ type: "user_input", input: req.input });
+      await first.completion;
+      const rolloutFiles = readdirSync(childSessionDir).filter(
+        (entry) => entry.startsWith("rollout-") && entry.endsWith(".jsonl"),
+      );
+      expect(rolloutFiles).toHaveLength(1);
+
+      await expect(
+        spawnAgenCDelegateThread(
+          session,
+          req,
+          req.parentContext.modelInfo.slug,
+          req.parentContext.modelInfo,
+          new AbortController(),
+        ),
+      ).rejects.toMatchObject({
+        name: "TerminalRunEpochOpenError",
+        message: expect.stringContaining(
+          `refusing to open terminal run ${childRunId} epoch 1`,
+        ),
+      });
+      expect(
+        readdirSync(childSessionDir).filter(
+          (entry) => entry.startsWith("rollout-") && entry.endsWith(".jsonl"),
+        ),
+      ).toEqual(rolloutFiles);
+    } finally {
+      await session.shutdown();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
   it("uses an inert child MCP manager and never refreshes the parent transport", async () => {
     const parentRefresh = vi.fn(async () => ({
@@ -784,7 +1083,10 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       }),
     });
     const session = mkSession(provider);
-    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(
+      session,
+      mkOneShotRequest(session),
+    );
     expect(outcome.verdict).toBe("fail");
     expect(outcome.output.findings.length).toBe(1);
   });
@@ -792,7 +1094,10 @@ describe("runAgenCReviewOneShot happy-path review", () => {
   it("classifies verdict=partial when assistant text is empty", async () => {
     const provider = mkScriptedProvider({ content: "" });
     const session = mkSession(provider);
-    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(
+      session,
+      mkOneShotRequest(session),
+    );
     expect(outcome.verdict).toBe("partial");
   });
 
@@ -808,14 +1113,18 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     const provider = mkScriptedProvider({
       content: "reviewer text",
       onChat: (messages, options) => {
-        expect(messages.some((message) => message.role === "system")).toBe(false);
+        expect(messages.some((message) => message.role === "system")).toBe(
+          false,
+        );
         observedSystemPrompt = options?.systemPrompt;
       },
     });
     const session = mkSession(provider);
     await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(observedSystemPrompt).toContain("# Review guidelines:");
-    expect(observedSystemPrompt?.match(/# Review guidelines:/g)).toHaveLength(1);
+    expect(observedSystemPrompt?.match(/# Review guidelines:/g)).toHaveLength(
+      1,
+    );
   });
 
   it("passes the reviewer model, no-tool envelope, and reasoning effort to the provider", async () => {
@@ -1021,10 +1330,12 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     });
     await thread.shutdown("test complete");
 
-    expect(parentEvents.some((event) => event.type === "exec_approval_request"))
-      .toBe(true);
-    expect(parentEvents.some((event) => event.type === "request_permissions"))
-      .toBe(true);
+    expect(
+      parentEvents.some((event) => event.type === "exec_approval_request"),
+    ).toBe(true);
+    expect(
+      parentEvents.some((event) => event.type === "request_permissions"),
+    ).toBe(true);
   });
 });
 
@@ -1277,11 +1588,15 @@ describe("ReviewManager.runReview orchestrator", () => {
     const payload = await exitPromise;
     expect(payload.reason).toBe("completed");
     const started = telemetry.find(
-      (event): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
+      (
+        event,
+      ): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
         event.type === "review_delegate_started",
     );
     const completed = telemetry.find(
-      (event): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
+      (
+        event,
+      ): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
         event.type === "review_delegate_completed",
     );
     expect(started?.payload).toMatchObject({
@@ -1364,17 +1679,27 @@ describe("ReviewManager.runReview orchestrator", () => {
     });
 
     const secondMessages = observedMessages[1] ?? [];
-    expect(secondMessages.some((message) => messageTextForTest(message).includes("first review snapshot")))
-      .toBe(true);
-    expect(secondMessages.some((message) => messageTextForTest(message).includes("previous review snapshot")))
-      .toBe(true);
+    expect(
+      secondMessages.some((message) =>
+        messageTextForTest(message).includes("first review snapshot"),
+      ),
+    ).toBe(true);
+    expect(
+      secondMessages.some((message) =>
+        messageTextForTest(message).includes("previous review snapshot"),
+      ),
+    ).toBe(true);
 
     const started = telemetry.filter(
-      (event): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
+      (
+        event,
+      ): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
         event.type === "review_delegate_started",
     );
     const completed = telemetry.filter(
-      (event): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
+      (
+        event,
+      ): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
         event.type === "review_delegate_completed",
     );
     expect(started).toHaveLength(2);
@@ -1461,7 +1786,10 @@ describe("runAgenCReviewOneShot provider error handling", () => {
     const provider = mkScriptedProvider({ throwError: boom });
     const session = mkSession(provider);
     const exitPromise = observeExitReviewMode(session);
-    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(
+      session,
+      mkOneShotRequest(session),
+    );
     expect(outcome.verdict).toBe("fail");
     expect(outcome.error).toBe(boom);
     const payload = await exitPromise;

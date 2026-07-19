@@ -25,6 +25,7 @@ import {
   type SqlMigration,
 } from "./migrations/index.js";
 import { AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION } from "./migrations/012_agent_role_workspace_provenance.js";
+import { RUN_DURABILITY_SCHEMA_VERSION } from "./migrations/015_run_durability_schema.js";
 import { replayAtomicSessionSnapshotWrites } from "./atomic-snapshot-writes.js";
 
 export interface OpenStateDatabaseOptions {
@@ -42,6 +43,7 @@ export interface StateDatabasePaths {
 export const STATE_DATABASE_FILENAME = "agenc-state_1.sqlite";
 export const LOGS_DATABASE_FILENAME = "agenc-logs_1.sqlite";
 export const STATE_PRE_V12_BACKUP_FILENAME = "agenc-state_1.pre-v12.sqlite";
+export const STATE_PRE_V15_BACKUP_FILENAME = "agenc-state_1.pre-v15.sqlite";
 
 export type SqliteDatabase = BetterSqlite3.Database;
 export type SqliteStatement<
@@ -246,12 +248,24 @@ function applyStateMigrations(
   // an existence/version check and make us migrate it without a backup.
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (
-      hasUserStateTables(db) &&
-      maxAppliedMigrationVersion(db) <
-        AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION
-    ) {
-      createPreV12StateBackupLocked(paths);
+    if (hasUserStateTables(db)) {
+      const maxApplied = maxAppliedMigrationVersion(db);
+      if (maxApplied < AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION) {
+        createPreMigrationStateBackupLocked(
+          paths,
+          STATE_PRE_V12_BACKUP_FILENAME,
+          AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION,
+          "pre-v12",
+        );
+      }
+      if (maxApplied < RUN_DURABILITY_SCHEMA_VERSION) {
+        createPreMigrationStateBackupLocked(
+          paths,
+          STATE_PRE_V15_BACKUP_FILENAME,
+          RUN_DURABILITY_SCHEMA_VERSION,
+          "pre-v15",
+        );
+      }
     }
     applyMigrations(db, STATE_DB_MIGRATIONS);
     db.exec("COMMIT");
@@ -261,8 +275,13 @@ function applyStateMigrations(
   }
 }
 
-function createPreV12StateBackupLocked(paths: StateDatabasePaths): void {
-  const backupPath = join(paths.projectDir, STATE_PRE_V12_BACKUP_FILENAME);
+function createPreMigrationStateBackupLocked(
+  paths: StateDatabasePaths,
+  filename: string,
+  targetVersion: number,
+  label: string,
+): void {
+  const backupPath = join(paths.projectDir, filename);
   const tempPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
   let snapshotSource: SqliteDatabase | undefined;
   try {
@@ -276,7 +295,7 @@ function createPreV12StateBackupLocked(paths: StateDatabasePaths): void {
     snapshotSource = undefined;
 
     chmodSync(tempPath, 0o600);
-    validatePreV12StateBackup(tempPath);
+    validatePreMigrationStateBackup(tempPath, targetVersion, label);
     fsyncFile(tempPath);
 
     // Refresh a stale artifact from an earlier failed attempt while the source
@@ -332,7 +351,11 @@ function maxAppliedMigrationVersion(db: SqliteDatabase): number {
   );
 }
 
-function validatePreV12StateBackup(path: string): void {
+function validatePreMigrationStateBackup(
+  path: string,
+  targetVersion: number,
+  label: string,
+): void {
   const backup = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const integrity = backup
@@ -345,10 +368,9 @@ function validatePreV12StateBackup(path: string): void {
       throw new Error(`state backup failed integrity check: ${path}`);
     }
     if (
-      maxAppliedMigrationVersion(backup) >=
-      AGENT_ROLE_WORKSPACE_PROVENANCE_SCHEMA_VERSION
+      maxAppliedMigrationVersion(backup) >= targetVersion
     ) {
-      throw new Error(`state backup is not a pre-v12 database: ${path}`);
+      throw new Error(`state backup is not a ${label} database: ${path}`);
     }
   } finally {
     backup.close();

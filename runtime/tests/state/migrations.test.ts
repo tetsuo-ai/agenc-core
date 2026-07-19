@@ -55,7 +55,7 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -72,6 +72,7 @@ describe("state migration registry", () => {
       "agent_role_workspace_provenance",
       "thread_listing_indexes",
       "execution_admission_schema",
+      "run_durability_schema",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -104,7 +105,105 @@ describe("state migration registry", () => {
       "012_agent_role_workspace_provenance.ts",
       "013_thread_listing_indexes.ts",
       "014_execution_admission_schema.ts",
+      "015_run_durability_schema.ts",
     ]);
+  });
+
+  it("adds durable run state without copying canonical rollout event payloads", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      const tables = db
+        .prepare<[], { name: string }>(
+          `SELECT name
+           FROM sqlite_master
+           WHERE type = 'table' AND name LIKE 'run_%'
+           ORDER BY name ASC`,
+        )
+        .all()
+        .map((row) => row.name);
+      expect(tables).toEqual([
+        "run_effects",
+        "run_journal_bindings",
+        "run_lifecycle_epochs",
+        "run_terminal_results",
+      ]);
+      expect(tables).not.toContain("run_journal_events");
+      expect(
+        db
+          .prepare<[], { version: number; name: string }>(
+            "SELECT version, name FROM schema_migrations WHERE version = 15",
+          )
+          .get(),
+      ).toEqual({ version: 15, name: "run_durability_schema" });
+
+      const effectIndexes = db
+        .prepare<[], { name: string }>("PRAGMA index_list(run_effects)")
+        .all()
+        .map((row) => row.name);
+      expect(effectIndexes).toEqual(
+        expect.arrayContaining([
+          "idx_run_effects_intent_sequence",
+          "idx_run_effects_result_sequence",
+          "idx_run_effects_pending_review",
+        ]),
+      );
+      const journalIndexes = db
+        .prepare<[], { name: string }>(
+          "PRAGMA index_list(run_journal_bindings)",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(journalIndexes).toContain("idx_run_journal_bindings_active");
+      const rolloutIndexes = db
+        .prepare<[], { name: string }>(
+          "PRAGMA index_list(thread_rollout_items)",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(rolloutIndexes).toEqual(
+        expect.arrayContaining([
+          "idx_thread_rollout_items_replay_source_sequence",
+          "idx_thread_rollout_items_replay_thread_sequence",
+          "idx_thread_rollout_items_replay_source_identity",
+          "idx_thread_rollout_items_replay_thread_identity",
+        ]),
+      );
+      const sequencePlan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN
+           SELECT event_seq, event_id, payload_json
+           FROM thread_rollout_items
+           WHERE source_path = ? AND item_type = 'event_msg'
+             AND event_seq > ?
+           GROUP BY event_seq, event_id, payload_json
+           ORDER BY event_seq
+           LIMIT ?`,
+        )
+        .all("/rollout/run.jsonl", 0, 201)
+        .map((row) => String((row as { detail?: unknown }).detail ?? ""));
+      expect(sequencePlan.join("\n")).toContain(
+        "idx_thread_rollout_items_replay_source_sequence",
+      );
+      const identityPlan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN
+           SELECT event_id, event_seq, payload_json
+           FROM thread_rollout_items
+           WHERE source_path = ? AND item_type = 'event_msg'
+             AND event_seq IS NOT NULL AND event_id IN (?, ?)
+           GROUP BY event_id, event_seq, payload_json`,
+        )
+        .all("/rollout/run.jsonl", "event:1", "event:2")
+        .map((row) => String((row as { detail?: unknown }).detail ?? ""));
+      expect(identityPlan.join("\n")).toContain(
+        "idx_thread_rollout_items_replay_source_identity",
+      );
+    } finally {
+      db.close();
+    }
   });
 
   it("installs ordering indexes for bounded active and archived thread pages", () => {

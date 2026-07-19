@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { ApprovalStore } from "../approval-cache.js";
 import { APPROVED, APPROVED_FOR_SESSION } from "../review-decision.js";
 import { createEmptyToolPermissionContext } from "../types.js";
+import type { Event } from "../../session/event-log.js";
 import type { ToolInvocation } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import {
@@ -13,19 +14,26 @@ import {
 } from "./arbiter.js";
 import type { GuardianApprovalReviewer } from "./reviewer.js";
 
-function invocation(opts: {
-  readonly services?: Record<string, unknown>;
-  readonly approvalPolicy?: string;
-  readonly approvalsReviewer?: string;
-  readonly activeTurn?: {
-    unsafePeek?: () => { readonly turnId?: unknown } | null | undefined;
-  };
-} = {}): ToolInvocation {
+function invocation(
+  opts: {
+    readonly services?: Record<string, unknown>;
+    readonly session?: ToolInvocation["session"];
+    readonly approvalPolicy?: string;
+    readonly approvalsReviewer?: string;
+    readonly activeTurn?: {
+      unsafePeek?: () => { readonly turnId?: unknown } | null | undefined;
+    };
+  } = {},
+): ToolInvocation {
   return {
-    session: {
-      services: opts.services ?? {},
-      ...(opts.activeTurn !== undefined ? { activeTurn: opts.activeTurn } : {}),
-    } as never,
+    session:
+      opts.session ??
+      ({
+        services: opts.services ?? {},
+        ...(opts.activeTurn !== undefined
+          ? { activeTurn: opts.activeTurn }
+          : {}),
+      } as never),
     turn: {
       subId: "turn-1",
       cwd: "/repo",
@@ -57,6 +65,90 @@ function approvalCtx(inv = invocation()): ApprovalCtx {
 }
 
 describe("guardian arbiter", () => {
+  test("fsync-journals the request and linked answer around every shared resolver", async () => {
+    const events: Event[] = [];
+    let sequence = 0;
+    const session = {
+      conversationId: "run-approval",
+      services: { admissionRequired: true },
+      rolloutStore: {
+        readAll: () =>
+          events.map((event) => ({
+            type: "event_msg" as const,
+            payload: event,
+          })),
+      },
+      emit: (event: Event): Event => {
+        const nextSequence = ++sequence;
+        const stamped = {
+          ...event,
+          eventId: `approval-event-${nextSequence}`,
+          seq: nextSequence,
+        };
+        events.push(stamped);
+        return stamped;
+      },
+    } as unknown as ToolInvocation["session"];
+    const answer = Promise.withResolvers<typeof APPROVED>();
+    const resolver = vi.fn(async () => {
+      expect(events.map((event) => event.msg.type)).toEqual([
+        "request_permissions",
+      ]);
+      return answer.promise;
+    });
+    const inv = invocation({ session });
+
+    const pending = requestApproval({
+      ctx: approvalCtx(inv),
+      args: { command: "pwd" },
+      resolver: { request: resolver },
+    });
+    await vi.waitFor(() => expect(resolver).toHaveBeenCalledOnce());
+    answer.resolve(APPROVED);
+    await expect(pending).resolves.toMatchObject({
+      decision: APPROVED,
+      source: "resolver",
+    });
+
+    expect(events.map((event) => event.msg.type)).toEqual([
+      "request_permissions",
+      "permission_decision",
+    ]);
+    const request = events[0];
+    const decision = events[1];
+    expect(request?.eventId).toBe("approval-event-1");
+    expect(request?.seq).toBe(1);
+    expect(decision?.msg).toMatchObject({
+      type: "permission_decision",
+      payload: {
+        requestEventId: "approval-event-1",
+        requestEventSeq: 1,
+        decision: "approved",
+        source: "resolver",
+      },
+    });
+  });
+
+  test("does not ask a resolver when the canonical permission journal is detached", async () => {
+    const resolver = vi.fn(async () => APPROVED);
+    const session = {
+      conversationId: "run-detached",
+      services: { admissionRequired: true },
+      rolloutStore: null,
+      emit: vi.fn(),
+    } as unknown as ToolInvocation["session"];
+
+    await expect(
+      requestApproval({
+        ctx: approvalCtx(invocation({ session })),
+        resolver: { request: resolver },
+      }),
+    ).rejects.toThrow(
+      "permission request call-1 has no canonical rollout store",
+    );
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   test("raw approval hook wins before resolver", async () => {
     const resolver = vi.fn(async () => APPROVED);
     const result = await requestApproval({
@@ -312,8 +404,7 @@ describe("guardian arbiter", () => {
     let activeTurn: string | null = "turn-1";
     const inv = invocation({
       activeTurn: {
-        unsafePeek: () =>
-          activeTurn === null ? null : { turnId: activeTurn },
+        unsafePeek: () => (activeTurn === null ? null : { turnId: activeTurn }),
       },
     });
     const resolver = vi.fn(async () => {

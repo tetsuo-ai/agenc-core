@@ -2,13 +2,13 @@
  * Tree-scoped run cancellation + spawn admission gate (M3 final slice;
  * design: docs/design/run-cancel-cascade-and-spawn-admission.md).
  *
- * Cancellation is durable-first: `cancelAgentRunTree` walks the spawn tree
- * in ONE transaction and moves every non-terminal descendant (queued AND
- * running) to `cancelled`, closing open edges, without touching
+ * `cancelAgentRunTree` walks the spawn tree in ONE transaction and moves
+ * every non-terminal descendant (queued AND running) to `cancelled`, closing
+ * open edges, without touching
  * `in_flight_tool_calls` (partial evidence is preserved and later
- * classified by the existing recovery category rules). Live interruption
- * is the daemon's second step and reuses `control.interrupt`'s cascade —
- * the frozen contract's single propagation primitive.
+ * classified by the existing recovery category rules). Live daemon runs seal
+ * their canonical rollout terminal before this rebuildable projection;
+ * inactive runs use the transaction as their honest offline authority.
  *
  * Admission under a cancel-locked ancestor is refused fail-closed at the
  * durable commit point (`ThreadSpawnEdgeRepository.create`) with
@@ -140,7 +140,10 @@ export interface CancelAgentRunTreeReport {
   readonly missing: boolean;
   /** The public run exists only through execution-admission evidence. */
   readonly admissionOnly?: boolean;
-  /** Root was already cancel-locked/terminal. Nothing was written. */
+  /**
+   * Root was already cancel-locked/terminal when this call began. An older
+   * incomplete cancellation may still repair non-terminal descendants.
+   */
   readonly alreadyTerminal: boolean;
   readonly rootStatusBefore: string | null;
   /**
@@ -168,8 +171,10 @@ export interface CancelAgentRunTreeReport {
  * every open subtree edge is closed, and `in_flight_tool_calls` rows are
  * left untouched so partial evidence survives for review.
  *
- * Idempotent: an already-terminal root reports `alreadyTerminal` and
- * mutates nothing; a missing root reports `missing` and mutates nothing.
+ * Idempotent: a fully-cascaded terminal root reports `alreadyTerminal` and
+ * mutates nothing. A cancelled root missing the `cascadeComplete` marker is
+ * repaired once (covering canonical-first cancellation and legacy crash
+ * gaps). A missing root reports `missing` and mutates nothing.
  */
 export function cancelAgentRunTree(
   driver: StateSqliteDriver,
@@ -207,7 +212,16 @@ function cancelSubtreeLocked(
     };
   }
   const subtree = collectSubtreeThreadIds(driver, runId);
-  if (isTerminalAgentRunStatus(rootStatus)) {
+  const metadataStmt = driver.prepareState<
+    [string],
+    { metadata_json: string | null }
+  >("SELECT metadata_json FROM agent_runs WHERE id = ?");
+  const rootMetadata = parseJsonObjectOrEmpty(
+    metadataStmt.get(runId)?.metadata_json,
+  );
+  const repairIncompleteCancelledRoot =
+    rootStatus === "cancelled" && rootMetadata.cascadeComplete !== true;
+  if (isTerminalAgentRunStatus(rootStatus) && !repairIncompleteCancelledRoot) {
     return {
       runId,
       missing: false,
@@ -224,10 +238,6 @@ function cancelSubtreeLocked(
   const priorStatusById: Record<string, string> = {};
   const closedEdgeChildIds: string[] = [];
 
-  const metadataStmt = driver.prepareState<
-    [string],
-    { metadata_json: string | null }
-  >("SELECT metadata_json FROM agent_runs WHERE id = ?");
   // Status predicate is the CAS: the row is only cancelled from the exact
   // non-terminal status read above, inside the same transaction.
   const cancelStmt = driver.prepareState<[string, string, string, string]>(
@@ -270,10 +280,30 @@ function cancelSubtreeLocked(
     }
   }
 
+  if (repairIncompleteCancelledRoot) {
+    driver
+      .prepareState<[string, string, string]>(
+        `UPDATE agent_runs
+         SET last_active_at = ?, metadata_json = ?
+         WHERE id = ? AND status = 'cancelled'`,
+      )
+      .run(
+        cancelledAt,
+        JSON.stringify({
+          ...rootMetadata,
+          cancelReason: reason,
+          cancelledBy: runId,
+          cancelledAt,
+          cascadeComplete: true,
+        }),
+        runId,
+      );
+  }
+
   return {
     runId,
     missing: false,
-    alreadyTerminal: false,
+    alreadyTerminal: repairIncompleteCancelledRoot,
     rootStatusBefore: rootStatus,
     subtreeRunIds: subtree,
     cancelledRunIds,

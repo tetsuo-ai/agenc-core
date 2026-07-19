@@ -223,9 +223,10 @@ function openDriver(attemptDir: string): StateSqliteDriver {
  */
 function durableStateDigest(driver: StateSqliteDriver): Sha256Digest {
   const runs = driver
-    .prepareState<[], { id?: string; status?: string; last_active_at?: string }>(
-      "SELECT id, status, last_active_at FROM agent_runs ORDER BY id",
-    )
+    .prepareState<
+      [],
+      { id?: string; status?: string; last_active_at?: string }
+    >("SELECT id, status, last_active_at FROM agent_runs ORDER BY id")
     .all();
   const toolCalls = driver
     .prepareState<
@@ -323,7 +324,9 @@ function durableStateDigest(driver: StateSqliteDriver): Sha256Digest {
 // Scenario drivers (one per suite scenario, keyed by scenarioId)
 // ---------------------------------------------------------------------------
 
-async function runRestartAfterReservation(ctx: ScenarioContext): Promise<ScenarioRun> {
+async function runRestartAfterReservation(
+  ctx: ScenarioContext,
+): Promise<ScenarioRun> {
   const { clock, evidence, attemptDir } = ctx;
   const doneRunId = "trust_restart_done";
   const liveRunId = "trust_restart_running";
@@ -384,11 +387,8 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
         now: nowIso(),
       });
       if (claim.kind !== "claimed") {
-        const reason =
-          claim.kind === "not_claimed" ? claim.reason : claim.kind;
-        throw new Error(
-          `restart scenario could not reserve budget: ${reason}`,
-        );
+        const reason = claim.kind === "not_claimed" ? claim.reason : claim.kind;
+        throw new Error(`restart scenario could not reserve budget: ${reason}`);
       }
       reservationId = claim.lease.reservation.reservationId;
       reservedSpend = claim.lease.reservation.reservedCostUsd;
@@ -507,8 +507,7 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
         reservationStatus: recoveredReservationStatus,
       });
 
-      const secondAdmissionRecovery =
-        restartedKernel.initializeExistingState();
+      const secondAdmissionRecovery = restartedKernel.initializeExistingState();
       secondAdmissionHeldUnknown = secondAdmissionRecovery.heldUnknown;
       const second = recoverDaemonStateOnStartup(driver, { now: nowIso });
       const secondCall = second.recoveredToolCalls.find(
@@ -557,20 +556,30 @@ async function runRestartAfterReservation(ctx: ScenarioContext): Promise<Scenari
     injectedAtVirtualMs,
     faultEvidenceDigest,
     invariantResults: [
-      invariant(evidence, "reservation_recovered_once", reservationRecoveredOnce, {
-        reservedSpend,
-        recoveredSpend,
-        recoveredHeldSpend,
-        recoveredUsedSpend,
-        recoveredReservationStatus,
-        firstAdmissionHeldUnknown,
-        secondAdmissionHeldUnknown,
-      }),
-      invariant(evidence, "no_duplicate_state_transition", noDuplicateTransition, {
-        firstPassStatusAfter,
-        secondPassStatusBefore,
-        stateDigestStable: digestAfterFirstPass === digestAfterSecondPass,
-      }),
+      invariant(
+        evidence,
+        "reservation_recovered_once",
+        reservationRecoveredOnce,
+        {
+          reservedSpend,
+          recoveredSpend,
+          recoveredHeldSpend,
+          recoveredUsedSpend,
+          recoveredReservationStatus,
+          firstAdmissionHeldUnknown,
+          secondAdmissionHeldUnknown,
+        },
+      ),
+      invariant(
+        evidence,
+        "no_duplicate_state_transition",
+        noDuplicateTransition,
+        {
+          firstPassStatusAfter,
+          secondPassStatusBefore,
+          stateDigestStable: digestAfterFirstPass === digestAfterSecondPass,
+        },
+      ),
       invariant(evidence, "terminal_result_queryable", terminalQueryable, {
         terminalStatus,
       }),
@@ -592,7 +601,25 @@ function eventIdOf(event: JsonObject): string | null {
 }
 
 function eventTypeOf(event: JsonObject): string | null {
-  return typeof event.type === "string" ? event.type : null;
+  if (typeof event.type === "string") return event.type;
+  if (event.method !== "event.event_gap") return null;
+  const params = event.params;
+  return params !== null &&
+    typeof params === "object" &&
+    !Array.isArray(params) &&
+    (params as JsonObject).type === EVENT_GAP_EVENT
+    ? EVENT_GAP_EVENT
+    : null;
+}
+
+function retiredCountOf(event: JsonObject): number {
+  if (typeof event.retiredCount === "number") return event.retiredCount;
+  const params = event.params;
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {
+    return 0;
+  }
+  const retiredCount = (params as JsonObject).retiredCount;
+  return typeof retiredCount === "number" ? retiredCount : 0;
 }
 
 interface MultiplexerHarness {
@@ -628,7 +655,9 @@ async function createMultiplexerHarness(options: {
   return { sessionManager, multiplexer, sessionId: options.sessionId };
 }
 
-async function runReconnectAfterUnackedEvent(ctx: ScenarioContext): Promise<ScenarioRun> {
+async function runReconnectAfterUnackedEvent(
+  ctx: ScenarioContext,
+): Promise<ScenarioRun> {
   const { clock, evidence } = ctx;
   // publish_event: events land in the REAL daemon client multiplexer's
   // detached-session replay buffer (no client attached yet).
@@ -780,7 +809,9 @@ async function runReconnectAfterUnackedEvent(ctx: ScenarioContext): Promise<Scen
   };
 }
 
-async function runBudgetSiblingReservationRace(ctx: ScenarioContext): Promise<ScenarioRun> {
+async function runBudgetSiblingReservationRace(
+  ctx: ScenarioContext,
+): Promise<ScenarioRun> {
   const { clock, evidence, attemptDir } = ctx;
   const parentRunId = "trust_parent_budget";
   const now = () => clock.wallDate();
@@ -945,14 +976,14 @@ async function runBudgetSiblingReservationRace(ctx: ScenarioContext): Promise<Sc
       unknownStatus:
         lostHold === undefined
           ? null
-          : repositories[0]!.getReservation(lostHold.reservationId)?.status ??
-            null,
+          : (repositories[0]!.getReservation(lostHold.reservationId)?.status ??
+            null),
     });
     const lostStatus =
       lostHold === undefined
         ? null
-        : repositories[0]!.getReservation(lostHold.reservationId)?.status ??
-          null;
+        : (repositories[0]!.getReservation(lostHold.reservationId)?.status ??
+          null);
     const expectedHeld =
       lostHold === undefined
         ? null
@@ -1033,7 +1064,9 @@ async function runBudgetSiblingReservationRace(ctx: ScenarioContext): Promise<Sc
   }
 }
 
-async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise<ScenarioRun> {
+async function runCancelParentAfterChildAdmission(
+  ctx: ScenarioContext,
+): Promise<ScenarioRun> {
   const { clock, evidence, attemptDir } = ctx;
   const parentId = "trust_cancel_parent";
   const runningChildId = "trust_cancel_child";
@@ -1047,16 +1080,25 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
     clock.advance(5);
     const startedAt = nowIso();
     upsertAgentRun(driver, {
-      id: parentId, objective: "parent", status: "running",
-      startedAt, lastActiveAt: startedAt,
+      id: parentId,
+      objective: "parent",
+      status: "running",
+      startedAt,
+      lastActiveAt: startedAt,
     });
     upsertAgentRun(driver, {
-      id: runningChildId, objective: "running child", status: "running",
-      startedAt, lastActiveAt: startedAt,
+      id: runningChildId,
+      objective: "running child",
+      status: "running",
+      startedAt,
+      lastActiveAt: startedAt,
     });
     upsertAgentRun(driver, {
-      id: queuedChildId, objective: "queued child", status: "pending",
-      startedAt, lastActiveAt: startedAt,
+      id: queuedChildId,
+      objective: "queued child",
+      status: "pending",
+      startedAt,
+      lastActiveAt: startedAt,
     });
     const edges = new ThreadSpawnEdgeRepository(driver);
     edges.create({
@@ -1124,7 +1166,9 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
     clock.advance(5);
     const statusOf = (id: string): string | null =>
       driver
-        .prepareState<[string], { status?: string }>("SELECT status FROM agent_runs WHERE id = ?")
+        .prepareState<[string], { status?: string }>(
+          "SELECT status FROM agent_runs WHERE id = ?",
+        )
         .get(id)?.status ?? null;
     const runningChildStatus = statusOf(runningChildId);
     const queuedChildStatus = statusOf(queuedChildId);
@@ -1140,8 +1184,11 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
     // cancelled parent cannot be revived by an upsert (status laundering).
     const lateChildId = "trust_cancel_child_late";
     upsertAgentRun(driver, {
-      id: lateChildId, objective: "late child",
-      status: "running", startedAt, lastActiveAt: startedAt,
+      id: lateChildId,
+      objective: "late child",
+      status: "running",
+      startedAt,
+      lastActiveAt: startedAt,
     });
     let admissionBlockedTyped = false;
     try {
@@ -1162,8 +1209,11 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
     }
     const lateEdgeAbsent = edges.get(lateChildId) === undefined;
     const reviveOutcome = upsertAgentRun(driver, {
-      id: parentId, objective: "parent", status: "running",
-      startedAt, lastActiveAt: nowIso(),
+      id: parentId,
+      objective: "parent",
+      status: "running",
+      startedAt,
+      lastActiveAt: nowIso(),
     });
     const reviveRejected =
       reviveOutcome.applied === false && statusOf(parentId) === "cancelled";
@@ -1198,25 +1248,35 @@ async function runCancelParentAfterChildAdmission(ctx: ScenarioContext): Promise
       injectedAtVirtualMs,
       faultEvidenceDigest,
       invariantResults: [
-        invariant(evidence, "descendant_admission_stopped", newAdmissionRefused, {
-          probes: [
-            "post-cancel spawn-edge create (typed SpawnAdmissionBlockedError)",
-            "refused edge absent from thread_spawn_edges",
-            "post-cancel parent revive upsert rejected (cancel-lock sticky)",
-          ],
-          admissionBlockedTyped,
-          lateEdgeAbsent,
-          reviveRejected,
-        }),
+        invariant(
+          evidence,
+          "descendant_admission_stopped",
+          newAdmissionRefused,
+          {
+            probes: [
+              "post-cancel spawn-edge create (typed SpawnAdmissionBlockedError)",
+              "refused edge absent from thread_spawn_edges",
+              "post-cancel parent revive upsert rejected (cancel-lock sticky)",
+            ],
+            admissionBlockedTyped,
+            lateEdgeAbsent,
+            reviveRejected,
+          },
+        ),
         invariant(
           evidence,
           "queued_and_running_descendants_cancelled",
           descendantsCancelled,
           { runningChildStatus, queuedChildStatus },
         ),
-        invariant(evidence, "partial_evidence_preserved", partialEvidencePreserved, {
-          toolCallPresent: partialEvidencePreserved,
-        }),
+        invariant(
+          evidence,
+          "partial_evidence_preserved",
+          partialEvidencePreserved,
+          {
+            toolCallPresent: partialEvidencePreserved,
+          },
+        ),
       ],
       observedFacts: observedFacts(ctx, {
         descendant_admission_stopped: newAdmissionRefused,
@@ -1243,10 +1303,13 @@ async function runPermissionHostileRepositoryInstruction(
   // request_capability_escalation (the fault: hostile input reaches policy)
   clock.advance(5);
   const injectedAtVirtualMs = clock.now();
-  const faultEvidenceDigest = evidence.record("capability.escalation_requested", {
-    tool: "Bash",
-    source: "repository_instruction",
-  });
+  const faultEvidenceDigest = evidence.record(
+    "capability.escalation_requested",
+    {
+      tool: "Bash",
+      source: "repository_instruction",
+    },
+  );
 
   // evaluate_policy through the REAL rule evaluator with a deny rule for the
   // mutation tool — repository content cannot grant capability. The app
@@ -1286,7 +1349,11 @@ async function runPermissionHostileRepositoryInstruction(
   // so this leg is recorded as advisory, not as an independent barrier.
   const sandboxPolicy = newWorkspaceWritePolicy();
   const hostileTarget = "/home/trust-victim/.ssh";
-  const targetWritable = isPathWritable(sandboxPolicy, hostileTarget, attemptDir);
+  const targetWritable = isPathWritable(
+    sandboxPolicy,
+    hostileTarget,
+    attemptDir,
+  );
   const mutationNotExecuted = denied && !targetWritable;
   evidence.record("sandbox.evaluated", {
     advisory: true,
@@ -1360,7 +1427,9 @@ async function runPermissionHostileRepositoryInstruction(
   };
 }
 
-async function runEventLossExplicitRetentionGap(ctx: ScenarioContext): Promise<ScenarioRun> {
+async function runEventLossExplicitRetentionGap(
+  ctx: ScenarioContext,
+): Promise<ScenarioRun> {
   const { clock, evidence } = ctx;
   // publish_replay_window: more events than the REAL daemon multiplexer's
   // detached-session buffer retains, ending with the terminal event.
@@ -1417,8 +1486,7 @@ async function runEventLossExplicitRetentionGap(ctx: ScenarioContext): Promise<S
   );
   const gapMarkerPresent = gapMarkers.length > 0;
   const announcedRetiredCount = gapMarkers.reduce(
-    (sum, marker) =>
-      sum + (typeof marker.retiredCount === "number" ? marker.retiredCount : 0),
+    (sum, marker) => sum + retiredCountOf(marker),
     0,
   );
   // Hidden loss is zero only when the loss is announced HONESTLY: the
@@ -1648,9 +1716,11 @@ const SCENARIO_DRIVERS: Readonly<
   "reconnect-after-unacked-event": runReconnectAfterUnackedEvent,
   "budget-sibling-reservation-race": runBudgetSiblingReservationRace,
   "cancel-parent-after-child-admission": runCancelParentAfterChildAdmission,
-  "permission-hostile-repository-instruction": runPermissionHostileRepositoryInstruction,
+  "permission-hostile-repository-instruction":
+    runPermissionHostileRepositoryInstruction,
   "event-loss-explicit-retention-gap": runEventLossExplicitRetentionGap,
-  "uncertain-effect-lost-acknowledgement": runUncertainEffectLostAcknowledgement,
+  "uncertain-effect-lost-acknowledgement":
+    runUncertainEffectLostAcknowledgement,
 };
 
 // ---------------------------------------------------------------------------
@@ -1696,7 +1766,9 @@ export interface TrustRunSummary {
   readonly infrastructureInvalid: number;
   /** passed / total — every attempt stays in the denominator. */
   readonly trustRecoveryRate: number;
-  readonly faultFamilyResults: Readonly<Record<string, "passed" | "failed" | "infrastructure_invalid">>;
+  readonly faultFamilyResults: Readonly<
+    Record<string, "passed" | "failed" | "infrastructure_invalid">
+  >;
   readonly zeroTolerance: {
     /** Scenarios (not invariants) with a policy-escape failure. */
     readonly policyEscapeCount: number;
@@ -1707,7 +1779,10 @@ export interface TrustRunSummary {
   /** Count of effect.unknown_outcome evidence events across evaluated attempts. */
   readonly unknownOutcomeCount: number;
   /** Failed invariants from EVALUATED attempts (infrastructure_invalid attempts excluded). */
-  readonly failedInvariants: readonly { scenarioId: string; invariant: string }[];
+  readonly failedInvariants: readonly {
+    scenarioId: string;
+    invariant: string;
+  }[];
 }
 
 function makeResetReceipt(
@@ -1809,7 +1884,16 @@ function buildTrustReport(input: {
   readonly outcome: TrustConformanceReportDocument["outcome"];
   readonly durationMs: number;
 }): TrustConformanceReportDocument {
-  const { options, plan, resetReceipt, attemptId, evidence, run, outcome, durationMs } = input;
+  const {
+    options,
+    plan,
+    resetReceipt,
+    attemptId,
+    evidence,
+    run,
+    outcome,
+    durationMs,
+  } = input;
   return withDocumentDigest<TrustConformanceReportDocument>({
     kind: "agenc.eval.trust-conformance-report",
     suiteProtocolVersion: EVAL_SUITE_PROTOCOL_VERSION,
@@ -1863,11 +1947,11 @@ function buildTrustReport(input: {
     actualStateDigest:
       run !== null && outcome !== "infrastructure_invalid"
         ? digestCanonicalJson("agenc.eval.trust-fixture.expected-state.v1", {
-          facts: run.observedFacts,
-        })
+            facts: run.observedFacts,
+          })
         : digestCanonicalJson("agenc.eval.trust-fixture.expected-state.v1", {
-          facts: ["infrastructure_invalid"],
-        }),
+            facts: ["infrastructure_invalid"],
+          }),
     outcome,
   });
 }
@@ -1878,7 +1962,10 @@ export async function runTrustConformanceSuite(
   // Fail closed on any definition/fixture drift before running anything.
   validateTrustFixtureBundleBinding(options.definition, options.fixtures);
   const fixturesByScenario = new Map(
-    options.fixtures.scenarios.map((scenario) => [scenario.scenarioId, scenario]),
+    options.fixtures.scenarios.map((scenario) => [
+      scenario.scenarioId,
+      scenario,
+    ]),
   );
   const plans = compileTrustFaultPlans(options.definition, options.seedSlot);
   const attempts: TrustAttempt[] = [];
@@ -1889,11 +1976,17 @@ export async function runTrustConformanceSuite(
     const attemptDir = mkdtempSync(path.join(tmpdir(), "agenc-trust-"));
     const clock = new VirtualClock();
     const evidence = new EvidenceRecorder(clock);
-    let outcome: TrustConformanceReportDocument["outcome"] = "infrastructure_invalid";
+    let outcome: TrustConformanceReportDocument["outcome"] =
+      "infrastructure_invalid";
     try {
       // Mint the reset receipt BEFORE the driver runs so it can attest the
       // measured pre-attempt state (empty attempt dir).
-      const resetReceipt = makeResetReceipt(options, plan, attemptId, attemptDir);
+      const resetReceipt = makeResetReceipt(
+        options,
+        plan,
+        attemptId,
+        attemptDir,
+      );
       let run: ScenarioRun | null = null;
       try {
         if (driver === undefined || fixture === undefined) {
@@ -1916,7 +2009,9 @@ export async function runTrustConformanceSuite(
           "agenc.eval.trust-fixture.expected-state.v1",
           { facts: run.observedFacts },
         );
-        const everyInvariantPassed = run.invariantResults.every((r) => r.passed);
+        const everyInvariantPassed = run.invariantResults.every(
+          (r) => r.passed,
+        );
         outcome =
           everyInvariantPassed && actualStateDigest === plan.expectedStateDigest
             ? "passed"
@@ -1945,7 +2040,11 @@ export async function runTrustConformanceSuite(
       // attempt to infrastructure_invalid (with the issues in evidence)
       // instead of aborting the suite and losing prior attempts.
       try {
-        validateTrustConformanceReport(options.definition, resetReceipt, report);
+        validateTrustConformanceReport(
+          options.definition,
+          resetReceipt,
+          report,
+        );
       } catch (validationError) {
         evidence.record("infrastructure.error", {
           stage: "report_self_check",
@@ -1967,12 +2066,27 @@ export async function runTrustConformanceSuite(
         });
         // If even the demoted report fails validation the harness is
         // unusable — rethrow rather than emit unvalidated artifacts.
-        validateTrustConformanceReport(options.definition, resetReceipt, report);
+        validateTrustConformanceReport(
+          options.definition,
+          resetReceipt,
+          report,
+        );
       }
-      attempts.push({ plan, resetReceipt, report, rawEvidence: evidence.events() });
+      attempts.push({
+        plan,
+        resetReceipt,
+        report,
+        rawEvidence: evidence.events(),
+      });
     } finally {
-      if (outcome !== "passed" && options.preserveAttemptDirsUnder !== undefined) {
-        const preserved = path.join(options.preserveAttemptDirsUnder, attemptId);
+      if (
+        outcome !== "passed" &&
+        options.preserveAttemptDirsUnder !== undefined
+      ) {
+        const preserved = path.join(
+          options.preserveAttemptDirsUnder,
+          attemptId,
+        );
         mkdirSync(options.preserveAttemptDirsUnder, { recursive: true });
         try {
           renameSync(attemptDir, preserved);
@@ -1993,7 +2107,10 @@ export function aggregateTrustAttempts(
   attempts: readonly TrustAttempt[],
 ): TrustRunSummary {
   const total = attempts.length;
-  const familyResults: Record<string, "passed" | "failed" | "infrastructure_invalid"> = {};
+  const familyResults: Record<
+    string,
+    "passed" | "failed" | "infrastructure_invalid"
+  > = {};
   for (const attempt of attempts) {
     if (attempt.report.suite.suiteId !== options.definition.suiteId) {
       throw new Error(
@@ -2028,18 +2145,23 @@ export function aggregateTrustAttempts(
       .map((result) => ({
         scenarioId: attempt.report.scenarioId,
         invariant: result.invariant,
-      })));
+      })),
+  );
   const policyEscapeCount = new Set(
     failedInvariants
       .filter((entry) =>
-        ["capability_not_granted", "mutation_not_executed"].includes(entry.invariant))
+        ["capability_not_granted", "mutation_not_executed"].includes(
+          entry.invariant,
+        ),
+      )
       .map((entry) => entry.scenarioId),
   ).size;
   const unknownOutcomeCount = evaluated.reduce(
     (count, attempt) =>
       count +
-      attempt.rawEvidence.filter((event) => event.type === "effect.unknown_outcome")
-        .length,
+      attempt.rawEvidence.filter(
+        (event) => event.type === "effect.unknown_outcome",
+      ).length,
     0,
   );
   return {

@@ -7,6 +7,7 @@ import type {
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
 
@@ -61,8 +62,14 @@ function toolHarness() {
     forSession: vi.fn(),
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient;
+  const effectEvents: Event[] = [];
+  const eventLog = new EventLog();
+  eventLog.subscribe((event) => effectEvents.push(event));
   const session = {
     conversationId: "session-1",
+    eventLog,
+    rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+    emit: (event: Event) => eventLog.emit(event),
     services: {
       executionAdmission: admission,
       admissionRequired: true,
@@ -73,6 +80,7 @@ function toolHarness() {
   return {
     acknowledgeCompletion,
     acquire,
+    effectEvents,
     holdUnknown,
     leaseController,
     reconcile,
@@ -81,6 +89,32 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
+  it("fails closed before tool dispatch when the canonical effect journal is detached", async () => {
+    const state = toolHarness();
+    Object.assign(state.session, { rolloutStore: null });
+    const invoke = vi.fn(async () => ({ content: "must not run" }));
+    const tool = {
+      name: "write.without-journal",
+      recoveryCategory: "side-effecting",
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-no-journal",
+        tool,
+        args: {},
+        invoke,
+      }),
+    ).rejects.toMatchObject({
+      name: "AdmissionDeniedError",
+      reason: "effect_journal_unavailable",
+    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(state.acquire).toHaveBeenCalledOnce();
+  });
+
   it("forwards live lease cancellation into the running tool", async () => {
     const leaseController = new AbortController();
     const holdUnknown = vi.fn();
@@ -128,8 +162,14 @@ describe("runAdmittedToolCall", () => {
       forSession: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     } as unknown as ExecutionAdmissionClient;
+    const effectEvents: Event[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe((event) => effectEvents.push(event));
     const session = {
       conversationId: "session-1",
+      eventLog,
+      rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+      emit: (event: Event) => eventLog.emit(event),
       services: {
         executionAdmission: admission,
         admissionRequired: true,
@@ -171,6 +211,10 @@ describe("runAdmittedToolCall", () => {
     );
     expect(acknowledgeCompletion).toHaveBeenCalledOnce();
     expect(acknowledgeCompletion).toHaveBeenCalledWith("tool-reservation");
+    expect(effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_unknown_outcome",
+    ]);
   });
 
   it("rejects a late tool success after durable cancellation", async () => {
@@ -223,6 +267,10 @@ describe("runAdmittedToolCall", () => {
       costUsd: 0.25,
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+    ]);
   });
 
   it("reconciles authoritative charged-tool usage", async () => {
@@ -312,5 +360,128 @@ describe("runAdmittedToolCall", () => {
       "tool-reservation",
       "missing_tool_usage",
     );
+  });
+
+  it("gives only idempotent effects a stable durable key", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "read.stable",
+      recoveryCategory: "idempotent",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+    const invoke = async () => ({ content: "same result" });
+
+    await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-stable",
+      tool,
+      args: { nested: { b: 2, a: 1 } },
+      invoke,
+    });
+    await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-stable",
+      tool,
+      args: { nested: { a: 1, b: 2 } },
+      invoke,
+    });
+
+    const intents = state.effectEvents.filter(
+      (event) => event.msg.type === "effect_intent",
+    );
+    expect(intents).toHaveLength(2);
+    if (
+      intents[0]?.msg.type !== "effect_intent" ||
+      intents[1]?.msg.type !== "effect_intent"
+    ) {
+      throw new Error("missing effect intent events");
+    }
+    expect(intents[0].msg.payload.idempotencyKey).toMatch(
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    expect(intents[1].msg.payload.idempotencyKey).toBe(
+      intents[0].msg.payload.idempotencyKey,
+    );
+    expect(intents[1].msg.payload.intentDigest).toBe(
+      intents[0].msg.payload.intentDigest,
+    );
+    expect(intents[1].id).not.toBe(intents[0].id);
+    expect(intents[1].seq).toBeGreaterThan(intents[0].seq!);
+  });
+
+  it("records an unacknowledged non-idempotent exception as unknown", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "write.unacknowledged-failure",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-unacknowledged-failure",
+        tool,
+        args: {},
+        invoke: async () => {
+          throw Object.assign(new Error("lost acknowledgement"), {
+            code: "EIO",
+          });
+        },
+      }),
+    ).rejects.toThrow("lost acknowledgement");
+
+    const acknowledgement = state.effectEvents.at(-1);
+    expect(acknowledgement?.msg.type).toBe("effect_unknown_outcome");
+    if (acknowledgement?.msg.type !== "effect_unknown_outcome") {
+      throw new Error("missing unknown effect outcome");
+    }
+    expect(acknowledgement.msg.payload).toMatchObject({
+      outcome: "unknown_outcome",
+      reason: "tool_failed_after_dispatch_without_acknowledgement",
+      requiresReview: true,
+    });
+  });
+
+  it("records an explicit error result as a proven failed outcome", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "write.known-failure",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-known-failure",
+        tool,
+        args: {},
+        invoke: async () => ({ content: "known failure", isError: true }),
+      }),
+    ).resolves.toMatchObject({ content: "known failure", isError: true });
+
+    const acknowledgement = state.effectEvents.at(-1);
+    expect(acknowledgement?.msg.type).toBe("effect_result");
+    if (acknowledgement?.msg.type !== "effect_result") {
+      throw new Error("missing effect result");
+    }
+    expect(acknowledgement.msg.payload.outcome).toBe("failed");
   });
 });

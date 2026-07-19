@@ -84,10 +84,12 @@ describe("client multiplexer buffered byte budget", () => {
     // ANNOUNCED by a leading event_gap marker (M4), never silent.
     expect(replayed.length).toBeGreaterThan(1);
     expect(replayed.length).toBeLessThan(10);
-    const marker = replayed[0] as { type: string; retiredCount: number };
-    expect(marker.type).toBe("event_gap");
+    const marker = replayed[0] as {
+      params: { type: string; retiredCount: number };
+    };
+    expect(marker.params.type).toBe("event_gap");
     const survivors = replayed.slice(1);
-    expect(marker.retiredCount).toBe(50 - survivors.length);
+    expect(marker.params.retiredCount).toBe(50 - survivors.length);
 
     // The survivors are the most recent events (oldest evicted from the head).
     const lastReplayed = survivors[survivors.length - 1] as {
@@ -97,16 +99,16 @@ describe("client multiplexer buffered byte budget", () => {
     const firstReplayed = survivors[0] as { sequence: number };
     expect(firstReplayed.sequence).toBeGreaterThan(40);
 
-    // Total replayed bytes stay within ~one event of the budget (plus the
-    // small gap marker).
+    // The marker is part of the hard cap; replay never exceeds the configured
+    // byte budget.
     const replayedBytes = replayed.reduce(
       (sum, event) => sum + Buffer.byteLength(JSON.stringify(event)),
       0,
     );
-    expect(replayedBytes).toBeLessThanOrEqual(4 * 1100 + 1100 + 200);
+    expect(replayedBytes).toBeLessThanOrEqual(4 * 1100);
   });
 
-  it("always retains at least the most recent event even when it alone exceeds the budget", async () => {
+  it("rejects a detached event that alone exceeds the hard byte budget", async () => {
     const { sessionManager, multiplexer } = createHarness(1024);
     await sessionManager.createSession({
       agentId: "agent_1",
@@ -114,7 +116,12 @@ describe("client multiplexer buffered byte budget", () => {
     });
 
     // A single payload far larger than the whole budget.
-    await multiplexer.broadcastSessionEvent("session_1", bigEvent(1, 100_000));
+    await expect(
+      multiplexer.broadcastSessionEvent(
+        "session_1",
+        bigEvent(1, 100_000),
+      ),
+    ).rejects.toMatchObject({ code: "EVENT_BUFFER_LIMIT_EXCEEDED" });
 
     const replayed: JsonObject[] = [];
     await multiplexer.registerClient({
@@ -125,7 +132,6 @@ describe("client multiplexer buffered byte budget", () => {
     });
     await multiplexer.attachClientToSession("session_1", "client_1");
 
-    expect(replayed).toHaveLength(1);
-    expect((replayed[0] as { sequence: number }).sequence).toBe(1);
+    expect(replayed).toHaveLength(0);
   });
 });

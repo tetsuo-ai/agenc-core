@@ -11,6 +11,7 @@ import type {
 } from "../../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../../src/budget/admission-types.js";
 import type { Session } from "../../../src/session/session.js";
+import { EventLog, type Event } from "../../../src/session/event-log.js";
 
 const COLLABORATION_CONTROL_TOOLS = [
   "spawn_agent",
@@ -86,8 +87,12 @@ describe("collaboration control admission classification", () => {
       forSession: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     } satisfies ExecutionAdmissionClient;
+    const eventLog = new EventLog();
     const session = {
       conversationId: "root-session",
+      eventLog,
+      rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+      emit: (event: Event) => eventLog.emit(event),
       services: {
         executionAdmission: admission,
         admissionRequired: true,

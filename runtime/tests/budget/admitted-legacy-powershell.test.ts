@@ -14,6 +14,7 @@ import {
   runWithCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
 import type { Session } from "../../src/session/session.js";
+import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import { getEmptyToolPermissionContext } from "../../src/tools/Tool.js";
 
 const shellProbe = vi.hoisted(() => ({
@@ -91,10 +92,11 @@ function admissionHarness(signal = new AbortController().signal) {
     forSession: vi.fn(),
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient;
+  const effectJournal = createTestEffectJournal();
   const session = {
+    ...effectJournal,
     conversationId: "session-powershell",
     activeTurn: { unsafePeek: () => ({ turnId: "turn-powershell" }) },
-    rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
     services: {
       executionAdmission: admission,
       admissionRequired: true,
