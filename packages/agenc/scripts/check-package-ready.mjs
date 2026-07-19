@@ -206,7 +206,10 @@ export function validateLauncherManifest({
       ["nodeApiVersion", LEGACY_BRIDGE_CONTRACT.nodeApiVersion],
     ]) {
       if (manifest.build?.[field] !== expected) {
-        fail(`v0.6.2 compatibility bridge requires build.${field} ${expected}`);
+        fail(
+          `v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} compatibility bridge requires ` +
+            `build.${field} ${expected}`,
+        );
       }
     }
   }
@@ -330,6 +333,37 @@ export function validateLauncherManifest({
         artifact.nativeToolchain.npmDistributionSha256 !== releaseToolchain.npmDistribution?.sha256
       ) {
         fail(`${key} Node distribution/header evidence does not match release-toolchain.json`);
+      }
+      if (artifact.platform === "win") {
+        const expectedImportLibrary = releaseToolchain.nodeImportLibraries?.[key];
+        const expectedCommonGypi = releaseToolchain.nodeHeaders?.windowsCommonGypi;
+        if (
+          artifact.nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
+          artifact.nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256 ||
+          artifact.nativeToolchain.nodeImportLibraryBytes !== expectedImportLibrary?.bytes
+        ) {
+          fail(`${key} Node import library evidence does not match release-toolchain.json`);
+        }
+        if (
+          expectedCommonGypi?.schemaVersion !== 1 ||
+          expectedCommonGypi.path !== "include/node/common.gypi" ||
+          expectedCommonGypi.transformation !==
+            "disable-debug-information-and-full-paths" ||
+          !/^[0-9a-f]{64}$/.test(expectedCommonGypi.sourceSha256 ?? "") ||
+          !/^[0-9a-f]{64}$/.test(expectedCommonGypi.releaseSha256 ?? "") ||
+          artifact.nativeToolchain.nodeCommonGypiFile !== expectedCommonGypi.path ||
+          artifact.nativeToolchain.nodeCommonGypiSourceSha256 !==
+            expectedCommonGypi.sourceSha256 ||
+          artifact.nativeToolchain.nodeCommonGypiReleaseSha256 !==
+            expectedCommonGypi.releaseSha256 ||
+          artifact.nativeToolchain.nodeCommonGypiTransformation !==
+            expectedCommonGypi.transformation
+        ) {
+          fail(
+            `${key} sanitized Node common.gypi evidence does not match ` +
+              "release-toolchain.json",
+          );
+        }
       }
       if (
         artifact.platform !== "linux" &&

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { posix } from "node:path";
 import { TextDecoder } from "node:util";
@@ -198,9 +199,10 @@ function validateSymlinkGraph(members, links) {
   }
 }
 
-export function validateRuntimeArchive(
+function inspectRuntimeArchive(
   path,
   platform = process.platform === "win32" ? "win" : process.platform,
+  includeContentInventory = false,
 ) {
   const archive = gunzipSync(readFileSync(path), {
     maxOutputLength: MAX_UNCOMPRESSED_BYTES,
@@ -212,7 +214,9 @@ export function validateRuntimeArchive(
   const members = [];
   const links = new Map();
   const collisionPaths = new Map();
+  let pendingPaxStart;
   while (offset + BLOCK_SIZE <= archive.length) {
+    const recordStart = pendingPaxStart ?? offset;
     const header = archive.subarray(offset, offset + BLOCK_SIZE);
     if (header.every((byte) => byte === 0)) break;
     validateChecksum(header);
@@ -227,6 +231,7 @@ export function validateRuntimeArchive(
     if (type === "x") {
       if (pendingPax !== undefined) throw new Error("stacked PAX headers are not allowed");
       pendingPax = parsePax(archive.subarray(dataStart, dataEnd));
+      pendingPaxStart = offset;
     } else {
       if (pendingPax?.size !== undefined && pendingPax.size !== size) {
         throw new Error("PAX size does not match tar header size");
@@ -246,8 +251,22 @@ export function validateRuntimeArchive(
         validateLink(memberPath, linkPath, platform);
         links.set(memberPath, linkPath);
       }
-      members.push({ path: memberPath, type });
+      const member = { path: memberPath, type };
+      if (includeContentInventory) {
+        const recordEnd = dataStart + Math.ceil(size / BLOCK_SIZE) * BLOCK_SIZE;
+        member.bytes = size;
+        member.mode = octal(header, 100, 8, "entry mode");
+        member.contentSha256 = createHash("sha256")
+          .update(archive.subarray(dataStart, dataEnd))
+          .digest("hex");
+        member.recordSha256 = createHash("sha256")
+          .update(archive.subarray(recordStart, recordEnd))
+          .digest("hex");
+        if (type === "2") member.linkPath = pendingPax?.linkpath ?? headerLink;
+      }
+      members.push(member);
       pendingPax = undefined;
+      pendingPaxStart = undefined;
       entries += 1;
       if (entries > MAX_ENTRIES) throw new Error("runtime archive has too many entries");
     }
@@ -258,5 +277,23 @@ export function validateRuntimeArchive(
     throw new Error("runtime archive is empty or missing node_modules");
   }
   validateSymlinkGraph(members, links);
-  return { entries, uncompressedBytes: archive.length };
+  return {
+    entries,
+    uncompressedBytes: archive.length,
+    ...(includeContentInventory ? { members } : {}),
+  };
+}
+
+export function validateRuntimeArchive(
+  path,
+  platform = process.platform === "win32" ? "win" : process.platform,
+) {
+  return inspectRuntimeArchive(path, platform, false);
+}
+
+export function runtimeArchiveContentInventory(
+  path,
+  platform = process.platform === "win32" ? "win" : process.platform,
+) {
+  return inspectRuntimeArchive(path, platform, true);
 }

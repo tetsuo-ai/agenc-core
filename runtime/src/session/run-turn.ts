@@ -2624,6 +2624,8 @@ async function prepareSamplingRequestBoundary(
           promptTokens: 0,
           completionTokens: 0,
           totalTokens: 0,
+          availability: "unknown",
+          provenance: "synthetic",
         },
         terminal: prepareTerminal.terminal,
       },
@@ -2819,6 +2821,8 @@ async function tryRunSamplingRequest(
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
+      availability: "unknown",
+      provenance: "synthetic",
     },
   };
 }
@@ -3832,7 +3836,13 @@ async function* runTurnKernelInner(
     yield {
       type: "turn_complete",
       content: "",
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        availability: "unknown",
+        provenance: "synthetic",
+      },
       stopReason: "error",
       error: error instanceof Error ? error : new Error(String(error)),
     };
@@ -3864,6 +3874,8 @@ async function* runTurnKernelInner(
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    availability: "unknown",
+    provenance: "synthetic",
   };
   let lastContent = "";
   const consumedCommandUuids: string[] = [];

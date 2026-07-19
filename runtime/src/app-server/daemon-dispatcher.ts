@@ -40,6 +40,10 @@ import {
   AgenCDaemonConnectionLimiter,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
+import {
+  AgenCDaemonRunInspectionError,
+  type AgenCDaemonRunInspectionService,
+} from "./run-inspection.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
   requireAbsoluteWorkspaceCwd,
@@ -58,6 +62,11 @@ import {
   type AgentListParams,
   type AgentLogsParams,
   type AgentStopParams,
+  type RunEvidenceParams,
+  type RunReplayParams,
+  type RunResultParams,
+  type RunStatusParams,
+  type RunCancelParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -148,16 +157,25 @@ const THREAD_REALTIME_VOICES = [
   "verse",
 ] as const;
 
+export const TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START = Symbol(
+  "test-only-allow-unadmitted-command-exec-start",
+);
+
+export const COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC =
+  "commandExec.start is disabled: daemon command execution has no session-bound run/step admission identity; use an ordinary admitted session tool until command execution admission is implemented";
+
 interface AgenCDaemonServerCapabilityInputs {
   readonly agentManager: AgenCDaemonDispatcherOptions["agentManager"];
   readonly initializeAuthenticator: AgenCDaemonDispatcherOptions["initializeAuthenticator"];
   readonly sessionManager: AgenCDaemonDispatcherOptions["sessionManager"];
   readonly fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly commandExec: AgenCCommandExec;
+  readonly allowUnadmittedCommandExecStart: boolean;
   readonly authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly daemonControl: AgenCDaemonDispatcherOptions["daemonControl"];
   readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly realtime: AgenCRealtimeRpcHandlers;
+  readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
 }
 
 function buildServerCapabilities(
@@ -173,6 +191,11 @@ function buildServerCapabilities(
     "agent.attach": hasMethod(agentManager, "attachAgent"),
     "agent.stop": hasMethod(agentManager, "stopAgent"),
     "agent.logs": hasMethod(agentManager, "getAgentLogs"),
+    "run.status": hasMethod(inputs.runInspection, "status"),
+    "run.result": hasMethod(inputs.runInspection, "result"),
+    "run.replay": hasMethod(inputs.runInspection, "replay"),
+    "run.evidence": hasMethod(inputs.runInspection, "evidence"),
+    "run.cancel": hasMethod(agentManager, "cancelRunTree"),
     "session.create": hasMethod(sessionManager, "createSession"),
     "session.list": hasMethod(sessionManager, "listSessions"),
     "session.attach": hasMethod(sessionManager, "attachSession"),
@@ -185,7 +208,9 @@ function buildServerCapabilities(
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
-    "thread/realtime/start": hasMethod(inputs.realtime, "start"),
+    "thread/realtime/start":
+      inputs.realtime.startEnabled === true &&
+      hasMethod(inputs.realtime, "start"),
     "thread/realtime/appendAudio": hasMethod(inputs.realtime, "appendAudio"),
     "thread/realtime/appendText": hasMethod(inputs.realtime, "appendText"),
     "thread/realtime/stop": hasMethod(inputs.realtime, "stop"),
@@ -196,7 +221,9 @@ function buildServerCapabilities(
     "elicitation.respond": hasMethod(agentManager, "respondToElicitation"),
     "permission.list": hasMethod(agentManager, "listPermissions"),
     "fs.fuzzy_search": hasMethod(inputs.fuzzyFileSearch, "search"),
-    "commandExec.start": hasMethod(inputs.commandExec, "start"),
+    "commandExec.start":
+      inputs.allowUnadmittedCommandExecStart &&
+      hasMethod(inputs.commandExec, "start"),
     "commandExec.write": hasMethod(inputs.commandExec, "write"),
     "commandExec.resize": hasMethod(inputs.commandExec, "resize"),
     "commandExec.terminate": hasMethod(inputs.commandExec, "terminate"),
@@ -298,6 +325,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
+    | "cancelRunTree"
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
@@ -329,12 +357,19 @@ export interface AgenCDaemonDispatcherOptions {
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
+  /** Isolated contract-test seam; production must never provide this token. */
+  readonly unadmittedCommandExecStartOverride?:
+    typeof TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
   readonly authBackend?: AuthBackend;
   readonly daemonControl?: {
     reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
   };
   readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly realtime?: AgenCRealtimeRpcHandlers;
+  readonly runInspection?: Pick<
+    AgenCDaemonRunInspectionService,
+    "status" | "result" | "replay" | "evidence"
+  >;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -372,6 +407,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "getAgentLogs"
     | "listAgents"
     | "stopAgent"
+    | "cancelRunTree"
     | "streamAgentMessage"
   > & {
     readonly listPermissions?: AgenCDaemonAgentManager["listPermissions"];
@@ -409,6 +445,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #commandExec: AgenCCommandExec;
+  readonly #allowUnadmittedCommandExecStart: boolean;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly #daemonControl:
     | {
@@ -417,6 +454,12 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly #realtime: AgenCRealtimeRpcHandlers;
+  readonly #runInspection:
+    | Pick<
+        AgenCDaemonRunInspectionService,
+        "status" | "result" | "replay" | "evidence"
+      >
+    | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -430,12 +473,16 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
     this.#commandExec = options.commandExec ?? new AgenCCommandExecService();
+    this.#allowUnadmittedCommandExecStart =
+      options.unadmittedCommandExecStartOverride ===
+      TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START;
     this.#health =
       options.health ??
       new AgenCDaemonHealthService({
         stateCounter: options.healthStateCounter,
       });
     this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
+    this.#runInspection = options.runInspection;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -444,12 +491,15 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#serverCapabilities = buildServerCapabilities({
       agentManager: this.#agentManager,
       authHandlers: this.#authHandlers,
+      allowUnadmittedCommandExecStart:
+        this.#allowUnadmittedCommandExecStart,
       commandExec: this.#commandExec,
       daemonControl: this.#daemonControl,
       fuzzyFileSearch: this.#fuzzyFileSearch,
       health: this.#health,
       initializeAuthenticator: this.#initializeAuthenticator,
       realtime: this.#realtime,
+      runInspection: this.#runInspection,
       sessionManager: this.#sessionManager,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -617,6 +667,45 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.getAgentLogs(
             validateAgentLogsParams(params),
+          ),
+        );
+      case "run.status":
+        if (this.#runInspection === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#runInspection.status(validateRunStatusParams(params)),
+        );
+      case "run.result":
+        if (this.#runInspection === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#runInspection.result(validateRunResultParams(params)),
+        );
+      case "run.replay":
+        if (this.#runInspection === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#runInspection.replay(validateRunReplayParams(params)),
+        );
+      case "run.evidence":
+        if (this.#runInspection === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#runInspection.evidence(validateRunEvidenceParams(params)),
+        );
+      case "run.cancel":
+        return successResponse(
+          id,
+          await this.#agentManager.cancelRunTree(
+            validateRunCancelParams(params),
           ),
         );
       case "session.create":
@@ -825,6 +914,12 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "commandExec.start":
+        if (!this.#allowUnadmittedCommandExecStart) {
+          throw new AgenCDaemonAgentLifecycleError(
+            "EXECUTION_ADMISSION_REQUIRED",
+            COMMAND_EXEC_EXECUTION_ADMISSION_DIAGNOSTIC,
+          );
+        }
         return successResponse(
           id,
           await this.#commandExec.start(
@@ -1640,6 +1735,79 @@ function validateAgentStopParams(params: JsonObject): AgentStopParams {
   });
   validateRequiredString(validated, "agent.stop", "agentId");
   return validated as AgentStopParams;
+}
+
+function validateRunCancelParams(params: JsonObject): RunCancelParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.cancel",
+    stringFields: ["runId", "reason"],
+  });
+  validateRequiredString(validated, "run.cancel", "runId");
+  return validated as RunCancelParams;
+}
+
+function validateRunStatusParams(params: JsonObject): RunStatusParams {
+  return validateRunIdOnlyParams(params, "run.status") as RunStatusParams;
+}
+
+function validateRunResultParams(params: JsonObject): RunResultParams {
+  return validateRunIdOnlyParams(params, "run.result") as RunResultParams;
+}
+
+function validateRunReplayParams(params: JsonObject): RunReplayParams {
+  return validateRunCursorParams(params, "run.replay") as RunReplayParams;
+}
+
+function validateRunEvidenceParams(params: JsonObject): RunEvidenceParams {
+  return validateRunCursorParams(params, "run.evidence") as RunEvidenceParams;
+}
+
+function validateRunIdOnlyParams(
+  params: JsonObject,
+  methodName: "run.status" | "run.result",
+): JsonObject {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["runId"],
+  });
+  validateRequiredString(validated, methodName, "runId");
+  return validated;
+}
+
+function validateRunCursorParams(
+  params: JsonObject,
+  methodName: "run.replay" | "run.evidence",
+): JsonObject {
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["runId"],
+    numberFields: ["afterSequence", "limit"],
+  });
+  validateRequiredString(validated, methodName, "runId");
+  const afterSequence = validated.afterSequence;
+  if (
+    afterSequence !== undefined &&
+    (typeof afterSequence !== "number" ||
+      !Number.isSafeInteger(afterSequence) ||
+      afterSequence < 0)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'afterSequence' must be a non-negative safe integer`,
+    );
+  }
+  const limit = validated.limit;
+  if (
+    limit !== undefined &&
+    (typeof limit !== "number" ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 200)
+  ) {
+    throw invalidParams(
+      `${methodName} param 'limit' must be an integer from 1 through 200`,
+    );
+  }
+  return validated;
 }
 
 function validateAgentLogsParams(params: JsonObject): AgentLogsParams {
@@ -2650,6 +2818,9 @@ function mapDispatchError(
     });
   }
   if (error instanceof AgenCDaemonAgentLifecycleError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonRunInspectionError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCSessionLifecycleError) {

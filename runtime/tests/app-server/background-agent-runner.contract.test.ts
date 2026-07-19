@@ -10,11 +10,14 @@ import {
 } from "./background-agent-runner.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type { AgentBudgetConfig } from "../config/schema.js";
+import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { requestApproval } from "../tools/orchestrator.js";
 
 function makeStubConversationThreadManager(opts: {
   readonly threadId: string;
@@ -22,6 +25,11 @@ function makeStubConversationThreadManager(opts: {
   readonly submit?: ReturnType<typeof vi.fn>;
   readonly shutdown?: ReturnType<typeof vi.fn>;
   readonly initialStatus?: AgentStatus;
+  readonly totalTokenUsage?: () => {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+  };
 }) {
   let listeners: ((status: AgentStatus) => void)[] = [];
   let currentStatus: AgentStatus =
@@ -48,11 +56,13 @@ function makeStubConversationThreadManager(opts: {
     submit,
     appendMessage: vi.fn(async () => opts.threadId),
     shutdown,
-    totalTokenUsage: () => ({
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-    }),
+    totalTokenUsage:
+      opts.totalTokenUsage ??
+      (() => ({
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      })),
     configSnapshot: () => ({}),
   };
   return {
@@ -97,12 +107,24 @@ function makeAuthBackend(
 function makeTopLevelRunner(opts: {
   readonly conversationId: string;
   readonly bootstrapShutdown?: ReturnType<typeof vi.fn>;
+  readonly threadShutdown?: ReturnType<typeof vi.fn>;
   readonly authBackend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
+  readonly agentBudget?: AgentBudgetConfig;
+  readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
+  readonly rolloutItems?: unknown[];
+  readonly onActiveAgentTerminated?: ReturnType<typeof vi.fn>;
+  readonly totalTokenUsage?: () => {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+  };
 }) {
-  const shutdown = opts.bootstrapShutdown ?? vi.fn(async () => {});
+  const shutdownImpl = opts.bootstrapShutdown ?? vi.fn(async () => {});
+  const durableOperations = new Set<Promise<unknown>>();
+  const beforeDurableClose = new Set<() => void | Promise<void>>();
   const permissionUpdates: ToolPermissionContext[] = [];
   const permissionModeRegistry = {
     current: () => createEmptyToolPermissionContext(),
@@ -112,14 +134,49 @@ function makeTopLevelRunner(opts: {
   };
   const stub = makeStubConversationThreadManager({
     threadId: opts.conversationId,
+    ...(opts.threadShutdown !== undefined
+      ? { shutdown: opts.threadShutdown }
+      : {}),
+    ...(opts.totalTokenUsage !== undefined
+      ? { totalTokenUsage: opts.totalTokenUsage }
+      : {}),
   });
   const phaseSubscribers: Array<(phase: unknown) => void> = [];
   const eventLogSubscribers: Array<(event: unknown) => void> = [];
+  const rolloutItems = opts.rolloutItems ?? [];
+  let lastSeq = rolloutItems.reduce((highest, item) => {
+    const seq = (item as { payload?: { seq?: unknown } })?.payload?.seq;
+    return typeof seq === "number" && Number.isSafeInteger(seq)
+      ? Math.max(highest, seq)
+      : highest;
+  }, 0);
+  const publishSessionEvent = (event: unknown) => {
+    for (const listener of [...eventLogSubscribers]) listener(event);
+  };
+  const rolloutStore = {
+    rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
+    readAll: () => [...rolloutItems],
+  };
   const session = {
     conversationId: opts.conversationId,
     permissionModeRegistry,
     abortAllTasks: vi.fn(async () => {}),
+    trackDurableOperation: <T>(operation: Promise<T>): Promise<T> => {
+      durableOperations.add(operation);
+      void operation.then(
+        () => durableOperations.delete(operation),
+        () => durableOperations.delete(operation),
+      );
+      return operation;
+    },
+    onBeforeDurableClose: (listener: () => void | Promise<void>) => {
+      beforeDurableClose.add(listener);
+      return () => beforeDurableClose.delete(listener);
+    },
     eventLog: {
+      get lastSeq() {
+        return lastSeq;
+      },
       subscribe: (listener: (event: unknown) => void) => {
         eventLogSubscribers.push(listener);
         return () => {
@@ -139,13 +196,36 @@ function makeTopLevelRunner(opts: {
       for (const listener of [...phaseSubscribers]) listener(phase);
     },
     emitSessionEvent: (event: unknown) => {
-      for (const listener of [...eventLogSubscribers]) listener(event);
+      const sequence = (event as { seq?: unknown }).seq;
+      if (typeof sequence === "number" && Number.isSafeInteger(sequence)) {
+        lastSeq = Math.max(lastSeq, sequence);
+      }
+      publishSessionEvent(event);
     },
     emit: vi.fn((event: unknown) => {
-      for (const listener of [...eventLogSubscribers]) listener(event);
+      const sequence = ++lastSeq;
+      const stamped = {
+        ...(event as object),
+        eventId:
+          (event as { eventId?: unknown }).eventId ?? `event:${sequence}`,
+        seq: sequence,
+      };
+      rolloutItems.push({ type: "event_msg", payload: stamped });
+      publishSessionEvent(stamped);
+      return stamped;
     }),
+    rolloutStore,
     services: { conversationThreadManager: stub },
   };
+  const shutdown = vi.fn(async () => {
+    await shutdownImpl();
+    while (durableOperations.size > 0) {
+      await Promise.all([...durableOperations]);
+    }
+    const finalizers = [...beforeDurableClose];
+    beforeDurableClose.clear();
+    for (const finalize of finalizers) await finalize();
+  });
   const control = {
     shutdown: vi.fn(async () => {}),
     sendInput: vi.fn(async () => {}),
@@ -155,6 +235,7 @@ function makeTopLevelRunner(opts: {
   };
   const bootstrap = vi.fn(async () => ({
     session,
+    rolloutStore,
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -171,7 +252,16 @@ function makeTopLevelRunner(opts: {
     })) as unknown as AgenCEnsureAgentControlFunction,
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.argv !== undefined ? { argv: opts.argv } : {}),
+    ...(opts.agentBudget !== undefined
+      ? { agentBudget: opts.agentBudget }
+      : {}),
+    ...(opts.executionAdmissionKernel !== undefined
+      ? { executionAdmissionKernel: opts.executionAdmissionKernel }
+      : {}),
     now: opts.now ?? (() => "2026-05-09T00:00:00.000Z"),
+    ...(opts.onActiveAgentTerminated !== undefined
+      ? { onActiveAgentTerminated: opts.onActiveAgentTerminated }
+      : {}),
   });
   return {
     runner,
@@ -182,10 +272,859 @@ function makeTopLevelRunner(opts: {
     bootstrap,
     permissionUpdates,
     permissionModeRegistry,
+    rolloutItems,
   };
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("carries the canonical rollout sequence into daemon notifications", () => {
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      eventId: "journal-progress-sequenced",
+      id: "progress-sequenced",
+      seq: 42,
+      msg: {
+        type: "tool_progress",
+        payload: {
+          callId: "tool-sequenced",
+          toolName: "Bash",
+          chunk: "ready",
+        },
+      },
+    });
+
+    expect(daemonEvent).toMatchObject({
+      id: "progress-sequenced",
+      eventId: "journal-progress-sequenced",
+      sequence: 42,
+    });
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", daemonEvent!),
+    ).toMatchObject({
+      params: {
+        eventId: "journal-progress-sequenced",
+        sequence: 42,
+        event: { id: "progress-sequenced" },
+      },
+    });
+  });
+
+  it("derives collision-free legacy eventIds without changing reused envelope ids", () => {
+    const first = daemonEventFromUnboundSessionEvent({
+      id: "reused-tool-progress-sub-id",
+      seq: 8,
+      msg: {
+        type: "tool_progress",
+        payload: { callId: "call-1", toolName: "Bash", chunk: "one" },
+      },
+    });
+    const second = daemonEventFromUnboundSessionEvent({
+      id: "reused-tool-progress-sub-id",
+      seq: 9,
+      msg: {
+        type: "tool_progress",
+        payload: { callId: "call-1", toolName: "Bash", chunk: "two" },
+      },
+    });
+
+    expect(first).toMatchObject({
+      id: "reused-tool-progress-sub-id",
+      eventId: "legacy-event:8:reused-tool-progress-sub-id",
+      sequence: 8,
+    });
+    expect(second).toMatchObject({
+      id: "reused-tool-progress-sub-id",
+      eventId: "legacy-event:9:reused-tool-progress-sub-id",
+      sequence: 9,
+    });
+  });
+
+  it.each([
+    ["agent_message_delta", { delta: "hello" }],
+    [
+      "tool_call_started",
+      { callId: "call-1", toolName: "Read", args: "{}" },
+    ],
+    [
+      "tool_call_completed",
+      { callId: "call-1", result: "ok", isError: false },
+    ],
+    ["turn_started", { turnId: "turn-1", startedAt: 1 }],
+    [
+      "turn_complete",
+      {
+        turnId: "turn-1",
+        lastAgentMessage: "done",
+        completedAt: 2,
+        durationMs: 1,
+      },
+    ],
+    ["turn_aborted", { turnId: "turn-1", reason: "cancelled" }],
+    ["error", { cause: "test", message: "failed" }],
+    ["effect_intent", { runId: "run-1", stepId: "step-1" }],
+    [
+      "execution_admission",
+      { runId: "run-1", stepId: "step-1", event: "allowed" },
+    ],
+    ["artifact_committed", { runId: "run-1", artifactId: "artifact-1" }],
+    ["recovery_decision", { runId: "run-1", decision: "projection_rebuilt" }],
+    ["run_terminal", { runId: "run-1", epoch: 1, status: "completed" }],
+  ] as const)(
+    "uses canonical identity for core %s notifications",
+    (type, payload) => {
+      const daemonEvent = daemonEventFromUnboundSessionEvent({
+        eventId: `journal-${type}`,
+        id: `canonical-${type}`,
+        seq: 17,
+        msg: { type, payload },
+      });
+      expect(daemonEvent).toMatchObject({
+        id: `canonical-${type}`,
+        eventId: `journal-${type}`,
+        sequence: 17,
+        type,
+      });
+      expect(
+        notificationFromDaemonEvent("session-1", "agent-1", daemonEvent!),
+      ).toMatchObject({
+        params: {
+          eventId: `journal-${type}`,
+          sequence: 17,
+        },
+      });
+      expect(
+        daemonEventFromUnboundSessionEvent({
+          id: `unsequenced-${type}`,
+          msg: { type, payload },
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("uses PhaseEvents only for bookkeeping when the canonical bridge is installed", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-canonical-core",
+    });
+    const emitted: unknown[] = [];
+    await runner.startAgent({
+      objective: "verify canonical delivery",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-canonical-core", {
+      sessionId: "session-1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emitPhaseEvent({ type: "assistant_text", content: "hello" });
+    session.emitPhaseEvent({
+      type: "tool_call",
+      toolCall: { id: "call-1", name: "Read", arguments: "{}" },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "hello",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      stopReason: "completed",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(emitted).toEqual([]);
+
+    session.emit({
+      eventId: "journal-delta",
+      id: "canonical-delta",
+      msg: { type: "agent_message_delta", payload: { delta: "hello" } },
+    });
+    session.emit({
+      eventId: "journal-tool",
+      id: "canonical-tool",
+      msg: {
+        type: "tool_call_started",
+        payload: { callId: "call-1", toolName: "Read", args: "{}" },
+      },
+    });
+    session.emit({
+      eventId: "journal-turn",
+      id: "canonical-turn",
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: "turn-1",
+          lastAgentMessage: "hello",
+          completedAt: 2,
+          durationMs: 1,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(emitted).toHaveLength(3));
+    expect(
+      emitted.map(
+        (event) =>
+          (event as { params?: { eventId?: unknown } }).params?.eventId,
+      ),
+    ).toEqual(["journal-delta", "journal-tool", "journal-turn"]);
+    for (const event of emitted) {
+      expect(
+        (event as { params?: { sequence?: unknown } }).params?.sequence,
+      ).toEqual(expect.any(Number));
+    }
+  });
+
+  it("drains the canonical turn tail before shutdown and terminal teardown", async () => {
+    let releaseTurnDelivery!: () => void;
+    const turnDeliveryBlocked = new Promise<void>((resolve) => {
+      releaseTurnDelivery = resolve;
+    });
+    let markTurnDeliveryStarted!: () => void;
+    const turnDeliveryStarted = new Promise<void>((resolve) => {
+      markTurnDeliveryStarted = resolve;
+    });
+    const bootstrapShutdown = vi.fn(async () => {});
+    const onActiveAgentTerminated = vi.fn(async () => {});
+    const { runner, session, stub } = makeTopLevelRunner({
+      conversationId: "session-terminal-delivery-order",
+      bootstrapShutdown,
+      onActiveAgentTerminated,
+    });
+    const emitted: unknown[] = [];
+    await runner.startAgent({
+      objective: "preserve the canonical tail",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-terminal-delivery-order", {
+      sessionId: "session-1",
+      emit: async (event) => {
+        const eventId = (event as { params?: { eventId?: unknown } }).params
+          ?.eventId;
+        if (eventId === "turn-complete-before-shutdown") {
+          markTurnDeliveryStarted();
+          await turnDeliveryBlocked;
+        }
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    session.emit({
+      eventId: "turn-complete-before-shutdown",
+      id: "turn-complete-before-shutdown",
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: "turn-terminal-delivery-order",
+          lastAgentMessage: "done",
+          completedAt: 2,
+          durationMs: 1,
+        },
+      },
+    });
+    await turnDeliveryStarted;
+    stub.pushStatus({
+      status: "completed",
+      turnId: "turn-terminal-delivery-order",
+      endedAtMs: 2,
+      lastMessage: "done",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(bootstrapShutdown).not.toHaveBeenCalled();
+    expect(onActiveAgentTerminated).not.toHaveBeenCalled();
+
+    releaseTurnDelivery();
+    await vi.waitFor(() =>
+      expect(onActiveAgentTerminated).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      emitted.map(
+        (event) =>
+          (event as { params?: { eventId?: unknown } }).params?.eventId,
+      ),
+    ).toEqual([
+      "turn-complete-before-shutdown",
+      "run-terminal:session-terminal-delivery-order:1",
+    ]);
+    expect(bootstrapShutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("fsync-journals daemon permission requests and decisions before execution resumes", async () => {
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-durable-permission",
+    });
+    const emitted: unknown[] = [];
+    await runner.startAgent({
+      objective: "record approval evidence",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-durable-permission", {
+      sessionId: "client-session",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    const resolver = (
+      session.services as {
+        approvalResolver?: {
+          request(context: unknown): Promise<{ readonly kind: string }>;
+        };
+      }
+    ).approvalResolver;
+    expect(resolver).toBeDefined();
+    const pending = requestApproval({
+      ctx: {
+        invocation: {
+          session,
+          turn: { subId: "turn-permission-1" },
+          tracker: {
+            appendFileDiff() {},
+            snapshot: () => [],
+            clear() {},
+          },
+          callId: "permission-call-1",
+          toolName: { name: "Read" },
+          payload: {
+            kind: "function",
+            arguments: '{"path":"README.md"}',
+          },
+          source: "direct",
+        } as never,
+        callId: "permission-call-1",
+        toolName: "Read",
+        turnId: "turn-permission-1",
+      },
+      resolver: resolver as never,
+    });
+
+    await vi.waitFor(() =>
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.permission_request",
+          params: expect.objectContaining({
+            requestId: "permission-call-1",
+            eventId: expect.any(String),
+            sequence: expect.any(Number),
+          }),
+        }),
+      ),
+    );
+    expect(
+      await runner.resolveToolDecision("session-durable-permission", {
+        requestId: "permission-call-1",
+        decision: { kind: "approved" },
+      }),
+    ).toBe(true);
+    await expect(pending).resolves.toMatchObject({
+      decision: { kind: "approved" },
+      source: "resolver",
+    });
+
+    const journalEvents = rolloutItems
+      .filter(
+        (item): item is {
+          readonly type: "event_msg";
+          readonly payload: {
+            readonly eventId: string;
+            readonly seq: number;
+            readonly msg: {
+              readonly type: string;
+              readonly payload: Record<string, unknown>;
+            };
+          };
+        } => (item as { readonly type?: unknown }).type === "event_msg",
+      )
+      .map((item) => item.payload);
+    const request = journalEvents.find(
+      (event) => event.msg.type === "request_permissions",
+    );
+    const decision = journalEvents.find(
+      (event) => event.msg.type === "permission_decision",
+    );
+    expect(request).toMatchObject({
+      eventId: expect.any(String),
+      seq: expect.any(Number),
+      msg: {
+        payload: {
+          callId: "permission-call-1",
+          toolName: "Read",
+          turnId: "turn-permission-1",
+          permissions: ["tool.use"],
+          input: { path: "README.md" },
+        },
+      },
+    });
+    expect(decision).toMatchObject({
+      eventId: expect.any(String),
+      seq: (request?.seq ?? 0) + 1,
+      msg: {
+        payload: {
+          runId: "session-durable-permission",
+          callId: "permission-call-1",
+          requestEventId: request?.eventId,
+          requestEventSeq: request?.seq,
+          decision: "approved",
+        },
+      },
+    });
+  });
+
+  it("aborts and journals a pending permission before stop seals the terminal tail", async () => {
+    let releaseShutdown!: () => void;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      releaseShutdown = resolve;
+    });
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-stop-pending-permission",
+      bootstrapShutdown: vi.fn(() => shutdownStarted),
+    });
+    await runner.startAgent({
+      objective: "wait for permission",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const resolver = (
+      session.services as {
+        approvalResolver?: {
+          request(context: unknown): Promise<{ readonly kind: string }>;
+        };
+      }
+    ).approvalResolver;
+    expect(resolver).toBeDefined();
+    const pending = requestApproval({
+      ctx: {
+        invocation: {
+          session,
+          turn: { subId: "turn-stop-permission" },
+          tracker: {
+            appendFileDiff() {},
+            snapshot: () => [],
+            clear() {},
+          },
+          callId: "permission-stop-call",
+          toolName: { name: "Bash" },
+          payload: { kind: "function", arguments: '{"cmd":"true"}' },
+          source: "direct",
+        } as never,
+        callId: "permission-stop-call",
+        toolName: "Bash",
+        turnId: "turn-stop-permission",
+      },
+      resolver: resolver as never,
+    });
+    await vi.waitFor(() =>
+      expect(
+        rolloutItems.some(
+          (item) =>
+            (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+              ?.type === "request_permissions",
+        ),
+      ).toBe(true),
+    );
+
+    const stopping = runner.stopAgent(
+      "session-stop-pending-permission",
+      "user_stopped",
+    );
+    await expect(pending).resolves.toMatchObject({
+      decision: { kind: "abort" },
+      source: "resolver",
+    });
+    await expect(
+      runner.submitAgentMessage("session-stop-pending-permission", {
+        sessionId: "session-stop-pending-permission",
+        content: "too late",
+        originalContent: "too late",
+        displayUserMessage: null,
+        messageId: "message-too-late",
+        streamId: "stream-too-late",
+        acceptedAt: "2026-05-09T00:00:01.000Z",
+      }),
+    ).rejects.toThrow("not running");
+    expect(
+      await runner.resolveToolDecision("session-stop-pending-permission", {
+        requestId: "permission-stop-call",
+        decision: { kind: "approved" },
+      }),
+    ).toBe(false);
+    releaseShutdown();
+    await stopping;
+
+    const canonical = rolloutItems
+      .filter(
+        (item): item is {
+          readonly payload: {
+            readonly seq: number;
+            readonly msg: {
+              readonly type: string;
+              readonly payload: Record<string, unknown>;
+            };
+          };
+        } => (item as { type?: unknown }).type === "event_msg",
+      )
+      .map((item) => item.payload);
+    const requestIndex = canonical.findIndex(
+      (event) => event.msg.type === "request_permissions",
+    );
+    const decisionIndex = canonical.findIndex(
+      (event) => event.msg.type === "permission_decision",
+    );
+    const terminalIndex = canonical.findIndex(
+      (event) => event.msg.type === "run_terminal",
+    );
+    expect(requestIndex).toBeGreaterThanOrEqual(0);
+    expect(decisionIndex).toBeGreaterThan(requestIndex);
+    expect(terminalIndex).toBeGreaterThan(decisionIndex);
+    expect(terminalIndex).toBe(canonical.length - 1);
+    expect(canonical[decisionIndex]?.msg.payload).toMatchObject({
+      callId: "permission-stop-call",
+      decision: "abort",
+    });
+    expect(canonical[terminalIndex]?.msg.payload).toMatchObject({
+      stopReason: "user_stopped",
+    });
+  });
+
+  it("canonicalizes cancellation and admission decisions before the terminal tail", async () => {
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-two-phase-cancel",
+    });
+    const cancelAdmissions = vi.fn((reason: string) => {
+      session.emit({
+        eventId: "admission-cancelled-before-terminal",
+        id: "admission-cancelled-before-terminal",
+        msg: {
+          type: "execution_admission",
+          payload: {
+            sequence: 7,
+            eventId: "admission-cancelled-before-terminal",
+            timestamp: "2026-05-09T00:00:00.000Z",
+            runId: "session-two-phase-cancel",
+            stepId: "model-turn-1",
+            kind: "model_turn",
+            event: "cancelled",
+            reason,
+          },
+        },
+      });
+      return {
+        affectedRunIds: ["session-two-phase-cancel"],
+        voidedReservations: 1,
+        heldUnknownReservations: 0,
+      };
+    });
+    (
+      session.services as typeof session.services & {
+        executionAdmission?: { cancelAdmissions: typeof cancelAdmissions };
+      }
+    ).executionAdmission = { cancelAdmissions };
+
+    await runner.startAgent({
+      objective: "cancel safely",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const prepared = await runner.prepareAgentCancellation(
+      "session-two-phase-cancel",
+      "operator",
+    );
+    expect(prepared).toMatchObject({
+      affectedRunIds: ["session-two-phase-cancel"],
+      voidedHolds: 1,
+    });
+    await expect(
+      runner.submitAgentMessage("session-two-phase-cancel", {
+        sessionId: "session-two-phase-cancel",
+        content: "late input",
+        originalContent: "late input",
+        messageId: "late-message",
+        streamId: "late-stream",
+        acceptedAt: "2026-05-09T00:00:01.000Z",
+      }),
+    ).rejects.toThrow("not running");
+
+    await runner.stopAgent("session-two-phase-cancel", "operator");
+
+    const canonical = rolloutItems
+      .filter(
+        (item): item is {
+          readonly payload: {
+            readonly seq: number;
+            readonly msg: { readonly type: string };
+          };
+        } => (item as { type?: unknown }).type === "event_msg",
+      )
+      .map((item) => item.payload);
+    const requestIndex = canonical.findIndex(
+      (event) => event.msg.type === "run_cancel_requested",
+    );
+    const admissionIndex = canonical.findIndex(
+      (event) => event.msg.type === "execution_admission",
+    );
+    const terminalIndex = canonical.findIndex(
+      (event) => event.msg.type === "run_terminal",
+    );
+    expect(requestIndex).toBeGreaterThanOrEqual(0);
+    expect(admissionIndex).toBeGreaterThan(requestIndex);
+    expect(terminalIndex).toBeGreaterThan(admissionIndex);
+    expect(terminalIndex).toBe(canonical.length - 1);
+    expect(cancelAdmissions).toHaveBeenCalledOnce();
+  });
+
+  it("aborts and journals a pending permission before a budget terminal", async () => {
+    let totalTokens = 0;
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-budget-pending-permission",
+      agentBudget: { token_cap: 1 },
+      totalTokenUsage: () => ({
+        inputTokens: totalTokens,
+        outputTokens: 0,
+        totalTokens,
+      }),
+    });
+    await runner.startAgent({
+      objective: "wait under budget",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const resolver = (
+      session.services as {
+        approvalResolver?: {
+          request(context: unknown): Promise<{ readonly kind: string }>;
+        };
+      }
+    ).approvalResolver;
+    const pending = requestApproval({
+      ctx: {
+        invocation: {
+          session,
+          turn: { subId: "turn-budget-permission" },
+          tracker: {
+            appendFileDiff() {},
+            snapshot: () => [],
+            clear() {},
+          },
+          callId: "permission-budget-call",
+          toolName: { name: "Bash" },
+          payload: { kind: "function", arguments: '{"cmd":"true"}' },
+          source: "direct",
+        } as never,
+        callId: "permission-budget-call",
+        toolName: "Bash",
+        turnId: "turn-budget-permission",
+      },
+      resolver: resolver as never,
+    });
+    await vi.waitFor(() =>
+      expect(
+        rolloutItems.some(
+          (item) =>
+            (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+              ?.type === "request_permissions",
+        ),
+      ).toBe(true),
+    );
+
+    totalTokens = 2;
+    session.emitPhaseEvent({ type: "assistant_text", content: "budget tick" });
+    await expect(pending).resolves.toMatchObject({
+      decision: { kind: "abort" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        rolloutItems.some(
+          (item) =>
+            (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+              ?.type === "run_terminal",
+        ),
+      ).toBe(true),
+    );
+
+    const canonical = rolloutItems
+      .filter(
+        (item): item is {
+          readonly payload: {
+            readonly msg: {
+              readonly type: string;
+              readonly payload: Record<string, unknown>;
+            };
+          };
+        } => (item as { type?: unknown }).type === "event_msg",
+      )
+      .map((item) => item.payload);
+    const relevant = canonical.filter((event) =>
+      ["request_permissions", "permission_decision", "run_terminal"].includes(
+        event.msg.type,
+      ),
+    );
+    expect(relevant.map((event) => event.msg.type)).toEqual([
+      "request_permissions",
+      "permission_decision",
+      "run_terminal",
+    ]);
+    expect(relevant[1]?.msg.payload).toMatchObject({
+      callId: "permission-budget-call",
+      decision: "abort",
+    });
+    expect(relevant[2]?.msg.payload).toMatchObject({
+      stopReason: "budget_limit",
+    });
+    expect(canonical.at(-1)?.msg.type).toBe("run_terminal");
+  });
+
+  it("commits an epoch-aware terminal at the quiesced shutdown boundary and publishes it canonically", async () => {
+    const threadShutdown = vi.fn(async () => {});
+    const onActiveAgentTerminated = vi.fn(async () => {});
+    const rolloutItems = [
+      {
+        type: "event_msg",
+        payload: {
+          id: "reopen-2",
+          seq: 7,
+          msg: {
+            type: "run_reopened",
+            payload: {
+              runId: "session-stop-epoch-2",
+              previousEpoch: 1,
+              epoch: 2,
+              reason: "review",
+              reopenedAt: "2026-05-08T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    ];
+    const { runner, session, shutdown } = makeTopLevelRunner({
+      conversationId: "session-stop-epoch-2",
+      threadShutdown,
+      rolloutItems,
+      onActiveAgentTerminated,
+    });
+    const emitted: unknown[] = [];
+    await runner.startAgent({
+      objective: "stop durably",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-stop-epoch-2", {
+      sessionId: "session-1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    await runner.stopAgent("session-stop-epoch-2", "user_stopped");
+
+    const terminalCallIndex = session.emit.mock.calls.findIndex(
+      ([event]) =>
+        (event as { msg?: { type?: unknown } }).msg?.type === "run_terminal",
+    );
+    expect(terminalCallIndex).toBeGreaterThanOrEqual(0);
+    expect(session.emit.mock.calls[terminalCallIndex]![0]).toMatchObject({
+      id: "run-terminal:session-stop-epoch-2:2",
+      msg: {
+        type: "run_terminal",
+        payload: {
+          epoch: 2,
+          status: "cancelled",
+          stopReason: "user_stopped",
+        },
+      },
+    });
+    expect(
+      session.emit.mock.invocationCallOrder[terminalCallIndex]!,
+    ).toBeGreaterThan(shutdown.mock.invocationCallOrder[0]!);
+    expect(threadShutdown).not.toHaveBeenCalled();
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          eventId: "run-terminal:session-stop-epoch-2:2",
+          sequence: expect.any(Number),
+          status: "stopped",
+          runStatus: "stopped",
+        }),
+      }),
+    );
+    expect(onActiveAgentTerminated).toHaveBeenCalledWith(
+      "session-stop-epoch-2",
+      expect.objectContaining({
+        terminal: expect.objectContaining({
+          epoch: 2,
+          eventId: "run-terminal:session-stop-epoch-2:2",
+        }),
+      }),
+    );
+  });
+
+  it("does not advertise a canonical terminal status when its durable append fails", async () => {
+    const onActiveAgentTerminated = vi.fn(async () => {});
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-terminal-append-failure",
+      onActiveAgentTerminated,
+    });
+    await runner.startAgent({
+      objective: "fail terminal commit",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    session.emit.mockImplementationOnce(() => {
+      throw new Error("terminal write failed");
+    });
+
+    await expect(
+      runner.stopAgent("session-terminal-append-failure", "user_stopped"),
+    ).rejects.toThrow("terminal write failed");
+    expect(onActiveAgentTerminated).not.toHaveBeenCalled();
+  });
+
+  it("announces sequenced pre-attach eviction with valid cursor coordinates", async () => {
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "session-buffer-gap",
+    });
+    await runner.startAgent({
+      objective: "fill detached buffer",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    for (let index = 0; index < 1_005; index += 1) {
+      session.emit({
+        id: `delta-${index}`,
+        msg: {
+          type: "agent_message_delta",
+          payload: { delta: String(index) },
+        },
+      });
+    }
+    for (let index = 0; index < 5; index += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const emitted: unknown[] = [];
+    await runner.attachAgentSessionEvents("session-buffer-gap", {
+      sessionId: "session-1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    expect(emitted).toHaveLength(1_001);
+    expect(emitted[0]).toMatchObject({
+      method: "event.event_gap",
+      params: {
+        type: "event_gap",
+        runId: "session-buffer-gap",
+        retiredCount: 6,
+        coordinatesAvailable: true,
+        afterSequence: 0,
+        firstAvailableSequence: 7,
+      },
+    });
+  });
+
   it("preserves the trusted Ledger clientAction through the session-event bridge", () => {
     const clientAction = {
       type: "ledger_solana_transfer_v1",
@@ -240,6 +1179,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).toEqual({
       id: "spawn-begin",
+      eventId: "spawn-begin",
       type: "collab_agent_spawn_begin",
       payload: {
         callId: "call-agent",
@@ -267,6 +1207,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).toEqual({
       id: "spawn-end",
+      eventId: "spawn-end",
       type: "collab_agent_spawn_end",
       payload: {
         callId: "call-agent",
@@ -295,6 +1236,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).toEqual({
       id: "agent-status",
+      eventId: "agent-status",
       type: "collab_agent_status",
       payload: {
         callId: "call-agent",
@@ -322,6 +1264,7 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).toEqual({
       id: "progress-1",
+      eventId: "progress-1",
       type: "tool_progress",
       payload: {
         callId: "tool-1",
@@ -366,6 +1309,7 @@ describe("AgenC delegate background-agent runner", () => {
         "grok-4"
       ],
       cwd: "/workspace",
+      executionAdmissionAutonomous: true,
     });
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({
@@ -376,6 +1320,29 @@ describe("AgenC delegate background-agent runner", () => {
       },
     });
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
+    const executionAdmissionKernel = {} as ExecutionAdmissionKernel;
+    const { runner, bootstrap, shutdown } = makeTopLevelRunner({
+      conversationId: "kernel-budget-session",
+      agentBudget: { token_cap: 0 },
+      executionAdmissionKernel,
+    });
+
+    await runner.startAgent({ objective: "kernel-owned budget" });
+    await Promise.resolve();
+
+    expect(await runner.getAgentSnapshot("kernel-budget-session")).toMatchObject({
+      status: "running",
+    });
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionAdmissionAutonomous: true,
+        executionAdmissionKernel,
+      }),
+    );
   });
 
   it("setAgentPermissionMode mutates the real session permission registry", async () => {
@@ -634,6 +1601,7 @@ describe("AgenC delegate background-agent runner", () => {
     const bootstrapOptions = vi.mocked(bootstrap).mock.calls[0]?.[0];
     expect(bootstrapOptions).toMatchObject({
       argv: ["node", "agenc", ],
+      executionAdmissionAutonomous: true,
     });
     expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
     await expect(
@@ -789,7 +1757,7 @@ describe("AgenC delegate background-agent runner", () => {
         params: {
           sessionId: "session_1",
           agentId: "session-user-order",
-          eventId: "message_1",
+          eventId: "event:2",
           acceptedAt: "2026-05-01T12:00:01.000Z",
           event: {
             id: "message_1",
@@ -870,7 +1838,7 @@ describe("AgenC delegate background-agent runner", () => {
         params: {
           sessionId: "session_1",
           agentId: "session-user-durable",
-          eventId: "message_2",
+          eventId: "event:2",
           event: {
             id: "message_2",
             type: "user_message",
@@ -1009,7 +1977,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] reports max-turn terminal phases as errored status", async () => {
+  it("[managed-thread] reports canonical max-turn errors with replay identity", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-max-turns",
     });
@@ -1033,6 +2001,17 @@ describe("AgenC delegate background-agent runner", () => {
       usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       stopReason: "max_turns",
     });
+    session.emit({
+      eventId: "max-turn-error",
+      id: "max-turn-error",
+      msg: {
+        type: "error",
+        payload: {
+          cause: "max_turns",
+          message: "Agent exceeded maxTurns",
+        },
+      },
+    });
 
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
@@ -1042,14 +2021,16 @@ describe("AgenC delegate background-agent runner", () => {
             status: "error",
             runStatus: "errored",
             message: "Agent exceeded maxTurns",
+            eventId: "max-turn-error",
+            sequence: expect.any(Number),
           }),
         }),
       );
     });
   });
 
-  it("[managed-thread] reports interrupted thread status as idle reusable status", async () => {
-    const { runner, stub } = makeTopLevelRunner({
+  it("[managed-thread] keeps interrupted status internal and publishes canonical abort", async () => {
+    const { runner, stub, session } = makeTopLevelRunner({
       conversationId: "session-interrupted-status",
     });
     const emitted: unknown[] = [];
@@ -1073,6 +2054,14 @@ describe("AgenC delegate background-agent runner", () => {
       endedAtMs: 123,
       reason: "user_cancel",
     } as AgentStatus);
+    session.emit({
+      eventId: "turn-interrupted",
+      id: "turn-interrupted",
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId: "turn-interrupted", reason: "user_cancel" },
+      },
+    });
 
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
@@ -1083,6 +2072,8 @@ describe("AgenC delegate background-agent runner", () => {
             runStatus: "completed",
             turnId: "turn-interrupted",
             message: "user_cancel",
+            eventId: "turn-interrupted",
+            sequence: expect.any(Number),
           }),
         }),
       );
@@ -1117,6 +2108,14 @@ describe("AgenC delegate background-agent runner", () => {
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       stopReason: "cancelled",
     });
+    session.emit({
+      eventId: "turn-cancelled",
+      id: "turn-cancelled",
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId: "turn-cancelled", reason: "cancelled" },
+      },
+    });
 
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
@@ -1126,6 +2125,8 @@ describe("AgenC delegate background-agent runner", () => {
             status: "idle",
             runStatus: "completed",
             message: "cancelled",
+            eventId: "turn-cancelled",
+            sequence: expect.any(Number),
           }),
         }),
       );
@@ -1183,6 +2184,27 @@ describe("AgenC delegate background-agent runner", () => {
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       stopReason: "cancelled",
     });
+    session.emit({
+      eventId: "tool-call-1-interrupted",
+      id: "tool-call-1-interrupted",
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call_1",
+          result: "cancelled",
+          isError: true,
+          metadata: { cause: "user_interrupted" },
+        },
+      },
+    });
+    session.emit({
+      eventId: "turn-tool-interrupted",
+      id: "turn-tool-interrupted",
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId: "turn-tool-interrupted", reason: "cancelled" },
+      },
+    });
 
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
@@ -1238,6 +2260,19 @@ describe("AgenC delegate background-agent runner", () => {
       usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
       stopReason: "completed",
     });
+    session.emit({
+      eventId: "turn-completed",
+      id: "turn-completed",
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: "turn-completed",
+          lastAgentMessage: "done",
+          completedAt: Date.now(),
+          durationMs: 1,
+        },
+      },
+    });
 
     await vi.waitFor(() => {
       expect(emitted).toContainEqual(
@@ -1247,6 +2282,8 @@ describe("AgenC delegate background-agent runner", () => {
             status: "idle",
             runStatus: "completed",
             message: "done",
+            eventId: "turn-completed",
+            sequence: expect.any(Number),
           }),
         }),
       );
@@ -1321,8 +2358,8 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.interrupt).toHaveBeenCalledWith("child-agent", "user_cancel");
   });
 
-  it("[managed-thread] stopAgent shuts down the managed thread", async () => {
-    const { runner, stub, control } = makeTopLevelRunner({
+  it("[managed-thread] stopAgent uses bootstrap lifecycle shutdown", async () => {
+    const { runner, stub, control, shutdown } = makeTopLevelRunner({
       conversationId: "session-stop",
     });
 
@@ -1334,7 +2371,8 @@ describe("AgenC delegate background-agent runner", () => {
 
     await runner.stopAgent("session-stop", "user_stopped");
 
-    expect(stub.thread.shutdown).toHaveBeenCalledWith("user_stopped");
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(stub.thread.shutdown).not.toHaveBeenCalled();
     expect(control.shutdown).not.toHaveBeenCalled();
   });
 });

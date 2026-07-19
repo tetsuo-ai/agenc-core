@@ -171,7 +171,7 @@ async function ensureProjectTrusted(projectPath, env = process.env) {
  * fresh), permission policy, session state. Anything else should be
  * stateless across daemon spawns.
  */
-export async function createTempHome() {
+export async function createTempHome({ sandboxMode } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
   const agencDir = resolveHarnessAgencHome({ HOME: home });
   await mkdir(agencDir, { recursive: true });
@@ -187,6 +187,29 @@ export async function createTempHome() {
     const source = path.join(resolveHarnessAgencHome(), name);
     if (existsSync(source)) {
       await copyFile(source, path.join(agencDir, name));
+    }
+  }
+  if (sandboxMode !== undefined) {
+    if (sandboxMode !== "danger-full-access") {
+      throw new Error(`unsupported TUI E2E sandbox mode: ${sandboxMode}`);
+    }
+    // Approval-overlay scenarios must remain in permission mode `default`, so
+    // --yolo would invalidate what they exercise. Set only the sandbox policy
+    // in the throwaway HOME before its daemon starts; production startup stays
+    // fail-closed and the scenario still asks for tool approval.
+    const configSet = spawnSync(
+      process.execPath,
+      [BIN_AGENC, "config", "set", "sandbox_mode", sandboxMode],
+      {
+        encoding: "utf8",
+        env: isolatedHomeEnv(home),
+        timeout: 10_000,
+      },
+    );
+    if (configSet.status !== 0) {
+      throw new Error(
+        `failed to configure temporary TUI E2E sandbox mode: ${configSet.stderr || configSet.stdout}`,
+      );
     }
   }
   // Pre-start the daemon and wait for status to report running. Without
@@ -564,13 +587,22 @@ function frameLooksBusy(frame) {
 }
 
 export class TuiSession {
-  constructor({ args = [], cols = 140, rows = 40, env = {}, cwd, useTempHome = false } = {}) {
+  constructor({
+    args = [],
+    cols = 140,
+    rows = 40,
+    env = {},
+    cwd,
+    useTempHome = false,
+    sandboxMode,
+  } = {}) {
     this.args = args;
     this.cols = cols;
     this.rows = rows;
     this.envOverrides = { ...env };
     this.cwd = cwd ?? process.cwd();
     this.useTempHome = useTempHome;
+    this.sandboxMode = sandboxMode;
     this.tempHome = null;
     this.term = null;
     this.buffer = "";
@@ -603,7 +635,9 @@ export class TuiSession {
     }
     let env = { ...process.env, ...this.envOverrides };
     if (this.useTempHome) {
-      const { home, wsPort } = await createTempHome();
+      const { home, wsPort } = await createTempHome({
+        sandboxMode: this.sandboxMode,
+      });
       this.tempHome = home;
       env = tempDaemonEnv(home, wsPort, env);
       // Trust file lives under HOME — recompute under the temp HOME so

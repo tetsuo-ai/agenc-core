@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -16,6 +16,7 @@ function makeEngine(config: HooksMap): HookEngine {
     shellPath: process.env.SHELL ?? "/bin/sh",
     sourcePath: "/tmp/agenc-hooks-test/config.toml",
     sandboxExecutionBroker: explicitDangerBroker,
+    admissionRequired: false,
   });
   engine.load(config);
   return engine;
@@ -90,7 +91,9 @@ describe("HookEngine dispatcher", () => {
     expect(
       engine.selectHandlersForMatcherInputs("UserPromptSubmit", ["skip"]),
     ).toHaveLength(1);
-    expect(engine.selectHandlersForMatcherInputs("Stop", ["skip"])).toHaveLength(1);
+    expect(
+      engine.selectHandlersForMatcherInputs("Stop", ["skip"]),
+    ).toHaveLength(1);
   });
 
   test("selects SessionStart handlers by source matcher", () => {
@@ -134,11 +137,10 @@ describe("HookEngine dispatcher", () => {
       ],
     });
 
-    const runs = await engine.dispatch(
-      "PermissionRequest",
-      ["Read"],
-      { hook_event_name: "PermissionRequest", tool_name: "Read" },
-    );
+    const runs = await engine.dispatch("PermissionRequest", ["Read"], {
+      hook_event_name: "PermissionRequest",
+      tool_name: "Read",
+    });
 
     expect(runs).toHaveLength(1);
     expect(runs[0]?.run.status).toBe("success");
@@ -153,7 +155,7 @@ describe("HookEngine dispatcher", () => {
             { type: "command", command: "printf blocked >&2; exit 2" },
             {
               type: "command",
-              command: "node -e \"setTimeout(() => {}, 1000)\"",
+              command: 'node -e "setTimeout(() => {}, 1000)"',
               timeout_ms: 20,
             },
           ],
@@ -196,6 +198,167 @@ describe("HookEngine dispatcher", () => {
     expect(result.status).toBe("skipped");
     expect(result.stdout).toBe("");
     expect(result.error).toBe("hook aborted");
+  });
+
+  test("fails closed before spawning when production admission is unavailable", async () => {
+    const engine = new HookEngine({
+      cwd: process.cwd(),
+      env: process.env,
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sourcePath: "/tmp/agenc-hooks-test/config.toml",
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: true,
+    });
+    engine.load({
+      PreToolUse: [
+        {
+          hooks: [{ type: "command", command: "printf should-not-run" }],
+        },
+      ],
+    });
+
+    await expect(
+      engine.runCommandHook(engine.listHooks()[0]!, {}),
+    ).rejects.toMatchObject({
+      code: "ADMISSION_DENIED",
+      reason: "hook_admission_unavailable",
+    });
+  });
+
+  test("aborts a running hook from the admitted lease signal", async () => {
+    const leaseAbort = new AbortController();
+    const markDispatched = vi.fn();
+    const reconcile = vi.fn();
+    const holdUnknown = vi.fn();
+    const acknowledgeCompletion = vi.fn();
+    const acquire = vi.fn(async () => ({
+      decision: "allow" as const,
+      reservation: {
+        reservationId: "hook-reservation",
+        step: { runId: "run-1", stepId: "hook-step" },
+        reservedCostUsd: 0,
+        reservedTokens: 0,
+        reservedAt: new Date().toISOString(),
+      },
+      request: {},
+      signal: leaseAbort.signal,
+    }));
+    const engine = new HookEngine({
+      cwd: process.cwd(),
+      env: process.env,
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sourcePath: "/tmp/agenc-hooks-test/config.toml",
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: true,
+      executionAdmission: {
+        scope: {
+          runId: "run-1",
+          workspaceId: "workspace",
+          sessionId: "session-1",
+          autonomous: false,
+        },
+        acquire,
+        markDispatched,
+        reconcile,
+        holdUnknown,
+        acknowledgeCompletion,
+        void: vi.fn(),
+        recordFallback: vi.fn(),
+        forSession: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+      } as never,
+    });
+    engine.load({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: 'node -e "setInterval(() => {}, 1000)"',
+              timeout_ms: 10_000,
+            },
+          ],
+        },
+      ],
+    });
+
+    const running = engine.runCommandHook(engine.listHooks()[0]!, {});
+    await vi.waitFor(() => expect(markDispatched).toHaveBeenCalledOnce());
+    leaseAbort.abort(new Error("kernel deadline expired"));
+    const result = await running;
+
+    expect(result.status).toBe("skipped");
+    expect(result.error).toBe("hook aborted");
+    expect(acquire.mock.calls[0]?.[0]).toMatchObject({ maxCostUsd: 0 });
+    expect(holdUnknown).toHaveBeenCalledWith(
+      "hook-reservation",
+      "hook_cancelled_after_dispatch",
+    );
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(acknowledgeCompletion).toHaveBeenCalledWith("hook-reservation");
+  });
+
+  test("releases hook capacity when post-effect reconciliation journaling fails", async () => {
+    const acknowledgeCompletion = vi.fn();
+    const reconcile = vi.fn(() => {
+      throw new Error("forced hook reconciliation journal failure");
+    });
+    const holdUnknown = vi.fn();
+    const engine = new HookEngine({
+      cwd: process.cwd(),
+      env: process.env,
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sourcePath: "/tmp/agenc-hooks-test/config.toml",
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: true,
+      executionAdmission: {
+        scope: {
+          runId: "run-journal-failure",
+          workspaceId: "workspace",
+          sessionId: "session-journal-failure",
+          autonomous: false,
+        },
+        acquire: vi.fn(async () => ({
+          decision: "allow" as const,
+          reservation: {
+            reservationId: "hook-journal-failure-reservation",
+            step: { runId: "run-journal-failure", stepId: "hook-step" },
+            reservedCostUsd: 0,
+            reservedTokens: 0,
+            reservedAt: new Date().toISOString(),
+          },
+          request: {},
+          signal: new AbortController().signal,
+        })),
+        markDispatched: vi.fn(),
+        reconcile,
+        holdUnknown,
+        acknowledgeCompletion,
+        void: vi.fn(),
+        recordFallback: vi.fn(),
+        forSession: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+      } as never,
+    });
+    engine.load({
+      PreToolUse: [
+        {
+          hooks: [{ type: "command", command: "printf completed" }],
+        },
+      ],
+    });
+
+    await expect(
+      engine.runCommandHook(engine.listHooks()[0]!, {}),
+    ).rejects.toThrow("forced hook reconciliation journal failure");
+    expect(holdUnknown).toHaveBeenCalledWith(
+      "hook-journal-failure-reservation",
+      "hook_failed_after_dispatch",
+    );
+    expect(acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(acknowledgeCompletion).toHaveBeenCalledWith(
+      "hook-journal-failure-reservation",
+    );
   });
 
   test("escalates timed-out hooks that ignore SIGTERM", async () => {
@@ -249,7 +412,8 @@ describe("hook output parser", () => {
       "hook output JSON must be an object",
     );
     expect(
-      readHookSpecificOutput(JSON.stringify({ hookSpecificOutput: [] })).invalid,
+      readHookSpecificOutput(JSON.stringify({ hookSpecificOutput: [] }))
+        .invalid,
     ).toBe("hookSpecificOutput must be an object");
     expect(
       readHookSpecificOutput(

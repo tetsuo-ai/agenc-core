@@ -522,7 +522,7 @@ describe("TUI session UserPromptSubmit hooks", () => {
     );
   });
 
-  it("runs one-shot prompt hooks before file expansion and appends context", async () => {
+  it("fails closed before local one-shot hooks can bypass daemon admission", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-one-shot-hook-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-one-shot-hook-cwd-"));
     const prevEnv = { ...process.env };
@@ -564,24 +564,14 @@ process.stdin.on("end", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("review @secret.txt");
-      expect(code).toBe(0);
+      expect(code).toBe(1);
       expect(spies.startPromptAgent).not.toHaveBeenCalled();
-      expect(spies.requests[0]).toEqual(
-        expect.objectContaining({ method: "agent.create" }),
+      expect(spies.requests).toEqual([]);
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain(
+        "could not cross the required execution admission boundary",
       );
-      const daemonPrompt = String(
-        (spies.requests[0]?.params as { readonly objective?: unknown })
-          ?.objective,
-      );
-      expect(daemonPrompt).toContain("<attached_files>");
-      expect(daemonPrompt).toContain("one-shot file body");
-      expect(daemonPrompt).toContain("# Hook Additional Context");
-      expect(daemonPrompt).toContain("untrusted command output");
-      expect(daemonPrompt).toContain(
-        '<hook_additional_context trust="untrusted" hook="UserPromptSubmit" event="UserPromptSubmit">',
-      );
-      expect(daemonPrompt).toContain("hook prompt=review @secret.txt");
-      expect(daemonPrompt).not.toContain("hook prompt=expanded");
     } finally {
       spies.restore();
       stdoutSpy.mockRestore();
@@ -592,7 +582,7 @@ process.stdin.on("end", () => {
     }
   });
 
-  it("blocks one-shot prompt hooks before runSingleTurn", async () => {
+  it("does not execute a blocking one-shot hook without daemon admission", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-one-shot-block-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-one-shot-block-cwd-"));
     const prevEnv = { ...process.env };
@@ -624,7 +614,10 @@ process.exit(2);
       expect(spies.requests).toEqual([]);
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("blocked one-shot prompt");
+      ).toContain("could not cross the required execution admission boundary");
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).not.toContain("blocked one-shot prompt");
     } finally {
       spies.restore();
       stderrSpy.mockRestore();

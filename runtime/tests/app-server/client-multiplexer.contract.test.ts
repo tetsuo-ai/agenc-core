@@ -178,6 +178,49 @@ describe("AgenC daemon client multiplexer", () => {
     expect(phone).toEqual([event]);
   });
 
+  it("rejects aggregate capability and status replay before registering a half-client", async () => {
+    const sessionManager = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      createAttachmentId: sequence(["attachment_1"]),
+      now: sequence([
+        "2026-05-01T10:00:00.000Z",
+        "2026-05-01T10:00:01.000Z",
+      ]),
+    });
+    const multiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
+      maxPendingDeliveryCountPerClient: 1,
+    });
+    await createSession(sessionManager);
+    const ledger = ledgerActionNotification("session_1", "intent-aggregate");
+    const status = agentStatusNotification("session_1", "status-aggregate");
+    await multiplexer.broadcastSessionEvent("session_1", ledger);
+    await multiplexer.broadcastSessionEvent("session_1", status);
+
+    await expect(
+      multiplexer.registerClient({
+        clientId: "aggregate-phone",
+        capabilities: {
+          "portal.ledger.solana.sign.v1": true,
+          [AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY]: true,
+        },
+        send: () => {},
+      }),
+    ).rejects.toMatchObject({ code: "EVENT_DELIVERY_LIMIT_EXCEEDED" });
+
+    // The failed aggregate reservation did not register the id or lease/drain
+    // the Ledger buffer. Retrying the same id for one bounded capability works.
+    const replayed: JsonObject[] = [];
+    await expect(
+      multiplexer.registerClient({
+        clientId: "aggregate-phone",
+        capabilities: { "portal.ledger.solana.sign.v1": true },
+        send: (message) => replayed.push(message),
+      }),
+    ).resolves.toEqual({ clientId: "aggregate-phone" });
+    expect(replayed).toEqual([ledger]);
+  });
+
   it("leases a buffered Ledger replay to only one concurrently initializing phone", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const firstPhone: JsonObject[] = [];

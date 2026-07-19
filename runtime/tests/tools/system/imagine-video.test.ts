@@ -93,10 +93,12 @@ describe("ImagineVideo execute", () => {
       pollTimeoutMs: 5_000,
     });
 
+    const admittedAbort = new AbortController();
     const result = await tool.execute({
       prompt: "a rocket launching at dawn",
       duration: 6,
       aspect_ratio: "16:9",
+      __abortSignal: admittedAbort.signal,
     });
     expect(result.isError).toBeUndefined();
     const parsed = JSON.parse(result.content) as {
@@ -122,6 +124,57 @@ describe("ImagineVideo execute", () => {
     ) as Record<string, unknown>;
     expect(body.prompt).toBe("a rocket launching at dawn");
     expect(body.duration).toBe(6);
+    expect(
+      (
+        fetchImpl as unknown as { mock: { calls: unknown[][] } }
+      ).mock.calls.every(
+        (call) =>
+          (call[1] as { signal?: AbortSignal } | undefined)?.signal ===
+          admittedAbort.signal,
+      ),
+    ).toBe(true);
+  });
+
+  it("stops polling when the admitted tool signal is cancelled", async () => {
+    const provider = createProvider("grok", {
+      apiKey: "oauth-subscription-bearer",
+      model: "grok-4.5",
+      baseURL: "https://api.x.ai/v1",
+    });
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (String(url).endsWith("/videos/generations")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ request_id: "req-cancel" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "pending" }),
+      };
+    }) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+      pollIntervalMs: 10_000,
+      pollTimeoutMs: 30_000,
+    });
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled video generation");
+
+    const running = tool.execute({
+      prompt: "a cancelled video",
+      __abortSignal: admittedAbort.signal,
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    admittedAbort.abort(reason);
+
+    await expect(running).rejects.toBe(reason);
   });
 
   it("refuses non-grok sessions", async () => {

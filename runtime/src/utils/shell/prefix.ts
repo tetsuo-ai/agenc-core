@@ -1,42 +1,13 @@
 /**
- * Shared command prefix extraction using Haiku LLM
+ * Shared conservative command-prefix extraction
  *
- * This module provides a factory for creating command prefix extractors
- * that can be used by different shell tools. The core logic
- * (Haiku query, response validation) is shared, while tool-specific
- * aspects (examples, pre-checks) are configurable.
+ * This module provides a factory for deterministic prefix pre-checks used by
+ * different shell tools. Commands without a proven local prefix fall through
+ * to normal permission approval.
  */
 
-import chalk from 'chalk'
 import type { QuerySource } from '../../constants/querySource.js'
-import { queryHaiku } from '../../services/api/anthropic.js'
-import { startsWithApiErrorPrefix } from '../../services/api/errors.js'
 import { memoizeWithLRU } from '../memoize.js'
-import { jsonStringify } from '../slowOperations.js'
-import { asSystemPrompt } from '../systemPromptType.js'
-
-/**
- * Shell executables that must never be accepted as bare prefixes.
- * Allowing e.g. "bash:*" would let any command through, defeating
- * the permission system. Includes Unix shells and Windows equivalents.
- */
-const DANGEROUS_SHELL_PREFIXES = new Set([
-  'sh',
-  'bash',
-  'zsh',
-  'fish',
-  'csh',
-  'tcsh',
-  'ksh',
-  'dash',
-  'cmd',
-  'cmd.exe',
-  'powershell',
-  'powershell.exe',
-  'pwsh',
-  'pwsh.exe',
-  'bash.exe',
-])
 
 /**
  * Result of command prefix extraction
@@ -77,7 +48,7 @@ export type PrefixExtractorConfig = {
  *
  * Uses two-layer memoization: the outer memoized function creates the promise
  * and attaches a .catch handler that evicts the cache entry on rejection.
- * This prevents aborted or failed Haiku calls from poisoning future lookups.
+ * This prevents aborted calls from poisoning future lookups.
  *
  * Bounded to 200 entries via LRU to prevent unbounded growth in heavy sessions.
  *
@@ -172,10 +143,6 @@ async function getCommandPrefixImpl(
   querySource: QuerySource,
   preCheck?: (command: string) => CommandPrefixResult | null,
 ): Promise<CommandPrefixResult | null> {
-  if (process.env.NODE_ENV === 'test') {
-    return null
-  }
-
   // Run pre-check if provided (e.g., isHelpCommand for Bash)
   if (preCheck) {
     const preCheckResult = preCheck(command)
@@ -184,103 +151,21 @@ async function getCommandPrefixImpl(
     }
   }
 
-  let preflightCheckTimeoutId: NodeJS.Timeout | undefined
-  let result: CommandPrefixResult | null = null
+  void isNonInteractiveSession
+  void toolName
+  void policySpec
+  void querySource
 
-  try {
-    // Log a warning if the pre-flight check takes too long
-    preflightCheckTimeoutId = setTimeout(
-      (tn, nonInteractive) => {
-        const message = `[${tn}Tool] Pre-flight check is taking longer than expected. Run with ANTHROPIC_LOG=debug to check for failed or slow API requests.`
-        if (nonInteractive) {
-          process.stderr.write(jsonStringify({ level: 'warn', message }) + '\n')
-        } else {
-          // biome-ignore lint/suspicious/noConsole: intentional warning
-          console.warn(chalk.yellow(`⚠️  ${message}`))
-        }
-      },
-      10000, // 10 seconds
-      toolName,
-      isNonInteractiveSession,
-    )
-
-    const useSystemPromptPolicySpec = false
-
-    const response = await queryHaiku({
-      systemPrompt: asSystemPrompt(
-        useSystemPromptPolicySpec
-          ? [
-              `Your task is to process ${toolName} commands that an AI coding agent wants to run.\n\n${policySpec}`,
-            ]
-          : [
-              `Your task is to process ${toolName} commands that an AI coding agent wants to run.\n\nThis policy spec defines how to determine the prefix of a ${toolName} command:`,
-            ],
-      ),
-      userPrompt: useSystemPromptPolicySpec
-        ? `Command: ${command}`
-        : `${policySpec}\n\nCommand: ${command}`,
-      signal: abortSignal,
-      options: {
-        enablePromptCaching: useSystemPromptPolicySpec,
-        querySource,
-        agents: [],
-        isNonInteractiveSession,
-        hasAppendSystemPrompt: false,
-        mcpTools: [],
-      },
-    })
-
-    // Clear the timeout since the query completed
-    clearTimeout(preflightCheckTimeoutId)
-
-    const prefix =
-      typeof response.message.content === 'string'
-        ? response.message.content
-        : Array.isArray(response.message.content)
-          ? (response.message.content.find((_: any) => _.type === 'text')?.text ??
-            'none')
-          : 'none'
-
-    if (startsWithApiErrorPrefix(prefix)) {
-      result = null
-    } else if (prefix === 'command_injection_detected') {
-      // Haiku detected something suspicious - treat as no prefix available
-      result = {
-        commandPrefix: null,
-      }
-    } else if (
-      prefix === 'git' ||
-      DANGEROUS_SHELL_PREFIXES.has(prefix.toLowerCase())
-    ) {
-      // Never accept bare `git` or shell executables as a prefix
-      result = {
-        commandPrefix: null,
-      }
-    } else if (prefix === 'none') {
-      // No prefix detected
-      result = {
-        commandPrefix: null,
-      }
-    } else {
-      // Validate that the prefix is actually a prefix of the command
-
-      if (!command.startsWith(prefix)) {
-        // Prefix isn't actually a prefix of the command
-        result = {
-          commandPrefix: null,
-        }
-      } else {
-        result = {
-          commandPrefix: prefix,
-        }
-      }
-    }
-
-    return result
-  } catch (error) {
-    clearTimeout(preflightCheckTimeoutId)
-    throw error
+  if (abortSignal.aborted) {
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : new Error('Command-prefix extraction aborted')
   }
+
+  // The former model shortcut was outside execution admission. A missing
+  // prefix only removes an allowlist suggestion, so the deterministic and
+  // conservative fallback is to require the normal permission flow.
+  return { commandPrefix: null }
 }
 
 async function getCommandSubcommandPrefixImpl(

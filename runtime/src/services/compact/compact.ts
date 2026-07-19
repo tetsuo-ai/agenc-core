@@ -11,6 +11,13 @@
 
 import { randomUUID } from "node:crypto";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
+import { runAdmittedModelCall } from "../../budget/admitted-model-call.js";
+import { AdmissionDeniedError } from "../../budget/admission-client.js";
+import {
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../../llm/provider.js";
+import type { LLMChatOptions, LLMMessage } from "../../llm/types.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
 import {
   getCompactPrompt,
@@ -468,27 +475,51 @@ async function summarizeTranscript(
   const fallback = fallbackSummary(transcript);
   const provider = context.provider;
   if (!provider) return fallback;
+  const session = context.admissionSession;
+  if (session === undefined) {
+    throw new AdmissionDeniedError("compaction_session_unavailable");
+  }
+  const messages: LLMMessage[] = [
+    {
+      role: "user",
+      content: `${compactPrompt}\n\n<transcript>\n${transcript}\n</transcript>`,
+    },
+  ];
+  const callSignal = signal ?? context.abortController?.signal;
+  const options: LLMChatOptions = {
+    ...(context.options?.mainLoopModel !== undefined
+      ? { model: context.options.mainLoopModel }
+      : {}),
+    systemPrompt: "You produce compact continuation summaries.",
+    maxOutputTokens: Math.min(
+      context.options?.maxOutputTokens ?? SUMMARY_MAX_OUTPUT_TOKENS,
+      SUMMARY_MAX_OUTPUT_TOKENS,
+    ),
+    ...(callSignal !== undefined ? { signal: callSignal } : {}),
+  };
   try {
-    const response = await provider.chat(
-      [{
-        role: "user",
-        content: `${compactPrompt}\n\n<transcript>\n${transcript}\n</transcript>`,
-      }],
-      {
-        model: context.options?.mainLoopModel,
-        systemPrompt: "You produce compact continuation summaries.",
-        maxOutputTokens: Math.min(
-          context.options?.maxOutputTokens ?? SUMMARY_MAX_OUTPUT_TOKENS,
-          SUMMARY_MAX_OUTPUT_TOKENS,
-        ),
-        signal: signal ?? context.abortController?.signal,
-      },
-    );
+    const response = await runAdmittedModelCall({
+      session,
+      provider,
+      messages,
+      options,
+      stepId: `compact:${session.nextInternalSubId()}`,
+      sessionId: session.conversationId,
+      model:
+        options.model ??
+        readProviderFactoryOptions(provider).model ??
+        session.modelInfo.slug ??
+        "unknown",
+      providerName: readProviderIdentity(provider) ?? provider.name,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+    });
     throwIfAborted(signal);
     const text = response.content.trim();
     return text.length > 0 ? text : fallback;
   } catch (error) {
     throwIfAborted(signal);
+    if (error instanceof AdmissionDeniedError) throw error;
     if (error instanceof Error && error.name === "AbortError") throw error;
     return fallback;
   }

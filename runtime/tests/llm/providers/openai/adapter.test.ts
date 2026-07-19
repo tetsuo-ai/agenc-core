@@ -51,6 +51,76 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each([
+    { api: "responses", useResponsesApi: true },
+    { api: "chat completions", useResponsesApi: false },
+  ])(
+    "single-wire $api chat performs exactly one transport attempt",
+    async ({ useResponsesApi }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "temporarily down" } }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        useResponsesApi,
+        fetchImpl,
+      });
+
+      await expect(
+        provider.chat(
+          [{ role: "user", content: "hello" }],
+          { singleWireAttempt: true },
+        ),
+      ).rejects.toBeDefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
+    {
+      api: "responses",
+      useResponsesApi: true,
+      frame:
+        'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"type":"overloaded_error","message":"busy"}}}\n\n',
+    },
+    {
+      api: "chat completions",
+      useResponsesApi: false,
+      frame: 'data: {"error":{"type":"overloaded_error","message":"busy"}}\n\n',
+    },
+  ])(
+    "single-wire $api stream does not run the configured-fallback retry loop",
+    async ({ useResponsesApi, frame }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([frame]),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        useResponsesApi,
+        fetchImpl,
+        providerFallback: {
+          provider: "openai",
+          model: "gpt-5",
+          targets: [{ provider: "grok", model: "grok-4-fast" }],
+        },
+      });
+
+      await expect(
+        provider.chatStream(
+          [{ role: "user", content: "hello" }],
+          () => {},
+          { singleWireAttempt: true },
+        ),
+      ).rejects.toBeDefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("propagates fallback trigger from chat requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "overloaded" } }), {
@@ -759,6 +829,39 @@ describe("OpenAIProvider", () => {
     expect(secondHeaders.get("authorization")).toBe("Bearer oauth-token-2");
   });
 
+  test("single-wire chat does not refresh OAuth credentials after a 401", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "unauthorized" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const refreshAccessToken = vi.fn().mockResolvedValue({
+      kind: "refreshed",
+      accessToken: "oauth-token-2",
+      refreshToken: "refresh-token-2",
+    });
+    const provider = new OpenAIProvider({
+      model: "gpt-5",
+      authMode: "oauth",
+      oauth: {
+        accessToken: "oauth-token-1",
+        refreshToken: "refresh-token-1",
+        refreshAccessToken,
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+  });
+
   test("hard-fails OAuth exhaustion and keeps the session in re-auth required state", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -1113,6 +1216,8 @@ describe("OpenAIProvider", () => {
       promptTokens: 5,
       completionTokens: 2,
       totalTokens: 7,
+      availability: "reported",
+      provenance: "provider",
       cachedInputTokens: 2,
       reasoningOutputTokens: 1,
       webSearchRequests: 1,
@@ -1327,6 +1432,8 @@ describe("OpenAIProvider", () => {
       promptTokens: 7,
       completionTokens: 4,
       totalTokens: 11,
+      availability: "reported",
+      provenance: "provider",
       cachedInputTokens: 3,
       reasoningOutputTokens: 2,
     });

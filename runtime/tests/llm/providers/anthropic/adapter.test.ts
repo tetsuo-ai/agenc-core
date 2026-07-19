@@ -34,6 +34,69 @@ function useDeterministicFallbackTimers(): () => void {
 }
 
 describe("AnthropicProvider", () => {
+  test("advertises an authoritative bounded budget contract", async () => {
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      maxTokens: 8_192,
+    });
+
+    await expect(provider.getExecutionProfile()).resolves.toMatchObject({
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
+      maxOutputTokens: 8_192,
+    });
+  });
+
+  test("single-wire chat performs exactly one transport attempt", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "temporarily down" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("single-wire stream does not run the configured-fallback retry loop", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+      ]),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-sonnet-4.5",
+      fetchImpl,
+      providerFallback: {
+        provider: "anthropic",
+        model: "claude-sonnet-4.5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }],
+      },
+    });
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("propagates fallback trigger from chat requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "overloaded" } }), {
@@ -675,6 +738,8 @@ describe("AnthropicProvider", () => {
       promptTokens: 11,
       completionTokens: 3,
       totalTokens: 14,
+      availability: "reported",
+      provenance: "provider",
       cachedInputTokens: 4,
       cacheCreationInputTokens: 6,
       webSearchRequests: 1,

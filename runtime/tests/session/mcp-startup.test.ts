@@ -187,6 +187,10 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       provider: {
         chat: providerChat,
       },
+      services: {
+        provider: { chat: providerChat },
+        admissionRequired: false,
+      },
       emit: vi.fn(),
       nextInternalSubId: vi.fn(() => "sub-0"),
       sessionConfiguration: { approvalPolicy: { value: "never" } },
@@ -303,6 +307,10 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
       provider: {
         chat: providerChat,
       },
+      services: {
+        provider: { chat: providerChat },
+        admissionRequired: false,
+      },
       emit: vi.fn(),
       nextInternalSubId: vi.fn(() => "sub-0"),
       sessionConfiguration: { approvalPolicy: { value: "on_request" } },
@@ -356,6 +364,10 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
     const session = {
       provider: {
         chat: providerChat,
+      },
+      services: {
+        provider: { chat: providerChat },
+        admissionRequired: false,
       },
       emit: vi.fn(),
       nextInternalSubId: vi.fn(() => "sub-0"),

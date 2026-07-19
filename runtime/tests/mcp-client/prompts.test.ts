@@ -1,4 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  AdmissionDeniedError,
+  type AdmissionAcquireInput,
+  type ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
+import {
+  clearCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../session/current-session.js";
+import type { Session } from "../session/session.js";
+import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import { createPromptBridge } from "./prompts.js";
 
 const UNTRUSTED_MCP_PROMPT_BOUNDARY =
@@ -14,7 +26,86 @@ function makeClient(overrides: {
   };
 }
 
+function promptLease(
+  input: AdmissionAcquireInput,
+  signal = new AbortController().signal,
+): AdmissionLease {
+  return {
+    decision: "allow",
+    reservation: {
+      reservationId: "prompt-reservation",
+      step: { runId: "run-prompt", stepId: input.stepId },
+      reservedCostUsd: input.maxCostUsd ?? 0,
+      reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+      reservedAt: "2026-07-18T00:00:00.000Z",
+    },
+    request: {
+      step: { runId: "run-prompt", stepId: input.stepId },
+      kind: input.kind,
+      estimate: {
+        maxInputTokens: input.maxInputTokens,
+        maxOutputTokens: input.maxOutputTokens,
+        maxCostUsd: input.maxCostUsd,
+      },
+      workspaceId: "workspace-prompt",
+      sessionId: "session-prompt",
+      autonomous: false,
+    },
+    signal,
+  };
+}
+
+function installPromptAdmission(
+  options: {
+    acquire?: (
+      input: AdmissionAcquireInput,
+      signal?: AbortSignal,
+    ) => Promise<AdmissionLease>;
+  } = {},
+) {
+  clearCurrentRuntimeSession();
+  const acquire = vi.fn(
+    options.acquire ??
+      (async (input: AdmissionAcquireInput) => promptLease(input)),
+  );
+  const admission = {
+    scope: {
+      runId: "run-prompt",
+      workspaceId: "workspace-prompt",
+      sessionId: "session-prompt",
+      autonomous: false,
+    },
+    acquire,
+    markDispatched: vi.fn(),
+    reconcile: vi.fn(() => ({
+      applied: true as const,
+      outcome: "reconciled" as const,
+    })),
+    holdUnknown: vi.fn(),
+    cancelRun: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  } as unknown as ExecutionAdmissionClient;
+  setCurrentRuntimeSession({
+    ...createTestEffectJournal(),
+    conversationId: "session-prompt",
+    services: { executionAdmission: admission, admissionRequired: true },
+  } as unknown as Session);
+  return { admission, acquire };
+}
+
 describe("createPromptBridge", () => {
+  beforeEach(() => {
+    installPromptAdmission();
+  });
+
+  afterEach(() => {
+    clearCurrentRuntimeSession();
+  });
+
   it("lists + namespaces prompts", async () => {
     const client = makeClient({
       listPrompts: vi.fn().mockResolvedValue({
@@ -125,6 +216,124 @@ describe("createPromptBridge", () => {
       role: "user",
       text: UNTRUSTED_MCP_PROMPT_BOUNDARY,
     });
+  });
+
+  it("does not issue prompts/get until the admission decision allows it", async () => {
+    const allow = Promise.withResolvers<void>();
+    const state = installPromptAdmission({
+      acquire: async (input) => {
+        await allow.promise;
+        return promptLease(input);
+      },
+    });
+    const getPrompt = vi.fn().mockResolvedValue({ messages: [] });
+    const bridge = await createPromptBridge(makeClient({ getPrompt }), "srv");
+
+    const rendering = bridge.renderPrompt("gated");
+    await vi.waitFor(() => expect(state.acquire).toHaveBeenCalledOnce());
+    expect(getPrompt).not.toHaveBeenCalled();
+
+    allow.resolve();
+    await expect(rendering).resolves.toMatchObject({ promptName: "gated" });
+    expect(state.admission.markDispatched).toHaveBeenCalledWith(
+      "prompt-reservation",
+      expect.objectContaining({
+        boundary: "tool_effect",
+        details: expect.objectContaining({
+          toolName: "mcp.prompt.get",
+          recoveryCategory: "idempotent",
+        }),
+      }),
+    );
+    expect(state.admission.reconcile).toHaveBeenCalledWith(
+      "prompt-reservation",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "prompt-reservation",
+    );
+  });
+
+  it("fails closed before prompts/get when no session identity is available", async () => {
+    clearCurrentRuntimeSession();
+    const getPrompt = vi.fn();
+    const bridge = await createPromptBridge(makeClient({ getPrompt }), "srv");
+
+    await expect(bridge.renderPrompt("missing-identity")).rejects.toMatchObject(
+      {
+        code: "ADMISSION_DENIED",
+        reason: "tool_admission_session_unavailable",
+      },
+    );
+    expect(getPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps capacity occupied until an abort-ignoring cancelled RPC settles", async () => {
+    const leaseController = new AbortController();
+    const state = installPromptAdmission({
+      acquire: async (input) => promptLease(input, leaseController.signal),
+    });
+    const invoked = Promise.withResolvers<AbortSignal>();
+    const physical = Promise.withResolvers<unknown>();
+    const getPrompt = vi.fn(
+      async (_request: unknown, options: { signal: AbortSignal }) => {
+        invoked.resolve(options.signal);
+        return physical.promise;
+      },
+    );
+    const bridge = await createPromptBridge(makeClient({ getPrompt }), "srv");
+    const cancellation = new AdmissionDeniedError("run_cancelled", "cancelled");
+
+    const rendering = bridge.renderPrompt("cancelled");
+    const rejection = expect(rendering).rejects.toBe(cancellation);
+    const rawSignal = await invoked.promise;
+    leaseController.abort(cancellation);
+
+    expect(rawSignal.aborted).toBe(true);
+    expect(rawSignal.reason).toBe(cancellation);
+    expect(state.admission.acknowledgeCompletion).not.toHaveBeenCalled();
+
+    physical.resolve({ messages: [] });
+    await rejection;
+    expect(state.admission.holdUnknown).toHaveBeenCalledWith(
+      "prompt-reservation",
+      "tool_cancelled_after_dispatch",
+    );
+    expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "prompt-reservation",
+    );
+  });
+
+  it("aborts on timeout but awaits an abort-ignoring RPC before releasing capacity", async () => {
+    const state = installPromptAdmission();
+    const invoked = Promise.withResolvers<AbortSignal>();
+    const physical = Promise.withResolvers<unknown>();
+    const getPrompt = vi.fn(
+      async (_request: unknown, options: { signal: AbortSignal }) => {
+        invoked.resolve(options.signal);
+        return physical.promise;
+      },
+    );
+    const bridge = await createPromptBridge(
+      makeClient({ getPrompt }),
+      "srv",
+      undefined,
+      { rpcTimeoutMs: 10 },
+    );
+
+    const rendering = bridge.renderPrompt("timeout");
+    const rejection = expect(rendering).rejects.toThrow(
+      'MCP server "srv" getPrompt("timeout") timed out after 10ms',
+    );
+    const rawSignal = await invoked.promise;
+    await vi.waitFor(() => expect(rawSignal.aborted).toBe(true));
+    expect(state.admission.acknowledgeCompletion).not.toHaveBeenCalled();
+
+    physical.resolve({ messages: [] });
+    await rejection;
+    expect(state.admission.acknowledgeCompletion).toHaveBeenCalledWith(
+      "prompt-reservation",
+    );
   });
 
   it("neutralizes forged system reminders and hidden text in rendered prompt framing", async () => {

@@ -54,6 +54,7 @@ const harness = vi.hoisted(() => {
 
   const state: AnyRecord = {
     createCalls: [],
+    modelsListCalls: [],
     getClientCalls: [],
     streamEvents: [],
     responseHeaders: {},
@@ -85,6 +86,13 @@ const harness = vi.hoisted(() => {
   })
 
   state.client = {
+    models: {
+      list: vi.fn((params: AnyRecord) => {
+        state.modelsListCalls.push(params)
+        if (state.createError) throw state.createError
+        return Promise.resolve({ data: [] })
+      }),
+    },
     beta: {
       messages: {
         create: vi.fn((params: AnyRecord, options?: AnyRecord) => {
@@ -409,6 +417,7 @@ vi.mock('../../../src/utils/tokens.js', () => ({
 
 function resetHarness(): void {
   harness.createCalls.length = 0
+  harness.modelsListCalls.length = 0
   harness.getClientCalls.length = 0
   harness.streamEvents = []
   harness.responseHeaders = {}
@@ -417,6 +426,7 @@ function resetHarness(): void {
   harness.nonStreamingResponse = undefined
   harness.getproviderClient.mockClear()
   harness.client.beta.messages.create.mockClear()
+  harness.client.models.list.mockClear()
   harness.logAPIError.mockClear()
   harness.logAPISuccessAndDuration.mockClear()
   harness.logForDebugging.mockClear()
@@ -753,22 +763,17 @@ describe('provider API requests', () => {
     expect(harness.getproviderClient).not.toHaveBeenCalled()
   })
 
-  test('verifyApiKey sends a minimal test message and returns false for invalid credentials', async () => {
+  test('verifyApiKey uses a non-generative models probe and returns false for invalid credentials', async () => {
     await expect(verifyApiKey('test-key', false)).resolves.toBe(true)
 
     expect(harness.getClientCalls[0]).toMatchObject({
       apiKey: 'test-key',
-      maxRetries: 3,
+      maxRetries: 0,
       model: 'small-fast-model',
       source: 'verify_api_key',
     })
-    expect(harness.createCalls[0].params).toMatchObject({
-      model: 'small-fast-model',
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'test' }],
-      temperature: 1,
-      betas: ['model-beta'],
-    })
+    expect(harness.modelsListCalls).toEqual([{ limit: 1 }])
+    expect(harness.createCalls).toHaveLength(0)
 
     resetHarness()
     harness.createError = new Error(

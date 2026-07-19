@@ -1,16 +1,16 @@
 /**
- * `agenc budget` — inspect and operate cost-bounded autonomy (TODO task 15).
+ * `agenc budget` — inspect cost-bounded admission policy.
  *
- *   agenc budget status [--json]     per-agent spend vs caps + policy
- *   agenc budget reset <agent>       clear an agent's spend + pause (operator)
+ *   agenc budget status [--json]     configured admission policy
+ *   agenc budget reset <agent>       rejected legacy mutation
  *
- * Read-only except `reset`. Never signs, spends, or mutates agent/daemon state
- * beyond the budget ledger.
+ * Durable usage and holds belong to the daemon execution-admission journal.
+ * This command never mutates that accounting; inspect/cancel a run with
+ * `agenc run status|replay|evidence|cancel`.
  */
 
 import { resolveAgencHome } from "../config/env.js";
 import { loadConfig } from "../config/loader.js";
-import { BudgetLedger } from "../budget/ledger.js";
 import { resolveBudgetPolicy } from "../budget/config.js";
 import type { BudgetPolicy } from "../budget/types.js";
 
@@ -22,15 +22,14 @@ export type AgenCBudgetCliCommand =
 
 export function formatAgenCBudgetCliHelpText(): string {
   return [
-    "agenc budget — inspect and operate cost-bounded autonomy",
+    "agenc budget — inspect cost-bounded execution admission",
     "",
     "Usage:",
-    "  agenc budget status [--json]     Policy + per-agent spend vs caps",
-    "  agenc budget reset <agent>       Clear an agent's spend and un-pause it",
+    "  agenc budget status [--json]     Show configured admission policy",
+    "  agenc budget reset <agent>       Rejected (legacy ledger mutation removed)",
     "",
-    "Budget is enforced daemon-side around autonomous turns and is disabled by",
-    "default. Configure via [budget] in config.toml or AGENC_BUDGET* env vars.",
-    "Ledger: <AGENC_HOME>/budget/ledger.json",
+    "Budget is enforced at daemon-owned model/tool boundaries and is disabled",
+    "by default. Inspect durable usage with: agenc run status <run-id>.",
     "",
     "Options:",
     "  -h, --help  Show this help text",
@@ -69,6 +68,7 @@ export interface BudgetCliDeps {
 }
 
 interface BudgetStatusReport {
+  readonly authority: "execution_admission_kernel";
   readonly enabled: boolean;
   readonly policy: {
     readonly dailyUsd?: number;
@@ -78,12 +78,8 @@ interface BudgetStatusReport {
     readonly softThreshold: number;
     readonly enforceInteractive: boolean;
   };
-  readonly agents: ReadonlyArray<{
-    readonly agentId: string;
-    readonly paused: boolean;
-    readonly day: { usd: number; tokens: number; key: string };
-    readonly month: { usd: number; tokens: number; key: string };
-  }>;
+  readonly inspect: "agenc run status <run-id>";
+  readonly cancel: "agenc run cancel <run-id> --reason <reason>";
 }
 
 function policyView(policy: BudgetPolicy): BudgetStatusReport["policy"] {
@@ -121,29 +117,22 @@ export async function runAgenCBudgetCli(
   }
 
   const env = deps.env ?? process.env;
+  if (command.kind === "reset") {
+    stderr(
+      "agenc: budget reset is unavailable: durable admission accounting is immutable; " +
+        "use 'agenc run status <run-id>' to inspect or 'agenc run cancel <run-id>' to stop work",
+    );
+    return 1;
+  }
   const agencHome = resolveAgencHome(env);
   const loaded = await loadConfig({ home: agencHome, onWarn: () => {} });
   const { policy } = resolveBudgetPolicy(loaded.config.budget, env);
-  const ledger = new BudgetLedger({ agencHome });
-
-  if (command.kind === "reset") {
-    ledger.reset(command.agentId);
-    stdout(`Budget reset for agent ${command.agentId} (spend cleared, un-paused).`);
-    return 0;
-  }
-
   const report: BudgetStatusReport = {
+    authority: "execution_admission_kernel",
     enabled: policy.enabled,
     policy: policyView(policy),
-    agents: ledger.listAgents().map((agentId) => {
-      const s = ledger.snapshot(agentId);
-      return {
-        agentId,
-        paused: s.paused,
-        day: { usd: s.day.usd, tokens: s.day.tokens, key: s.day.key },
-        month: { usd: s.month.usd, tokens: s.month.tokens, key: s.month.key },
-      };
-    }),
+    inspect: "agenc run status <run-id>",
+    cancel: "agenc run cancel <run-id> --reason <reason>",
   };
 
   if (command.json) {
@@ -153,6 +142,7 @@ export async function runAgenCBudgetCli(
 
   stdout("AgenC budget");
   stdout("");
+  stdout("  Authority:   daemon execution-admission kernel");
   stdout(`  Enforcement: ${report.enabled ? "enabled" : "disabled (no caps active)"}`);
   const p = report.policy;
   const caps: string[] = [];
@@ -166,16 +156,8 @@ export async function runAgenCBudgetCli(
       ` (soft warn at ${Math.round(p.softThreshold * 100)}%)`,
   );
   stdout("");
-  if (report.agents.length === 0) {
-    stdout("  No per-agent spend recorded yet.");
-  } else {
-    stdout("  Agents:");
-    for (const a of report.agents) {
-      stdout(
-        `    ${a.agentId}${a.paused ? " [PAUSED]" : ""}: ` +
-          `$${a.day.usd.toFixed(4)} today, $${a.month.usd.toFixed(4)} this month`,
-      );
-    }
-  }
+  stdout("  Usage:       agenc run status <run-id>");
+  stdout("  Evidence:    agenc run evidence <run-id>");
+  stdout("  Cancellation: agenc run cancel <run-id> --reason <reason>");
   return 0;
 }

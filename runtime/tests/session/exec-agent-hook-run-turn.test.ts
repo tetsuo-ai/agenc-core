@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod/v4";
 
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 import {
   createAgentRoleWorkspace,
   type AgentRoleWorkspace,
@@ -21,6 +26,7 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import { Session, type SessionServices } from "../session/session.js";
+import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
 import {
@@ -49,8 +55,12 @@ import { addFunctionHook } from "../utils/hooks/sessionHooks.js";
 import { runWithCwdOverride } from "../utils/cwd.js";
 
 const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
+const testCleanup: Array<() => Promise<void> | void> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  while (testCleanup.length > 0) {
+    await testCleanup.pop()?.();
+  }
   clearCurrentRuntimeSession();
   resetCommandQueue();
 });
@@ -91,6 +101,170 @@ describe("execAgentHook run-turn integration", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(setResponseLength).toHaveBeenCalled();
     expect(setStreamMode).toHaveBeenCalledWith("responding");
+  });
+
+  test("admits the hook child under a distinct child execution identity", async () => {
+    const provider = providerWithToolCall({
+      id: "tool-1",
+      name: "StructuredOutput",
+      arguments: JSON.stringify({ ok: true }),
+    });
+    const parent = createParentSession(provider);
+    await mountTestParentRollout(parent);
+    Object.assign(parent.modelInfo, { maxOutputTokens: 128 });
+
+    let childReservationSequence = 0;
+    let admittedChildScope: ExecutionAdmissionClient["scope"] = {
+      runId: "hook-child-run",
+      workspaceId: "workspace",
+      sessionId: "hook-child-session",
+      autonomous: false,
+    };
+    const childAcquire = vi.fn(
+      async (input: AdmissionAcquireInput, signal?: AbortSignal) =>
+        allowAdmissionLease(
+          input,
+          `child-reservation-${++childReservationSequence}`,
+          admittedChildScope.runId,
+          signal ?? new AbortController().signal,
+        ),
+    );
+    let childAdmission: ExecutionAdmissionClient;
+    childAdmission = {
+      get scope() {
+        return admittedChildScope;
+      },
+      acquire: childAcquire,
+      markDispatched: vi.fn(),
+      reconcile: vi.fn(() => ({
+        applied: true as const,
+        outcome: "reconciled" as const,
+      })),
+      holdUnknown: vi.fn(),
+      void: vi.fn(),
+      acknowledgeCompletion: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession: vi.fn(() => childAdmission),
+      subscribe: vi.fn(() => () => {}),
+    };
+
+    const spawnAcquire = vi.fn(
+      async (input: AdmissionAcquireInput, _signal?: AbortSignal) => {
+        if (input.kind !== "spawn") {
+          throw new Error(`parent admission received ${input.kind}`);
+        }
+        return allowAdmissionLease(
+          input,
+          "hook-spawn-reservation",
+          "parent-run",
+          new AbortController().signal,
+        );
+      },
+    );
+    const spawnMarkDispatched = vi.fn();
+    const spawnReconcile = vi.fn(() => ({
+      applied: true as const,
+      outcome: "reconciled" as const,
+    }));
+    const spawnVoid = vi.fn();
+    const forSession = vi.fn(
+      (scope: Parameters<ExecutionAdmissionClient["forSession"]>[0]) => {
+        admittedChildScope = {
+          ...admittedChildScope,
+          runId: scope.runId,
+          sessionId: scope.sessionId,
+          ...(scope.parentRunId !== undefined
+            ? { parentRunId: scope.parentRunId }
+            : {}),
+          ...(scope.parentScopeId !== undefined
+            ? { parentScopeId: scope.parentScopeId }
+            : {}),
+        };
+        return childAdmission;
+      },
+    );
+    const parentAdmission: ExecutionAdmissionClient = {
+      scope: {
+        runId: "parent-run",
+        workspaceId: "workspace",
+        sessionId: "parent-test",
+        autonomous: false,
+      },
+      acquire: spawnAcquire,
+      markDispatched: spawnMarkDispatched,
+      reconcile: spawnReconcile,
+      holdUnknown: vi.fn(),
+      void: spawnVoid,
+      acknowledgeCompletion: vi.fn(),
+      recordFallback: vi.fn(),
+      forSession,
+      subscribe: vi.fn(() => () => {}),
+    };
+    Object.assign(parent.services, {
+      executionAdmission: parentAdmission,
+      admissionRequired: true,
+    });
+    setCurrentRuntimeSession(parent);
+
+    const result = await execAgentHook(
+      {
+        type: "agent",
+        prompt: "verify",
+      } as never,
+      "Stop",
+      "Stop" as never,
+      "{}",
+      new AbortController().signal,
+      createToolUseContext({ roleWorkspace: parent.roleWorkspace }),
+      "hook-tool-use",
+      [],
+    );
+
+    expect(result.outcome).toBe("success");
+    expect(spawnAcquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stepId: expect.stringMatching(
+          /^hook-agent-spawn:hook-tool-use:hook-agent-/,
+        ),
+        kind: "spawn",
+        sessionId: "parent-test",
+        parentScopeId: "parent-test",
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+      expect.any(AbortSignal),
+    );
+    const childScope = forSession.mock.calls[0]?.[0];
+    expect(childScope).toEqual({
+      runId: expect.stringMatching(/^hook-agent-/),
+      sessionId: expect.stringMatching(/^hook-agent-/),
+      parentRunId: "parent-run",
+      parentScopeId: "parent-test",
+    });
+    expect(childScope?.runId).toBe(childScope?.sessionId);
+    expect(spawnMarkDispatched).toHaveBeenCalledWith(
+      "hook-spawn-reservation",
+      expect.objectContaining({
+        boundary: "spawn_commit",
+        details: expect.objectContaining({
+          childThreadId: childScope?.sessionId,
+          parentSessionId: "parent-test",
+        }),
+      }),
+    );
+    expect(spawnReconcile).toHaveBeenCalledWith(
+      "hook-spawn-reservation",
+      { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    );
+    expect(spawnVoid).not.toHaveBeenCalled();
+    expect(
+      childAcquire.mock.calls.some(
+        ([input]) =>
+          input.kind === "model_turn" &&
+          input.sessionId === childScope?.sessionId,
+      ),
+    ).toBe(true);
   });
 
   test("waits for validated structured-output tool results", async () => {
@@ -1502,6 +1676,45 @@ function llmMessageText(message: LLMMessage): string {
     .join("\n");
 }
 
+function allowAdmissionLease(
+  input: AdmissionAcquireInput,
+  reservationId: string,
+  runId: string,
+  signal: AbortSignal,
+): AdmissionLease {
+  return {
+    decision: "allow",
+    reservation: {
+      reservationId,
+      step: { runId, stepId: input.stepId },
+      reservedCostUsd: input.maxCostUsd ?? 0,
+      reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+      reservedAt: "2026-07-18T00:00:00.000Z",
+    },
+    request: {
+      step: { runId, stepId: input.stepId },
+      kind: input.kind,
+      estimate: {
+        maxInputTokens: input.maxInputTokens,
+        maxOutputTokens: input.maxOutputTokens,
+        maxCostUsd: input.maxCostUsd,
+      },
+      workspaceId: "workspace",
+      sessionId: input.sessionId ?? "session",
+      autonomous: false,
+      ...(input.parentScopeId !== undefined
+        ? { parentScopeId: input.parentScopeId }
+        : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.provider !== undefined ? { provider: input.provider } : {}),
+      ...(input.deadlineAt !== undefined
+        ? { deadlineAt: input.deadlineAt }
+        : {}),
+    },
+    signal,
+  };
+}
+
 function providerWithToolCall(
   toolCall: LLMResponse["toolCalls"][number],
 ): LLMProvider & { chatStream: ReturnType<typeof vi.fn> } {
@@ -1540,6 +1753,7 @@ function providerWithResponses(
 function echoTool(): Tool {
   return {
     name: "Echo",
+    recoveryCategory: "idempotent",
     inputSchema: z.object({ value: z.string() }),
     inputJSONSchema: {
       type: "object",
@@ -1566,6 +1780,7 @@ function echoTool(): Tool {
 function errorTool(): Tool {
   return {
     name: "ErrorTool",
+    recoveryCategory: "idempotent",
     inputSchema: z.object({}),
     inputJSONSchema: {
       type: "object",
@@ -1598,6 +1813,44 @@ function createAgentDefinitions(roleWorkspace: AgentRoleWorkspace) {
   };
 }
 
+async function mountTestParentRollout(parent: Session): Promise<void> {
+  const agencHome = await mkdtemp(join(tmpdir(), "agenc-hook-rollout-"));
+  const previousAgencHome = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  let store: RolloutStore | undefined;
+  try {
+    store = new RolloutStore({
+      cwd: parent.sessionConfiguration.cwd,
+      sessionId: parent.conversationId,
+      agencVersion: "test",
+    });
+    store.open({
+      sessionId: parent.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd: parent.sessionConfiguration.cwd,
+      originator: "hook-agent-test",
+      agencVersion: "test",
+      model: parent.sessionConfiguration.collaborationMode.model,
+      modelProvider: parent.services.provider.name,
+    });
+    parent.mountRolloutStore(store);
+  } catch (error) {
+    if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
+    else process.env.AGENC_HOME = previousAgencHome;
+    await rm(agencHome, { recursive: true, force: true });
+    throw error;
+  }
+  testCleanup.push(async () => {
+    try {
+      store?.close();
+    } finally {
+      if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousAgencHome;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+}
+
 function createParentSession(
   provider: LLMProvider,
   roleWorkspace = DEFAULT_ROLE_WORKSPACE,
@@ -1608,6 +1861,7 @@ function createParentSession(
     createEmptyToolPermissionContext({ mode: "dontAsk" }),
   );
   const services = {
+    admissionRequired: false,
     provider,
     registry: {
       tools: [],

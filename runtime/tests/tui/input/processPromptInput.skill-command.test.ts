@@ -1,6 +1,11 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
-import { parseDollarSkillCommand, processPromptInput } from './processPromptInput.js'
+import { peekAmbientRuntimeSession } from '../../../src/session/current-session.js'
+import {
+  loadDollarSkillCommandForTurn,
+  parseDollarSkillCommand,
+  processPromptInput,
+} from './processPromptInput.js'
 
 function baseContext(commands: any[]) {
   return {
@@ -78,6 +83,71 @@ describe('parseDollarSkillCommand', () => {
       '<command-name>$python-game</command-name>',
     )
     expect(JSON.stringify(result.messages)).toContain('Skill body with args: make game.py')
+  })
+
+  test('binds the exact TUI session while an MCP prompt command renders', async () => {
+    const session = {
+      conversationId: 'session-mcp-prompt',
+      services: {},
+    }
+    const getPromptForCommand = vi.fn(async () => {
+      expect(peekAmbientRuntimeSession()).toBe(session)
+      return [{ type: 'text', text: 'MCP prompt body' }]
+    })
+
+    await expect(
+      loadDollarSkillCommandForTurn(
+        { commandName: 'mcp__docs__review', args: 'src' },
+        {
+          type: 'prompt',
+          name: 'mcp__docs__review',
+          description: 'Review with MCP',
+          loadedFrom: 'mcp',
+          source: 'mcp',
+          isMcp: true,
+          progressMessage: 'running',
+          contentLength: 0,
+          getPromptForCommand,
+        },
+        {
+          ...baseContext([]),
+          session,
+          abortController: new AbortController(),
+        },
+      ),
+    ).resolves.toMatchObject({ skillContent: 'MCP prompt body' })
+    expect(getPromptForCommand).toHaveBeenCalledOnce()
+  })
+
+  test('fails MCP prompt commands closed when the TUI has no session identity', async () => {
+    const getPromptForCommand = vi.fn(async () => [
+      { type: 'text', text: 'must not load' },
+    ])
+
+    await expect(
+      loadDollarSkillCommandForTurn(
+        { commandName: 'mcp__docs__review', args: '' },
+        {
+          type: 'prompt',
+          name: 'mcp__docs__review',
+          description: 'Review with MCP',
+          loadedFrom: 'mcp',
+          source: 'mcp',
+          isMcp: true,
+          progressMessage: 'running',
+          contentLength: 0,
+          getPromptForCommand,
+        },
+        {
+          ...baseContext([]),
+          abortController: new AbortController(),
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: 'ADMISSION_DENIED',
+      reason: 'mcp_prompt_admission_identity_unavailable',
+    })
+    expect(getPromptForCommand).not.toHaveBeenCalled()
   })
 
   test('escapes dollar skill metadata while preserving raw args for skill content', async () => {

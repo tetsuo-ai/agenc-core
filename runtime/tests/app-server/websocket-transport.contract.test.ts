@@ -30,6 +30,18 @@ function nextClose(socket: WebSocket): Promise<void> {
   });
 }
 
+const RESPONSIVE_CONTROL_METHODS = [
+  "run.cancel",
+  "session.cancelTurn",
+  "agent.list",
+  "session.list",
+  "session.snapshot",
+  "session.hooks.status",
+  "health.ping",
+  "health.ready",
+  "health.stats",
+] as const;
+
 function waitForErrorCount(
   errors: readonly Error[],
   count: number,
@@ -145,6 +157,45 @@ describe("AgenC websocket app-server transport", () => {
     await server.close();
   });
 
+  it("does not let a priority request overtake connection initialization", async () => {
+    const events: string[] = [];
+    let releaseInitialize: (() => void) | undefined;
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message) => {
+        if (message.method === "initialize") {
+          events.push("initialize:start");
+          await new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+          });
+          events.push("initialize:end");
+          return;
+        }
+        events.push(String(message.method));
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send(
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0"}}',
+    );
+    client.send('{"jsonrpc":"2.0","id":2,"method":"health.ping"}');
+    await delay(30);
+    expect(events).toEqual(["initialize:start"]);
+
+    releaseInitialize?.();
+    await delay(40);
+    expect(events).toEqual([
+      "initialize:start",
+      "initialize:end",
+      "health.ping",
+    ]);
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
   it("dispatches request.cancel ahead of an in-flight long request", async () => {
     // Regression for the transport-FIFO cancellation starvation: a
     // request.cancel chained behind a long-running request could never run
@@ -232,6 +283,64 @@ describe("AgenC websocket app-server transport", () => {
     await delay(40);
     expect(events).toEqual(["stream:start", "turn:cancel", "stream:end"]);
 
+    client.close();
+    await nextClose(client);
+    await server.close();
+  });
+
+  it("keeps cancel, health, status, and session lookup responsive under a blocked stream", async () => {
+    const events: string[] = [];
+    let releaseStream: (() => void) | undefined;
+    let resolveStarted: () => void = () => {};
+    const streamStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const server = new AgenCWebSocketServer({
+      onMessage: async (message) => {
+        if (message.method === "message.stream") {
+          events.push("stream:start");
+          resolveStarted();
+          await new Promise<void>((resolve) => {
+            releaseStream = resolve;
+          });
+          events.push("stream:end");
+          return;
+        }
+        events.push(String(message.method));
+      },
+    });
+
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    client.send(
+      JSON.stringify({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "stream",
+        method: "message.stream",
+      }),
+    );
+    await streamStarted;
+    for (const [index, method] of RESPONSIVE_CONTROL_METHODS.entries()) {
+      client.send(
+        JSON.stringify({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `control-${index}`,
+          method,
+        }),
+      );
+    }
+
+    await delay(60);
+    expect(events[0]).toBe("stream:start");
+    expect(events).not.toContain("stream:end");
+    expect(events.slice(1).sort()).toEqual(
+      [...RESPONSIVE_CONTROL_METHODS].sort(),
+    );
+
+    releaseStream?.();
+    await delay(40);
+    expect(events.at(-1)).toBe("stream:end");
     client.close();
     await nextClose(client);
     await server.close();

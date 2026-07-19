@@ -1,11 +1,13 @@
 # Cost-bounded autonomy: budget enforcement design
 
-**Task 15.** A daemon-owned budget layer that bounds what **cumulative-wired
-autonomous surfaces** (heartbeat, cron delivery, hooks HTTP) can spend, so AgenC
-never reproduces the idle-burn failure mode. Background agent runs use
-**per-run** caps only (not this cumulative ledger) — see Live wire-up below.
-This note records the SOTA research the design is grounded in and the decisions
-that follow from it.
+> **Historical design.** The surface-specific `BudgetEnforcer` / JSON ledger
+> described below has been superseded in production by the daemon-owned
+> [execution admission kernel](execution-admission-kernel.md). The research and
+> original rationale remain useful, but gateway heartbeat, cron, and hooks no
+> longer construct this second accounting engine.
+
+**Task 15.** This note records the research that motivated cost-bounded
+autonomy and the original implementation decisions.
 
 Operator-facing summary of live surfaces:
 [`../reference/autonomy.md`](../reference/autonomy.md).
@@ -89,17 +91,30 @@ A self-contained subsystem, `runtime/src/budget/`, exposing a
   spend, persisted to `<agencHome>/budget/ledger.json` (0600), atomic writes.
   Windows roll by date key so "daily/monthly budget" means what a user expects.
 - **Admission gate** — `admit({ agentId, model, estInputTokens, maxOutputTokens })`
-  computes the worst-case debit at the model's price and checks it against
-  BOTH remaining daily and monthly budget (both must pass — fail closed).
-  Returns a hold on success, or a typed `BUDGET_EXCEEDED` refusal.
-- **Reconcile** — `reconcile(hold, actualUsage)` replaces the held estimate with
-  the real spend and refunds the delta. The real `usage` from the provider
-  response is authoritative (pre-flight estimates drift; §4). After a successful
-  admit, call sites **always** reconcile exactly once via exclusive
-  `try`/`finally` on **hooks, cron, and heartbeat**:
-  success uses returned usage (or zeros if missing); throw uses zeros → full
-  hold refund. Unknown usage may under-book real spend; it must not leave a
-  sticky worst-case hold. `reconcile` is **not** idempotent — call once only.
+  transactionally reserves the worst-case debit at the model's price under the
+  ledger's cross-process disk lock: the cap check (BOTH remaining daily and
+  monthly budget — fail closed) runs against the locked, freshly-loaded state,
+  and the debit plus a durable, uniquely-identified open hold land in ONE
+  atomic save. Two concurrent reservers serialize on the lock; the second sees
+  the first's debit. Returns a hold on success, or a typed `BUDGET_EXCEEDED`
+  refusal.
+- **Reservations** — every non-zero hold carries a `holdId` (the frozen
+  `BudgetReservation.reservationId` from `contracts/run-contracts.ts`) and is
+  persisted in the ledger file while open (`listOpenHolds()`). A crash between
+  admit and reconcile leaves a visible open hold whose FULL reservation stays
+  consumed (`held_unknown` semantics) — unknown usage is never refunded as if
+  the call were free. A hold whose day window rolls before reconciliation is
+  discarded without refund. Operator `reset` clears the agent's open holds.
+- **Reconcile** — `reconcile(hold, actualUsage)` consumes the persisted hold
+  **exactly once**: it replaces the held estimate with the real spend and
+  refunds the delta in one locked transaction. The real `usage` from the
+  provider response is authoritative (pre-flight estimates drift; §4).
+  Duplicate calls find no open hold and are mechanical no-ops
+  (`{ applied: false, reason: "duplicate" }`) — `holdId` is the idempotency
+  key, so retry/recovery paths can safely call it again. Call sites reconcile
+  via exclusive `try`/`finally` on **hooks, cron, and heartbeat**: success
+  uses returned usage (or zeros if missing); throw uses zeros → full hold
+  refund (the contract's `voided` resolution).
 - **Enforcement policy** — on refusal: pause the agent's autonomy
   (`paused` state), emit a notification once, and surface the typed error; the
   operator raises the cap or resets to resume. Crossing the soft threshold
@@ -125,60 +140,26 @@ Default `[agent.budget]` is **empty** (no token/dollar/wall-clock caps) so long
 foreground-style sessions are not killed by a hidden ceiling; operators who
 want per-run caps set them explicitly.
 
-## Live wire-up (current as of 0.6.0)
+## Production replacement (current as of 0.6.0)
 
-The enforcer primitive is **implemented and live** on the autonomous gateway
-surfaces. Callers construct a `BudgetEnforcer` with
-`resolveBudgetPolicy` + `BudgetLedger` + `createModelPriceResolver`, then
-`admit` → turn → `reconcile`. When budget is disabled, admit is a no-op hold.
+`ExecutionAdmissionKernel` is now the sole production accounting authority.
+It reserves at the actual model/charged-tool boundary, conserves child work
+inside parent allocations, reconciles provider usage exactly once, and keeps
+unknown usage held in project SQLite. TUI, print, daemon background sessions,
+subagents, heartbeat, cron, and hooks all reach that boundary. Gateway code
+only schedules and delivers; it does not estimate/debit an outer turn.
 
-### Wired (cumulative ledger)
+Calendar-window allocations are keyed by the durable root-agent/run identity,
+so independent agents in one project do not consume one another's cap while
+all descendants of an agent share its envelope. A durable run identity is
+pinned to its project state database; rebinding it to another workspace fails
+closed instead of creating a second copy of the same daily/monthly allowance.
 
-| Surface | Path | Agent id | On refuse |
-| --- | --- | --- | --- |
-| **Heartbeat** | `heartbeat/wire.ts` builds enforcer; `heartbeat/runner.ts` admits before the turn and reconciles after | policy `agent` (default `default`) | Deliver pause notice to heartbeat target; skip turn (`budget_paused`) |
-| **Cron delivery** | `gateway/cron-delivery.ts` | `cron:<taskId>` | Log + optional channel pause notice; skip turn |
-| **Hooks HTTP** | `gateway/hooks.ts` | `hook:<name>` | HTTP **429** with budget error; no turn |
-
-All three mark turns `autonomous: true` and **deny** tool permission requests.
-Rough token estimates use chars/4; max output for pre-flight defaults to
-**2048** tokens on these paths.
-
-### Not cumulative-wired
-
-| Surface | What bounds spend today |
-| --- | --- |
-| Interactive TUI / print turns | Session-level cost tools only unless `enforce_interactive` is enabled **and** a caller actually invokes `BudgetEnforcer` on that path (the interactive turn loop is **not** currently admit/reconcile-wired) |
-| Background agent runs (`background-agent-runner`) | **Per-run** `AgentBudgetConfig` only (`token_cap` / `dollar_cap` / `wall_clock_seconds`) — does **not** call `BudgetEnforcer` |
-
-So: enabling `[budget]` protects heartbeat / cron delivery / hooks. It does
-**not** by itself put a daily envelope around interactive chat or
-`agent.create` background jobs. Operators who need those bounds use
-`[agent.budget]`, session `max_budget_usd`, and/or future wire-ups.
-
-### Primitive modules
-
-| Module | Role |
-| --- | --- |
-| `budget/enforcer.ts` | `admit` / `reconcile` / pause / soft-warn |
-| `budget/ledger.ts` | Persistent per-agent windows → `budget/ledger.json` |
-| `budget/config.ts` | env > config > default policy resolution |
-| `budget/pricing.ts` | Model price resolver for worst-case debit |
-| `bin/budget-cli.ts` | `agenc budget status\|reset` |
-
-### Deferred (still accurate)
-
-- *Per-model-call* pre-flight gate on the single LLM call path (§3) — needs
-  `stream-model` plumbing; per-turn is the pragmatic cut in production today.
-- *Velocity circuit-breaker* and *loop/duplicate-turn detector*.
-- *Delegation conservation* — sub-agent debit from parent (Agent Contracts §2).
-- *Cheap-utility-model routing + outcome-based escalation* (§6) — heartbeat
-  carries `policy.model` but full per-turn model override on the daemon session
-  is still a cost-reduction follow-up; the **cap** is the safety boundary and
-  is live.
-- *Reasoning-token budget forcing* (§7).
-- Cumulative wire-up for interactive turns and background-agent runs (when
-  product wants one ledger across all spend, not only gateway autonomy).
+The old `BudgetEnforcer` and `BudgetLedger` modules remain for isolated legacy
+tests/evaluation compatibility, not as a live gateway gate. `agenc budget
+status` reports configured policy only, and `agenc budget reset` is rejected.
+Operators inspect immutable durable state with `agenc run
+status|replay|evidence` and stop work with `agenc run cancel`.
 
 ## Citations
 

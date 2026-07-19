@@ -5,17 +5,24 @@ import { describe, expect, test } from "vitest";
 import type { ToolRegistry } from "../../tool-registry.js";
 import {
   formatMcpSseServeUrl,
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE,
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE,
+  MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON,
   prepareMcpSseServerReconfigurationFromConfig,
   resolveMcpServeDefaults,
   startMcpServerFromConfig,
   startMcpSseServe,
 } from "./start.js";
 
-const EMPTY_REGISTRY: ToolRegistry = {
-  tools: [],
-  toLLMTools: () => [],
+const UNREACHABLE_REGISTRY: ToolRegistry = {
+  get tools() {
+    throw new Error("unadmitted inbound MCP must not materialize tools");
+  },
+  toLLMTools() {
+    throw new Error("unadmitted inbound MCP must not materialize tools");
+  },
   async dispatch() {
-    return { content: "" };
+    throw new Error("unadmitted inbound MCP must not dispatch tools");
   },
 };
 
@@ -58,15 +65,6 @@ function parseMcpSseData(frame: string): unknown {
   return JSON.parse(data);
 }
 
-async function callListDir(
-  url: string,
-  sessionId: string,
-  path: string,
-  id: number,
-): Promise<{ readonly status: number; readonly message?: unknown }> {
-  return callMcpTool(url, sessionId, "system.listDir", { path }, id);
-}
-
 async function callMcpTool(
   url: string,
   sessionId: string,
@@ -86,6 +84,26 @@ async function callMcpTool(
   return {
     status: response.status,
     message: parseMcpSseData(await response.text()),
+  };
+}
+
+function admissionRequiredMessage(id: number): unknown {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      content: [
+        {
+          type: "text",
+          text: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_MESSAGE,
+        },
+      ],
+      structuredContent: {
+        code: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_CODE,
+        reason: MCP_INBOUND_TOOL_ADMISSION_REQUIRED_REASON,
+      },
+      isError: true,
+    },
   };
 }
 
@@ -182,7 +200,7 @@ describe("mcp server start config", () => {
           },
         },
       },
-      { toolRegistry: EMPTY_REGISTRY },
+      { toolRegistry: UNREACHABLE_REGISTRY },
     );
     if (result.kind !== "started") {
       throw new Error(`expected started result, got ${result.kind}`);
@@ -194,6 +212,27 @@ describe("mcp server start config", () => {
         headers: { accept: "text/event-stream" },
       });
       expect(response.status).toBe(400);
+
+      const session = await initializeMcp(result.server.url);
+      await expect(
+        postMcpJson(result.server.url, session, 2, "tools/list"),
+      ).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { tools: [], nextCursor: null },
+      });
+      await expect(
+        callMcpTool(
+          result.server.url,
+          session,
+          "system.listDir",
+          { path: process.cwd() },
+          3,
+        ),
+      ).resolves.toEqual({
+        status: 200,
+        message: admissionRequiredMessage(3),
+      });
     } finally {
       await result.server.close();
     }
@@ -210,18 +249,22 @@ describe("mcp server start config", () => {
         recursive: true,
       }),
       mkdir(join(workspaceA, ".agenc", "memory"), { recursive: true }),
-      mkdir(workspaceB),
+      mkdir(join(workspaceB, ".agenc", "skills", "workspace-b"), {
+        recursive: true,
+      }),
       mkdir(join(globalHome, "skills", "global-only"), { recursive: true }),
       mkdir(join(globalHome, "commands"), { recursive: true }),
       mkdir(join(globalHome, "memory"), { recursive: true }),
     ]);
     await Promise.all([
-      writeFile(join(workspaceA, "only-a.txt"), "a"),
-      writeFile(join(workspaceB, "only-b.txt"), "b"),
       writeFile(invalidWorkspace, "file"),
       writeFile(
         join(workspaceA, ".agenc", "skills", "workspace-only", "SKILL.md"),
         "---\ndescription: Workspace-only prompt\n---\nWorkspace prompt sentinel",
+      ),
+      writeFile(
+        join(workspaceB, ".agenc", "skills", "workspace-b", "SKILL.md"),
+        "---\ndescription: Workspace B prompt\n---\nWorkspace B prompt sentinel",
       ),
       writeFile(
         join(globalHome, "skills", "global-only", "SKILL.md"),
@@ -328,9 +371,11 @@ describe("mcp server start config", () => {
         headers: mcpHeaders(oldSession),
         body: mcpRequest(6, "tools/list"),
       });
-      const advertised = JSON.stringify(await listResponse.json());
-      expect(advertised).not.toContain("system.symbolSearch");
-      expect(advertised).not.toContain("system.gitStatus");
+      await expect(listResponse.json()).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: 6,
+        result: { tools: [], nextCursor: null },
+      });
       const symbolCall = await callMcpTool(
         result.server.url,
         oldSession,
@@ -338,19 +383,13 @@ describe("mcp server start config", () => {
         { query: "anything", workspace_root: workspaceA },
         7,
       );
-      expect(JSON.stringify(symbolCall.message)).toContain(
-        "Unknown tool 'system.symbolSearch'",
-      );
+      expect(symbolCall).toEqual({
+        status: 200,
+        message: admissionRequiredMessage(7),
+      });
       await expect(stat(join(workspaceA, "code-intel"))).rejects.toMatchObject({
         code: "ENOENT",
       });
-      const firstRead = await callListDir(
-        result.server.url,
-        oldSession,
-        workspaceA,
-        8,
-      );
-      expect(JSON.stringify(firstRead.message)).toContain("only-a.txt");
 
       await expect(
         prepareMcpSseServerReconfigurationFromConfig(
@@ -358,15 +397,15 @@ describe("mcp server start config", () => {
           configFor(invalidWorkspace),
         ),
       ).rejects.toThrow("must resolve to a directory");
-      const afterRejectedPrepare = await callListDir(
+      const afterRejectedPrepare = await postMcpJson(
         result.server.url,
         oldSession,
-        workspaceA,
-        9,
+        8,
+        "prompts/get",
+        { name: "workspace-only" },
       );
-      expect(afterRejectedPrepare.status).toBe(200);
-      expect(JSON.stringify(afterRejectedPrepare.message)).toContain(
-        "only-a.txt",
+      expect(JSON.stringify(afterRejectedPrepare)).toContain(
+        "Workspace prompt sentinel",
       );
 
       const prepared = await prepareMcpSseServerReconfigurationFromConfig(
@@ -374,29 +413,23 @@ describe("mcp server start config", () => {
         configFor(workspaceB),
       );
       expect(prepared.apply()).toBe(1);
-      expect(
-        await callListDir(result.server.url, oldSession, workspaceA, 4),
-      ).toEqual({ status: 404 });
+      const revoked = await fetch(result.server.url, {
+        method: "POST",
+        headers: mcpHeaders(oldSession),
+        body: mcpRequest(9, "prompts/list"),
+      });
+      expect(revoked.status).toBe(404);
 
       const newSession = await initializeMcp(result.server.url);
-      const secondRead = await callListDir(
+      const secondPromptList = await postMcpJson(
         result.server.url,
         newSession,
-        workspaceB,
-        7,
+        10,
+        "prompts/list",
       );
-      expect(JSON.stringify(secondRead.message)).toContain("only-b.txt");
-      expect(JSON.stringify(secondRead.message)).not.toContain("only-a.txt");
+      expect(JSON.stringify(secondPromptList)).toContain("workspace-b");
+      expect(JSON.stringify(secondPromptList)).not.toContain("workspace-only");
 
-      const ambientRead = await callListDir(
-        result.server.url,
-        newSession,
-        process.cwd(),
-        8,
-      );
-      expect(JSON.stringify(ambientRead.message)).toContain(
-        "Path is outside allowed directories",
-      );
     } finally {
       await result.server.close();
       if (originalAgencHome === undefined) {
@@ -408,7 +441,7 @@ describe("mcp server start config", () => {
     }
   });
 
-  test("pins foreground SSE workspace before later session creation", async () => {
+  test("pins foreground SSE prompt scope while tools remain fail-closed", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-mcp-pinned-sse-"));
     const workspaceA = join(root, "workspace-a");
     const workspaceB = join(root, "workspace-b");
@@ -421,8 +454,6 @@ describe("mcp server start config", () => {
       }),
     ]);
     await Promise.all([
-      writeFile(join(workspaceA, "only-a.txt"), "a"),
-      writeFile(join(workspaceB, "only-b.txt"), "b"),
       writeFile(
         join(workspaceA, ".agenc", "skills", "a-only", "SKILL.md"),
         "---\ndescription: A-only prompt\n---\nPrompt from workspace A",
@@ -462,22 +493,25 @@ describe("mcp server start config", () => {
       );
       expect(JSON.stringify(prompt)).toContain("Prompt from workspace A");
       expect(JSON.stringify(prompt)).not.toContain("Prompt from workspace B");
-      const workspaceARead = await callListDir(
-        started.url,
-        session,
-        workspaceA,
-        4,
-      );
-      expect(JSON.stringify(workspaceARead.message)).toContain("only-a.txt");
-      const workspaceBRead = await callListDir(
-        started.url,
-        session,
-        workspaceB,
-        5,
-      );
-      expect(JSON.stringify(workspaceBRead.message)).toContain(
-        "Path is outside allowed directories",
-      );
+      await expect(
+        postMcpJson(started.url, session, 4, "tools/list"),
+      ).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: 4,
+        result: { tools: [], nextCursor: null },
+      });
+      await expect(
+        callMcpTool(
+          started.url,
+          session,
+          "system.listDir",
+          { path: workspaceA },
+          5,
+        ),
+      ).resolves.toEqual({
+        status: 200,
+        message: admissionRequiredMessage(5),
+      });
     } finally {
       process.chdir(originalCwd);
       await started?.close();

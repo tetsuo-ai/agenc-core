@@ -128,7 +128,9 @@ describe("LIVE XSearch tool catalog gate (Hermes-style)", () => {
       workspaceRoot: process.cwd(),
       getSession: () =>
         ({
-          services: { provider: sessionProvider },
+          conversationId: "xsearch-test",
+          nextInternalSubId: () => "xsearch-1",
+          services: { admissionRequired: false, provider: sessionProvider },
         }) as unknown as Session,
       sessionProvider: "grok",
       sessionBaseURL: "https://api.x.ai/v1",

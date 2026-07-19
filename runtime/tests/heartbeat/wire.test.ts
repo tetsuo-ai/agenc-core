@@ -9,7 +9,14 @@
  * failing every tick forever.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -104,12 +111,16 @@ describe("startHeartbeat persistent session", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  async function tickOnce(client: GatewayDaemonClient, mem: InMemoryChannelAdapter) {
+  async function tickOnce(
+    client: GatewayDaemonClient,
+    mem: InMemoryChannelAdapter,
+    config: AgenCConfig = HEARTBEAT_CONFIG,
+  ) {
     const { clock, fire } = manualClock();
     const scheduler = await startHeartbeat({
       agencHome: home,
       workspaceDir: ws,
-      config: HEARTBEAT_CONFIG,
+      config,
       env: {},
       client,
       adapters: [mem],
@@ -167,5 +178,18 @@ describe("startHeartbeat persistent session", () => {
       "utf8",
     ).trim();
     expect(persisted).toBe("hb-sess-2");
+  });
+
+  test("delegates budget admission to the daemon without creating a surface ledger", async () => {
+    const client = new RecordingClient((id) => new EchoSession(id, "admitted"));
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+    await tickOnce(client, mem, {
+      ...HEARTBEAT_CONFIG,
+      budget: { enabled: true, daily_tokens: 1 },
+    } as unknown as AgenCConfig);
+
+    expect(client.created).toBe(1);
+    expect(mem.lastText("c1")).toBe("admitted");
+    expect(existsSync(join(home, "budget", "ledger.json"))).toBe(false);
   });
 });

@@ -156,6 +156,37 @@ describe('turn compatibility catalog boundary', () => {
     expect(parentBroker.cwd).toBe(authority)
   })
 
+  it('injects an explicitly bound child admission client', async () => {
+    const cwd = tempRoot('child-admission')
+    const childAdmission = {
+      scope: {
+        runId: 'child-run',
+        workspaceId: cwd,
+        sessionId: 'child-run',
+        autonomous: false,
+      },
+    } as never
+    const turn = await createTurnCompatSession(
+      foregroundParent(cwd),
+      {
+        messages: [],
+        systemPrompt: asSystemPrompt(['system']),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow' }),
+        toolUseContext: foregroundToolContext(cwd, [], undefined),
+        querySource: 'agent:custom',
+      },
+      {
+        conversationId: 'child-run',
+        executionAdmission: childAdmission,
+      },
+    )
+
+    expect(turn.session.conversationId).toBe('child-run')
+    expect(turn.session.services.executionAdmission).toBe(childAdmission)
+  })
+
   it('frames legacy tool history once before handing it to Session.runTurn', async () => {
     const cwd = tempRoot('legacy-tool-history')
     const raw =

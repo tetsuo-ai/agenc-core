@@ -1,6 +1,6 @@
 # Daemon reference
 
-The local **app-server** control plane for AgenC **0.6.0**. One daemon per
+The local **app-server** control plane for AgenC **0.7.0**. One daemon per
 `AGENC_HOME`. Clients (TUI, print CLI, gateway, remote, SDK, background
 agents) attach over a local socket and speak JSON-RPC.
 
@@ -119,6 +119,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `initialize` | Handshake + capability advertisement |
 | `request.cancel` | Cancel an in-flight request |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs` | Background agents |
+| `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel` | Durable run state, canonical journal replay/evidence, terminal result, and tree cancellation |
 | `session.create` / `session.list` / `session.attach` / `session.detach` | Session lifecycle |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` | Session control |
 | `session.cancelTurn` | Abort current turn |
@@ -129,10 +130,67 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `elicitation.respond` | User-input / MCP elicitation reply |
 | `permission.list` | List pending / granted permissions |
 | `fs.fuzzy_search` | Workspace fuzzy file search |
-| `commandExec.start` / `write` / `resize` / `terminate` | PTY/command exec |
+| `commandExec.start` / `write` / `resize` / `terminate` | Reserved PTY/command-exec protocol; direct starts currently fail closed |
 | `health.ping` / `health.ready` / `health.stats` | Liveness and stats |
 | `daemon.reload` | Reload configuration |
 | `auth.login` / `auth.whoami` / `auth.logout` | Auth backend |
+
+`session.list` is page-bounded: `limit` defaults to 50 and is capped at 100.
+Pass the returned opaque `nextCursor` back with the same `agentId` filter; a
+cursor is scoped to that filter and should not be persisted across daemon
+upgrades. Persisted metadata is read with an indexed keyset page rather than a
+full thread-history scan.
+
+Run inspection searches discovered project state databases by `runId`:
+
+- `run.status` returns lifecycle status plus aggregate admission step,
+  reservation, allocation, fallback, and budget/hold totals. `durableRun`
+  carries the compatibility `agent_runs` row when one exists; canonical-only
+  v15 runs do not fabricate it. A `run_terminal_results` record is the
+  strongest terminal-status source. An admission-only record stays nonterminal
+  because admission state cannot prove that no future step will be created.
+- `run.replay` pages the canonical append-only rollout journal through its
+  rebuildable `thread_rollout_items` projection. `afterSequence` is exclusive,
+  `limit` defaults to 100 and accepts 1 through 200, and every response includes
+  `hasMore` plus `nextAfterSequence`. Canonical sequences are per-run and pages
+  are contiguous. Retention, compaction, or an interior corruption-truncation
+  range returns `gap.kind: "event_gap"` without moving the cursor past the
+  missing range. A contiguous prefix can still advance `nextAfterSequence` to
+  its last delivered event. A cursor beyond the durable tail returns
+  `gap.kind: "cursor_ahead"` with the last available sequence. If a run has no
+  canonical source, a pre-M4 execution-admission journal remains available as
+  a compatibility reader; its sequence scope is explicitly
+  `project_state_database`.
+- `run.result` succeeds only for a durably terminal run. A v15 result returns
+  `output.available: true` with exit code, stop reason, final message, usage,
+  and the terminal snapshot sequence. A stopped-session operator review may
+  later append leased audit evidence at a higher replay sequence without
+  resuming execution or changing the result. A live or admission-only run returns
+  `RUN_NOT_TERMINAL`; a missing run returns `RUN_NOT_FOUND`. A legacy terminal
+  row with no canonical terminal payload returns `output.available: false`
+  rather than fabricating output.
+- `run.evidence` returns the same bounded journal page with SHA-256 hashes of
+  the run state, admission summary, individual events, and page bundle.
+  Canonical pages declare `workflowEvidenceIncluded: true`; completeness is
+  `complete`, `partial`, `journal_gap`, or
+  `admission_source_unavailable` for a missing compatibility source.
+
+All four methods use the transport priority lane and bounded indexed queries.
+Before reading, the daemon refreshes the requested run's rebuildable rollout
+projection from its canonical active or archived JSONL source and recovers any
+missing v15 effect or terminal projection. This repair writes indexes/state but
+does not dispatch work, publish events, or rewrite the journal. If one run id
+exists in multiple project databases, the methods fail with
+`RUN_ID_AMBIGUOUS` instead of choosing silently.
+
+The full persistence, replay, gap, effect, migration, and crash semantics are
+documented in
+[`../design/durable-runs-effects-events.md`](../design/durable-runs-effects-events.md).
+
+The stdio and WebSocket transports give cancel operations plus bounded health,
+status, attach, and session lookup RPCs a priority lane. They still wait for
+`initialize`, but do not wait for a full `message.send` / `message.stream` turn
+to finish. Ordinary order-dependent mutations remain FIFO per connection.
 
 ### Internal methods (TUI / privileged clients)
 
@@ -141,12 +199,20 @@ Include session rewind/compact, `session.setModel`,
 MCP reconnect/enable/disable. Full list:
 `AGENC_DAEMON_INTERNAL_METHODS` in the protocol module.
 
-`commandExec.start` requires an explicit `permissionProfile` or legacy
-`sandboxPolicy`. Policy-less requests are rejected with
-`sandbox_surface_uncovered`; clients that intentionally need host execution
-must send `permissionProfile: ":danger-full-access"`. Restricted profiles use
-the packaged, non-workspace-writable sandbox helper and fail before spawn when
-platform isolation is unavailable.
+`commandExec.start` is currently fail-closed with
+`EXECUTION_ADMISSION_REQUIRED`. Although the underlying service retains its
+explicit sandbox-policy contract for internal testing and future wiring, the
+daemon RPC has no session-bound run/step identity and therefore cannot start a
+process. Use an ordinary admitted session tool. `write`, `resize`, and
+`terminate` remain available as cleanup/control operations for an already
+owned process; they do not create execution. The initialize capability map
+advertises `commandExec.start: false` while this guard is active.
+
+`thread/realtime/start` is likewise fail-closed and advertised as unavailable
+until realtime provider traffic has durable admission, bounded reservation,
+and authoritative usage reconciliation. The remaining realtime methods stay
+typed for protocol compatibility and cleanup of test-only/previously owned
+sessions.
 
 ### Server → client notifications
 

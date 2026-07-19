@@ -273,28 +273,69 @@ async function nextStreamChunkWithTimeout<T>(
   // gaphunt3 #21: already-aborted signals must reject before awaiting the next
   // chunk so a mid-stream cancel cannot block on a slow iterator.next().
   if (externalSignal?.aborted) {
+    await closeAsyncIterator(iterator);
     throw createStreamAbortError(providerName);
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortHandler: (() => void) | undefined;
-  const guards: Promise<never>[] = [];
+  let resolveInterrupted!: () => void;
+  const interrupted = new Promise<void>((resolve) => {
+    resolveInterrupted = resolve;
+  });
+  const interruption: { error?: Error } = {};
+  let nextOutcome:
+    | Promise<
+        | { readonly kind: "result"; readonly result: IteratorResult<T> }
+        | { readonly kind: "error"; readonly error: unknown }
+      >
+    | undefined;
+  const interrupt = (error: Error): void => {
+    if (interruption.error !== undefined) return;
+    interruption.error = error;
+    void (async () => {
+      // `return()` requests teardown, but the AsyncIterator contract does not
+      // guarantee that its resolution also settles an already-pending
+      // `next()`. Retain admission until both teardown and that physical read
+      // settle, including for custom abort-ignoring iterators.
+      await Promise.all([
+        closeAsyncIterator(iterator),
+        ...(nextOutcome !== undefined ? [nextOutcome] : []),
+      ]);
+      resolveInterrupted();
+    })();
+  };
   if (effectiveTimeoutMs !== undefined) {
-    guards.push(new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(createStreamTimeoutError(providerName, effectiveTimeoutMs));
-      }, effectiveTimeoutMs);
-    }));
+    timer = setTimeout(() => {
+      interrupt(createStreamTimeoutError(providerName, effectiveTimeoutMs));
+    }, effectiveTimeoutMs);
   }
   if (externalSignal) {
-    guards.push(new Promise<never>((_, reject) => {
-      abortHandler = () => reject(createStreamAbortError(providerName));
-      externalSignal.addEventListener("abort", abortHandler, { once: true });
-    }));
+    abortHandler = () => interrupt(createStreamAbortError(providerName));
+    externalSignal.addEventListener("abort", abortHandler, { once: true });
   }
 
   try {
-    return await Promise.race([iterator.next(), ...guards]);
+    let nextCall: Promise<IteratorResult<T>>;
+    try {
+      nextCall = Promise.resolve(iterator.next());
+    } catch (error) {
+      throw error;
+    }
+    nextOutcome = nextCall.then(
+      (result) => ({ kind: "result" as const, result }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    );
+    const outcome = await Promise.race([
+      nextOutcome,
+      interrupted.then(() => ({ kind: "interrupted" as const })),
+    ]);
+    if (interruption.error !== undefined) throw interruption.error;
+    if (outcome.kind === "error") throw outcome.error;
+    if (outcome.kind === "interrupted") {
+      throw createStreamAbortError(providerName);
+    }
+    return outcome.result;
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -305,20 +346,25 @@ async function nextStreamChunkWithTimeout<T>(
   }
 }
 
-function closeAsyncIterator(iterator: AsyncIterator<unknown>): void {
-  if (typeof iterator.return !== "function") return;
-  try {
-    const closeResult = iterator.return();
-    if (
-      closeResult !== null &&
-      closeResult !== undefined &&
-      typeof closeResult.then === "function"
-    ) {
-      void closeResult.catch(() => undefined);
+const iteratorCloseTasks = new WeakMap<object, Promise<boolean>>();
+
+function closeAsyncIterator(iterator: AsyncIterator<unknown>): Promise<boolean> {
+  const key = iterator as object;
+  const existing = iteratorCloseTasks.get(key);
+  if (existing !== undefined) return existing;
+  const task = (async () => {
+    if (typeof iterator.return !== "function") return false;
+    try {
+      await iterator.return();
+      return true;
+    } catch {
+      // The caller must retain capacity until an outstanding next() settles
+      // when teardown cannot be confirmed.
+      return false;
     }
-  } catch {
-    // best-effort stream cleanup
-  }
+  })();
+  iteratorCloseTasks.set(key, task);
+  return task;
 }
 
 function estimateOpenAIContentChars(content: unknown): number {
@@ -596,12 +642,16 @@ async function createWithResponseMetadata<T>(
   client: unknown,
   params: Record<string, unknown>,
   signal: AbortSignal | undefined,
+  singleWireAttempt = false,
 ): Promise<{
   data: T;
   response?: Response;
   requestId?: string | null;
 }> {
-  const request = (client as any).responses.create(params, { signal });
+  const request = (client as any).responses.create(params, {
+    signal,
+    ...(singleWireAttempt ? { maxRetries: 0 } : {}),
+  });
   if (
     request &&
     typeof request === "object" &&
@@ -836,10 +886,12 @@ export class GrokProvider implements LLMProvider {
     error: unknown,
     consecutiveFailures: number,
     model: string = this.config.model,
+    singleWireAttempt = false,
   ): ProviderFallbackDecision | null {
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
+      ...(singleWireAttempt ? { maxFailures: 1 } : {}),
       model,
       error,
       consecutiveFailures,
@@ -903,6 +955,9 @@ export class GrokProvider implements LLMProvider {
         ...(params.temperature !== undefined
           ? { temperature: params.temperature }
           : {}),
+        ...(params.max_output_tokens !== undefined
+          ? { max_output_tokens: params.max_output_tokens }
+          : {}),
         ...(params.max_turns !== undefined ? { max_turns: params.max_turns } : {}),
         ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
         ...(params.include !== undefined ? { include: params.include } : {}),
@@ -962,6 +1017,7 @@ export class GrokProvider implements LLMProvider {
               client,
               activePlan.params,
               signal,
+              options?.singleWireAttempt,
             ),
           activeRequestTimeout.timeoutMs,
           this.name,
@@ -1027,11 +1083,13 @@ export class GrokProvider implements LLMProvider {
       // returns `skipped`, so the original 401 bubbles up unchanged.
       // OAuth-capable providers install real refresh callbacks via
       // withAuthRefreshCallbacks(); bearer-key mode skips refresh.
-      const parsed = await retryWithAuthRefresh(
-        String(this.config.apiKey),
-        async () => run(plan),
-        this.authRefreshCallbacks,
-      );
+      const parsed = options?.singleWireAttempt === true
+        ? await run(plan)
+        : await retryWithAuthRefresh(
+          String(this.config.apiKey),
+          async () => run(plan),
+          this.authRefreshCallbacks,
+        );
 
       // Record the response metadata so the tracker can supply
       // previous_response_id and delta input on the next compatible call.
@@ -1051,6 +1109,7 @@ export class GrokProvider implements LLMProvider {
       return parsed;
       } catch (err: unknown) {
       if (
+        options?.singleWireAttempt !== true &&
         isContinuationRetrievalFailure(err) &&
         "previous_response_id" in plan.params
       ) {
@@ -1100,8 +1159,10 @@ export class GrokProvider implements LLMProvider {
         err,
         consecutiveFallbackFailures,
         String(plan.params.model ?? this.config.model),
+        options?.singleWireAttempt,
       );
       if (
+        options?.singleWireAttempt !== true &&
         fallbackDecision?.kind === "wait" &&
         await this.waitForConfiguredFallbackRetry(
           fallbackDecision,
@@ -1167,7 +1228,7 @@ export class GrokProvider implements LLMProvider {
       let model = this.config.model;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let responseError: Error | undefined;
-      let usage: LLMUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let usage: LLMUsage = coerceUsage({});
       let providerEvidence: LLMResponse["providerEvidence"];
       let encryptedReasoning: LLMResponse["encryptedReasoning"];
       const toolCallAccum = new Map<string, LLMToolCall>();
@@ -1209,6 +1270,7 @@ export class GrokProvider implements LLMProvider {
               client,
               params,
               signal,
+              options?.singleWireAttempt,
             ),
           requestAttemptTimeout.timeoutMs,
           this.name,
@@ -1216,6 +1278,7 @@ export class GrokProvider implements LLMProvider {
         );
       } catch (err) {
         if (
+          options?.singleWireAttempt !== true &&
           isContinuationRetrievalFailure(err) &&
           "previous_response_id" in params
         ) {
@@ -1238,6 +1301,7 @@ export class GrokProvider implements LLMProvider {
                 client,
                 params,
                 signal,
+                options?.singleWireAttempt,
               ),
             requestAttemptTimeout.timeoutMs,
             this.name,
@@ -1550,8 +1614,10 @@ export class GrokProvider implements LLMProvider {
           err,
           consecutiveFallbackFailures,
           String(params.model ?? this.config.model),
+          options?.singleWireAttempt,
         );
         if (
+          options?.singleWireAttempt !== true &&
           fallbackDecision?.kind === "wait" &&
           await this.waitForConfiguredFallbackRetry(
             fallbackDecision,
@@ -1574,7 +1640,11 @@ export class GrokProvider implements LLMProvider {
         return {
           content,
           toolCalls: partialToolCalls,
-          usage,
+          usage: {
+            ...usage,
+            availability: "unknown",
+            provenance: "synthetic",
+          },
           model,
           requestMetrics,
           compaction: compactionDiagnostics,
@@ -1596,7 +1666,7 @@ export class GrokProvider implements LLMProvider {
       }
       throw mappedError;
       } finally {
-      if (streamIterator) closeAsyncIterator(streamIterator);
+      if (streamIterator) await closeAsyncIterator(streamIterator);
       streamIterator = null;
     }
     }
@@ -1689,6 +1759,8 @@ export class GrokProvider implements LLMProvider {
     ) ?? {
       provider: "grok",
       model: this.config.model,
+      usageReporting: "authoritative" as const,
+      supportsMaxOutputTokens: true,
       maxOutputTokens:
         typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
           ? this.config.maxTokens
@@ -1719,6 +1791,7 @@ export class GrokProvider implements LLMProvider {
       store: false,
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
+      maxOutputTokens: options?.maxOutputTokens,
       maxTurns: options?.maxTurns,
       model: options?.model?.trim() || undefined,
       reasoningEffort: options?.reasoningEffort,
@@ -1762,6 +1835,7 @@ export class GrokProvider implements LLMProvider {
       store?: boolean;
       allowedToolNames?: readonly string[];
       toolChoice?: LLMToolChoice;
+      maxOutputTokens?: number;
       maxTurns?: number;
       reasoningEffort?: LLMChatOptions["reasoningEffort"];
       includeEncryptedReasoning?: boolean;
@@ -1820,11 +1894,13 @@ export class GrokProvider implements LLMProvider {
     }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;
-    // Output-token cap removed intentionally. AgenC never sends
-    // max_output_tokens on /v1/responses — the whole point of routing
-    // through a 2M-context model is that the runtime lets the model
-    // finish its thought. Any config value that previously would have
-    // become max_output_tokens is now ignored for this field.
+    if (
+      typeof options?.maxOutputTokens === "number" &&
+      Number.isFinite(options.maxOutputTokens) &&
+      options.maxOutputTokens > 0
+    ) {
+      params.max_output_tokens = Math.floor(options.maxOutputTokens);
+    }
     const maxTurns = options?.maxTurns ?? this.config.maxTurns;
     if (
       typeof maxTurns === "number" &&

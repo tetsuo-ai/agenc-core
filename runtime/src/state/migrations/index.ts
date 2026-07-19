@@ -11,6 +11,9 @@ import { agentRunMetadataSchemaMigration } from "./009_agent_run_metadata_schema
 import { toolRecoveryCategorySchemaMigration } from "./010_tool_recovery_category_schema.js";
 import { memoryPipelineSchemaMigration } from "./011_memory_pipeline_schema.js";
 import { agentRoleWorkspaceProvenanceMigration } from "./012_agent_role_workspace_provenance.js";
+import { threadListingIndexesMigration } from "./013_thread_listing_indexes.js";
+import { executionAdmissionSchemaMigration } from "./014_execution_admission_schema.js";
+import { runDurabilitySchemaMigration } from "./015_run_durability_schema.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -29,6 +32,9 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   toolRecoveryCategorySchemaMigration,
   memoryPipelineSchemaMigration,
   agentRoleWorkspaceProvenanceMigration,
+  threadListingIndexesMigration,
+  executionAdmissionSchemaMigration,
+  runDurabilitySchemaMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

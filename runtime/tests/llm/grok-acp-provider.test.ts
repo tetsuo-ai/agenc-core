@@ -179,6 +179,17 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       expect(response.model).toBe('grok-composer-2.5-fast')
       expect(response.finishReason).toBe('stop')
       expect(response.toolCalls).toEqual([])
+      expect(response.usage).toMatchObject({
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        availability: 'unknown',
+        provenance: 'synthetic',
+      })
+      await expect(provider.getExecutionProfile()).resolves.toMatchObject({
+        usageReporting: 'unavailable',
+        supportsMaxOutputTokens: false,
+      })
     } finally {
       await provider.dispose()
     }

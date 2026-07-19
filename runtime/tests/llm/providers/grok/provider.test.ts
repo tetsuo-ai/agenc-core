@@ -141,6 +141,31 @@ describe("providers/grok entrypoint", () => {
     expect(JSON.stringify(tools)).toContain("FileRead");
   });
 
+  test("forwards the admitted request output cap to xAI Responses", () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.5",
+    });
+    const request = (provider as any).buildRequestPlan(
+      [{ role: "user", content: "hello" }],
+      { maxOutputTokens: 7_777 },
+    );
+
+    expect(request.params.max_output_tokens).toBe(7_777);
+  });
+
+  test("advertises an authoritative bounded budget contract", async () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.5",
+    });
+
+    await expect(provider.getExecutionProfile()).resolves.toMatchObject({
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
+    });
+  });
+
   test("rejects structured outputs with tools outside the Grok 4 family", () => {
     const provider = new GrokProvider({
       apiKey: "test-key",

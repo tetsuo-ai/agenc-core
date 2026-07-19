@@ -21,6 +21,89 @@ const NODE_MAJOR = 25;
 const NODE_MODULE_ABI = "141";
 const NODE_API_VERSION = "10";
 
+test("get.agenc.ag source preserves the landing page and release routes", () => {
+  const config = JSON.parse(readFileSync(
+    new URL("../../../packaging/get-agenc-ag/vercel.json", import.meta.url),
+    "utf8",
+  ));
+  assert.deepEqual(Object.keys(config).sort(), ["headers", "redirects"]);
+  assert.deepEqual(config.redirects, [
+    {
+      source: "/install.sh",
+      destination:
+        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.sh",
+      permanent: false,
+    },
+    {
+      source: "/install.ps1",
+      destination:
+        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.ps1",
+      permanent: false,
+    },
+    {
+      source: "/manifest-v2.json",
+      destination:
+        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/" +
+        "agenc-runtime-manifest-v2.json",
+      permanent: false,
+    },
+    {
+      source: "/manifest.json",
+      destination:
+        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/" +
+        "agenc-runtime-manifest.json",
+      permanent: false,
+    },
+  ]);
+  assert.deepEqual(config.headers, [
+    {
+      source: "/(.*)",
+      headers: [
+        { key: "X-Content-Type-Options", value: "nosniff" },
+        { key: "X-Frame-Options", value: "DENY" },
+        { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        {
+          key: "Permissions-Policy",
+          value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        },
+        {
+          key: "Content-Security-Policy",
+          value:
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+            "font-src https://fonts.gstatic.com; img-src 'self' data:; " +
+            "object-src 'none'; base-uri 'none'; form-action 'none'; " +
+            "frame-ancestors 'none'; upgrade-insecure-requests",
+        },
+      ],
+    },
+  ]);
+
+  const version = JSON.parse(readFileSync(
+    new URL("../../../package.json", import.meta.url),
+    "utf8",
+  )).version;
+  const landingPage = readFileSync(
+    new URL("../../../packaging/get-agenc-ag/public/index.html", import.meta.url),
+    "utf8",
+  );
+  const advertisedVersions = [
+    ...landingPage.matchAll(/\bV(\d+\.\d+\.\d+)\b/g),
+  ].map((match) => match[1]);
+  assert.ok(advertisedVersions.length > 0);
+  assert.deepEqual([...new Set(advertisedVersions)], [version]);
+  assert.doesNotMatch(landingPage, /PRE-RELEASE/);
+  assert.ok(landingPage.includes("NODE ≥ 25.9 &lt; 26"));
+  assert.ok(landingPage.includes("curl -fsSL https://get.agenc.ag/install.sh | sh"));
+  for (const asset of ["agenc-logo.svg", "agenc-wordmark.svg"]) {
+    const contents = readFileSync(
+      new URL(`../../../packaging/get-agenc-ag/public/assets/${asset}`, import.meta.url),
+      "utf8",
+    );
+    assert.match(contents, /^<svg\b/);
+  }
+});
+
 test("consumer GitHub CLI pins exactly mirror the reviewed release toolchain", () => {
   const toolchain = JSON.parse(readFileSync(
     new URL("../../../release-toolchain.json", import.meta.url),

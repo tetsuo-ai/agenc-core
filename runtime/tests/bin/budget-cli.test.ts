@@ -1,5 +1,5 @@
-// `agenc budget` CLI (TODO task 15): parse matrix + status/reset against a
-// temp home with a real ledger.
+// `agenc budget` compatibility CLI: policy status remains read-only while the
+// retired per-surface ledger reset is rejected.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +11,6 @@ import {
   parseAgenCBudgetCliArgs,
   runAgenCBudgetCli,
 } from "../../src/bin/budget-cli.js";
-import { BudgetLedger } from "../../src/budget/ledger.js";
 
 describe("parseAgenCBudgetCliArgs", () => {
   test("null for non-budget argv", () => {
@@ -58,7 +57,7 @@ describe("budget CLI against a temp home", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  test("status: disabled by default, no agents", async () => {
+  test("status reports the daemon execution-admission authority", async () => {
     const out: string[] = [];
     const code = await runAgenCBudgetCli(
       { kind: "status", json: true },
@@ -67,14 +66,12 @@ describe("budget CLI against a temp home", () => {
     expect(code).toBe(0);
     const report = JSON.parse(out.join("\n"));
     expect(report.enabled).toBe(false);
-    expect(report.agents).toEqual([]);
+    expect(report.authority).toBe("execution_admission_kernel");
+    expect(report.inspect).toBe("agenc run status <run-id>");
+    expect(report.agents).toBeUndefined();
   });
 
-  test("status reflects env-configured caps and ledger spend", async () => {
-    const ledger = new BudgetLedger({ agencHome: home });
-    ledger.addSpend("worker", 1.25, 5000);
-    ledger.setPaused("worker", true);
-
+  test("status reflects env-configured policy without reading a second ledger", async () => {
     const out: string[] = [];
     const code = await runAgenCBudgetCli(
       { kind: "status", json: true },
@@ -87,26 +84,17 @@ describe("budget CLI against a temp home", () => {
     const report = JSON.parse(out.join("\n"));
     expect(report.enabled).toBe(true);
     expect(report.policy.dailyUsd).toBe(5);
-    const worker = report.agents.find((a: { agentId: string }) => a.agentId === "worker");
-    expect(worker.paused).toBe(true);
-    expect(worker.day.usd).toBeCloseTo(1.25);
+    expect(report.agents).toBeUndefined();
   });
 
-  test("reset clears an agent's spend and pause", async () => {
-    const ledger = new BudgetLedger({ agencHome: home });
-    ledger.addSpend("worker", 3, 1000);
-    ledger.setPaused("worker", true);
-
-    const out: string[] = [];
+  test("reset is rejected instead of mutating a separate ledger", async () => {
+    const err: string[] = [];
     const code = await runAgenCBudgetCli(
       { kind: "reset", agentId: "worker" },
-      { env, stdout: (l) => out.push(l) },
+      { env, stderr: (l) => err.push(l) },
     );
-    expect(code).toBe(0);
-    expect(out.join("\n")).toContain("reset");
-
-    const after = new BudgetLedger({ agencHome: home }).snapshot("worker");
-    expect(after.day.usd).toBe(0);
-    expect(after.paused).toBe(false);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("durable admission accounting is immutable");
+    expect(err.join("\n")).toContain("agenc run status");
   });
 });

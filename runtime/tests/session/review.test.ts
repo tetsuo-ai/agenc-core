@@ -188,6 +188,7 @@ function mkSession(opts?: {
   provider?: LLMProvider;
 }): Session {
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -203,7 +204,9 @@ function mkSession(opts?: {
       toLLMTools: () => [],
       dispatch: async () => ({ content: "", isError: false }),
     },
-    ...(opts?.reviewManager !== undefined ? { reviewManager: opts.reviewManager } : {}),
+    ...(opts?.reviewManager !== undefined
+      ? { reviewManager: opts.reviewManager }
+      : {}),
   } as unknown as SessionServices;
   const sessionOpts: SessionOpts = {
     conversationId: "conv-review-test",
@@ -221,7 +224,9 @@ function mkSession(opts?: {
   return new Session(sessionOpts);
 }
 
-const mkReviewRequest = (overrides?: Partial<ReviewRequest>): ReviewRequest => ({
+const mkReviewRequest = (
+  overrides?: Partial<ReviewRequest>,
+): ReviewRequest => ({
   target: "Diff between HEAD and main",
   userFacingHint: "Focus on error-handling paths",
   ...overrides,
@@ -344,6 +349,7 @@ describe("spawnReviewTask registry lifecycle", () => {
     const session = mkSession({ provider });
     session.eventLog.subscribe((event) => events.push(event.msg));
     session.rolloutStore = {
+      store: { agencVersion: "test" },
       append: (item: unknown) => {
         rolloutItems.push(item);
       },
@@ -364,35 +370,40 @@ describe("spawnReviewTask registry lifecycle", () => {
     expect(outcome?.verdict).toBe("pass");
     expect(exit.reason).toBe("completed");
     expect(session.activeTurn.unsafePeek()).toBeNull();
-    expect(observedMessages.some((message) =>
-      messageText(message).includes("Target: Full driver target"),
-    )).toBe(true);
+    expect(
+      observedMessages.some((message) =>
+        messageText(message).includes("Target: Full driver target"),
+      ),
+    ).toBe(true);
     expect(observedOptions?.tools).toEqual([]);
     expect(observedOptions?.toolChoice).toBe("none");
-    expect(events.find((event) => event.type === "entered_review_mode"))
-      .toMatchObject({
-        type: "entered_review_mode",
-        payload: { target: "Full driver target" },
-      });
-    expect(events.find((event) => event.type === "review_delegate_started"))
-      .toMatchObject({
-        type: "review_delegate_started",
-        payload: {
-          subId: "review-full-driver",
-          snapshot_reused: false,
-          priorFindingCount: 0,
-        },
-      });
-    expect(events.find((event) => event.type === "review_delegate_completed"))
-      .toMatchObject({
-        type: "review_delegate_completed",
-        payload: {
-          subId: "review-full-driver",
-          newFindingCount: 0,
-          verdict: "pass",
-          reason: "completed",
-        },
-      });
+    expect(
+      events.find((event) => event.type === "entered_review_mode"),
+    ).toMatchObject({
+      type: "entered_review_mode",
+      payload: { target: "Full driver target" },
+    });
+    expect(
+      events.find((event) => event.type === "review_delegate_started"),
+    ).toMatchObject({
+      type: "review_delegate_started",
+      payload: {
+        subId: "review-full-driver",
+        snapshot_reused: false,
+        priorFindingCount: 0,
+      },
+    });
+    expect(
+      events.find((event) => event.type === "review_delegate_completed"),
+    ).toMatchObject({
+      type: "review_delegate_completed",
+      payload: {
+        subId: "review-full-driver",
+        newFindingCount: 0,
+        verdict: "pass",
+        reason: "completed",
+      },
+    });
     expect(rolloutItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -474,9 +485,13 @@ describe("spawnReviewTask abort lifecycle", () => {
       subId: "review-A",
       request: mkReviewRequest(),
     });
-    expect(await session.abortTurnIfActive("review-other", "interrupted")).toBe(false);
+    expect(await session.abortTurnIfActive("review-other", "interrupted")).toBe(
+      false,
+    );
     expect(spawned.abortController.signal.aborted).toBe(false);
-    expect(await session.abortTurnIfActive("review-A", "interrupted")).toBe(true);
+    expect(await session.abortTurnIfActive("review-A", "interrupted")).toBe(
+      true,
+    );
     expect(spawned.abortController.signal.aborted).toBe(true);
   });
 
@@ -530,8 +545,16 @@ describe("ReviewManager", () => {
     const manager = new ReviewManager();
     const first = new AbortController();
     const second = new AbortController();
-    manager.register({ subId: "r1", abortController: first, request: mkReviewRequest() });
-    manager.register({ subId: "r1", abortController: second, request: mkReviewRequest() });
+    manager.register({
+      subId: "r1",
+      abortController: first,
+      request: mkReviewRequest(),
+    });
+    manager.register({
+      subId: "r1",
+      abortController: second,
+      request: mkReviewRequest(),
+    });
     expect(manager.size).toBe(1);
     const taken = manager.take("r1");
     expect(taken?.abortController).toBe(second);
@@ -560,8 +583,16 @@ describe("ReviewManager", () => {
     const manager = new ReviewManager();
     const c1 = new AbortController();
     const c2 = new AbortController();
-    manager.register({ subId: "r1", abortController: c1, request: mkReviewRequest() });
-    manager.register({ subId: "r2", abortController: c2, request: mkReviewRequest() });
+    manager.register({
+      subId: "r1",
+      abortController: c1,
+      request: mkReviewRequest(),
+    });
+    manager.register({
+      subId: "r2",
+      abortController: c2,
+      request: mkReviewRequest(),
+    });
     manager.shutdown("review_ended");
     expect(c1.signal.aborted).toBe(true);
     expect(c2.signal.aborted).toBe(true);
@@ -574,7 +605,11 @@ describe("ReviewManager", () => {
     const manager = new ReviewManager();
     const c1 = new AbortController();
     c1.abort("pre-existing");
-    manager.register({ subId: "r1", abortController: c1, request: mkReviewRequest() });
+    manager.register({
+      subId: "r1",
+      abortController: c1,
+      request: mkReviewRequest(),
+    });
     manager.shutdown("review_ended");
     // Reason remains the pre-existing one; upstream AbortController semantics
     // make abort() a no-op once already aborted, but we guard explicitly so
@@ -663,7 +698,8 @@ describe("parseReviewOutput", () => {
   });
 
   it("extracts JSON from a text wrapper (upstream `text.find('{') .. text.rfind('}')`)", () => {
-    const raw = 'Here is the review: {"overall_explanation":"wrapped"} trailing noise';
+    const raw =
+      'Here is the review: {"overall_explanation":"wrapped"} trailing noise';
     const out = parseReviewOutput(raw);
     expect(out.overallExplanation).toBe("wrapped");
   });
@@ -806,7 +842,9 @@ describe("review task interleave with regular tasks", () => {
     expect(regular.abortController.signal.aborted).toBe(true);
     expect(regular.abortController.signal.reason).toBe("replaced");
     expect(session.activeTurn.unsafePeek()?.turnId).toBe("review-A");
-    expect(session.activeTurn.unsafePeek()?.tasks.get("review-A")?.kind).toBe("review");
+    expect(session.activeTurn.unsafePeek()?.tasks.get("review-A")?.kind).toBe(
+      "review",
+    );
     await session.onTaskFinished(review.subId);
   });
 
@@ -894,7 +932,9 @@ describe("review_ended TurnAbortReason", () => {
       subId: "review-A",
       request: mkReviewRequest(),
     });
-    expect(await session.abortTurnIfActive("review-A", "review_ended")).toBe(true);
+    expect(await session.abortTurnIfActive("review-A", "review_ended")).toBe(
+      true,
+    );
     expect(spawned.abortController.signal.reason).toBe("review_ended");
   });
 });

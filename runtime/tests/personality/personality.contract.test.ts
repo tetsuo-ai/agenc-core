@@ -270,6 +270,12 @@ function mkProviderRecorder(response?: Partial<LLMResponse>): {
     seenSystemPrompts,
     provider: {
       name: "stub-provider",
+      getExecutionProfile: async () => ({
+        provider: "stub-provider",
+        model: "test-model",
+        usageReporting: "authoritative",
+        supportsMaxOutputTokens: true,
+      }),
       chat: async () => finalResponse,
       chatStream: async (
         messages: LLMMessage[],
@@ -299,6 +305,7 @@ function mkSession(provider: LLMProvider): {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

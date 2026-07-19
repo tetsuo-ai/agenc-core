@@ -212,11 +212,16 @@ mock-oriented toy baseline.
       80% power at alpha 0.05; never use fewer than 50 independent tasks or three
       fresh trials per system/task for the superiority claim.
 
-[ ] Run the actual AgenC agent, not a mock executor.
+[x] Run the actual AgenC agent, not a mock executor.
     - Keep a small deterministic offline suite for PRs.
     - Run the paid/full matrix explicitly or on a scheduled worker with secrets.
     - Publish a sanitized baseline report from real runs; never commit secrets or
       private prompts/artifacts.
+    - DONE 2026-07-17: real grok-4.5 seed baseline across all 10 qualified pilot
+      tasks (VFR 7/10, 0 infra-invalid, contained, clean key scans); sanitized
+      report at docs/eval/seed-baseline-2026-07-17.md (#1533); offline eval suite
+      runs hermetically in PR gates; harness fixes #1530-#1532, usage/cost
+      capture #1534.
 
 [ ] Add fair comparator runs.
     - Pin comparator versions and document unavoidable capability differences.
@@ -356,7 +361,7 @@ Why this is mandatory: a durable multi-agent product cannot promise budgets,
 bounded fan-out, cancellation, or consistent permissions while each entry point
 starts work differently.
 
-[ ] Define one admission API used before every model turn and tool execution.
+[x] Define one admission API used before every model turn and tool execution.
     - Prove it first through the M5 CLI/SDK slice, then route TUI, print,
       background agents, subagents, workflows/jobs, hooks, cron, MCP, and future
       protocol adapters through it.
@@ -364,7 +369,7 @@ starts work differently.
     - Return a durable run/step identity and an explicit allow, queue, deny, or
       approval-required decision.
 
-[ ] Enforce hierarchical budgets transactionally.
+[x] Enforce hierarchical budgets transactionally.
     - Give every charge a durable unique reservation/reconciliation ID.
     - Reserve a conservative maximum charge before every model call or charged
       tool, and constrain the provider request with corresponding token/output
@@ -382,18 +387,18 @@ starts work differently.
     - Surface every fallback/model/spend decision. Never silently downgrade to
       make a budget appear satisfied.
 
-[ ] Enforce bounded concurrency and durable admission.
+[x] Enforce bounded concurrency and durable admission.
     - Add global, workspace, session, parent, and provider limits.
     - Persist queued work and use starvation-resistant ordering.
     - A daemon restart must reconstruct reservations and the queue before new
       work is admitted.
 
-[ ] Propagate cancellation and deadlines.
+[x] Propagate cancellation and deadlines.
     - Cancelling a parent prevents new child admission and reaches queued and
       running descendants.
     - Preserve final states and partial evidence; cancellation is not deletion.
 
-[ ] Keep the control plane responsive under agent load.
+[x] Keep the control plane responsive under agent load.
     - Make `session.list` bounded/paginated and stop scanning persisted threads
       while holding the session lock.
     - Do not serialize cancel, health, status, or session lookup behind a full
@@ -423,7 +428,7 @@ Why this is mandatory: a daemon-backed engineering agent is only more reliable
 if clients can reconnect and the daemon can recover without hiding loss or
 blindly replaying side effects.
 
-[ ] Add one canonical append-only run journal.
+[x] Add one canonical append-only run journal.
     - Project and converge existing rollout checkpoints, single-writer resume
       leases, dangling-effect recovery, job/task recovery, and bounded
       multiplexer replay. Do not add a parallel state database.
@@ -434,7 +439,7 @@ blindly replaying side effects.
       persist them end to end instead of inventing competing IDs.
     - Make terminal results queryable after the original connection disappears.
 
-[ ] Define honest effect semantics.
+[x] Define honest effect semantics.
     - Preserve the existing `idempotent | side-effecting | interactive`
       `recoveryCategory` contract; add outcome/evidence state instead of a
       competing effect taxonomy.
@@ -445,14 +450,14 @@ blindly replaying side effects.
       the step `unknown_outcome`, stop dependent mutations, and require review.
     - Never claim exactly-once execution for arbitrary shell/network effects.
 
-[ ] Add replay-safe client semantics.
+[x] Add replay-safe client semantics.
     - Extend the existing bounded reconnect buffer into cursor-based durable
       replay with explicit retention gaps, reconnect/reattach, and final-result
       reads.
     - Preserve event IDs and sequence values in the typed SDK.
     - Make duplicate delivery detectable and harmless to supported clients.
 
-[ ] Add failure injection at every critical boundary.
+[x] Add failure injection at every critical boundary.
     - Kill the daemon before and after reservation, model response, tool spawn,
       tool acknowledgement, artifact write, event publish, and terminal commit.
     - Disconnect and reconnect clients at multiple points during streaming and

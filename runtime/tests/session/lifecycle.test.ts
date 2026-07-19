@@ -11,6 +11,7 @@ function stubSession() {
       emit: (e: unknown) => e,
     },
     nextInternalSubId: () => "sub-1",
+    abortAllTasks: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   } as unknown as Parameters<typeof shutdownSessionLifecycle>[0]["session"];
 }
@@ -41,6 +42,33 @@ describe("shutdownSessionLifecycle", () => {
       agentControl: agentControl as any,
     });
     expect(order).toEqual(["agents", "session"]);
+  });
+
+  it("drains the active task before Session runs its close-boundary finalizer", async () => {
+    const order: string[] = [];
+    let releaseAbort!: () => void;
+    const session = stubSession();
+    (session.abortAllTasks as any) = vi.fn(async () => {
+      order.push("abort_started");
+      await new Promise<void>((resolve) => {
+        releaseAbort = resolve;
+      });
+      order.push("abort_drained");
+    });
+    (session.shutdown as any) = vi.fn(async () => {
+      order.push("terminal_finalizer");
+    });
+
+    const shutdown = shutdownSessionLifecycle({ session });
+    await vi.waitFor(() => expect(order).toEqual(["abort_started"]));
+    releaseAbort();
+    await shutdown;
+
+    expect(order).toEqual([
+      "abort_started",
+      "abort_drained",
+      "terminal_finalizer",
+    ]);
   });
 
   it("stops MCP manager last (I-6 fail-soft)", async () => {

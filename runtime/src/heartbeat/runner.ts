@@ -4,13 +4,12 @@
  * One tick, in order:
  *   1. gates: enabled, active hours, cron-running defer, skip-when-busy
  *   2. HEARTBEAT.md present? (absent → nothing to do)
- *   3. BUDGET ADMIT (task-15 enforcer): worst-case pre-flight. On refusal the
- *      turn is NOT run — the budget layer has already paused autonomy — and a
- *      one-line budget notice is delivered to the target (fail closed, visible,
- *      never a silent skip).
- *   4. run the heartbeat turn on the utility model
- *   5. HEARTBEAT_OK reply → suppress delivery; otherwise deliver
- *   6. reconcile the budget from the real usage
+ *   3. run the heartbeat turn on the utility model; production model/tool
+ *      admission happens inside its daemon-owned session
+ *   4. HEARTBEAT_OK reply → suppress delivery; otherwise deliver
+ *
+ * The optional budget seam remains for isolated runner tests/embedders. The
+ * gateway production wire deliberately does not install a surface ledger.
  */
 
 import {
@@ -30,7 +29,7 @@ export interface HeartbeatRunnerOptions {
   readonly turnRunner: HeartbeatTurnRunner;
   readonly delivery: HeartbeatDelivery;
   readonly file: HeartbeatFileReader;
-  /** Optional budget gate; when absent, no budget enforcement. */
+  /** Optional compatibility/test gate; production admission is daemon-owned. */
   readonly budget?: HeartbeatBudgetGate;
   /** True while a cron job is executing (defer). Default: never. */
   readonly isCronRunning?: () => boolean;
@@ -106,8 +105,8 @@ export class HeartbeatRunner {
     const model = policy.model ?? "";
     const maxOutputTokens = this.#o.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
-    // 3. Budget pre-flight (task 15). A refusal means autonomy is paused; do
-    // NOT run the turn — surface it instead of silently spending or skipping.
+    // Optional compatibility/test pre-flight. Production leaves this absent
+    // because the daemon session owns admission at the real call boundary.
     let hold: unknown = null;
     if (this.#o.budget !== undefined) {
       // Prefer policy model; never admit as "unknown" under USD caps (todo-104).

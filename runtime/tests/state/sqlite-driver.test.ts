@@ -14,6 +14,7 @@ import {
   applyMigrations,
   openStateDatabases,
   resolveStateDatabasePaths,
+  STATE_PRE_V15_BACKUP_FILENAME,
   STATE_PRE_V12_BACKUP_FILENAME,
 } from "./sqlite-driver.js";
 import { STATE_DB_MIGRATIONS } from "./migrations/index.js";
@@ -77,10 +78,12 @@ describe("openStateDatabases", () => {
         "tool_state_json",
         "mcp_connection_state_json",
       ]);
-      expect(snapshotColumns.find((column) => column.name === "session_id"))
-        .toMatchObject({ notnull: 1, pk: 1 });
-      expect(snapshotColumns.find((column) => column.name === "snapshot_at"))
-        .toMatchObject({ notnull: 1, pk: 2 });
+      expect(
+        snapshotColumns.find((column) => column.name === "session_id"),
+      ).toMatchObject({ notnull: 1, pk: 1 });
+      expect(
+        snapshotColumns.find((column) => column.name === "snapshot_at"),
+      ).toMatchObject({ notnull: 1, pk: 2 });
       const toolCallColumns = driver
         .prepareState<[], { name: string; notnull: number; pk: number }>(
           "PRAGMA table_info(in_flight_tool_calls)",
@@ -98,10 +101,12 @@ describe("openStateDatabases", () => {
         "output_log_bytes",
         "recovery_category",
       ]);
-      expect(toolCallColumns.find((column) => column.name === "session_id"))
-        .toMatchObject({ notnull: 1, pk: 1 });
-      expect(toolCallColumns.find((column) => column.name === "tool_call_id"))
-        .toMatchObject({ notnull: 1, pk: 2 });
+      expect(
+        toolCallColumns.find((column) => column.name === "session_id"),
+      ).toMatchObject({ notnull: 1, pk: 1 });
+      expect(
+        toolCallColumns.find((column) => column.name === "tool_call_id"),
+      ).toMatchObject({ notnull: 1, pk: 2 });
       expect(
         driver
           .prepareLogs<[], { name: string }>(
@@ -138,7 +143,10 @@ describe("openStateDatabases", () => {
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
     const raw = new Database(paths.stateDbPath);
     try {
-      applyMigrations(raw, STATE_DB_MIGRATIONS.slice(0, -1));
+      applyMigrations(
+        raw,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+      );
       const insertEdge = raw.prepare(
         `INSERT INTO thread_spawn_edges (
           child_thread_id, parent_thread_id, parent_path, metadata_json, status
@@ -191,7 +199,7 @@ describe("openStateDatabases", () => {
             "SELECT MAX(version) AS version FROM schema_migrations",
           )
           .get()?.version,
-      ).toBe(12);
+      ).toBe(15);
     } finally {
       driver.close();
     }
@@ -248,7 +256,10 @@ describe("openStateDatabases", () => {
     const restored = new Database(restoredPath);
     try {
       expect(() =>
-        applyMigrations(restored, STATE_DB_MIGRATIONS.slice(0, -1)),
+        applyMigrations(
+          restored,
+          STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+        ),
       ).not.toThrow();
       expect(
         restored
@@ -274,23 +285,28 @@ describe("openStateDatabases", () => {
     mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
     const v11 = new Database(paths.stateDbPath);
     try {
-      applyMigrations(v11, STATE_DB_MIGRATIONS.slice(0, -1));
-      v11.prepare(
-        `INSERT INTO thread_spawn_edges (
+      applyMigrations(
+        v11,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 12),
+      );
+      v11
+        .prepare(
+          `INSERT INTO thread_spawn_edges (
           child_thread_id, parent_thread_id, parent_path, metadata_json, status
         ) VALUES (?, ?, ?, ?, ?)`,
-      ).run(
-        "concurrent-child",
-        "root-1",
-        "/root",
-        JSON.stringify({
-          agentId: "concurrent-child",
-          agentPath: "/root/concurrent",
-          agentRole: "default",
-          depth: 1,
-        }),
-        "open",
-      );
+        )
+        .run(
+          "concurrent-child",
+          "root-1",
+          "/root",
+          JSON.stringify({
+            agentId: "concurrent-child",
+            agentPath: "/root/concurrent",
+            agentRole: "default",
+            depth: 1,
+          }),
+          "open",
+        );
 
       const upgraded = openStateDatabases({ cwd });
       upgraded.close();
@@ -317,6 +333,90 @@ describe("openStateDatabases", () => {
       }
     } finally {
       v11.close();
+    }
+  });
+
+  it("creates a verified pre-v15 backup before installing durable run state", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const v14 = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(
+        v14,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version < 15),
+      );
+      v14.prepare(
+        `INSERT INTO agent_runs (
+           id, objective, status, started_at, last_active_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        "run-before-v15",
+        "preserve me",
+        "running",
+        "2026-07-18T00:00:00.000Z",
+        "2026-07-18T00:00:01.000Z",
+      );
+    } finally {
+      v14.close();
+    }
+
+    const upgraded = openStateDatabases({ cwd });
+    upgraded.close();
+
+    const backupPath = join(
+      paths.projectDir,
+      STATE_PRE_V15_BACKUP_FILENAME,
+    );
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = new Database(backupPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      expect(
+        backup
+          .prepare("SELECT MAX(version) AS version FROM schema_migrations")
+          .get(),
+      ).toEqual({ version: 14 });
+      expect(
+        backup
+          .prepare(
+            "SELECT objective FROM agent_runs WHERE id = 'run-before-v15'",
+          )
+          .get(),
+      ).toEqual({ objective: "preserve me" });
+      expect(
+        backup
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name = 'run_terminal_results'`,
+          )
+          .get(),
+      ).toBeUndefined();
+      expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({
+        integrity_check: "ok",
+      });
+    } finally {
+      backup.close();
+    }
+
+    const restoredPath = join(paths.projectDir, "restored-pre-v15.sqlite");
+    copyFileSync(backupPath, restoredPath);
+    const restored = new Database(restoredPath);
+    try {
+      expect(() =>
+        applyMigrations(
+          restored,
+          STATE_DB_MIGRATIONS.filter((migration) => migration.version < 15),
+        ),
+      ).not.toThrow();
+      expect(
+        restored
+          .prepare("SELECT objective FROM agent_runs WHERE id = ?")
+          .get("run-before-v15"),
+      ).toEqual({ objective: "preserve me" });
+    } finally {
+      restored.close();
     }
   });
 });

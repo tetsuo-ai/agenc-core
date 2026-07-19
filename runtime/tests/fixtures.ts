@@ -200,6 +200,7 @@ export function mkSession(opts?: {
     totalTokenUsage: opts?.totalTokenUsage ?? 0,
   };
   const services: SessionServices = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

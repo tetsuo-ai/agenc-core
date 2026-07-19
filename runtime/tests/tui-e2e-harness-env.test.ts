@@ -91,4 +91,34 @@ describe("TUI E2E harness state isolation", () => {
     expect(source).toContain("env: tempDaemonEnv(home, wsPort)");
     expect(source).not.toMatch(/env:\s*\{[^}]*HOME:\s*home/su);
   });
+
+  it.each([
+    "31-permission-accept.mjs",
+    "32-permission-deny.mjs",
+    "33-permission-always.mjs",
+  ])("keeps approval coverage while bypassing only the host sandbox in %s", (scenario) => {
+    const source = readFileSync(
+      new URL(`../scripts/check-tui-e2e/scenarios/${scenario}`, import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain('sandboxMode: "danger-full-access"');
+    expect(source).toContain('args: ["--permission-mode", "default"]');
+    expect(source).toContain('path.join(slimCwd, "package.json")');
+    expect(source).not.toContain('args: ["--yolo"]');
+  });
+
+  it("configures a scenario-only sandbox override before starting its temp daemon", () => {
+    const harness = readFileSync(
+      new URL("../scripts/check-tui-e2e/harness.mjs", import.meta.url),
+      "utf8",
+    );
+    const configIndex = harness.indexOf(
+      '[BIN_AGENC, "config", "set", "sandbox_mode", sandboxMode]',
+    );
+    const daemonIndex = harness.indexOf('[BIN_AGENC, "daemon", "start"]');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(daemonIndex).toBeGreaterThan(configIndex);
+  });
 });

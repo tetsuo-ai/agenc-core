@@ -1,17 +1,18 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.6.2**). For the
+A current map of how `agenc` is put together (runtime **0.7.0**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
-| Doc | Scope |
-| --- | --- |
-| [`reference/daemon.md`](reference/daemon.md) | Daemon process, socket, protocol, lifecycle |
-| [`reference/providers.md`](reference/providers.md) | Built-in providers, defaults, credentials |
-| [`reference/autonomy.md`](reference/autonomy.md) | Budget, heartbeat, cron delivery, hooks HTTP |
-| [`design/budget-enforcement.md`](design/budget-enforcement.md) | Budget design + live wire-up |
-| [`gateway.md`](gateway.md) | Channel gateway operator guide |
-| [`sdk.md`](sdk.md) | `@tetsuo-ai/agenc-sdk` embedding API |
+| Doc                                                                              | Scope                                                                        |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`reference/daemon.md`](reference/daemon.md)                                     | Daemon process, socket, protocol, lifecycle                                  |
+| [`reference/providers.md`](reference/providers.md)                               | Built-in providers, defaults, credentials                                    |
+| [`reference/autonomy.md`](reference/autonomy.md)                                 | Budget, heartbeat, cron delivery, hooks HTTP                                 |
+| [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md)   | Live durable budget/admission design                                         |
+| [`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md) | Canonical run journal, effects, terminal results, replay, and crash recovery |
+| [`gateway.md`](gateway.md)                                                       | Channel gateway operator guide                                               |
+| [`sdk.md`](sdk.md)                                                               | `@tetsuo-ai/agenc-sdk` embedding API                                         |
 
 ## Process model
 
@@ -53,90 +54,129 @@ Everything past the launcher lives in the single runtime workspace
 
 ### Packages
 
-| Package | Role |
-| --- | --- |
-| `packages/agenc` (`@tetsuo-ai/agenc`) | Public launcher + postinstall runtime ensure |
-| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol |
-| `runtime` (`@tetsuo-ai/runtime`) | Full runtime: CLI, daemon, TUI, session/agent engine, tools, providers |
+| Package                                       | Role                                                                   |
+| --------------------------------------------- | ---------------------------------------------------------------------- |
+| `packages/agenc` (`@tetsuo-ai/agenc`)         | Public launcher + postinstall runtime ensure                           |
+| `packages/agenc-sdk` (`@tetsuo-ai/agenc-sdk`) | Zero-dep embedding/control client for the daemon protocol              |
+| `runtime` (`@tetsuo-ai/runtime`)              | Full runtime: CLI, daemon, TUI, session/agent engine, tools, providers |
 
 ## Runtime subsystems (`runtime/src`)
 
-| Dir | Responsibility |
-| --- | --- |
-| `bin/` | CLI entry (`agenc.ts`) and subcommand adapters: auth, config, mcp, doctor, init, providers, state, budget, gateway, remote, security, onboard, update, trajectories, … |
-| `app-server/` | Daemon: transports, JSON-RPC dispatch, agent/session lifecycle, auth, health, background-agent runner, command exec, realtime, overload limits |
-| `app-server-client/` | In-process / client helpers for talking to the daemon |
-| `app-server-protocol/` | Shared protocol constants (e.g. portal default local endpoint) |
-| `session/` | Session engine: turn loop, transcript, append-only rollout store + `index.json`, resume, cost, autonomous mode |
-| `agents/` | Background-agent state, registry, roles, mailbox, worktree isolation, workflow runner, delegate/fork |
-| `auth/` | Local and remote auth backends, BYOK precedence, provider auth selection, session auth state |
-| `llm/` | Provider-neutral client/request shaping, model catalog, retries, streaming, wire adapters, OAuth refresh |
-| `tools/` | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …) |
-| `tool-registry.ts` / `tools.ts` | Tool registration and assembly entry points |
-| `permissions/` | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log |
-| `sandbox/` | OS sandbox launch helpers (bubblewrap/Landlock on Linux, Seatbelt on macOS via `@anthropic-ai/sandbox-runtime`) |
-| `mcp-client/` / `mcp-server/` / `mcp/` | Outbound MCP client, server framework, and serve bootstrap |
-| `gateway/` | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
-| `heartbeat/` | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md). |
-| `budget/` | Cumulative daily/monthly spend ledger + `BudgetEnforcer` admit/reconcile. See [`design/budget-enforcement.md`](design/budget-enforcement.md). |
-| `phases/` | Turn phases: stream model, execute tools, commit, stop hooks, post-sample recovery, continuation nudge |
-| `hooks/` | Configured lifecycle hooks (PreToolUse / PostToolUse / Stop / …) and hook engine |
-| `elicitation/` | Structured user-input / MCP elicitation request-response |
-| `memory/` / `memdir/` | Project/session memory extraction, storage, aging, retrieval; team memory paths |
-| `config/` | Config schema, loader, migrations, profiles, model/provider resolution |
-| `state/` | On-disk SQLite project state, migrations, recovery, pruning, agent-runs, health stats |
-| `secrets/` | Secret redaction / sanitizer |
-| `transaction-guard/` | Opt-in local SLM guard for Solana-like mutating tool calls |
-| `unified-exec/` / `pty/` / `shell-command/` | Process execution, PTY helpers, shell parsing/safety |
-| `commands/` | Slash-command registry and TUI/headless command implementations |
-| `plugins/` / `skills/` / `outputStyles/` | Plugin manifests/marketplace/registration; skill loading; output styles |
-| `prompts/` | System prompt assembly, sections, attachments |
-| `cost/` | Session cost tracker + hook |
-| `coordinator/` | Coordinator mode (orchestrate via spawned agents) |
-| `personality/` | Personality migration / resolution helpers |
-| `planning/` | Plan files and exit-plan approval |
-| `thread-store/` | Live thread + file thread store for rollouts |
-| `tasks/` | Task UI / task store surface for agent work items |
-| `file-watcher/` | Workspace file-watch helpers |
-| `transport/` | Transport fallback ladder |
-| `services/` | Concrete provider/API wire layer, caching, and related services |
-| `recovery/` | Crash/recovery helpers for in-flight work |
-| `onboarding/` | Guided `agenc onboard` wizard UI |
-| `eval/` | Legacy diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`) |
-| `eval-contract/` | Immutable task/preregistration/evidence/score contract v1 |
-| `eval-suites/` | Versioned competitive/trust suite definitions, catalog, schedule compiler, and validators |
-| `tui/` | Terminal UI (custom Ink reconciler fork under `tui/ink`) |
-| `entrypoints/` | Public/SDK type entry surfaces |
-| `protocol/` | Marketplace protocol A1/A2 (read-only CLI adapter + types); mutating claim verbs reserved / owner-gated |
-| `bootstrap/` / `lifecycle/` / `conversation/` | Bootstrap state, shutdown/signals, conversation token-budget and realtime |
-| `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities |
-| `browser/` | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool |
-| `build/` / `version.ts` / `index.ts` | Feature flags, version stamp (`0.6.2`), public barrel |
+| Dir                                                                      | Responsibility                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bin/`                                                                   | CLI entry (`agenc.ts`) and subcommand adapters: auth, config, mcp, doctor, init, providers, state, budget, gateway, remote, security, onboard, update, trajectories, …                                                                         |
+| `app-server/`                                                            | Daemon: transports, JSON-RPC dispatch, agent/session lifecycle, durable run inspection/replay, auth, health, background-agent runner, command exec, realtime, overload limits                                                                  |
+| `app-server-client/`                                                     | In-process / client helpers for talking to the daemon                                                                                                                                                                                          |
+| `app-server-protocol/`                                                   | Shared protocol constants (e.g. portal default local endpoint)                                                                                                                                                                                 |
+| `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode                                                                                      |
+| `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, workflow runner, delegate/fork                                                                                                                                           |
+| `auth/`                                                                  | Local and remote auth backends, BYOK precedence, provider auth selection, session auth state                                                                                                                                                   |
+| `llm/`                                                                   | Provider-neutral client/request shaping, model catalog, retries, streaming, wire adapters, OAuth refresh                                                                                                                                       |
+| `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
+| `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
+| `permissions/`                                                           | Trust, approval policy, rules, modes, sandbox policy, unattended policy, guardian/classifier, audit log                                                                                                                                        |
+| `sandbox/`                                                               | OS sandbox launch helpers (bubblewrap/Landlock on Linux, Seatbelt on macOS via `@anthropic-ai/sandbox-runtime`)                                                                                                                                |
+| `mcp-client/` / `mcp-server/` / `mcp/`                                   | Outbound MCP client, server framework, and serve bootstrap                                                                                                                                                                                     |
+| `gateway/`                                                               | Channel gateway as a **daemon client**: Telegram, Discord, Slack, WebChat, stdio; pairing, bindings, approvals, session routing, untrusted framing, hooks HTTP, cron delivery, optional media/onchain helpers. See [`gateway.md`](gateway.md). |
+| `heartbeat/`                                                             | Proactive ticks: policy, `HEARTBEAT.md` reader, runner, scheduler, gateway/budget wire. See [`reference/autonomy.md`](reference/autonomy.md).                                                                                                  |
+| `budget/`                                                                | Daemon-owned execution admission, hierarchical budgets, concurrency, cancellation, and durable reconciliation. See [`design/execution-admission-kernel.md`](design/execution-admission-kernel.md).                                             |
+| `phases/`                                                                | Turn phases: stream model, execute tools, commit, stop hooks, post-sample recovery, continuation nudge                                                                                                                                         |
+| `hooks/`                                                                 | Configured lifecycle hooks (PreToolUse / PostToolUse / Stop / …) and hook engine                                                                                                                                                               |
+| `elicitation/`                                                           | Structured user-input / MCP elicitation request-response                                                                                                                                                                                       |
+| `memory/` / `memdir/`                                                    | Project/session memory extraction, storage, aging, retrieval; team memory paths                                                                                                                                                                |
+| `config/`                                                                | Config schema, loader, migrations, profiles, model/provider resolution                                                                                                                                                                         |
+| `state/`                                                                 | On-disk SQLite project state, migrations, rebuildable run/effect/journal projections, recovery, pruning, agent-runs, health stats                                                                                                              |
+| `durability/`                                                            | Crash failpoints and immutable, atomic artifact publication                                                                                                                                                                                    |
+| `secrets/`                                                               | Secret redaction / sanitizer                                                                                                                                                                                                                   |
+| `transaction-guard/`                                                     | Opt-in local SLM guard for Solana-like mutating tool calls                                                                                                                                                                                     |
+| `unified-exec/` / `pty/` / `shell-command/`                              | Process execution, PTY helpers, shell parsing/safety                                                                                                                                                                                           |
+| `commands/`                                                              | Slash-command registry and TUI/headless command implementations                                                                                                                                                                                |
+| `plugins/` / `skills/` / `outputStyles/`                                 | Plugin manifests/marketplace/registration; skill loading; output styles                                                                                                                                                                        |
+| `prompts/`                                                               | System prompt assembly, sections, attachments                                                                                                                                                                                                  |
+| `cost/`                                                                  | Session cost tracker + hook                                                                                                                                                                                                                    |
+| `coordinator/`                                                           | Coordinator mode (orchestrate via spawned agents)                                                                                                                                                                                              |
+| `personality/`                                                           | Personality migration / resolution helpers                                                                                                                                                                                                     |
+| `planning/`                                                              | Plan files and exit-plan approval                                                                                                                                                                                                              |
+| `thread-store/`                                                          | Live thread + file thread store for rollouts                                                                                                                                                                                                   |
+| `tasks/`                                                                 | Task UI / task store surface for agent work items                                                                                                                                                                                              |
+| `file-watcher/`                                                          | Workspace file-watch helpers                                                                                                                                                                                                                   |
+| `transport/`                                                             | Transport fallback ladder                                                                                                                                                                                                                      |
+| `services/`                                                              | Concrete provider/API wire layer, caching, and related services                                                                                                                                                                                |
+| `recovery/`                                                              | Crash/recovery helpers for in-flight work                                                                                                                                                                                                      |
+| `onboarding/`                                                            | Guided `agenc onboard` wizard UI                                                                                                                                                                                                               |
+| `eval/`                                                                  | Legacy diagnostic agent-eval report schema (runner lives under `runtime/scripts` + `runtime/eval`)                                                                                                                                             |
+| `eval-contract/`                                                         | Immutable task/preregistration/evidence/score contract v1                                                                                                                                                                                      |
+| `eval-suites/`                                                           | Versioned competitive/trust suite definitions, catalog, schedule compiler, and validators                                                                                                                                                      |
+| `tui/`                                                                   | Terminal UI (custom Ink reconciler fork under `tui/ink`)                                                                                                                                                                                       |
+| `entrypoints/`                                                           | Public/SDK type entry surfaces                                                                                                                                                                                                                 |
+| `protocol/`                                                              | Marketplace protocol A1/A2 (read-only CLI adapter + types); mutating claim verbs reserved / owner-gated                                                                                                                                        |
+| `bootstrap/` / `lifecycle/` / `conversation/`                            | Bootstrap state, shutdown/signals, conversation token-budget and realtime                                                                                                                                                                      |
+| `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
+| `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
+| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.7.0`), public barrel                                                                                                                                                                                          |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
 The daemon and runtime persist under one home. Relocate with an absolute
 `AGENC_HOME=/path`; relative values are rejected.
 
-| Path | Purpose |
-| --- | --- |
-| `daemon.sock` | Unix domain socket (clients + SDK) |
-| `daemon.cookie` | Shared secret for local client auth (0600) |
-| `daemon.pid` | Detached daemon PID |
-| `daemon.log` | Daemon log sink |
-| `daemon-snapshot.json` / runtime info files | Restart/recovery metadata |
-| `config.toml` | Operator config (`[budget]`, `[heartbeat]`, providers, …) |
-| `auth.json` | Stored credentials / auth backend state |
-| `budget/ledger.json` | Cumulative spend ledger (0600, atomic writes) |
-| `runtime/<version>/<artifact-key>-sha256-<digest>/` | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable |
-| `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry |
-| `gateway/` | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane |
-| `projects/<slug>/` | Per-project SQLite state + `sessions/<id>/` rollouts |
-| `sessions/` (project-scoped) | Append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename) |
-| logs / state DBs | SQLite state + logs databases under project/home layout |
+| Path                                                               | Purpose                                                                                                                              |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `daemon.sock`                                                      | Unix domain socket (clients + SDK)                                                                                                   |
+| `daemon.cookie`                                                    | Shared secret for local client auth (0600)                                                                                           |
+| `daemon.pid`                                                       | Detached daemon PID                                                                                                                  |
+| `daemon.log`                                                       | Daemon log sink                                                                                                                      |
+| `daemon-snapshot.json` / runtime info files                        | Restart/recovery metadata                                                                                                            |
+| `config.toml`                                                      | Operator config (`[budget]`, `[heartbeat]`, providers, …)                                                                            |
+| `auth.json`                                                        | Stored credentials / auth backend state                                                                                              |
+| `runtime/<version>/<artifact-key>-sha256-<digest>/`                | Immutable content-addressed, ABI-keyed runtimes; staged/backup promotion is crash-recoverable                                        |
+| `runtime/.activation-lock.sqlite` / `.activation-transaction.json` | `AGENC_HOME` activation lock and durable roll-forward journal; canonical wrapper locks live in a private per-user registry           |
+| `gateway/`                                                         | Gateway sessions map, pairing, webchat token, heartbeat session id, control plane                                                    |
+| `projects/<slug>/`                                                 | Per-project SQLite state (including execution admission and schema-v15 run/effect projections) + canonical `sessions/<id>/` rollouts |
+| `projects/<slug>/agenc-state_1.pre-v15.sqlite`                     | Automatic verified rollback snapshot created before upgrading an existing project database to schema v15                             |
+| `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename)                                               |
+| logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
 
 Optional trajectory export writes redacted rollout items via
 `AGENC_TRAJECTORY_EXPORT_PATH` or `AGENC_TRAJECTORY_EXPORT_DIR`.
+
+### Durable run event path
+
+The rollout JSONL is the event authority. Schema-v15 SQLite tables are
+rebuildable lifecycle/effect/query projections, and `thread_rollout_items` is
+the replay index. Durable events are sequenced, appended, and fsynced before
+they reach either live subscriber surface:
+
+```text
+event stamp -> rollout append + fsync -> EventLog / txEvent publish
+                    |
+                    +-> thread_rollout_items -> run.replay / run.evidence
+                    +-> v15 projections      -> run.status / run.result
+```
+
+Effects add `effect_intent` before physical dispatch, followed by a proven
+`effect_result` or an honest `effect_unknown_outcome`. Only operations whose
+contract is explicitly `idempotent` carry an idempotency key or qualify for
+replay. Side-effecting and interactive work never receives an arbitrary
+exactly-once claim. Terminal results are immutable within a lifecycle epoch;
+an explicit reopen creates the next epoch and keeps prior results. The final
+automatic execution event is `run_terminal`; a stopped-session operator may
+later take the exclusive rollout lease to append review evidence without
+resuming execution. The terminal result's `lastSequence` remains that terminal
+snapshot coordinate even when the audit-journal tail advances.
+
+Admitted child and review runs have their own canonical journals. A failure
+after spawn dispatch but before child construction seals a minimal failed or
+cancelled journal, and a terminal `(runId, epoch)` cannot acquire a fresh
+writer under another rollout path. Resource cleanup failures after terminal
+commit are warnings; a journal-seal failure still fails the run.
+
+Cursor replay uses per-run `(sequence, eventId)` identities. Retention,
+compaction, corruption truncation, and bounded live-buffer eviction surface an
+explicit `event_gap`; a cursor beyond the canonical tail surfaces
+`cursor_ahead`. Neither case advances silently. Details and the 15-point
+`SIGKILL` acceptance matrix are in
+[`design/durable-runs-effects-events.md`](design/durable-runs-effects-events.md).
 
 `AGENC_HOME` is a single-host trust and locking boundary. It must live on a
 local filesystem with reliable SQLite OS locks and atomic same-filesystem
@@ -151,16 +191,16 @@ lock creation; Windows lock paths are NTFS-only and do not accept ReFS.
 
 ## Client surfaces
 
-| Surface | How it attaches | Notes |
-| --- | --- | --- |
-| Interactive TUI | Runtime CLI → daemon | Default `agenc` |
-| Print / headless | `agenc --no-tui` / `-p` | Stream-json capable; auto-denies unhandled permissions |
+| Surface           | How it attaches                            | Notes                                                         |
+| ----------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| Interactive TUI   | Runtime CLI → daemon                       | Default `agenc`                                               |
+| Print / headless  | `agenc --no-tui` / `-p`                    | Stream-json capable; auto-denies unhandled permissions        |
 | Background agents | `agent.*` daemon methods / `agenc agent …` | Per-run `AgentBudgetConfig` caps only (not cumulative budget) |
-| Channel gateway | `agenc gateway run` via SDK | Telegram, Discord, Slack, WebChat, stdio |
-| Hooks HTTP | Gateway hooks server | `POST /hooks/agent` (loopback, bearer token) |
-| Cron delivery | Gateway cron delivery loop | Delivery-tagged tasks from `.agenc/scheduled_tasks.json` |
-| Embedding SDK | `@tetsuo-ai/agenc-sdk` `connect()` | Typed JSON-RPC client; also `promptViaSubprocess()` |
-| Remote control | `agenc remote` / remote auth backend | See [`remote-control.md`](remote-control.md) |
+| Channel gateway   | `agenc gateway run` via SDK                | Telegram, Discord, Slack, WebChat, stdio                      |
+| Hooks HTTP        | Gateway hooks server                       | `POST /hooks/agent` (loopback, bearer token)                  |
+| Cron delivery     | Gateway cron delivery loop                 | Delivery-tagged tasks from `.agenc/scheduled_tasks.json`      |
+| Embedding SDK     | `@tetsuo-ai/agenc-sdk` `connect()`         | Typed JSON-RPC client; also `promptViaSubprocess()`           |
+| Remote control    | `agenc remote` / remote auth backend       | See [`remote-control.md`](remote-control.md)                  |
 
 ### Attachment and capability delivery
 
@@ -189,16 +229,16 @@ layer resolves an approval decision from the active mode and rule set.
 **Permission modes** (`runtime/src/types/permissions.ts`,
 `runtime/src/permissions/permission-mode.ts`):
 
-| Mode | Role |
-| --- | --- |
-| `default` | Ask on request for sensitive tools |
-| `acceptEdits` | Auto-allow file edits; still ask for riskier actions |
-| `plan` | Plan-only posture; mutating work gated until exit-plan approval |
-| `bypassPermissions` | YOLO-style: skip prompts down to a deny floor (`--yolo`) |
-| `dontAsk` | Deny when would-ask (no interactive prompt) |
-| `auto` | Classifier-assisted auto mode (feature-gated) |
-| `unattended` | Background-agent policy (allowlist/denylist / pause) |
-| `bubble` | Bubble permission decisions to a parent context |
+| Mode                | Role                                                            |
+| ------------------- | --------------------------------------------------------------- |
+| `default`           | Ask on request for sensitive tools                              |
+| `acceptEdits`       | Auto-allow file edits; still ask for riskier actions            |
+| `plan`              | Plan-only posture; mutating work gated until exit-plan approval |
+| `bypassPermissions` | YOLO-style: skip prompts down to a deny floor (`--yolo`)        |
+| `dontAsk`           | Deny when would-ask (no interactive prompt)                     |
+| `auto`              | Classifier-assisted auto mode (feature-gated)                   |
+| `unattended`        | Background-agent policy (allowlist/denylist / pause)            |
+| `bubble`            | Bubble permission decisions to a parent context                 |
 
 When enabled, the OS sandbox confines shell execution at the kernel level.
 `--yolo` / bypass waives approval prompts — it does **not** enable kernel
@@ -226,14 +266,14 @@ One sampling iteration of the turn loop (`session/run-turn.ts`) runs an ordered
 phase machine. Module files under `runtime/src/phases/` own the heavy steps;
 `TurnState` documents the same numbering.
 
-| # | Stage | Module / site | Role |
-| --- | --- | --- | --- |
-| 1 | `prepareContext` | inline in `session/run-turn.ts` | Build messages for query, attachments, compact, request contract |
-| 2 | `streamModel` | `phases/stream-model.ts` | Stream provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
-| 3 | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors |
-| 4 | `continuationNudge` | `phases/continuation-nudge.ts` | Nudge re-entry when the model stopped without required follow-up |
-| 5 | `executeTools` | `phases/execute-tools.ts` | Drain / finalize tool dispatch → tool results |
-| 6 | `commit` | `phases/commit.ts` | Terminal commit for the iteration; may re-enter via stop-hooks |
+| #   | Stage                | Module / site                    | Role                                                                                              |
+| --- | -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 1   | `prepareContext`     | inline in `session/run-turn.ts`  | Build messages for query, attachments, compact, request contract                                  |
+| 2   | `streamModel`        | `phases/stream-model.ts`         | Stream provider response; capture assistant + tool-use blocks (may start streaming tool dispatch) |
+| 3   | `postSampleRecovery` | `phases/post-sample-recovery.ts` | Run recovery ladder on stream outcome / withheld errors                                           |
+| 4   | `continuationNudge`  | `phases/continuation-nudge.ts`   | Nudge re-entry when the model stopped without required follow-up                                  |
+| 5   | `executeTools`       | `phases/execute-tools.ts`        | Drain / finalize tool dispatch → tool results                                                     |
+| 6   | `commit`             | `phases/commit.ts`               | Terminal commit for the iteration; may re-enter via stop-hooks                                    |
 
 `phases/stop-hooks.ts` is not a separate numbered stage: stop-hook blocking is
 evaluated from `commit` (and can set `transition` so the outer loop re-enters).
@@ -250,14 +290,14 @@ recovery condition, triggers are evaluated in a **fixed priority order**
 `buildDefaultTriggerOrder`). Orchestration + re-entry cap:
 `recovery/fallback-ladder.ts` (`RecoveryLadder`, `MAX_RECOVERY_REENTRIES = 5`).
 
-| Order | Trigger name | Intent |
-| --- | --- | --- |
-| 1 | `isWithheld413` | Prompt-too-long → collapse / reactive recovery |
-| 2 | `isWithheldMedia` | Media-too-large → reactive recovery (skips collapse) |
-| 3 | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation |
-| 4 | `stopHookBlocking` | Stop-hook inject + re-enter |
-| 5 | `streamingFallbackOccured` | Streaming fallback tombstone + recreate executor |
-| 6 | `FallbackTriggeredError` | Model fallback swap |
+| Order | Trigger name                | Intent                                               |
+| ----- | --------------------------- | ---------------------------------------------------- |
+| 1     | `isWithheld413`             | Prompt-too-long → collapse / reactive recovery       |
+| 2     | `isWithheldMedia`           | Media-too-large → reactive recovery (skips collapse) |
+| 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation         |
+| 4     | `stopHookBlocking`          | Stop-hook inject + re-enter                          |
+| 5     | `streamingFallbackOccured`  | Streaming fallback tombstone + recreate executor     |
+| 6     | `FallbackTriggeredError`    | Model fallback swap                                  |
 
 Related modules: `api-errors.ts` (match predicates), `model-fallback.ts`,
 `max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
@@ -268,11 +308,11 @@ the I-10 tests that pin `I10_TRIGGER_ORDER`.
 
 Default provider is **`grok`** (xAI). Model defaults are dual-sourced:
 
-| Source | Grok default | Evidence |
-| --- | --- | --- |
-| Fresh `defaultConfig().model` | **`grok-4.5`** | `runtime/src/config/schema.ts` |
-| Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | **`grok-4.5`** | `runtime/src/llm/registry/provider-info.ts` |
-| Managed OpenRouter paid first model | **`x-ai/grok-4.5`** | `subscription-managed-models.ts` |
+| Source                                                          | Grok default        | Evidence                                    |
+| --------------------------------------------------------------- | ------------------- | ------------------------------------------- |
+| Fresh `defaultConfig().model`                                   | **`grok-4.5`**      | `runtime/src/config/schema.ts`              |
+| Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | **`grok-4.5`**      | `runtime/src/llm/registry/provider-info.ts` |
+| Managed OpenRouter paid first model                             | **`x-ai/grok-4.5`** | `subscription-managed-models.ts`            |
 
 Bare interactive startup with an empty/fresh config uses the **config** default
 (`grok-4.5`). Provider-map and paid managed OpenRouter also use **4.5**.
@@ -293,16 +333,16 @@ There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 
 Autonomous surfaces share one design: **fail closed, never silent spend**.
 
-| Surface | Module | Cumulative `BudgetEnforcer`? |
-| --- | --- | --- |
-| Heartbeat ticks | `heartbeat/` (wired from gateway run) | **Yes** (`wire.ts` + `runner.ts`) |
-| Cron delivery | `gateway/cron-delivery.ts` | **Yes** (agent id `cron:<taskId>`) |
-| Hooks HTTP | `gateway/hooks.ts` | **Yes** (agent id `hook:<name>`; 429 on refuse) |
-| Interactive TUI / print turns | `session/` | **No** (`enforce_interactive` is reserved; path not admit-wired) |
-| Background agent runs | `app-server/background-agent-runner.ts` | **No** — **per-run** `[agent.budget]` only |
+| Surface                       | Module                                  | Daemon execution admission?                                                        |
+| ----------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
+| Heartbeat ticks               | `heartbeat/` (wired from gateway run)   | **Yes**, inside its daemon-owned background session                                |
+| Cron delivery                 | `gateway/cron-delivery.ts`              | **Yes**, inside its daemon-owned background session                                |
+| Hooks HTTP                    | `gateway/hooks.ts`                      | **Yes**, inside its daemon-owned background session; denial is HTTP 429            |
+| Interactive TUI / print turns | `session/`                              | **Yes** at model/tool boundaries; `[budget]` windows require `enforce_interactive` |
+| Background agent runs         | `app-server/background-agent-runner.ts` | **Yes**; unattended admission policy without enabling keepalive ticks              |
 
-Budget primitive: `runtime/src/budget/`. Defaults **disabled**. Ledger:
-`$AGENC_HOME/budget/ledger.json`. CLI: `agenc budget status|reset`.
+Budget caps default **disabled**, but admission and concurrency remain active.
+Inspect durable accounting with `agenc run status|replay|evidence`.
 
 Heartbeat: **disabled by default**, interval **1800s**, env
 `AGENC_HEARTBEAT*`. Full operator guide: [`reference/autonomy.md`](reference/autonomy.md).
@@ -365,7 +405,7 @@ compression, and timestamp policy, validates the descriptor graph, compares
 every compressed blob, then starts the bound image under read-only-root,
 capability-free, no-network hardening and verifies native socket credentials.
 
-## Current status (0.6.2)
+## Current status (0.7.0)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

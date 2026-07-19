@@ -21,11 +21,23 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { AgentBudgetState, BudgetWindowSpend } from "./types.js";
+import type {
+  AgentBudgetState,
+  BudgetRefusalReason,
+  BudgetWindowSpend,
+  PersistedBudgetHold,
+} from "./types.js";
 
 interface LedgerFile {
   readonly version: 1;
   agents: Record<string, AgentBudgetState>;
+  /**
+   * Open (reserved-but-unresolved) holds keyed by holdId — the durable
+   * reservation record the frozen contract requires. Written in the SAME
+   * atomic save as the worst-case debit, so reserve+debit is one durable
+   * transaction. Absent in pre-reservation ledger files (loads as {}).
+   */
+  holds: Record<string, PersistedBudgetHold>;
 }
 
 function emptyWindow(key: string): BudgetWindowSpend {
@@ -67,7 +79,7 @@ export class BudgetLedger {
   }
 
   #load(): LedgerFile {
-    if (!existsSync(this.#path)) return { version: 1, agents: {} };
+    if (!existsSync(this.#path)) return { version: 1, agents: {}, holds: {} };
     try {
       const raw = JSON.parse(readFileSync(this.#path, "utf8")) as unknown;
       if (
@@ -77,13 +89,21 @@ export class BudgetLedger {
         typeof (raw as { agents?: unknown }).agents === "object" &&
         (raw as { agents?: unknown }).agents !== null
       ) {
-        return { version: 1, agents: (raw as LedgerFile).agents };
+        const holds = (raw as { holds?: unknown }).holds;
+        return {
+          version: 1,
+          agents: (raw as LedgerFile).agents,
+          holds:
+            typeof holds === "object" && holds !== null && !Array.isArray(holds)
+              ? (holds as Record<string, PersistedBudgetHold>)
+              : {},
+        };
       }
     } catch {
       // Corrupt ledger fails toward zero spend — the caps still apply going
       // forward; we never fabricate spend the agent didn't make.
     }
-    return { version: 1, agents: {} };
+    return { version: 1, agents: {}, holds: {} };
   }
 
   #save(): void {
@@ -95,10 +115,11 @@ export class BudgetLedger {
 
   /**
    * Cross-process exclusive lock for multi-instance ledger writers
-   * (heartbeat / hooks / cron each construct their own BudgetLedger — todo-110).
+   * Legacy/evaluation callers may construct independent BudgetLedger objects.
+   * Production model/tool accounting is owned by ExecutionAdmissionKernel.
    * Re-loads disk state under the lock so concurrent addSpend merges.
    */
-  #withDiskLock(mutate: () => void): void {
+  #withDiskLock<T>(mutate: () => T): T {
     const lockPath = `${this.#path}.lock`;
     mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 });
     const deadline = Date.now() + 5_000;
@@ -109,9 +130,9 @@ export class BudgetLedger {
       } catch {
         if (Date.now() > deadline) {
           // Fail open to local mutate if lock stuck (still better than hang).
-          mutate();
+          const result = mutate();
           this.#save();
-          return;
+          return result;
         }
         // Busy-wait briefly for the lock holder.
         const start = Date.now();
@@ -123,8 +144,9 @@ export class BudgetLedger {
     try {
       // Merge: re-read disk then apply mutate against this.#file.
       this.#file = this.#load();
-      mutate();
+      const result = mutate();
       this.#save();
+      return result;
     } finally {
       try {
         closeSync(fd);
@@ -194,6 +216,122 @@ export class BudgetLedger {
     });
   }
 
+  /** Drop holds whose day window has rolled: their debit no longer exists. */
+  #pruneExpiredHolds(dayKey: string): void {
+    for (const [holdId, hold] of Object.entries(this.#file.holds)) {
+      if (hold.dayKey !== dayKey) delete this.#file.holds[holdId];
+    }
+  }
+
+  /**
+   * Transactional reserve: under the cross-process disk lock, roll the
+   * agent's windows, run the caller's admission `check` against the LOCKED
+   * state, and — only if it passes — apply the worst-case debit AND record
+   * the open hold in one atomic save. This closes the check-outside-lock
+   * TOCTOU: two concurrent reservers serialize on the lock and the second
+   * sees the first's debit.
+   *
+   * The persisted hold's window keys are stamped from the rolled state (the
+   * authoritative clock inside the lock), not from the caller.
+   */
+  tryReserve(
+    request: Omit<PersistedBudgetHold, "dayKey" | "monthKey">,
+    check: (state: AgentBudgetState) => BudgetRefusalReason | null,
+  ):
+    | { readonly reserved: true; readonly hold: PersistedBudgetHold }
+    | { readonly reserved: false; readonly reason: BudgetRefusalReason } {
+    return this.#withDiskLock(() => {
+      const state = this.#stateRolled(request.agentId);
+      this.#pruneExpiredHolds(state.day.key);
+      const reason = check(state);
+      if (reason !== null) return { reserved: false, reason };
+      const hold: PersistedBudgetHold = {
+        ...request,
+        dayKey: state.day.key,
+        monthKey: state.month.key,
+      };
+      state.day.usd += hold.estimatedUsd;
+      state.day.tokens += hold.estimatedTokens;
+      state.month.usd += hold.estimatedUsd;
+      state.month.tokens += hold.estimatedTokens;
+      this.#file.holds[hold.holdId] = hold;
+      return { reserved: true, hold };
+    });
+  }
+
+  /**
+   * Exactly-once hold resolution: under the disk lock, look up the persisted
+   * hold by id. Present and current → apply `(actual − estimated)` from the
+   * PERSISTED estimate, delete the hold, save (one durable transaction) →
+   * "reconciled". Absent → a duplicate call; the ledger is untouched.
+   * Present but its day window rolled → the debit was already zeroed by the
+   * roll, so the stale hold is discarded with NO refund ("window_rolled" —
+   * unknown usage is never refunded as if the call were free).
+   */
+  consumeHold(
+    holdId: string,
+    actualUsd: number,
+    actualTokens: number,
+  ): "reconciled" | "duplicate" | "window_rolled" {
+    return this.#withDiskLock(() => {
+      const hold = this.#file.holds[holdId];
+      if (hold === undefined) return "duplicate";
+      const state = this.#stateRolled(hold.agentId);
+      if (hold.dayKey !== state.day.key) {
+        delete this.#file.holds[holdId];
+        return "window_rolled";
+      }
+      state.day.usd += actualUsd - hold.estimatedUsd;
+      state.day.tokens += actualTokens - hold.estimatedTokens;
+      state.month.usd += actualUsd - hold.estimatedUsd;
+      state.month.tokens += actualTokens - hold.estimatedTokens;
+      delete this.#file.holds[holdId];
+      return "reconciled";
+    });
+  }
+
+  /**
+   * The frozen `voided` reservation resolution ("work cancelled before any
+   * charge; full refund"): under the disk lock, delete every open hold for
+   * `agentId` and refund its reserved debit from the current windows.
+   * Unlike operator `reset`, recorded spend, pause, and warn flags are
+   * untouched — only unresolved reservations are released. Holds whose day
+   * window already rolled are discarded without refund (the roll zeroed
+   * the debit). Returns the number of holds voided.
+   */
+  voidHoldsForAgent(agentId: string): number {
+    return this.#withDiskLock(() => {
+      let voided = 0;
+      for (const [holdId, hold] of Object.entries(this.#file.holds)) {
+        if (hold.agentId !== agentId) continue;
+        const state = this.#stateRolled(agentId);
+        if (hold.dayKey === state.day.key) {
+          state.day.usd -= hold.estimatedUsd;
+          state.day.tokens -= hold.estimatedTokens;
+        }
+        // The month window outlives the day window: a hold whose day
+        // rolled still carries its debit in the current month, and
+        // `voided` means FULL refund (frozen contract) — unlike
+        // consumeHold's window_rolled, which deliberately keeps the
+        // month debit because the usage is unknown, not cancelled.
+        if (hold.monthKey === state.month.key) {
+          state.month.usd -= hold.estimatedUsd;
+          state.month.tokens -= hold.estimatedTokens;
+        }
+        delete this.#file.holds[holdId];
+        voided += 1;
+      }
+      return voided;
+    });
+  }
+
+  /** Open (unresolved) holds, optionally filtered by agent. */
+  listOpenHolds(agentId?: string): readonly PersistedBudgetHold[] {
+    return Object.values(this.#file.holds)
+      .filter((hold) => agentId === undefined || hold.agentId === agentId)
+      .sort((a, b) => a.holdId.localeCompare(b.holdId));
+  }
+
   setPaused(agentId: string, paused: boolean): void {
     this.#withDiskLock(() => {
       const s = this.#stateRolled(agentId);
@@ -212,11 +350,14 @@ export class BudgetLedger {
     });
   }
 
-  /** Operator reset: clear an agent's spend, pause flag, and warn flags. */
+  /** Operator reset: clear an agent's spend, holds, pause and warn flags. */
   reset(agentId: string): void {
     this.#withDiskLock(() => {
       const { dayKey, monthKey } = windowKeys(this.#now());
       this.#file.agents[agentId] = emptyState(agentId, dayKey, monthKey);
+      for (const [holdId, hold] of Object.entries(this.#file.holds)) {
+        if (hold.agentId === agentId) delete this.#file.holds[holdId];
+      }
     });
   }
 

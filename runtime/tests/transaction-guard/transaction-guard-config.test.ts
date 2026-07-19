@@ -84,8 +84,9 @@ function makeInvocation(
 ): ToolInvocation {
   const services =
     transactionGuardConfig === undefined
-      ? {}
+      ? { admissionRequired: false }
       : {
+          admissionRequired: false,
           configStore: {
             current: () => ({
               transaction_guard: Object.freeze({ ...transactionGuardConfig }),
@@ -361,7 +362,7 @@ describe("config-driven guard activation through runToolUse", () => {
     expect(out.isError).not.toBe(true);
   });
 
-  test("fail_mode=open lets the call proceed when the guard is unavailable", async () => {
+  test("fail_mode=open cannot bypass the admission kernel", async () => {
     stripGuardEnv();
     process.env.AGENC_TRANSACTION_GUARD_TIMEOUT_MS = "2000";
     const endpoint = await unreachableLocalUrl();
@@ -382,7 +383,9 @@ describe("config-driven guard activation through runToolUse", () => {
         }),
       },
     );
-    expect(executed).toBe(true);
-    expect(out.isError).not.toBe(true);
+    expect(executed).toBe(false);
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain(TRANSACTION_GUARD_UNAVAILABLE);
+    expect(out.content).toContain("legacy_ollama_courtguard_model_path_disabled");
   });
 });

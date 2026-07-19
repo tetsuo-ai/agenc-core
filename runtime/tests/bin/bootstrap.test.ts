@@ -30,6 +30,7 @@ import { RolloutStore } from "../session/rollout-store.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import { Session } from "../session/session.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   _resetAgentRolesForTesting,
   createAgentRoleWorkspace,
@@ -167,6 +168,19 @@ function rolloutEvent(
       msg: { type, payload },
     },
   } as unknown as RolloutItem;
+}
+
+function nextRolloutEventSequence(rolloutStore: RolloutStore): number {
+  return (
+    Math.max(
+      0,
+      ...rolloutStore.readAll().flatMap((item) =>
+        item.type === "event_msg" && typeof item.payload.seq === "number"
+          ? [item.payload.seq]
+          : [],
+      ),
+    ) + 1
+  );
 }
 
 describe("resolveStartupSelection", () => {
@@ -776,37 +790,43 @@ describe("bootstrapLocalRuntimeSession", () => {
         type: "response_item",
         payload: { role: "user", content: "persisted ask" },
       } as RolloutItem);
+      const firstEventSequence = nextRolloutEventSequence(first.rolloutStore);
       for (const event of [
-        rolloutEvent("turn", "turn_started", { turnId: "turn-1" }, 1),
+        rolloutEvent(
+          "turn",
+          "turn_started",
+          { turnId: "turn-1" },
+          firstEventSequence,
+        ),
         rolloutEvent(
           "thinking-start",
           "assistant_thinking_block_start",
           { index: 0, redacted: false, kind: "thinking" },
-          2,
+          firstEventSequence + 1,
         ),
         rolloutEvent(
           "thinking-delta",
           "assistant_thinking_delta",
           { index: 0, delta: "visible reasoning", kind: "thinking" },
-          3,
+          firstEventSequence + 2,
         ),
         rolloutEvent(
           "thinking-stop",
           "assistant_thinking_block_stop",
           { index: 0, kind: "thinking" },
-          4,
+          firstEventSequence + 3,
         ),
         rolloutEvent(
           "thinking-final",
           "agent_thinking",
           { text: "visible reasoning", redacted: false, kind: "thinking" },
-          5,
+          firstEventSequence + 4,
         ),
         rolloutEvent(
           "complete",
           "turn_complete",
           { turnId: "turn-1", lastAgentMessage: "done" },
-          6,
+          firstEventSequence + 5,
         ),
       ]) {
         first.rolloutStore.appendRollout(event);
@@ -938,6 +958,143 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("mounts and seeds a resumed rollout before replaying detached admission evidence", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const conversationId = "conv-resume-admission-catchup";
+    const admissionKernel = new ExecutionAdmissionKernel({ agencHome: home });
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        resumeConversation: false,
+        executionAdmissionKernel: admissionKernel,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+      const firstAdmission = first.session.services.executionAdmission;
+      expect(firstAdmission).toBeDefined();
+      const lease = await firstAdmission!.acquire({
+        stepId: "detached-fallback",
+        kind: "model_turn",
+        model: "grok-4.3",
+        provider: "grok",
+        maxInputTokens: 1,
+        maxOutputTokens: 1,
+        maxCostUsd: 0,
+      });
+      firstAdmission!.void(
+        lease.reservation.reservationId,
+        "prepare detached fallback fixture",
+      );
+
+      const maxSequenceBeforeDetach = Math.max(
+        0,
+        ...first.rolloutStore.readAll().flatMap((item) =>
+          item.type === "event_msg" && typeof item.payload.seq === "number"
+            ? [item.payload.seq]
+            : [],
+        ),
+      );
+      await first.shutdown();
+      firstShutdown = null;
+
+      // This SQLite-authoritative decision lands while no Session is bound.
+      // A production resume must catch it up only after mounting the real
+      // rollout and restoring its canonical sequence/identity coordinates.
+      firstAdmission!.recordFallback({
+        stepId: "detached-fallback",
+        fromModel: "grok-4.3",
+        toModel: "grok-4.5",
+        reason: "resume regression fixture",
+      });
+      const detachedAdmissions = admissionKernel
+        .listJournal({ cwd: workspace, runId: conversationId })
+        .filter((event) => event.event === "fallback");
+      expect(detachedAdmissions).toHaveLength(1);
+      const detachedAdmission = detachedAdmissions[0]!;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId,
+        executionAdmissionKernel: admissionKernel,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      resumedShutdown = resumed.shutdown;
+
+      const admissionEvents = resumed.rolloutStore
+        .readAll()
+        .flatMap((item) =>
+          item.type === "event_msg" &&
+          item.payload.msg.type === "execution_admission"
+            ? [item.payload]
+            : [],
+        )
+        .filter((event) => event.eventId === detachedAdmission.eventId);
+      expect(admissionEvents).toHaveLength(1);
+      expect(admissionEvents[0]).toMatchObject({
+        eventId: admissionEvents[0]!.msg.payload.eventId,
+        seq: expect.any(Number),
+        msg: {
+          type: "execution_admission",
+          payload: { event: "fallback" },
+        },
+      });
+      expect(admissionEvents[0]!.seq).toBeGreaterThan(maxSequenceBeforeDetach);
+
+      const canonicalEvents = resumed.rolloutStore
+        .readAll()
+        .flatMap((item) => (item.type === "event_msg" ? [item.payload] : []));
+      expect(new Set(canonicalEvents.map((event) => event.seq)).size).toBe(
+        canonicalEvents.length,
+      );
+      expect(
+        new Set(canonicalEvents.map((event) => event.eventId)).size,
+      ).toBe(canonicalEvents.length);
+    } finally {
+      await resumedShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      admissionKernel.close();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("replays streamed tool input events into resumed transcript state", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -976,13 +1133,14 @@ describe("bootstrapLocalRuntimeSession", () => {
         },
       });
       firstShutdown = first.shutdown;
+      const firstEventSequence = nextRolloutEventSequence(first.rolloutStore);
 
       first.rolloutStore.appendRollout(
         rolloutEvent(
           "tool-input-delta",
           "tool_input_delta",
           { index: 0, partialJson: '{"path":"src/partial' },
-          1,
+          firstEventSequence,
         ),
       );
       first.rolloutStore.appendRollout(
@@ -1000,7 +1158,7 @@ describe("bootstrapLocalRuntimeSession", () => {
               input: {},
             },
           },
-          2,
+          firstEventSequence + 1,
         ),
       );
       first.rolloutStore.flushDurable();
@@ -1095,6 +1253,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         },
       });
       firstShutdown = first.shutdown;
+      const firstEventSequence = nextRolloutEventSequence(first.rolloutStore);
 
       first.rolloutStore.appendRollout(
         rolloutEvent(
@@ -1106,7 +1265,7 @@ describe("bootstrapLocalRuntimeSession", () => {
             toolName: "lookup",
             args: JSON.stringify({ query: "runtime" }),
           },
-          1,
+          firstEventSequence,
         ),
       );
       first.rolloutStore.appendRollout(
@@ -1119,7 +1278,7 @@ describe("bootstrapLocalRuntimeSession", () => {
             result: "lookup result",
             durationMs: 12,
           },
-          2,
+          firstEventSequence + 1,
         ),
       );
       first.rolloutStore.flushDurable();
@@ -1225,6 +1384,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         },
       });
       firstShutdown = first.shutdown;
+      const firstEventSequence = nextRolloutEventSequence(first.rolloutStore);
 
       first.rolloutStore.appendRollout(
         rolloutEvent(
@@ -1241,7 +1401,7 @@ describe("bootstrapLocalRuntimeSession", () => {
             model: "gpt-5.4",
             provider: "openai",
           },
-          1,
+          firstEventSequence,
         ),
       );
       first.rolloutStore.flushDurable();
@@ -1323,6 +1483,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,
@@ -1509,6 +1675,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,
@@ -1615,6 +1787,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       () =>
         ({
           name: "stub",
+          getExecutionProfile: async () => ({
+            provider: "stub",
+            model: "test-model",
+            usageReporting: "authoritative",
+            supportsMaxOutputTokens: true,
+          }),
           chat: async () => providerResponse,
           chatStream: directChatStream,
           prewarmStartup,

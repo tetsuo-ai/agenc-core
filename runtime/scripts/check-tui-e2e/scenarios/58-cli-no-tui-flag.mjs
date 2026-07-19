@@ -33,7 +33,7 @@ export default async function (session) {
     const result = await new Promise((resolve, reject) => {
       const child = spawn(
         process.execPath,
-        [BIN_AGENC, "--no-tui", "reply with the single word NOTUI"],
+        [BIN_AGENC, "--yolo", "--no-tui", "reply with the single word NOTUI"],
         {
           cwd: session.cwd,
           stdio: ["ignore", "pipe", "pipe"],

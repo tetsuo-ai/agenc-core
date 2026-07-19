@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildToolRegistry } from "./tool-registry.js";
+import {
+  buildToolRegistry as buildProductionToolRegistry,
+  type BuildToolRegistryOptions,
+} from "./tool-registry.js";
 import {
   createModelFacingTools,
   __setLiveWebFetchDnsAllLookupForTests,
@@ -19,6 +22,13 @@ import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
 import { createTaskTools } from "./tools/tasks/index.js";
 import { explicitDangerBroker } from "./helpers/explicit-danger-boundary.js";
 
+function buildToolRegistry(options: BuildToolRegistryOptions) {
+  return buildProductionToolRegistry({
+    ...options,
+    requireAdmission: options.requireAdmission ?? false,
+  });
+}
+
 afterEach(() => {
   clearExitPlanModeApprovalsForTest();
 });
@@ -30,6 +40,7 @@ function createSkillSession(
     conversationId: "session-test",
     config: { cwd: process.cwd() },
     services: {
+      admissionRequired: false,
       configStore: {
         current: () => ({}),
       },

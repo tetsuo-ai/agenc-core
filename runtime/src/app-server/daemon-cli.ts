@@ -19,6 +19,7 @@ import {
   type AgenCDaemonAgentSnapshotFlush,
   type AgenCDaemonAgentStatusSnapshot,
   type AgenCDaemonMessageExchangeSnapshot,
+  type AgenCDaemonRunTerminalSnapshot,
   type AgenCDaemonSnapshotSessionRoute,
 } from "./agent-lifecycle.js";
 import {
@@ -80,6 +81,7 @@ import type {
 } from "./transport/peer-credentials.js";
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
+import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -114,6 +116,13 @@ import {
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
+import { StateRunDurabilityRepository } from "../state/run-durability.js";
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
+import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
+import { ExecutionAdmissionRepository } from "../state/execution-admission.js";
+import { cancelRunTreeAndAdmission } from "../state/run-admission-cancellation.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { resolveAdmissionConcurrencyLimits } from "../budget/admission-config.js";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { readRotatedToolOutputLog } from "../state/tool-output-rotation.js";
 import {
@@ -1390,6 +1399,36 @@ async function runAgenCDaemonForeground(
     allowGpu: activeConfig.sandbox?.allow_gpu === true,
   });
   const cleanup = new AgenCCleanupRegistry();
+  let executionAdmissionKernel: ExecutionAdmissionKernel;
+  try {
+    executionAdmissionKernel = new ExecutionAdmissionKernel({
+      agencHome: authStartup.daemonHome,
+      limits: resolveAdmissionConcurrencyLimits(host.env, {
+        sessionLimit: activeConfig.agent_max_threads,
+      }),
+    });
+    const recovery = executionAdmissionKernel.initializeExistingState();
+    if (
+      recovery.requeued > 0 ||
+      recovery.heldUnknown > 0 ||
+      recovery.expired > 0 ||
+      recovery.detachedQueued > 0
+    ) {
+      io.stderr.write(
+        `agenc: admission recovery databases=${recovery.databases} ` +
+          `requeued=${recovery.requeued} held_unknown=${recovery.heldUnknown} ` +
+          `expired=${recovery.expired} detached=${recovery.detachedQueued}\n`,
+      );
+    }
+  } catch (error) {
+    io.stderr.write(
+      `agenc: execution admission recovery failed: ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
+  cleanup.register("daemon-execution-admission", () => {
+    executionAdmissionKernel.close();
+  });
   // Only the spawned, detached daemon (AGENC_DAEMON_RUN=1) redirects console
   // output into the size-capped rotating sink; a `--foreground` invocation run
   // directly by a user keeps writing to the inherited terminal.
@@ -1415,6 +1454,7 @@ async function runAgenCDaemonForeground(
     configuredRunner = new AgenCDelegateBackgroundAgentRunner({
       env: host.env,
       argv: [host.execPath, host.entrypointPath, "--autonomous"],
+      executionAdmissionKernel,
       ...createAgenCDaemonDelegateRunnerRuntimeConfig(
         host,
         activeConfig,
@@ -1487,6 +1527,16 @@ async function runAgenCDaemonForeground(
         throw error;
       }
     },
+    recordRunTerminal: (terminal) => {
+      try {
+        snapshotPolicies.recordRunTerminal(terminal);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: durable run terminal commit failed: ${formatCleanupError(error)}\n`,
+        );
+        throw error;
+      }
+    },
     registerSnapshotSession: (session) => {
       try {
         snapshotPolicies.registerSession(session);
@@ -1511,6 +1561,22 @@ async function runAgenCDaemonForeground(
       io.stderr.write(
         `agenc: permission audit log failed: ${formatCleanupError(error)}\n`,
       ),
+    cancelRunTreeDurable: (params) =>
+      cancelRunTreeAcrossStateDatabases(
+        authStartup.daemonHome,
+        primaryCwd,
+        params,
+      ),
+    voidBudgetHoldsForAgents: (agentIds) => {
+      let voided = 0;
+      for (const agentId of agentIds) {
+        voided += executionAdmissionKernel.cancelRun(
+          agentId,
+          "run.cancel",
+        ).voidedReservations;
+      }
+      return voided;
+    },
   });
   // Wire the runner's terminal-status hook into the lifecycle so a
   // completed/errored agent's status transitions out of `running` in
@@ -1607,6 +1673,11 @@ async function runAgenCDaemonForeground(
           snapshotPolicies.updateSnapshotRetention(
             next.config.agent?.retention,
           );
+          executionAdmissionKernel.updateLimits(
+            resolveAdmissionConcurrencyLimits(host.env, {
+              sessionLimit: next.config.agent_max_threads,
+            }),
+          );
           activeConfig = next.config;
           activeMcpServer = preparedMcpChange.adopt();
           adopted = true;
@@ -1644,6 +1715,13 @@ async function runAgenCDaemonForeground(
     },
     health,
     realtime,
+    runInspection: new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () =>
+        discoverAgenCDaemonStateDatabasePaths(
+          authStartup.daemonHome,
+          primaryCwd,
+        ),
+    }),
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
   });
@@ -2136,6 +2214,84 @@ function recoverAgenCDaemonStartupState(
   };
 }
 
+/**
+ * Durable half of run.cancel: apply the tree-scoped cascade against every
+ * project state DB that holds the run row (a run lives in exactly one
+ * project DB in practice; the merge keeps the result honest if ids ever
+ * collide across projects). Missing everywhere → `missing: true`.
+ */
+function cancelRunTreeAcrossStateDatabases(
+  daemonHome: string,
+  cwd: string,
+  params: {
+    readonly runId: string;
+    readonly reason: string;
+    readonly cancelledAt: string;
+  },
+): CancelAgentRunTreeReport {
+  const paths = discoverAgenCDaemonStateDatabasePaths(daemonHome, cwd);
+  let merged: CancelAgentRunTreeReport | undefined;
+  for (const pathSet of paths) {
+    const driver = openStateDatabasePaths(pathSet);
+    try {
+      const admissions = new ExecutionAdmissionRepository(driver, {
+        now: () => new Date(params.cancelledAt),
+      });
+      const atomic = cancelRunTreeAndAdmission(driver, admissions, params);
+      const report: CancelAgentRunTreeReport = {
+        ...atomic.run,
+        admissionVoidedReservations:
+          atomic.admission.voidedReservationIds.length,
+        admissionHeldUnknownReservations:
+          atomic.admission.heldUnknownReservationIds.length,
+      };
+      if (report.missing) continue;
+      if (merged === undefined) {
+        merged = report;
+        continue;
+      }
+      merged = {
+        runId: params.runId,
+        missing: false,
+        alreadyTerminal: merged.alreadyTerminal && report.alreadyTerminal,
+        rootStatusBefore: merged.rootStatusBefore ?? report.rootStatusBefore,
+        subtreeRunIds: [
+          ...new Set([...merged.subtreeRunIds, ...report.subtreeRunIds]),
+        ],
+        cancelledRunIds: [...merged.cancelledRunIds, ...report.cancelledRunIds],
+        priorStatusById: {
+          ...merged.priorStatusById,
+          ...report.priorStatusById,
+        },
+        closedEdgeChildIds: [
+          ...merged.closedEdgeChildIds,
+          ...report.closedEdgeChildIds,
+        ],
+        admissionVoidedReservations:
+          (merged.admissionVoidedReservations ?? 0) +
+          (report.admissionVoidedReservations ?? 0),
+        admissionHeldUnknownReservations:
+          (merged.admissionHeldUnknownReservations ?? 0) +
+          (report.admissionHeldUnknownReservations ?? 0),
+      };
+    } finally {
+      driver.close();
+    }
+  }
+  return (
+    merged ?? {
+      runId: params.runId,
+      missing: true,
+      alreadyTerminal: false,
+      rootStatusBefore: null,
+      subtreeRunIds: [],
+      cancelledRunIds: [],
+      priorStatusById: {},
+      closedEdgeChildIds: [],
+    }
+  );
+}
+
 function discoverAgenCDaemonStateDatabasePaths(
   daemonHome: string,
   cwd: string,
@@ -2295,10 +2451,47 @@ class AgenCDaemonSnapshotPolicyRegistry {
   recordAgentRun(run: AgenCDaemonAgentRunSnapshot): void {
     const entry = this.#policyForRoute(run);
     upsertAgentRun(entry.driver, run);
+    new StateRunDurabilityRepository(entry.driver).ensureInitialEpoch({
+      runId: run.id,
+      openedAt: run.startedAt,
+    });
     if (run.currentSessionId !== undefined) {
       this.#rememberSession(run.currentSessionId, entry.driver.stateDbPath);
       entry.policy.trackSession(run.currentSessionId, run.id);
     }
+  }
+
+  recordRunTerminal(terminal: AgenCDaemonRunTerminalSnapshot): void {
+    const entry = this.#policyForRoute(terminal);
+    const repository = new StateRunDurabilityRepository(entry.driver);
+    const current = repository.currentEpoch(terminal.agentId);
+    if (current === undefined) {
+      repository.ensureInitialEpoch({
+        runId: terminal.agentId,
+        openedAt: terminal.openedAt,
+      });
+    } else if (current.epoch !== terminal.epoch) {
+      throw new Error(
+        `run ${terminal.agentId} terminal epoch ${terminal.epoch} does not match current epoch ${current.epoch}`,
+      );
+    }
+    if (repository.getJournalBinding(terminal.rolloutPath) === undefined) {
+      repository.bindJournalSource({
+        runId: terminal.agentId,
+        epoch: terminal.epoch,
+        childRunId: terminal.agentId,
+        sessionId: terminal.sessionId,
+        sourcePath: terminal.rolloutPath,
+        boundAt: terminal.openedAt,
+      });
+    }
+    hitM4DurabilityFailpoint("before_terminal_commit");
+    repository.recordTerminalResult({
+      epoch: terminal.epoch,
+      result: terminal.result,
+      eventId: terminal.eventId,
+    });
+    hitM4DurabilityFailpoint("after_terminal_commit");
   }
 
   threadStoreForAgentLogs(

@@ -21,6 +21,13 @@
 
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus } from "../agents/status.js";
+import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import type {
+  EffectOutcome,
+  RunTerminalStatus,
+  RunUsageTotals,
+} from "../contracts/run-contracts.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import type {
   CollaborationMode,
   FileSystemSandboxPolicy,
@@ -47,7 +54,7 @@ import type {
 export const ROLLOUT_SCHEMA_VERSION = 1;
 
 // ─────────────────────────────────────────────────────────────────────
-// Event envelope: { id, msg, seq }
+// Event envelope: { eventId, id, msg, seq }
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -57,6 +64,13 @@ export const ROLLOUT_SCHEMA_VERSION = 1;
 export type EventSeq = number;
 
 export interface Event {
+  /**
+   * Canonical run-journal identity. EventLog assigns `event:<seq>` when a
+   * producer does not provide a stable identity. This is deliberately
+   * distinct from `id`, which remains the reusable session/subscription
+   * correlation envelope used by existing producers.
+   */
+  readonly eventId?: string;
   readonly id: string;
   readonly msg: EventMsg;
   /**
@@ -263,6 +277,45 @@ export interface RequestPermissionsEvent {
   readonly callId: string;
   readonly toolName: string;
   readonly permissions: ReadonlyArray<string>;
+  readonly turnId?: string;
+  readonly reason?: string;
+  readonly input?: Readonly<Record<string, unknown>>;
+  readonly planContent?: string;
+  readonly planFilePath?: string;
+  readonly recordedAt?: string;
+}
+
+/**
+ * Fsync-durable answer to a permission request. The request sequence ties the
+ * decision to the exact prompt that was shown; the decision kind is the
+ * stable, non-secret portion of ReviewDecision.
+ */
+export interface PermissionDecisionEvent {
+  readonly runId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly turnId: string;
+  readonly requestEventId: string;
+  readonly requestEventSeq: number;
+  readonly decision:
+    | "approved"
+    | "approved_execpolicy_amendment"
+    | "approved_for_session"
+    | "network_policy_amendment"
+    | "denied"
+    | "timed_out"
+    | "abort";
+  /** Which arbiter leg supplied the answer (human resolver, hook, cache, etc.). */
+  readonly source?:
+    | "hook"
+    | "resolver"
+    | "default_deny"
+    | "permission_hook"
+    | "guardian"
+    | "cache"
+    | "aborted";
+  readonly reason?: string;
+  readonly recordedAt: string;
 }
 
 export interface ContextCompactedEvent {
@@ -296,12 +349,148 @@ export interface WarningEvent {
   readonly message: string;
 }
 
+/**
+ * Fsync-durable proof that an approved tool effect is about to cross the
+ * physical dispatch boundary. Arguments are represented by a digest so the
+ * journal remains bounded and does not become a second secret-bearing input
+ * store.
+ */
+export interface EffectIntentEvent {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly recoveryCategory: ToolRecoveryCategory;
+  /** Present only for effects whose contract is explicitly idempotent. */
+  readonly idempotencyKey?: string;
+  readonly intentDigest: string;
+  readonly attempt: number;
+  readonly recordedAt: string;
+}
+
+/**
+ * Fsync-durable acknowledgement of a proven effect outcome. Unknown physical
+ * outcomes use {@link EffectUnknownOutcomeEvent} and may not be overwritten by
+ * a late result without explicit review.
+ */
+export interface EffectResultEvent {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly recoveryCategory: ToolRecoveryCategory;
+  readonly idempotencyKey?: string;
+  readonly intentEventSeq: number;
+  readonly outcome: Exclude<EffectOutcome, "unknown_outcome">;
+  readonly resultDigest?: string;
+  readonly evidence?: Readonly<Record<string, unknown>>;
+  readonly recordedAt: string;
+}
+
+/**
+ * Fsync-durable acknowledgement that a non-idempotent effect crossed the
+ * dispatch boundary but its physical outcome cannot be proven. This is a
+ * review lock, not a retry signal.
+ */
+export interface EffectUnknownOutcomeEvent {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly recoveryCategory: ToolRecoveryCategory;
+  readonly idempotencyKey?: string;
+  readonly intentEventSeq: number;
+  readonly outcome: "unknown_outcome";
+  readonly reason: string;
+  readonly requiresReview: true;
+  readonly recordedAt: string;
+}
+
+/** Fsync-durable human resolution of an unknown effect outcome. */
+export interface EffectReviewResolvedEvent {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly callId: string;
+  readonly resolution: string;
+  readonly reviewedBy: string;
+  readonly reviewedAt: string;
+}
+
+/**
+ * Fsync-durable declaration that an immutable content artifact is about to be
+ * published. The digest, byte length, and final target are sufficient to
+ * prove or disprove publication after a crash without replaying the producer.
+ */
+export interface ArtifactIntentEvent {
+  readonly runId: string;
+  readonly artifactId: string;
+  readonly kind: "tool_result";
+  readonly sourceCallId: string;
+  readonly targetPath: string;
+  readonly contentSha256: string;
+  readonly byteLength: number;
+  readonly recordedAt: string;
+}
+
+/** Fsync-durable acknowledgement that immutable artifact bytes are visible. */
+export interface ArtifactCommittedEvent extends ArtifactIntentEvent {
+  readonly intentEventSeq: number;
+  readonly outcome: "committed" | "already_committed" | "recovered";
+  readonly committedAt: string;
+}
+
+/** Durable terminal result for a root run, queryable after disconnect. */
+export interface RunTerminalEvent {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly status: RunTerminalStatus;
+  readonly exitCode: number | null;
+  readonly stopReason: string | null;
+  readonly finalMessage: string | null;
+  readonly usage: RunUsageTotals | null;
+  /** Highest sequence committed before this terminal event was allocated. */
+  readonly lastSequenceBeforeTerminal: number | null;
+  readonly finishedAt: string;
+}
+
+/** Durable proof that a previously-terminal run entered a new review epoch. */
+export interface RunReopenedEvent {
+  readonly runId: string;
+  readonly previousEpoch: number;
+  readonly epoch: number;
+  readonly reason: string;
+  readonly reopenedAt: string;
+}
+
+/**
+ * Durable operator intent recorded before cancellation starts quiescing the
+ * run. Startup recovery uses this boundary to fail closed when the daemon dies
+ * after admission cancellation but before the terminal tail is committed.
+ */
+export interface RunCancelRequestedEvent {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly reason: string;
+  readonly requestedAt: string;
+}
+
+/** Durable explanation of a restart decision that intentionally does no work. */
+export interface RecoveryDecisionEvent {
+  readonly runId: string;
+  readonly stepId?: string;
+  readonly decision:
+    | "retry_safe_deferred"
+    | "projection_rebuilt"
+    | "artifact_retry_safe_deferred"
+    | "artifact_conflict_review_required";
+  readonly reason: string;
+  readonly evidenceEventId: string;
+  readonly evidenceEventSeq: number;
+  readonly recordedAt: string;
+}
+
 export type GuardianAssessmentStatus =
-  | "in_progress"
-  | "approved"
-  | "denied"
-  | "timed_out"
-  | "aborted";
+  "in_progress" | "approved" | "denied" | "timed_out" | "aborted";
 
 export type GuardianAssessmentDecisionSource = "agent";
 export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
@@ -320,17 +509,10 @@ export interface GuardianAssessmentEvent {
 }
 
 export type ReviewDelegateVerdict =
-  | "pass"
-  | "fail"
-  | "partial"
-  | "aborted"
-  | "timeout";
+  "pass" | "fail" | "partial" | "aborted" | "timeout";
 
 export type ReviewDelegateCompletionReason =
-  | "completed"
-  | "timeout"
-  | "aborted"
-  | "error";
+  "completed" | "timeout" | "aborted" | "error";
 
 export interface ReviewDelegateStartedEvent {
   readonly subId: string;
@@ -367,10 +549,7 @@ export interface PlanApprovalRequestedEvent {
 }
 
 export type PlanApprovalOutcome =
-  | "approved"
-  | "approved_for_session"
-  | "denied"
-  | "aborted";
+  "approved" | "approved_for_session" | "denied" | "aborted";
 
 export interface PlanApprovalCompletedEvent {
   readonly requestId: string;
@@ -472,11 +651,7 @@ export interface CollabAgentSpawnEndEvent {
 }
 
 export type CollabAgentTaskStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed";
+  "pending" | "running" | "completed" | "failed" | "killed";
 
 export interface CollabAgentStatusEvent {
   readonly callId: string;
@@ -757,6 +932,10 @@ export type EventMsg =
       readonly payload: RequestPermissionsEvent;
     }
   | {
+      readonly type: "permission_decision";
+      readonly payload: PermissionDecisionEvent;
+    }
+  | {
       readonly type: "request_user_input";
       readonly payload: RequestUserInputEvent;
     }
@@ -786,6 +965,36 @@ export type EventMsg =
   | { readonly type: "error"; readonly payload: ErrorEvent }
   | { readonly type: "stream_error"; readonly payload: StreamErrorEvent }
   | { readonly type: "warning"; readonly payload: WarningEvent }
+  | { readonly type: "effect_intent"; readonly payload: EffectIntentEvent }
+  | { readonly type: "effect_result"; readonly payload: EffectResultEvent }
+  | {
+      readonly type: "effect_unknown_outcome";
+      readonly payload: EffectUnknownOutcomeEvent;
+    }
+  | {
+      readonly type: "effect_review_resolved";
+      readonly payload: EffectReviewResolvedEvent;
+    }
+  | { readonly type: "artifact_intent"; readonly payload: ArtifactIntentEvent }
+  | {
+      readonly type: "artifact_committed";
+      readonly payload: ArtifactCommittedEvent;
+    }
+  | { readonly type: "run_terminal"; readonly payload: RunTerminalEvent }
+  | { readonly type: "run_reopened"; readonly payload: RunReopenedEvent }
+  | {
+      readonly type: "run_cancel_requested";
+      readonly payload: RunCancelRequestedEvent;
+    }
+  | {
+      readonly type: "recovery_decision";
+      readonly payload: RecoveryDecisionEvent;
+    }
+  | {
+      /** Durable projection of the daemon-owned M3 admission journal. */
+      readonly type: "execution_admission";
+      readonly payload: AdmissionJournalEvent;
+    }
   | {
       readonly type: "guardian_assessment";
       readonly payload: GuardianAssessmentEvent;
@@ -994,6 +1203,18 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "error",
     "stream_error",
     "warning",
+    "effect_intent",
+    "effect_result",
+    "effect_unknown_outcome",
+    "effect_review_resolved",
+    "permission_decision",
+    "artifact_intent",
+    "artifact_committed",
+    "run_terminal",
+    "run_reopened",
+    "run_cancel_requested",
+    "recovery_decision",
+    "execution_admission",
     "guardian_assessment",
     "review_delegate_started",
     "review_delegate_completed",
@@ -1048,6 +1269,21 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     // the 100ms batch path would be lost, defeating resume-continuation.
     "turn_checkpoint",
     "turn_resumed",
+    // M4 effect lifecycle records are commit boundaries. The intent must be
+    // durable before dispatch, and an acknowledgement must be durable before
+    // the caller is allowed to continue.
+    "effect_intent",
+    "effect_result",
+    "effect_unknown_outcome",
+    "effect_review_resolved",
+    "request_permissions",
+    "permission_decision",
+    "artifact_intent",
+    "artifact_committed",
+    "run_terminal",
+    "run_reopened",
+    "run_cancel_requested",
+    "recovery_decision",
   ]),
 );
 
@@ -1061,6 +1297,11 @@ export function isDurableEvent(event: Event): boolean {
 
 export type EventListener = (event: Event) => void;
 
+interface PendingPublication {
+  readonly event: Event;
+  readonly afterPublish?: EventListener;
+}
+
 /**
  * Synchronous, in-process event bus. Emitted events get a monotonic
  * `seq` assigned before any async work (I-27). Listeners receive
@@ -1069,27 +1310,90 @@ export type EventListener = (event: Event) => void;
  */
 export class EventLog {
   private nextSeq: EventSeq = 0;
+  private readonly allocatedEventIds = new Set<string>();
   private readonly listeners = new Set<EventListener>();
+  private readonly pendingPublications: PendingPublication[] = [];
+  private emitDelegate: ((event: Event) => Event) | undefined;
+  private publishing = false;
   private closed = false;
 
   /**
-   * Emit an event. Returns the assigned seq.
-   * I-27: synchronous + FIFO + monotonic.
+   * Install the owning Session's persist-before-publish path. Legacy runtime
+   * producers that still receive only `session.eventLog` then converge on the
+   * same rollout append instead of allocating live-only sequence numbers.
+   */
+  setEmitDelegate(delegate: ((event: Event) => Event) | undefined): void {
+    this.emitDelegate = delegate;
+  }
+
+  /**
+   * Allocate the next sequence without publishing to subscribers. Durable
+   * owners use this split phase to persist + fsync the stamped event before
+   * any listener can observe it.
+   */
+  stamp(event: Event): Event {
+    if (this.closed) return event;
+    const seq = this.nextSeq + 1;
+    const suppliedEventId: unknown = event.eventId;
+    if (
+      suppliedEventId !== undefined &&
+      (typeof suppliedEventId !== "string" || suppliedEventId.length === 0)
+    ) {
+      throw new Error("eventId must be a non-empty string");
+    }
+    if (
+      typeof suppliedEventId === "string" &&
+      /^event:[1-9]\d*$/.test(suppliedEventId) &&
+      suppliedEventId !== `event:${seq}`
+    ) {
+      throw new Error(
+        `eventId ${suppliedEventId} is reserved for sequence ${suppliedEventId.slice("event:".length)}`,
+      );
+    }
+    const eventId = suppliedEventId ?? `event:${seq}`;
+    if (this.allocatedEventIds.has(eventId)) {
+      throw new Error(`eventId already allocated: ${eventId}`);
+    }
+    this.nextSeq = seq;
+    this.allocatedEventIds.add(eventId);
+    return { ...event, eventId, seq };
+  }
+
+  /**
+   * Publish an already-stamped event. Re-entrant publications are queued so
+   * every listener observes monotonically increasing sequence order.
+   */
+  publish(event: Event, afterPublish?: EventListener): Event {
+    if (this.closed) return event;
+    this.pendingPublications.push({ event, afterPublish });
+    if (this.publishing) return event;
+    this.publishing = true;
+    try {
+      let next: PendingPublication | undefined;
+      while ((next = this.pendingPublications.shift()) !== undefined) {
+        for (const listener of this.listeners) {
+          try {
+            listener(next.event);
+          } catch {
+            // I-43: per-sidecar isolation — don't let one subscriber's
+            // failure prevent the others from receiving the event.
+          }
+        }
+        next.afterPublish?.(next.event);
+      }
+    } finally {
+      this.publishing = false;
+    }
+    return event;
+  }
+
+  /**
+   * Compatibility one-shot emit. Durable Session owners use stamp() followed
+   * by persistence and publish(); standalone event logs retain this API.
    */
   emit(event: Event): Event {
-    if (this.closed) return event;
-    this.nextSeq += 1;
-    const seq = this.nextSeq;
-    const stamped: Event = { ...event, seq };
-    for (const listener of this.listeners) {
-      try {
-        listener(stamped);
-      } catch {
-        // I-43: per-sidecar isolation — don't let one subscriber's
-        // failure prevent the others from receiving the event.
-      }
-    }
-    return stamped;
+    if (this.emitDelegate !== undefined) return this.emitDelegate(event);
+    return this.publish(this.stamp(event));
   }
 
   /**
@@ -1113,9 +1417,54 @@ export class EventLog {
     this.nextSeq = seq;
   }
 
+  /**
+   * Restore canonical coordinates before a resumed session accepts new
+   * producers. Sequence alone is insufficient: allowing an old eventId to be
+   * reused at a new sequence would permanently corrupt cursor replay.
+   */
+  seedCanonicalHistory(events: readonly Event[]): void {
+    let maxSequence = this.nextSeq;
+    const historicalSequences = new Set<number>();
+    for (const event of events) {
+      if (
+        !Number.isSafeInteger(event.seq) ||
+        event.seq === undefined ||
+        event.seq <= 0
+      ) {
+        continue;
+      }
+      const eventId =
+        typeof event.eventId === "string" && event.eventId.length > 0
+          ? event.eventId
+          : `legacy-event:${event.seq}:${event.id}`;
+      if (historicalSequences.has(event.seq)) {
+        throw new Error(`canonical rollout reuses sequence: ${event.seq}`);
+      }
+      const reservedSequence = /^event:([1-9]\d*)$/.exec(eventId)?.[1];
+      if (
+        reservedSequence !== undefined &&
+        Number(reservedSequence) !== event.seq
+      ) {
+        throw new Error(
+          `canonical rollout eventId ${eventId} conflicts with sequence ${event.seq}`,
+        );
+      }
+      if (this.allocatedEventIds.has(eventId)) {
+        throw new Error(`canonical rollout reuses eventId: ${eventId}`);
+      }
+      historicalSequences.add(event.seq);
+      this.allocatedEventIds.add(eventId);
+      maxSequence = Math.max(maxSequence, event.seq);
+    }
+    this.nextSeq = maxSequence;
+  }
+
   close(): void {
     this.closed = true;
+    this.emitDelegate = undefined;
+    this.pendingPublications.length = 0;
     this.listeners.clear();
+    this.allocatedEventIds.clear();
   }
 
   get isClosed(): boolean {

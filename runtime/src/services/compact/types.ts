@@ -9,6 +9,7 @@
  */
 
 import type { LLMProvider } from "../../llm/types.js";
+import type { Session } from "../../session/session.js";
 
 export type RuntimeMessage = {
   readonly role?: "system" | "user" | "assistant" | "tool";
@@ -35,6 +36,8 @@ export type RuntimeMessage = {
 export type CompactContext = {
   readonly abortController?: AbortController;
   readonly provider?: LLMProvider;
+  /** Live owner used to admit every provider-backed compaction pass. */
+  readonly admissionSession?: Session;
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: CompactProgressEvent) => void;

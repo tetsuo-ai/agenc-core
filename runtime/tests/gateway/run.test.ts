@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
+  GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC,
   sanitizeGatewayDaemonEnv,
   startGateway,
 } from "../../src/gateway/run.js";
@@ -417,6 +418,52 @@ describe("startGateway", () => {
       extraAdapters: [mem],
     });
     expect(handle.channels.sort()).toEqual(["mem", "stdio"]);
+    await handle.stop();
+  });
+
+  test("direct gateway provider features fail closed and route messages through the daemon agent", async () => {
+    writeConfig({
+      channels: { mem: { dmPolicy: "allowlist", allowlist: ["u"] } },
+    });
+    const client = new FakeClient();
+    const mem = new InMemoryChannelAdapter({ id: "mem" });
+    const logs: string[] = [];
+    const handle = await startGateway({
+      agencHome: home,
+      env: {
+        XAI_API_KEY: "test-key-that-must-not-be-used-by-the-gateway",
+        AGENC_GATEWAY_MEME_ENABLED: "1",
+        AGENC_GATEWAY_VOICE_ENABLED: "1",
+        AGENC_GATEWAY_X_SEARCH_ENABLED: "1",
+      },
+      clientFactory: async () => client,
+      extraAdapters: [mem],
+      log: (line) => logs.push(line),
+    });
+
+    for (const text of [
+      "/meme a capybara shipping code",
+      "/voice release complete",
+      "/x latest AgenC post",
+    ]) {
+      await mem.receive({
+        sender: { peerId: "u" },
+        conversation: { kind: "dm", id: "gateway-admission" },
+        text,
+      });
+    }
+
+    expect(client.sessions).toHaveLength(1);
+    expect(client.sessions[0]?.prompts).toHaveLength(3);
+    expect(client.sessions[0]?.prompts.join("\n")).toContain("/meme");
+    expect(client.sessions[0]?.prompts.join("\n")).toContain("/voice");
+    expect(client.sessions[0]?.prompts.join("\n")).toContain("/x latest");
+    expect(
+      logs.filter((line) =>
+        line.includes(GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC)
+      ),
+    ).toHaveLength(3);
+
     await handle.stop();
   });
 

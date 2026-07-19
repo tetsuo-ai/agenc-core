@@ -136,6 +136,7 @@ import type { RolloutStore } from "./rollout-store.js";
 import type { LiveThread } from "../thread-store/live-thread.js";
 import type { RolloutTraceRecorder } from "./rollout-trace.js";
 import type { AppendOptions } from "./session-store.js";
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   cloneLlmMessage,
   llmMessageToResponseItem,
@@ -168,6 +169,7 @@ import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type {
   SessionStartHookInput,
@@ -508,9 +510,15 @@ export interface McpManager {
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;
-  getResources?(): Promise<ReadonlyArray<unknown>>;
-  getResourcesByServer?(name: string): Promise<ReadonlyArray<unknown>>;
-  readResource?(namespacedName: string): Promise<unknown | null>;
+  getResources?(signal?: AbortSignal): Promise<ReadonlyArray<unknown>>;
+  getResourcesByServer?(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<unknown>>;
+  readResource?(
+    namespacedName: string,
+    signal?: AbortSignal,
+  ): Promise<unknown | null>;
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the
@@ -635,7 +643,10 @@ export interface SkillsManager {
     readonly agentId?: string;
     readonly sessionId?: string;
   }): void;
-  getInvokedSkillsForAgent?(agentId?: string, sessionId?: string): ReadonlyMap<
+  getInvokedSkillsForAgent?(
+    agentId?: string,
+    sessionId?: string,
+  ): ReadonlyMap<
     string,
     {
       readonly skillName: string;
@@ -810,6 +821,10 @@ export interface SessionServices {
   // T-future: AgenC-specific additions
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  /** Daemon-owned M3 execution authority shared by model/tool/spawn paths. */
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  /** Production sessions set this so a missing kernel is a typed hard stop. */
+  readonly admissionRequired?: boolean;
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
@@ -896,9 +911,7 @@ function buildProviderFallbackLadderOptions(params: {
   };
 }
 
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "openrouter",
-]);
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["openrouter"]);
 
 const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
@@ -985,10 +998,10 @@ async function vendManagedProviderKey(params: {
   readonly model: string;
 }): Promise<
   | {
-    readonly apiKey: string;
-    readonly baseURL?: string;
-    readonly model?: string;
-  }
+      readonly apiKey: string;
+      readonly baseURL?: string;
+      readonly model?: string;
+    }
   | undefined
 > {
   if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
@@ -1001,9 +1014,10 @@ async function vendManagedProviderKey(params: {
   const apiKey = firstNonEmpty(key.apiKey);
   if (apiKey === undefined) return undefined;
   const baseURL = firstNonEmpty(key.baseUrl);
-  const model = baseURL !== undefined
-    ? normalizeManagedGatewayModel(params.provider, params.model)
-    : params.model;
+  const model =
+    baseURL !== undefined
+      ? normalizeManagedGatewayModel(params.provider, params.model)
+      : params.model;
   return {
     apiKey,
     ...(baseURL !== undefined ? { baseURL } : {}),
@@ -1020,6 +1034,7 @@ async function providerFactoryOptionsFromSettings(params: {
   readonly managedKeysEnabled: boolean;
   readonly sessionId: string;
   readonly reusableApiKey?: string;
+  readonly executionAdmissionRequired?: boolean;
 }): Promise<ProviderFactoryOptions> {
   const extra: Record<string, unknown> = {};
   if (params.settings?.contextWindowTokens !== undefined) {
@@ -1028,9 +1043,13 @@ async function providerFactoryOptionsFromSettings(params: {
   if (params.settings?.maxOutputTokens !== undefined) {
     extra.maxTokens = params.settings.maxOutputTokens;
   }
-  const providerFallback = buildProviderFallbackLadderOptions(params);
-  if (providerFallback !== undefined) {
-    extra.providerFallback = providerFallback;
+  if (params.executionAdmissionRequired === true) {
+    extra.maxRetries = 0;
+  } else {
+    const providerFallback = buildProviderFallbackLadderOptions(params);
+    if (providerFallback !== undefined) {
+      extra.providerFallback = providerFallback;
+    }
   }
   const normalizedProvider = normalizeProviderName(params.provider);
   if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
@@ -1094,7 +1113,8 @@ async function providerFactoryOptionsFromSettings(params: {
     ...(managedCredential?.baseURL !== undefined
       ? { extra: { ...extra, managedGateway: true } }
       : {}),
-    ...(managedCredential?.baseURL === undefined && Object.keys(extra).length > 0
+    ...(managedCredential?.baseURL === undefined &&
+    Object.keys(extra).length > 0
       ? { extra }
       : {}),
   };
@@ -1129,6 +1149,7 @@ export type AbortReason =
   | "signal_received"
   | "stream_idle"
   | "token_budget_exceeded"
+  | "provider_overrun"
   | "process_killed";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1188,9 +1209,7 @@ export interface SessionFileRewindParams {
 }
 
 export type SessionFileRewindErrorCode =
-  | "ACTIVE_TURN"
-  | "MESSAGE_NOT_FOUND"
-  | "NO_FILE_HISTORY";
+  "ACTIVE_TURN" | "MESSAGE_NOT_FOUND" | "NO_FILE_HISTORY";
 
 export type SessionPreviewFileRewindResult =
   | {
@@ -1643,9 +1662,7 @@ function activeAgentDefinitionsFromRoles(
     if (definition === undefined) return [];
     const configured = {
       ...definition,
-      ...(role.description.length > 0
-        ? { whenToUse: role.description }
-        : {}),
+      ...(role.description.length > 0 ? { whenToUse: role.description } : {}),
     };
     return [
       {
@@ -1800,6 +1817,21 @@ export class Session {
   private rolloutPersistenceSuspendDepth = 0;
 
   /**
+   * Work whose completion can append a durable boundary record (for example,
+   * the decision paired with a pending permission request). Shutdown drains
+   * this set before it allows the run terminal callback to seal the journal.
+   */
+  private readonly pendingDurableOperations = new Set<Promise<unknown>>();
+
+  /** One-shot callbacks run after shutdown has quiesced event producers. */
+  private readonly beforeDurableCloseListeners = new Set<
+    () => void | Promise<void>
+  >();
+
+  /** Once set, no event may be appended after the canonical terminal tail. */
+  private canonicalJournalSealed = false;
+
+  /**
    * TUI-facing PhaseEvent subscribers. The one-shot CLI renders these
    * directly from the generator; the live TUI needs an in-session bus
    * so `useQuery` can observe the same stream.
@@ -1854,6 +1886,9 @@ export class Session {
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
+    // Keep legacy producers that were handed `session.eventLog` on the same
+    // canonical persist-before-publish path as direct `session.emit` callers.
+    this.eventLog.setEmitDelegate((event) => this.emit(event));
     this.roleWorkspace = opts.roleWorkspace
       ? normalizeAgentRoleWorkspace(opts.roleWorkspace)
       : createAgentRoleWorkspace(opts.initialState.sessionConfiguration.cwd);
@@ -2047,9 +2082,7 @@ export class Session {
    */
   listMcpClients(): readonly MCPServerConnection[] {
     const manager = this.services.mcpManager as unknown as
-      | McpManagerLike
-      | null
-      | undefined;
+      McpManagerLike | null | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -2063,9 +2096,7 @@ export class Session {
 
   listMcpTools(): readonly unknown[] {
     const manager = this.services.mcpManager as unknown as
-      | Pick<McpManager, "getTools">
-      | null
-      | undefined;
+      Pick<McpManager, "getTools"> | null | undefined;
     if (
       manager === null ||
       manager === undefined ||
@@ -2291,6 +2322,8 @@ export class Session {
                 : false,
               sessionId: this.conversationId,
               reusableApiKey: reusableLiveProviderOptions?.apiKey,
+              executionAdmissionRequired:
+                this.services.admissionRequired !== false,
             })
           : {};
       preparedSwitch = prepareProviderSwitch(resolvedProvider, {
@@ -2446,7 +2479,9 @@ export class Session {
     let completed = false;
     try {
       while (true) {
-        const next = await runWithCurrentRuntimeSession(this, () => iter.next());
+        const next = await runWithCurrentRuntimeSession(this, () =>
+          iter.next(),
+        );
         if (next.done) {
           completed = true;
           return next.value;
@@ -2502,6 +2537,34 @@ export class Session {
     } finally {
       this.rolloutPersistenceSuspendDepth -= 1;
     }
+  }
+
+  /**
+   * Register a promise that may still append durable journal evidence.
+   * Registration is deliberately synchronous so shutdown cannot miss work
+   * that started immediately before ingress was closed.
+   */
+  trackDurableOperation<T>(operation: Promise<T>): Promise<T> {
+    this.pendingDurableOperations.add(operation);
+    void operation.then(
+      () => this.pendingDurableOperations.delete(operation),
+      () => this.pendingDurableOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  /**
+   * Register a finalizer that runs while the rollout writer remains open but
+   * after shutdown hooks, active work, and other durable operations drain.
+   */
+  onBeforeDurableClose(listener: () => void | Promise<void>): () => void {
+    if (this.canonicalJournalSealed) {
+      throw new Error("canonical run journal is already sealed");
+    }
+    this.beforeDurableCloseListeners.add(listener);
+    return () => {
+      this.beforeDurableCloseListeners.delete(listener);
+    };
   }
 
   async submit(
@@ -2806,7 +2869,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "MESSAGE_NOT_FOUND",
-        message: "The selected message is no longer in the active conversation.",
+        message:
+          "The selected message is no longer in the active conversation.",
       };
     }
     const fileHistory = this.attachedFileHistory;
@@ -2859,7 +2923,8 @@ export class Session {
           ok: false,
           sessionId: this.conversationId,
           code: "ACTIVE_TURN",
-          message: "Cannot restore files right now: a turn is currently in flight.",
+          message:
+            "Cannot restore files right now: a turn is currently in flight.",
         };
       }
       throw error;
@@ -2963,6 +3028,7 @@ export class Session {
     return {
       abortController,
       provider: this.services.provider,
+      admissionSession: this,
       setStreamMode: surface.setStreamMode,
       setResponseLength: surface.setResponseLength,
       onCompactProgress: surface.onCompactProgress,
@@ -3107,15 +3173,34 @@ export class Session {
    * I-8: every error site MUST funnel through this or the dedicated
    * `emitError` helper (event-log.ts).
    */
-  emit(event: Event, appendOpts: AppendOptions = {}): void {
+  emit(event: Event, appendOpts: AppendOptions = {}): Event {
+    if (this.canonicalJournalSealed) {
+      throw new Error(
+        `cannot append ${event.msg.type}: canonical run journal is sealed`,
+      );
+    }
     if (
       event.msg.type === "context_compacted" ||
       (event.msg as { type?: string }).type === "compacted"
     ) {
       this.clearProviderResponseId();
     }
-    // I-27: assign seq synchronously + fan to subscribers.
-    const stamped = this.eventLog.emit(event);
+    if (this.isRolloutPersistenceSuspended()) {
+      // Fork turns share the source Session for model/tool plumbing, but their
+      // events are intentionally excluded from its canonical rollout. Keep
+      // those observations explicitly ephemeral: consuming the source
+      // EventLog sequence here would create an unreplayable interior hole, and
+      // retaining caller-supplied coordinates would let the live bridge claim
+      // an event that run.replay can never return.
+      const ephemeral: Event = { id: event.id, msg: event.msg };
+      this.eventLog.publish(ephemeral, (published) => {
+        this.txEvent.send(published);
+      });
+      return ephemeral;
+    }
+    // I-27 + M4: allocate identity/sequence first, but do not let a listener
+    // observe a durable transition until its rollout append has fsynced.
+    const stamped = this.eventLog.stamp(event);
     const derivedTurnId =
       appendOpts.turnId ??
       (stamped.msg.type === "tool_call_completed"
@@ -3127,17 +3212,30 @@ export class Session {
         ? measureToolResultBytes(stamped.msg.payload.result)
         : undefined);
     // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
-    if (this.rolloutStore && !this.isRolloutPersistenceSuspended()) {
-      this.rolloutStore.append(stamped, {
-        durable: isDurableEvent(stamped) || appendOpts.durable === true,
+    const durable = isDurableEvent(stamped) || appendOpts.durable === true;
+    if (this.rolloutStore) {
+      const committed = this.rolloutStore.append(stamped, {
+        durable,
         ...(derivedTurnId !== undefined ? { turnId: derivedTurnId } : {}),
         ...(derivedToolResultBytes !== undefined
           ? { toolResultBytes: derivedToolResultBytes }
           : {}),
       });
+      if (durable && committed === false) {
+        throw new Error(
+          `durable event ${stamped.msg.type} sequence ${stamped.seq ?? "unassigned"} was not fsync-committed`,
+        );
+      }
     }
-    // Compatibility consumer path.
-    this.txEvent.send(stamped);
+    hitM4DurabilityFailpoint("before_event_publish");
+    this.eventLog.publish(stamped, (published) => {
+      // Compatibility consumers belong to the same FIFO publication queue.
+      // A listener may synchronously emit another event; keeping this callback
+      // inside EventLog prevents txEvent from observing N+1 before N.
+      this.txEvent.send(published);
+      hitM4DurabilityFailpoint("after_event_publish");
+    });
+    return stamped;
   }
 
   /**
@@ -3763,8 +3861,7 @@ export class Session {
       }
     }
     let resolveResponse:
-      | ((response: RequestUserInputResponse | null) => void)
-      | undefined;
+      ((response: RequestUserInputResponse | null) => void) | undefined;
     const responsePromise = new Promise<RequestUserInputResponse | null>(
       (resolve) => {
         resolveResponse = resolve;
@@ -3873,8 +3970,7 @@ export class Session {
       }
     }
     let resolveResponse:
-      | ((response: McpElicitationResponse) => void)
-      | undefined;
+      ((response: McpElicitationResponse) => void) | undefined;
     const responsePromise = new Promise<McpElicitationResponse>((resolve) => {
       resolveResponse = resolve;
     });
@@ -3988,9 +4084,7 @@ export class Session {
     // cleanup/telemetry automations observe every shutdown while the
     // session state is still intact.
     try {
-      const { dispatchSessionEnd } = await import(
-        "../llm/hooks/dispatcher.js"
-      );
+      const { dispatchSessionEnd } = await import("../llm/hooks/dispatcher.js");
       const hookTimeout = new Promise<void>((resolveTimeout) => {
         setTimeout(resolveTimeout, MAX_DRAIN_MS).unref?.();
       });
@@ -4074,6 +4168,43 @@ export class Session {
     } catch {
       /* best-effort */
     }
+    let durableCloseError: unknown;
+    try {
+      let drainedOperationCount = 0;
+      while (this.pendingDurableOperations.size > 0) {
+        const pending = [...this.pendingDurableOperations];
+        drainedOperationCount += pending.length;
+        if (drainedOperationCount > 100_000) {
+          throw new Error(
+            "durable shutdown drain exceeded 100000 operations",
+          );
+        }
+        const outcomes = await Promise.allSettled(pending);
+        const failures = outcomes.flatMap((outcome) =>
+          outcome.status === "rejected" ? [outcome.reason] : [],
+        );
+        if (failures.length > 0) {
+          throw new AggregateError(
+            failures,
+            "durable shutdown operation failed",
+          );
+        }
+      }
+
+      const finalizers = [...this.beforeDurableCloseListeners];
+      this.beforeDurableCloseListeners.clear();
+      for (const finalize of finalizers) {
+        await finalize();
+      }
+    } catch (error) {
+      durableCloseError = error;
+    } finally {
+      // Whether terminal finalization succeeded or failed, no producer may
+      // append around/after the close boundary. A failed finalizer therefore
+      // remains honestly non-terminal and requires recovery from committed
+      // evidence rather than permitting a late competing result.
+      this.canonicalJournalSealed = true;
+    }
     // Flush + close the rollout store (I-4: final durable fsync).
     if (this.rolloutStore) {
       try {
@@ -4093,6 +4224,7 @@ export class Session {
     this.txEvent.close();
     this.agentStatus.next({ status: "shutdown", endedAtMs: monotonicMs() });
     this.agentStatus.complete();
+    if (durableCloseError !== undefined) throw durableCloseError;
   }
 }
 

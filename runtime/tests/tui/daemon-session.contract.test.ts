@@ -1528,6 +1528,7 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: "delta_1",
+        agentId: "agent_1",
         delta: "hello",
       },
     });
@@ -1537,6 +1538,7 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: "tool_1",
+        agentId: "agent_1",
         requestId: "call_1",
         toolName: "Bash",
         input: { command: "pwd" },
@@ -1573,6 +1575,7 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: "raw_1",
+        agentId: "agent_1",
         event: { id: "raw_1", type: "custom", payload: { ok: true } },
       },
     });
@@ -1580,12 +1583,12 @@ describe("AgenC TUI daemon session adapter", () => {
 
     expect(received).toEqual([
       {
-        id: "delta_1",
+        id: "daemon:agent_1:delta_1",
         type: "agent_message_delta",
         payload: { delta: "hello" },
       },
       {
-        id: "tool_1",
+        id: "daemon:agent_1:tool_1",
         type: "tool_call_started",
         payload: {
           callId: "call_1",
@@ -1594,7 +1597,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
       {
-        id: "turn_1",
+        id: "daemon:agent_1:turn_1",
         type: "background_agent_status",
         payload: {
           turnId: "turn_1",
@@ -1604,7 +1607,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
       {
-        id: "turn_1_done",
+        id: "daemon:agent_1:turn_1_done",
         type: "background_agent_status",
         payload: {
           turnId: "turn_1",
@@ -1614,8 +1617,60 @@ describe("AgenC TUI daemon session adapter", () => {
           message: "done",
         },
       },
-      { id: "raw_1", type: "custom", payload: { ok: true } },
+      {
+        id: "daemon:agent_1:raw_1",
+        type: "custom",
+        payload: { ok: true },
+      },
     ]);
+  });
+
+  it("scopes repeated canonical event ids by daemon run", () => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+
+    for (const agentId of ["run_before_restart", "run_after_restart"]) {
+      client.emit("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.message_chunk",
+        params: {
+          sessionId: "session_1",
+          agentId,
+          eventId: "event:8",
+          delta: "OK",
+        },
+      });
+      client.emit("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.agent_status",
+        params: {
+          sessionId: "session_1",
+          agentId,
+          eventId: "event:12",
+          status: "idle",
+          runStatus: "completed",
+          turnId: "turn_1",
+        },
+      });
+    }
+    unsubscribe();
+
+    expect(received.map((event) => event.id)).toEqual([
+      "daemon:run_before_restart:event%3A8",
+      "daemon:run_before_restart:event%3A12",
+      "daemon:run_after_restart:event%3A8",
+      "daemon:run_after_restart:event%3A12",
+    ]);
+    expect(new Set(received.map((event) => event.id)).size).toBe(4);
   });
 
   it("namespaces daemon request event ids when a permission prompt shares the tool request id", () => {

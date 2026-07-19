@@ -205,6 +205,7 @@ function buildSession(
   } = {},
 ): Session {
   const services = {
+    admissionRequired: false,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -650,6 +651,52 @@ describe("Session.abortTerminal", () => {
         },
       },
     });
+  });
+});
+
+describe("Session rollout persistence suspension", () => {
+  it("keeps fork-only events ephemeral without consuming canonical coordinates", async () => {
+    const session = buildSession();
+    const append = vi.fn(() => true);
+    session.rolloutStore = {
+      append,
+    } as unknown as Session["rolloutStore"];
+    const published: Event[] = [];
+    session.eventLog.subscribe((event) => published.push(event));
+
+    const before = session.emit({
+      id: "root-before",
+      msg: { type: "user_message", payload: { message: "before" } },
+    });
+    let forkEvent: Event | undefined;
+    await session.withRolloutPersistenceSuspended(async () => {
+      forkEvent = session.emit({
+        eventId: "fork-event-must-not-leak",
+        id: "fork-correlation",
+        seq: 99,
+        msg: { type: "turn_started", payload: { turnId: "fork-turn" } },
+      });
+    });
+    const after = session.emit({
+      id: "root-after",
+      msg: { type: "turn_complete", payload: { turnId: "root-turn" } },
+    });
+
+    expect(before).toMatchObject({ eventId: "event:1", seq: 1 });
+    expect(forkEvent).toEqual({
+      id: "fork-correlation",
+      msg: { type: "turn_started", payload: { turnId: "fork-turn" } },
+    });
+    expect(after).toMatchObject({ eventId: "event:2", seq: 2 });
+    expect(append.mock.calls.map(([event]) => event)).toMatchObject([
+      { eventId: "event:1", seq: 1 },
+      { eventId: "event:2", seq: 2 },
+    ]);
+    expect(published.map((event) => [event.eventId, event.seq])).toEqual([
+      ["event:1", 1],
+      [undefined, undefined],
+      ["event:2", 2],
+    ]);
   });
 });
 
@@ -1321,6 +1368,87 @@ describe("Session turn-driver hooks", () => {
 
     expect(closeCount).toBe(1);
     await expect(session.conversation.runningState()).resolves.toBeUndefined();
+  });
+
+  it("drains durable continuations before finalizing and sealing the journal", async () => {
+    const session = buildSession();
+    const appended: Event[] = [];
+    session.rolloutStore = {
+      append: vi.fn((event: Event) => {
+        appended.push(event);
+        return true;
+      }),
+      flushDurable: vi.fn(),
+      close: vi.fn(),
+    } as unknown as Session["rolloutStore"];
+    let releaseDecision!: () => void;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const decision = (async () => {
+      await decisionGate;
+      session.emit(
+        {
+          id: "permission-decision:shutdown",
+          msg: {
+            type: "permission_decision",
+            payload: {
+              runId: session.conversationId,
+              callId: "call-shutdown",
+              toolName: "Bash",
+              turnId: "turn-shutdown",
+              requestEventId: "request-shutdown",
+              requestEventSeq: 1,
+              decision: "abort",
+              source: "aborted",
+              recordedAt: "2026-07-18T00:00:00.000Z",
+            },
+          },
+        },
+        { durable: true },
+      );
+    })();
+    session.trackDurableOperation(decision);
+    session.onBeforeDurableClose(() => {
+      session.emit(
+        {
+          eventId: "run-terminal:conv-test:1",
+          id: "run-terminal:conv-test:1",
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId: "conv-test",
+              epoch: 1,
+              status: "cancelled",
+              exitCode: null,
+              stopReason: "shutdown",
+              finalMessage: null,
+              usage: null,
+              lastSequenceBeforeTerminal: 1,
+              finishedAt: "2026-07-18T00:00:01.000Z",
+            },
+          },
+        },
+        { durable: true },
+      );
+    });
+
+    const shutdown = session.shutdown();
+    await Promise.resolve();
+    expect(appended).toEqual([]);
+    releaseDecision();
+    await shutdown;
+
+    expect(appended.map((event) => event.msg.type)).toEqual([
+      "permission_decision",
+      "run_terminal",
+    ]);
+    expect(() =>
+      session.emit({
+        id: "late",
+        msg: { type: "warning", payload: { cause: "late", message: "late" } },
+      }),
+    ).toThrow("canonical run journal is sealed");
   });
 });
 

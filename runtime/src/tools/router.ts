@@ -108,6 +108,7 @@ import {
   hasExactLedgerMention,
   REQUEST_LEDGER_TRANSFER_TOOL_NAME,
 } from "../elicitation/request-ledger-transfer.js";
+import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -642,29 +643,39 @@ export class ToolRouter {
           } else if (opts.signal) {
             opts.signal.addEventListener("abort", forwardAbort, { once: true });
           }
-          const directContextWindowTokens =
-            effectiveContextWindowTokens(invocation.turn);
+          const directContextWindowTokens = effectiveContextWindowTokens(
+            invocation.turn,
+          );
           try {
-            return await executeToolDispatch({
-              rawArgs: dispatchRawArgs,
-              signal: toolAbortController.signal,
-              currentTurnId: directDispatchTurnId(invocation),
-              eventLog: invocation.session.eventLog,
-              subId: invocation.callId,
+            return await runAdmittedToolCall({
+              session: invocation.session,
+              turnId: directDispatchTurnId(invocation),
+              callId: invocation.callId,
               tool: spec.tool,
-              invocation: dispatchInvocation,
-              approvalAlreadyResolved: dispatchContext.approvalResolved,
-              runtimeAttemptContext,
-              abortController: toolAbortController,
-              ...(directContextWindowTokens !== undefined
-                ? { contextWindowTokens: directContextWindowTokens }
-                : {}),
-              ...(opts.permissionAuditLogger !== undefined
-                ? { permissionAuditLogger: opts.permissionAuditLogger }
-                : {}),
-              ...(opts.onPermissionAuditError !== undefined
-                ? { onPermissionAuditError: opts.onPermissionAuditError }
-                : {}),
+              args: dispatchArgs,
+              signal: toolAbortController.signal,
+              invoke: ({ signal, abortController }) =>
+                executeToolDispatch({
+                  rawArgs: dispatchRawArgs,
+                  signal,
+                  currentTurnId: directDispatchTurnId(invocation),
+                  eventLog: invocation.session.eventLog,
+                  subId: invocation.callId,
+                  tool: spec.tool,
+                  invocation: dispatchInvocation,
+                  approvalAlreadyResolved: dispatchContext.approvalResolved,
+                  runtimeAttemptContext,
+                  abortController,
+                  ...(directContextWindowTokens !== undefined
+                    ? { contextWindowTokens: directContextWindowTokens }
+                    : {}),
+                  ...(opts.permissionAuditLogger !== undefined
+                    ? { permissionAuditLogger: opts.permissionAuditLogger }
+                    : {}),
+                  ...(opts.onPermissionAuditError !== undefined
+                    ? { onPermissionAuditError: opts.onPermissionAuditError }
+                    : {}),
+                }),
             });
           } finally {
             opts.signal?.removeEventListener("abort", forwardAbort);
@@ -1111,28 +1122,42 @@ export class ToolRouter {
               sandboxMode: sandbox,
               approvalResolved: dispatchContext.approvalResolved,
               ...(dispatchContext.additionalPermissions !== undefined
-                ? { additionalPermissions: dispatchContext.additionalPermissions }
+                ? {
+                    additionalPermissions:
+                      dispatchContext.additionalPermissions,
+                  }
                 : {}),
               rawArgs: dispatchRawArgs,
               invocation: dispatchInvocation,
             },
           );
-          return executeToolDispatch(rawDispatchOptions(dispatchRawArgs, {
-            ...withoutPermissionEvaluator(opts),
+          return runAdmittedToolCall({
+            session: opts.session,
+            turnId: opts.turn.subId,
+            callId: toolCall.id,
             tool: spec.tool,
-            invocation: dispatchInvocation,
-            preHooks: [],
-            ...(preHookPermissionDecision !== undefined
-              ? { preHookPermissionDecision }
-              : {}),
-            ...(prePreventContinuation !== undefined
-              ? { prePreventContinuation }
-              : {}),
-            approvalAlreadyResolved: dispatchContext.approvalResolved,
-            abortController: toolAbortController,
-            subId: toolCall.id,
-            runtimeAttemptContext,
-          }));
+            args: dispatchArgs,
+            signal: toolAbortController.signal,
+            invoke: ({ abortController }) =>
+              executeToolDispatch(
+                rawDispatchOptions(dispatchRawArgs, {
+                  ...withoutPermissionEvaluator(opts),
+                  tool: spec.tool,
+                  invocation: dispatchInvocation,
+                  preHooks: [],
+                  ...(preHookPermissionDecision !== undefined
+                    ? { preHookPermissionDecision }
+                    : {}),
+                  ...(prePreventContinuation !== undefined
+                    ? { prePreventContinuation }
+                    : {}),
+                  approvalAlreadyResolved: dispatchContext.approvalResolved,
+                  abortController,
+                  subId: toolCall.id,
+                  runtimeAttemptContext,
+                }),
+              ),
+          });
         },
       });
       markLoadedToolNamesDiscovered(

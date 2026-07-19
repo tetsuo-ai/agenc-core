@@ -87,7 +87,6 @@ import {
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
-import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgencHome as resolveAgencHomeFromEnv, resolveWorkspace as resolveWorkspaceFromEnv } from "../config/env.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
@@ -121,6 +120,11 @@ import {
   type BootstrapSessionServicesHandle,
 } from "./bootstrap-services.js";
 import { fetchStartupInternalEvents } from "./startup-internal-events.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import {
+  resolveAdmissionConcurrencyLimits,
+  resolveExecutionAdmissionBudgetPolicy,
+} from "../budget/admission-config.js";
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -399,27 +403,6 @@ function requireProviderApiKeyOrUndefined(params: {
   throw new Error(
     `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
   );
-}
-
-function buildProviderFallbackLadderOptions(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly settings: ResolvedProviderSettings | undefined;
-}): ProviderFallbackLadderOptions | undefined {
-  const targets = params.settings?.fallbackTargets;
-  if (!targets || targets.length === 0) return undefined;
-  return {
-    provider: params.provider,
-    model: params.model,
-    targets,
-    ...(params.settings?.fallbackMaxFailures !== undefined
-      ? { maxFailures: params.settings.fallbackMaxFailures }
-      : {}),
-    ...(params.settings?.fallbackStatuses !== undefined &&
-    params.settings.fallbackStatuses.length > 0
-      ? { statuses: params.settings.fallbackStatuses }
-      : {}),
-  };
 }
 
 function providerApiKeyEnvHint(
@@ -844,6 +827,17 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
   /** Production daemon entrypoints require a healthy boundary before startup. */
   readonly requireSandboxReadyAtStartup?: boolean;
+  /** Shared daemon authority. Omit only for an independently owned session. */
+  readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
+  /**
+   * Treat this session as unattended work for execution-admission budget
+   * policy without enabling autonomous keepalive ticks. Daemon-owned
+   * background sessions set this explicitly; interactive sessions inherit
+   * the ordinary `--autonomous`/config mode.
+   */
+  readonly executionAdmissionAutonomous?: boolean;
+  /** Stable calendar-budget identity; daemon agents default to their run id. */
+  readonly executionAdmissionBudgetIdentity?: string;
 }
 
 export interface LocalRuntimeBootstrap {
@@ -936,6 +930,8 @@ export async function bootstrapLocalRuntimeSession(
   }
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
+  const executionAdmissionAutonomous =
+    options.executionAdmissionAutonomous ?? autonomousModeEnabled;
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
   const resumeConversation =
@@ -1076,11 +1072,6 @@ export async function bootstrapLocalRuntimeSession(
       }),
     managedKey,
   });
-  const providerFallback = buildProviderFallbackLadderOptions({
-    provider: resolvedProvider,
-    model: providerModel,
-    settings: runtimeProviderSettings,
-  });
   const selectedBaseURL = firstNonEmptyString(
     providerSettings?.baseURL,
     managedKey.baseURL,
@@ -1217,9 +1208,11 @@ export async function bootstrapLocalRuntimeSession(
         providerSettings?.maxOutputTokens === undefined
           ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
           : {}),
-        ...(providerFallback !== undefined
-          ? { providerFallback }
-          : {}),
+        // M3 reserves one conservative maximum per provider dispatch. Keep
+        // the wire operation single-attempt; otherwise a hidden retry or
+        // model fallback could spend outside that reservation. The explicit
+        // startup-prewarm fallback is admitted and journaled separately.
+        maxRetries: 0,
         ...(hasManagedCredential ? { managedCredential: true } : {}),
         ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
         // Grok-only server-tool profile from [llm.xai]; empty for non-Grok /
@@ -1342,6 +1335,39 @@ export async function bootstrapLocalRuntimeSession(
   let initialMessages: ReadonlyArray<EventMsg> = [];
 
   const sessionProjectRootMarkers = startup.config.project_root_markers;
+  const ownedExecutionAdmissionKernel =
+    options.executionAdmissionKernel === undefined
+      ? new ExecutionAdmissionKernel({
+          agencHome,
+          limits: resolveAdmissionConcurrencyLimits(env, {
+            sessionLimit: startup.config.agent_max_threads,
+          }),
+        })
+      : null;
+  const executionAdmissionKernel =
+    options.executionAdmissionKernel ?? ownedExecutionAdmissionKernel!;
+  const executionAdmission = executionAdmissionKernel.bindClient({
+    cwd: workspaceRoot,
+    ...(options.executionAdmissionBudgetIdentity !== undefined
+      ? { budgetIdentity: options.executionAdmissionBudgetIdentity }
+      : options.executionAdmissionAutonomous !== undefined
+        ? { budgetIdentity: conversationId }
+        : {}),
+    ...(sessionProjectRootMarkers !== undefined
+      ? { projectRootMarkers: sessionProjectRootMarkers }
+      : {}),
+    scope: {
+      runId: conversationId,
+      sessionId: conversationId,
+      autonomous: executionAdmissionAutonomous,
+    },
+    budget: resolveExecutionAdmissionBudgetPolicy({
+      budget: startup.config.budget,
+      agentBudget: startup.config.agent?.budget,
+      autonomous: executionAdmissionAutonomous,
+      env,
+    }),
+  });
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
@@ -1386,6 +1412,8 @@ export async function bootstrapLocalRuntimeSession(
       sessionConfiguration,
       codeModeService,
       sandboxExecutionBroker,
+      executionAdmission,
+      admissionRequired: true,
     });
 
   const shutdown = (): Promise<void> => {
@@ -1430,6 +1458,13 @@ export async function bootstrapLocalRuntimeSession(
         await disposeSandboxExecutionBroker(sandboxExecutionBroker);
       } catch (error) {
         errors.push(error);
+      }
+      if (ownedExecutionAdmissionKernel !== null) {
+        try {
+          ownedExecutionAdmissionKernel.close();
+        } catch (error) {
+          errors.push(error);
+        }
       }
       if (errors.length > 0) {
         throw new AggregateError(errors, "local runtime shutdown failed");
@@ -1495,8 +1530,11 @@ export async function bootstrapLocalRuntimeSession(
       onBeforeSessionConfigured: async (s) => {
         sessionRef = s;
         sessionForShutdown = s;
-        bootstrapServices.bindSession(s);
-        const agentRegistry = new AgentRegistry();
+        const agentRegistry = new AgentRegistry({
+          ...(startup.config.agent_max_threads !== undefined
+            ? { maxThreads: startup.config.agent_max_threads }
+            : {}),
+        });
         const agentControl = new AgentControl({
           session: s,
           registry: agentRegistry,
@@ -1570,9 +1608,22 @@ export async function bootstrapLocalRuntimeSession(
           },
         });
 
+        // Resume must restore the canonical rollout coordinates before the
+        // SQLite admission journal subscribes and catches up decisions that
+        // landed while this Session was detached. Binding earlier either has
+        // no store to persist into or allocates catch-up events from sequence
+        // one, colliding with resumed history. These three boundaries are
+        // intentionally fail-closed; continuing without the admission
+        // projection would make later execution evidence incomplete.
+        const existingItems = rolloutStore.readAll();
+        s.eventLog.seedCanonicalHistory(
+          existingItems.flatMap((item) =>
+            item.type === "event_msg" ? [item.payload] : [],
+          ),
+        );
+        bootstrapServices.bindSession(s);
+
         try {
-          const existingItems = rolloutStore.readAll();
-          s.eventLog.seedLastSeq(maxRolloutEventSeq(existingItems));
           if (existingItems.length > 0) {
             const indexSnapshot = readIndexSnapshot(
               join(
@@ -1855,16 +1906,4 @@ export async function bootstrapLocalRuntimeSession(
     }
     throw err;
   }
-}
-
-function maxRolloutEventSeq(items: readonly RolloutItem[]): number {
-  let maxSeq = 0;
-  for (const item of items) {
-    if (item.type !== "event_msg") continue;
-    const seq = (item.payload as { readonly seq?: unknown }).seq;
-    if (typeof seq === "number" && Number.isSafeInteger(seq) && seq > maxSeq) {
-      maxSeq = seq;
-    }
-  }
-  return maxSeq;
 }

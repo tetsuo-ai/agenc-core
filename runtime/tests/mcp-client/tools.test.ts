@@ -458,6 +458,180 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(ends[0]!.isError).toBe(false);
   });
 
+  test("aborts an outbound MCP RPC from the admitted hidden signal", async () => {
+    let rpcSignal: AbortSignal | undefined;
+    const callTool = vi.fn(
+      async (
+        _params: unknown,
+        _schema: unknown,
+        requestOptions?: { signal?: AbortSignal },
+      ) =>
+        await new Promise<unknown>((_resolve, reject) => {
+          rpcSignal = requestOptions?.signal;
+          rpcSignal?.addEventListener(
+            "abort",
+            () => reject(rpcSignal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const observer = { onEnd: vi.fn() };
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "slow_remote", description: "waits remotely" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "remote",
+      undefined,
+      { callObserver: observer },
+    );
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled outbound MCP call");
+
+    const running = bridge.tools[0]!.execute({
+      value: 1,
+      __abortSignal: admittedAbort.signal,
+    });
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    admittedAbort.abort(reason);
+
+    await expect(running).rejects.toBe(reason);
+    expect(rpcSignal?.aborted).toBe(true);
+    expect(observer.onEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ isError: true }),
+    );
+  });
+
+  test("retains the admitted call until an abort-ignoring MCP RPC settles", async () => {
+    const rawResult = Promise.withResolvers<{
+      content: Array<{ type: "text"; text: string }>;
+      isError: boolean;
+    }>();
+    let rpcSignal: AbortSignal | undefined;
+    const callTool = vi.fn(
+      async (
+        _params: unknown,
+        _schema: unknown,
+        requestOptions?: { signal?: AbortSignal },
+      ) => {
+        rpcSignal = requestOptions?.signal;
+        return rawResult.promise;
+      },
+    );
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "slow_remote", description: "waits remotely" }],
+        }),
+        callTool,
+        close: async () => {},
+      },
+      "remote",
+    );
+    const admittedAbort = new AbortController();
+    const reason = new Error("kernel cancelled abort-ignoring MCP call");
+    const args: Record<string, unknown> = { value: 1 };
+    Object.defineProperty(args, "__abortSignal", {
+      value: admittedAbort.signal,
+      enumerable: false,
+    });
+    let settled = false;
+
+    const running = bridge.tools[0]!.execute(args);
+    void running.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(callTool).toHaveBeenCalledOnce());
+    admittedAbort.abort(reason);
+
+    expect(rpcSignal?.aborted).toBe(true);
+    expect(rpcSignal?.reason).toBe(reason);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    rawResult.resolve({
+      content: [{ type: "text", text: "late result" }],
+      isError: false,
+    });
+    await expect(running).rejects.toBe(reason);
+  });
+
+  test("actively aborts an MCP tool deadline without releasing early", async () => {
+    vi.useFakeTimers();
+    try {
+      const rawResult = Promise.withResolvers<{
+        content: Array<{ type: "text"; text: string }>;
+        isError: boolean;
+      }>();
+      let rpcSignal: AbortSignal | undefined;
+      const callTool = vi.fn(
+        async (
+          _params: unknown,
+          _schema: unknown,
+          requestOptions?: { signal?: AbortSignal },
+        ) => {
+          rpcSignal = requestOptions?.signal;
+          return rawResult.promise;
+        },
+      );
+      const bridge = await createToolBridge(
+        {
+          listTools: async () => ({
+            tools: [{ name: "slow_remote", description: "waits remotely" }],
+          }),
+          callTool,
+          close: async () => {},
+        },
+        "remote",
+        undefined,
+        { callToolTimeoutMs: 25 },
+      );
+      let settled = false;
+
+      const running = bridge.tools[0]!.execute({ value: 1 });
+      void running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callTool).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(rpcSignal?.aborted).toBe(true);
+      expect(rpcSignal?.reason).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("timed out after 25ms"),
+        }),
+      );
+      expect(settled).toBe(false);
+
+      rawResult.resolve({
+        content: [{ type: "text", text: "late result" }],
+        isError: false,
+      });
+      await expect(running).resolves.toEqual(
+        expect.objectContaining({
+          content: expect.stringContaining("timed out after 25ms"),
+          isError: true,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("normalizes malformed MCP tool call result content", async () => {
     const observedResults: string[] = [];
     const bridge = await createToolBridge(
@@ -735,10 +909,17 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     await expect(bridge.tools[0]!.execute({ value: 1 })).resolves.toMatchObject({
       content: "approved",
     });
-    expect(callTool).toHaveBeenCalledWith({
-      name: "write",
-      arguments: { value: 2 },
-    });
+    expect(callTool).toHaveBeenCalledWith(
+      {
+        name: "write",
+        arguments: { value: 2 },
+      },
+      undefined,
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        timeout: expect.any(Number),
+      }),
+    );
   });
 
   test("MCP approval templates feed guardian prompts with updated args", async () => {

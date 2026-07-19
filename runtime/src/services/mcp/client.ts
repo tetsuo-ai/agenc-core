@@ -94,6 +94,10 @@ import {
   getWebSocketProxyUrl,
 } from '../../utils/proxy.js'
 import { sanitizeSystemReminderContent } from '../../prompts/attachments/system-reminder-sanitizer.js'
+import {
+  DEFAULT_PROMPT_RPC_TIMEOUT_MS,
+  runAdmittedMcpPromptGet,
+} from '../../mcp-client/prompts.js'
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
 import { subprocessEnv } from '../../utils/subprocessEnv.js'
@@ -2194,13 +2198,29 @@ const fetchCommandsForClient = memoizeWithLRU(
           },
           argNames,
           source: 'mcp',
-          async getPromptForCommand(args: string) {
+          async getPromptForCommand(args: string, context: unknown) {
             const argsArray = args.split(' ')
             try {
               const connectedClient = await ensureConnectedClient(client)
-              const result = await connectedClient.client.getPrompt({
-                name: prompt.name,
-                arguments: zipObject(argNames, argsArray),
+              const promptArguments = zipObject(argNames, argsArray)
+              const rpcTimeoutMs = promptRpcTimeoutMs(connectedClient.config)
+              const signal = promptCommandAbortSignal(context)
+              const result = await runAdmittedMcpPromptGet({
+                serverName: connectedClient.name,
+                promptName: prompt.name,
+                args: promptArguments,
+                rpcTimeoutMs,
+                ...(signal !== undefined ? { signal } : {}),
+                invoke: effectSignal => connectedClient.client.getPrompt(
+                  {
+                    name: prompt.name,
+                    arguments: promptArguments,
+                  },
+                  {
+                    signal: effectSignal,
+                    timeout: rpcTimeoutMs,
+                  },
+                ),
               })
               const transformed = await Promise.all(
                 result.messages.map(message =>
@@ -2236,6 +2256,21 @@ const fetchCommandsForClient = memoizeWithLRU(
 
 const UNTRUSTED_MCP_PROMPT_BOUNDARY =
   '===== AGENC UNTRUSTED MCP PROMPT CONTENT ====='
+
+function promptRpcTimeoutMs(config: ScopedMcpServerConfig): number {
+  return 'timeout' in config &&
+    typeof config.timeout === 'number' &&
+    Number.isFinite(config.timeout) &&
+    config.timeout > 0
+    ? config.timeout
+    : DEFAULT_PROMPT_RPC_TIMEOUT_MS
+}
+
+function promptCommandAbortSignal(context: unknown): AbortSignal | undefined {
+  const abortController = asRecord(asRecord(context)?.abortController)
+  const signal = abortController?.signal
+  return signal instanceof AbortSignal ? signal : undefined
+}
 
 function neutralizeMcpPromptBoundary(text: string): string {
   return text
@@ -3213,31 +3248,35 @@ async function callMCPTool({
       tool,
     )
 
-    // Use Promise.race with our own timeout to handle cases where SDK's
-    // internal timeout doesn't work (e.g., SSE stream breaks mid-request)
     const timeoutMs = getMcpToolTimeoutMs()
-    let timeoutId: NodeJS.Timeout | undefined
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        (reject, name, tool, timeoutMs) => {
-          reject(
-            new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
-              'MCP tool timeout',
-            ),
-          )
-        },
-        timeoutMs,
-        reject,
-        name,
-        tool,
-        timeoutMs,
+    signal.throwIfAborted()
+    const effectController = new AbortController()
+    const timeoutError =
+      new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+        `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
+        'MCP tool timeout',
       )
-    })
+    let timedOut = false
+    const forwardCallerAbort = (): void => {
+      if (!effectController.signal.aborted) {
+        effectController.abort(signal.reason)
+      }
+    }
+    signal.addEventListener('abort', forwardCallerAbort, { once: true })
+    const timeoutId = setTimeout(() => {
+      timedOut = true
+      if (!effectController.signal.aborted) {
+        effectController.abort(timeoutError)
+      }
+    }, timeoutMs)
 
-    const result = await Promise.race([
-      client.callTool(
+    let result: Awaited<ReturnType<typeof client.callTool>>
+    try {
+      // Abort the physical RPC on cancellation/deadline, but keep this call
+      // pending until the transport promise settles. The outer admitted tool
+      // must retain its concurrency slot while an abort-ignoring transport is
+      // still physically live.
+      result = await client.callTool(
         {
           name: tool,
           arguments: args,
@@ -3245,7 +3284,7 @@ async function callMCPTool({
         },
         CallToolResultSchema,
         {
-          signal,
+          signal: effectController.signal,
           timeout: timeoutMs,
           onprogress: onProgress
             ? sdkProgress => {
@@ -3261,13 +3300,17 @@ async function callMCPTool({
             }
             : undefined,
         },
-      ),
-      timeoutPromise,
-    ]).finally(() => {
-      if (timeoutId) {
-        clearTimeout(timeoutId)
-      }
-    })
+      )
+      signal.throwIfAborted()
+      if (timedOut) throw timeoutError
+    } catch (error) {
+      signal.throwIfAborted()
+      if (timedOut) throw timeoutError
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+      signal.removeEventListener('abort', forwardCallerAbort)
+    }
 
     if ('isError' in result && result.isError) {
       let errorDetails = 'Unknown error'

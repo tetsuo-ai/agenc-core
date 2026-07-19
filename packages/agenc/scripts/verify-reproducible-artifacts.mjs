@@ -10,6 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { runtimeArchiveContentInventory } from "../lib/runtime-archive.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -102,15 +103,51 @@ function validateArtifactPair(root, entries) {
   }
 }
 
+function archiveEntryDifferences(leftEntries, rightEntries) {
+  const leftTarball = leftEntries.find((entry) => entry.name.endsWith(".tar.gz"));
+  const rightTarball = rightEntries.find((entry) => entry.name.endsWith(".tar.gz"));
+  if (!leftTarball || !rightTarball || leftTarball.name !== rightTarball.name) {
+    return { count: 0, shown: [], unavailable: "release tarball names differ" };
+  }
+  try {
+    const left = runtimeArchiveContentInventory(join(first, leftTarball.name));
+    const right = runtimeArchiveContentInventory(join(second, rightTarball.name));
+    const leftByPath = new Map(left.members.map((member) => [member.path, member]));
+    const rightByPath = new Map(right.members.map((member) => [member.path, member]));
+    const paths = [...new Set([...leftByPath.keys(), ...rightByPath.keys()])]
+      .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    const differences = paths.flatMap((path) => {
+      const leftMember = leftByPath.get(path);
+      const rightMember = rightByPath.get(path);
+      return JSON.stringify(leftMember) === JSON.stringify(rightMember)
+        ? []
+        : [{ path, first: leftMember ?? null, second: rightMember ?? null }];
+    });
+    return {
+      count: differences.length,
+      shown: differences.slice(0, 50),
+      ...(differences.length > 50 ? { omitted: differences.length - 50 } : {}),
+    };
+  } catch (error) {
+    return {
+      count: 0,
+      shown: [],
+      unavailable: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 assertDisjointPaths();
 const left = inventory(first);
 const right = inventory(second);
 validateArtifactPair(first, left);
 validateArtifactPair(second, right);
 if (JSON.stringify(left) !== JSON.stringify(right)) {
+  const entryDifferences = archiveEntryDifferences(left, right);
   throw new Error(
     `two release builds were not byte-identical:\nfirst=${JSON.stringify(left, null, 2)}\n` +
-      `second=${JSON.stringify(right, null, 2)}`,
+      `second=${JSON.stringify(right, null, 2)}\n` +
+      `archiveEntryDifferences=${JSON.stringify(entryDifferences, null, 2)}`,
   );
 }
 

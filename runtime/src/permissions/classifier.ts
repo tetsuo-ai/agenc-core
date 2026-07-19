@@ -21,6 +21,8 @@
  * @module
  */
 
+import { randomUUID } from "node:crypto";
+
 import {
   resolveApiKey,
 } from "../config/env.js";
@@ -38,6 +40,9 @@ import {
   type BashPermissionInput,
 } from "./bash.js";
 import type { ToolPermissionContext } from "./types.js";
+import { peekAmbientRuntimeSession } from "../session/current-session.js";
+import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import { AdmissionDeniedError } from "../budget/admission-client.js";
 
 // ---------------------------------------------------------------------------
 // Safe-tool allowlist
@@ -446,6 +451,10 @@ function tryParseJson(input: string): unknown {
 async function defaultRemoteClassifierStageRunner(
   request: RemoteClassifierStageRequest,
 ): Promise<RemoteClassifierStageResponse> {
+  const session = peekAmbientRuntimeSession();
+  if (session === null) {
+    throw new AdmissionDeniedError("classifier_session_context_unavailable");
+  }
   const config = resolveRemoteClassifierConfig();
   if (!config) {
     throw new Error("auto mode classifier unavailable: missing xAI API key");
@@ -454,25 +463,38 @@ async function defaultRemoteClassifierStageRunner(
     apiKey: config.apiKey,
     model: request.model,
     timeoutMs: config.timeoutMs,
+    extra: { maxRetries: 0 },
   }) as LLMProvider;
-  const response = await provider.chat(
-    [
-      { role: "system", content: request.systemPrompt },
-      { role: "user", content: request.userPrompt },
-    ],
-    {
-      signal: request.signal,
-      timeoutMs: config.timeoutMs,
-      parallelToolCalls: false,
-      structuredOutput: {
-        enabled: true,
-        schema:
-          request.stage === "thinking"
-            ? THINKING_STAGE_SCHEMA
-            : FAST_STAGE_SCHEMA,
-      },
+  const messages = [
+    { role: "system" as const, content: request.systemPrompt },
+    { role: "user" as const, content: request.userPrompt },
+  ];
+  const options = {
+    signal: request.signal,
+    timeoutMs: config.timeoutMs,
+    maxOutputTokens: 512,
+    parallelToolCalls: false,
+    structuredOutput: {
+      enabled: true,
+      schema:
+        request.stage === "thinking"
+          ? THINKING_STAGE_SCHEMA
+          : FAST_STAGE_SCHEMA,
     },
-  );
+  } as const;
+  const response = await runAdmittedModelCall({
+    session,
+    provider,
+    messages,
+    options,
+    stepId: `classifier:${request.stage}:${randomUUID()}`,
+    sessionId: session.conversationId,
+    parentScopeId: `classifier:${request.stage}`,
+    model: request.model,
+    providerName: "grok",
+    signal: request.signal,
+    invoke: (admittedOptions) => provider.chat(messages, admittedOptions),
+  });
   const parsed = parseClassifierStructuredOutput(
     response.structuredOutput?.parsed ??
       response.structuredOutput?.rawText ??

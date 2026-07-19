@@ -11,7 +11,7 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.6.2**. Default session provider **grok**, fresh-config session model
+Version: **0.7.0**. Default session provider **grok**, fresh-config session model
 **grok-4.5** (see [providers.md](providers.md)).
 
 ---
@@ -83,7 +83,7 @@ agenc help [command]
 
 Topics include (among others): `agent`, `init`, `login` / `logout` / `whoami`,
 `daemon`, `remote`, `mcp`, `doctor`, `onboard`, `security`, `update`, `gateway`,
-`budget`, `permissions`, `plugin` / `plugins`, `providers`, `config`, `state`,
+`budget`, `run`, `permissions`, `plugin` / `plugins`, `providers`, `config`, `state`,
 `trajectories`. Unknown topics error with a pointer to `agenc help`.
 
 ---
@@ -239,18 +239,51 @@ agenc budget status [--json]
 agenc budget reset <agent>
 ```
 
-Cost-bounded autonomy. Read-only except `reset`. Enforced daemon-side around
-autonomous turns; **disabled by default**.
+Cost-bounded execution admission policy; **disabled by default**. Durable
+usage is inspected by run id with `agenc run status|replay|evidence`.
 
 | Subcommand | Meaning |
 | --- | --- |
-| `status` | Policy + per-agent spend vs caps |
-| `reset <agent>` | Clear an agent's spend and un-pause it |
+| `status` | Configured admission policy and canonical run-inspection commands |
+| `reset <agent>` | Rejected compatibility command; durable admission evidence cannot be reset |
 
 Configure via `[budget]` in `config.toml` or `AGENC_BUDGET*` env vars.
-Ledger: `<AGENC_HOME>/budget/ledger.json`.
+The daemon execution-admission kernel is the sole production accounting
+authority; gateway heartbeat, cron, and hooks do not maintain separate ledgers.
 
-Design: [`../design/budget-enforcement.md`](../design/budget-enforcement.md).
+Design: [`../design/execution-admission-kernel.md`](../design/execution-admission-kernel.md).
+
+---
+
+## `run`
+
+```text
+agenc run status <run-id>
+agenc run result <run-id>
+agenc run replay <run-id> [--after <sequence>] [--limit <1-200>]
+agenc run evidence <run-id> [--after <sequence>] [--limit <1-200>]
+agenc run cancel <run-id> [--reason <text>]
+```
+
+These commands use the daemon's durable run/admission contract and print
+canonical JSON. `status` includes aggregate admission and budget/hold state;
+`result` succeeds only after the durable run is terminal; its `lastSequence`
+is the terminal snapshot coordinate. A later exclusively leased offline effect
+review can advance the replay tail without resuming execution or changing that
+result. `replay` pages the
+canonical append-only rollout journal with an exclusive per-run sequence
+cursor. `evidence` adds source/completeness metadata and SHA-256 hashes for
+mechanical review. `cancel` durably locks the run tree, cancels queued
+descendants, and propagates to running descendants without deleting partial
+evidence.
+
+Replay and evidence pages default to the daemon's bounded page size and never
+accept more than 200 events. Retention, compaction, corruption truncation, a
+missing source, and a cursor beyond the canonical tail are explicit gaps and
+do not advance the returned cursor past a missing range. Pre-M4 runs can fall
+back to the project-database-scoped execution-admission journal, which is
+labeled as a compatibility source. An admission-only record is not presented
+as a fabricated terminal result.
 
 ---
 
@@ -407,17 +440,29 @@ agenc permissions approve --session session_123 call_456
 ```text
 agenc state export <agent-id>
 agenc state import
+agenc state resolve-tool-call <session-id> <tool-call-id>
 ```
 
 | Command | Meaning |
 | --- | --- |
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
+| `resolve-tool-call <session-id> <tool-call-id>` | Record an operator review for one unresolved `unknown_outcome` tool call and lift the session's side-effecting mutation gate once no unresolved effects remain |
 
 ```bash
 agenc state export agent_123 > state.json
 agenc state import < state.json
+AGENC_REVIEWER_ID=operator_7 \
+  agenc state resolve-tool-call session_abc call_42
 ```
+
+Run `resolve-tool-call` from the affected session's project directory after
+stopping the live session. For an M4 effect, it appends and fsyncs a canonical
+`effect_review_resolved` event before advancing the SQLite review projection;
+it never reruns the tool or rewrites `unknown_outcome` as success. Reviewer
+identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
+`local_operator` as the final fallback. If the requested call is not found,
+the error lists any unresolved calls known for that session.
 
 ---
 
@@ -518,7 +563,7 @@ agenc mcp xaa
 
 | Command | Meaning |
 | --- | --- |
-| `serve` | Expose workspace-scoped read-only AgenC tools as an MCP server |
+| `serve` | Expose workspace-scoped AgenC prompts and resources as an MCP server |
 | `add` | Add an MCP server |
 | `list` | List configured MCP servers |
 | `get` | Show one MCP server |
@@ -543,10 +588,12 @@ agenc mcp serve --transport stdio
 agenc mcp list
 ```
 
-Inbound serve advertises only explicitly non-mutating, idempotent read tools.
-Environment flags cannot authorize mutations. Daemon SSE autostart additionally
-requires an absolute `mcp.server.workspace`; foreground serve uses its working
-directory.
+Inbound serve does not advertise or execute tools until a request can be bound
+to a daemon session-owned admission identity. Direct `tools/call` requests fail
+closed with `ADMISSION_IDENTITY_REQUIRED`; environment flags cannot authorize
+execution. Prompts and resources remain workspace-scoped. Daemon SSE autostart
+additionally requires an absolute `mcp.server.workspace`; foreground serve uses
+its working directory.
 
 ---
 

@@ -616,6 +616,7 @@ function startToolUseSummaryGeneration(
     signal: summarySignal,
     isNonInteractiveSession: false,
     provider: session.services.provider,
+    session,
     ...(lastAssistantText !== undefined ? { lastAssistantText } : {}),
   })
     .then((summary): ToolUseSummaryMessage | null => {

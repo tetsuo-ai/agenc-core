@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,6 +31,10 @@ import {
   SESSION_ID_ARG,
 } from "./system/filesystem.js";
 import { runWithCwdOverride } from "../utils/cwd.js";
+import {
+  clearCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../session/current-session.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../tools/ScheduleCronTool/CronCreateTool.js", () => ({
@@ -54,6 +58,14 @@ vi.mock("../tools.js", () => ({
   parseToolPreset: vi.fn(() => []),
   ALL_AGENT_DISALLOWED_TOOLS: [],
 }));
+
+const legacyTestSession = {
+  conversationId: "tool-surface-test-session",
+  services: { admissionRequired: false },
+} as never;
+
+beforeEach(() => setCurrentRuntimeSession(legacyTestSession));
+afterEach(() => clearCurrentRuntimeSession(legacyTestSession));
 
 function permissionContextForWorkspace(workspace?: string) {
   return createEmptyToolPermissionContext({

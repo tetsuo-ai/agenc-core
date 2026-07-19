@@ -75,6 +75,8 @@ export interface AgenCRealtimeThreadBinding {
 }
 
 export interface AgenCRealtimeRpcHandlers {
+  /** True only for an implementation whose start path is actually enabled. */
+  readonly startEnabled?: boolean;
   start(
     params: ThreadRealtimeStartParams,
     context?: AgenCRealtimeRpcContext,
@@ -98,7 +100,17 @@ export interface AgenCRealtimeRpcServiceOptions {
     | AgenCRealtimeThreadBinding
     | null
     | Promise<AgenCRealtimeThreadBinding | null>;
+  /** Isolated contract-test seam; production must never provide this token. */
+  readonly unadmittedStartOverride?:
+    typeof TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START;
 }
+
+export const TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START = Symbol(
+  "test-only-allow-unadmitted-realtime-start",
+);
+
+export const REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC =
+  "thread/realtime/start is disabled: realtime provider traffic has no durable run/step admission, bounded budget reservation, or authoritative usage reconciliation; use ordinary daemon session turns until realtime admission is implemented";
 
 interface ActiveRealtimeFanout {
   readonly active: RealtimeActiveHandle;
@@ -124,9 +136,17 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         | null
         | Promise<AgenCRealtimeThreadBinding | null>)
     | undefined;
+  readonly #allowUnadmittedStart: boolean;
 
   constructor(options: AgenCRealtimeRpcServiceOptions = {}) {
     this.#resolveThread = options.resolveThread;
+    this.#allowUnadmittedStart =
+      options.unadmittedStartOverride ===
+      TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START;
+  }
+
+  get startEnabled(): boolean {
+    return this.#allowUnadmittedStart;
   }
 
   registerThread(binding: AgenCRealtimeThreadBinding): void {
@@ -141,6 +161,12 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     params: ThreadRealtimeStartParams,
     context: AgenCRealtimeRpcContext = {},
   ): Promise<ThreadRealtimeStartResponse> {
+    if (!this.#allowUnadmittedStart) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "EXECUTION_ADMISSION_REQUIRED",
+        REALTIME_EXECUTION_ADMISSION_DIAGNOSTIC,
+      );
+    }
     const binding = await this.#requireThread(params.threadId);
     const transport = normalizeRealtimeStartTransport(params.transport);
     const guard: RealtimeStartupGuard = { cancelled: false };

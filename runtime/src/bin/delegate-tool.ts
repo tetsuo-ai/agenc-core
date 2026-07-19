@@ -53,13 +53,11 @@ const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
   properties: {
     taskPrompt: {
       type: "string",
-      description:
-        "Task prompt handed to the child agent as its user message.",
+      description: "Task prompt handed to the child agent as its user message.",
     },
     role: {
       type: "string",
-      description:
-        "Built-in or user-defined role name. Defaults to `default`.",
+      description: "Built-in or user-defined role name. Defaults to `default`.",
     },
     isolation: {
       type: "string",
@@ -104,8 +102,7 @@ export function bindSessionAgentControl(
   controlCache.set(session, pair);
   try {
     const services = session.services as unknown as
-      | { agentControl?: unknown }
-      | undefined;
+      { agentControl?: unknown } | undefined;
     if (services !== undefined && services !== null) {
       services.agentControl = pair.control as unknown;
     }
@@ -131,14 +128,20 @@ export function ensureAgentControl(session: Session): {
   };
   const bound = services.agentControl;
   if (bound instanceof AgentControl) {
-    const registry = (bound as AgentControlWithRegistry)[SESSION_AGENT_REGISTRY];
+    const registry = (bound as AgentControlWithRegistry)[
+      SESSION_AGENT_REGISTRY
+    ];
     if (registry instanceof AgentRegistry) {
       const pair = { control: bound, registry };
       controlCache.set(session, pair);
       return pair;
     }
   }
-  const registry = new AgentRegistry();
+  const registry = new AgentRegistry({
+    ...(session.config.agent_max_threads !== undefined
+      ? { maxThreads: session.config.agent_max_threads }
+      : {}),
+  });
   const rawThreadManager =
     services.threadManager instanceof ThreadManager
       ? services.threadManager

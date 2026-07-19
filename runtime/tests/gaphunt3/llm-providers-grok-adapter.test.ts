@@ -27,28 +27,39 @@ afterEach(() => {
  * (iterator teardown) was invoked, which the chunk loop's finally must call on
  * abort.
  */
-function makeBlockingStream(firstEvent: Record<string, unknown>): {
+function makeBlockingStream(
+  firstEvent: Record<string, unknown>,
+  closeResult: Promise<IteratorResult<Record<string, unknown>>> =
+    Promise.resolve({ value: undefined, done: true }),
+  settlePendingNextOnReturn = true,
+): {
   stream: AsyncIterable<Record<string, unknown>>;
   returnCalled: () => boolean;
+  settlePendingNext: () => void;
 } {
   let yieldedFirst = false;
   let returnInvoked = false;
+  let settlePendingNext: (() => void) | undefined;
   const iterator: AsyncIterator<Record<string, unknown>> = {
     next(): Promise<IteratorResult<Record<string, unknown>>> {
       if (!yieldedFirst) {
         yieldedFirst = true;
         return Promise.resolve({ value: firstEvent, done: false });
       }
-      return new Promise<IteratorResult<Record<string, unknown>>>(() => {});
+      return new Promise<IteratorResult<Record<string, unknown>>>((resolve) => {
+        settlePendingNext = () => resolve({ value: undefined, done: true });
+      });
     },
     return(): Promise<IteratorResult<Record<string, unknown>>> {
       returnInvoked = true;
-      return Promise.resolve({ value: undefined, done: true });
+      if (settlePendingNextOnReturn) settlePendingNext?.();
+      return closeResult;
     },
   };
   return {
     stream: { [Symbol.asyncIterator]: () => iterator },
     returnCalled: () => returnInvoked,
+    settlePendingNext: () => settlePendingNext?.(),
   };
 }
 
@@ -129,6 +140,100 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
     expect(returnCalled()).toBe(true);
     // No visible content should have leaked from the aborted turn.
     expect(chunks.some((c) => c.content && c.content.length > 0)).toBe(false);
+  });
+
+  test("retains the model boundary until iterator teardown is confirmed", async () => {
+    vi.useFakeTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4.3",
+      timeoutMs: 10 * 60_000,
+    });
+    const closeGate = Promise.withResolvers<
+      IteratorResult<Record<string, unknown>>
+    >();
+    const { stream, returnCalled } = makeBlockingStream(
+      {
+        type: "response.reasoning_summary_text.delta",
+        delta: "still thinking...",
+        summary_index: 0,
+      },
+      closeGate.promise,
+    );
+    (provider as any).client = {
+      responses: { create: vi.fn(() => withResponse(stream)) },
+    };
+    const controller = new AbortController();
+    let settled: "rejected" | "resolved" | "pending" = "pending";
+
+    void provider
+      .chatStream([{ role: "user", content: "go" }], () => {}, {
+        signal: controller.signal,
+      })
+      .then(
+        () => {
+          settled = "resolved";
+        },
+        () => {
+          settled = "rejected";
+        },
+      );
+    await flushMicrotasks();
+    controller.abort();
+    await flushMicrotasks();
+
+    expect(returnCalled()).toBe(true);
+    expect(settled).toBe("pending");
+
+    closeGate.resolve({ value: undefined, done: true });
+    await flushMicrotasks();
+    expect(settled).toBe("rejected");
+  });
+
+  test("does not trust return resolution while a pending next remains live", async () => {
+    vi.useFakeTimers();
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4.3",
+      timeoutMs: 10 * 60_000,
+    });
+    const { stream, returnCalled, settlePendingNext } = makeBlockingStream(
+      {
+        type: "response.reasoning_summary_text.delta",
+        delta: "abort-ignoring read",
+        summary_index: 0,
+      },
+      Promise.resolve({ value: undefined, done: true }),
+      false,
+    );
+    (provider as any).client = {
+      responses: { create: vi.fn(() => withResponse(stream)) },
+    };
+    const controller = new AbortController();
+    let settled: "rejected" | "resolved" | "pending" = "pending";
+
+    void provider
+      .chatStream([{ role: "user", content: "go" }], () => {}, {
+        signal: controller.signal,
+      })
+      .then(
+        () => {
+          settled = "resolved";
+        },
+        () => {
+          settled = "rejected";
+        },
+      );
+    await flushMicrotasks();
+    controller.abort();
+    await flushMicrotasks();
+
+    expect(returnCalled()).toBe(true);
+    expect(settled).toBe("pending");
+
+    settlePendingNext();
+    await flushMicrotasks();
+    expect(settled).toBe("rejected");
   });
 
   test("the loop re-checks options.signal before awaiting each chunk", async () => {

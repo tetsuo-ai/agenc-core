@@ -312,7 +312,10 @@ export function prepareReleaseAssets({
   let legacyManifestBytes;
   if (manifest.runtimeVersion === LEGACY_BRIDGE_CONTRACT.runtimeVersion) {
     if (frozenLegacySha256 !== undefined || frozenLegacyBytes !== undefined) {
-      throw new Error("v0.6.2 must derive its legacy bridge from the reviewed v2 manifest");
+      throw new Error(
+        `v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} must derive its legacy bridge ` +
+          "from the reviewed v2 manifest",
+      );
     }
     const expected = Buffer.from(
       `${JSON.stringify(projectLegacyManifest(manifest), null, 2)}\n`,
@@ -320,7 +323,8 @@ export function prepareReleaseAssets({
     legacyManifestBytes = readFileSync(resolvedLegacyManifest);
     if (!legacyManifestBytes.equals(expected)) {
       throw new Error(
-        "legacy bridge manifest is not the deterministic projection of the reviewed v0.6.2 v2 manifest",
+        `legacy bridge manifest is not the deterministic projection of the reviewed ` +
+          `v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} v2 manifest`,
       );
     }
   } else {
@@ -329,7 +333,10 @@ export function prepareReleaseAssets({
       ({ sha256: frozenLegacySha256, bytes: frozenLegacyBytes } =
         reviewedLegacyBridgeIdentity(toolchain));
     } else if (frozenLegacySha256 === undefined || frozenLegacyBytes === undefined) {
-      throw new Error("post-v0.6.2 legacy bridge identity must include SHA-256 and byte count");
+      throw new Error(
+        `post-v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} legacy bridge identity must include ` +
+          "SHA-256 and byte count",
+      );
     }
     legacyManifestBytes = frozenLegacyManifestBytes({
       path: resolvedLegacyManifest,

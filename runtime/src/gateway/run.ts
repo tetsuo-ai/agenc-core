@@ -25,7 +25,6 @@ import type { HeartbeatScheduler } from "../heartbeat/scheduler.js";
 import { startCronDelivery, type CronDeliveryHandle } from "./cron-delivery.js";
 import {
   TELEGRAM_OWNER_COMMANDS,
-  TELEGRAM_PUBLIC_MEDIA_COMMANDS,
   TelegramOwnerControl,
 } from "./control-plane.js";
 import { ChannelGateway } from "./gateway.js";
@@ -41,14 +40,11 @@ import {
   FetchSlackTransport,
   SlackChannelAdapter,
 } from "./slack-channel.js";
-import { XaiMemeFeature } from "./meme.js";
 import {
   HeliusOnchainFeature,
   loadHeliusGatewayApiKey,
   parseHeliusTokenAliases,
 } from "./onchain.js";
-import { XaiVoiceFeature } from "./voice.js";
-import { XaiXSearchFeature } from "./x-search.js";
 import { createSdkDaemonClient } from "./sdk-daemon-client.js";
 import { StdioChannelAdapter } from "./stdio-channel.js";
 import {
@@ -107,6 +103,9 @@ export interface GatewayRunOptions {
   readonly extraAdapters?: readonly ChannelAdapter[];
   readonly agencCommand?: string;
 }
+
+export const GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC =
+  "standalone gateway provider execution is disabled: it has no durable run/step admission, transactional budget reservation, or authoritative usage reconciliation; matching messages route through the daemon agent instead";
 
 /**
  * Resolve a gateway surface token: env override, else a persisted per-home
@@ -182,17 +181,6 @@ function envPositiveInt(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function envBoundedPositiveInt(
-  value: string | undefined,
-  minimum: number,
-  maximum: number,
-): number | undefined {
-  const parsed = envPositiveInt(value);
-  return parsed === undefined
-    ? undefined
-    : Math.min(maximum, Math.max(minimum, parsed));
-}
-
 function envList(value: string | undefined): readonly string[] {
   if (value === undefined) return [];
   return value
@@ -266,44 +254,28 @@ export async function startGateway(
     adapters.push(new StdioChannelAdapter());
   }
 
-  // Grok credentials: /grok-login OAuth wins over env BYOK (same product rule
-  // as CLI). Lazy-read OAuth so gateway cold start does not require secure
-  // storage when only BYOK is used.
-  let xaiKey: string | undefined;
-  try {
-    const { readXaiOauthAccessToken } = await import(
-      "../utils/xaiOauthCredentials.js"
-    );
-    xaiKey = readXaiOauthAccessToken();
-  } catch {
-    xaiKey = undefined;
+  // Direct media/search helpers historically called provider endpoints from
+  // the gateway process, outside the daemon's durable execution authority.
+  // Keep their pure/injected classes testable, but production gateway startup
+  // never installs them until they carry the same admission contract as an
+  // ordinary daemon-routed turn.
+  for (const [feature, requested] of [
+    ["meme/image", envFlag(env.AGENC_GATEWAY_MEME_ENABLED)],
+    ["voice/song", envFlag(env.AGENC_GATEWAY_VOICE_ENABLED)],
+    ["X search", envFlag(env.AGENC_GATEWAY_X_SEARCH_ENABLED)],
+  ] as const) {
+    if (requested) {
+      log(
+        `gateway: ${feature} direct route fail-closed — ${GATEWAY_DIRECT_PROVIDER_ADMISSION_DIAGNOSTIC}`,
+      );
+    }
   }
-  if (xaiKey === undefined || xaiKey.length === 0) {
-    xaiKey =
-      env.XAI_API_KEY?.trim() ||
-      env.GROK_API_KEY?.trim() ||
-      env.AGENC_XAI_API_KEY?.trim() ||
-      undefined;
-  }
-  const memeEnabled =
-    envFlag(env.AGENC_GATEWAY_MEME_ENABLED) &&
-    xaiKey !== undefined &&
-    xaiKey.length > 0;
-  const voiceEnabled =
-    envFlag(env.AGENC_GATEWAY_VOICE_ENABLED) &&
-    xaiKey !== undefined &&
-    xaiKey.length > 0;
-  const xSearchEnabled =
-    envFlag(env.AGENC_GATEWAY_X_SEARCH_ENABLED) &&
-    xaiKey !== undefined &&
-    xaiKey.length > 0;
   const telegramAdminPeerIds = envList(env.AGENC_TELEGRAM_ADMIN_PEER_IDS);
   const telegramOwnerClaimCode = env.AGENC_TELEGRAM_OWNER_CLAIM_CODE?.trim();
-  const publicTelegramCommands = TELEGRAM_PUBLIC_MEDIA_COMMANDS.filter((entry) => {
-    if (entry.command === "image" || entry.command === "meme") return memeEnabled;
-    if (entry.command === "voice" || entry.command === "song") return voiceEnabled;
-    return false;
-  });
+  const publicTelegramCommands: ReadonlyArray<{
+    readonly command: string;
+    readonly description: string;
+  }> = [];
   const ownerTelegramCommands = [
     ...TELEGRAM_OWNER_COMMANDS,
     ...publicTelegramCommands,
@@ -392,88 +364,6 @@ export async function startGateway(
     );
   }
 
-  const memeDailyLimit = envPositiveInt(env.AGENC_GATEWAY_MEME_DAILY_LIMIT);
-  const memeFeature =
-    memeEnabled && xaiKey !== undefined
-      ? new XaiMemeFeature({
-          apiKey: xaiKey,
-          usageFile: join(options.agencHome, "gateway", "meme-usage.json"),
-          ...(env.AGENC_GATEWAY_MEME_MODEL !== undefined
-            ? { model: env.AGENC_GATEWAY_MEME_MODEL }
-            : {}),
-          ...(memeDailyLimit !== undefined ? { dailyLimit: memeDailyLimit } : {}),
-          log,
-        })
-      : undefined;
-  const voiceDailyLimit = envPositiveInt(env.AGENC_GATEWAY_VOICE_DAILY_LIMIT);
-  const voiceFeature =
-    voiceEnabled && xaiKey !== undefined
-      ? new XaiVoiceFeature({
-          apiKey: xaiKey,
-          usageFile: join(options.agencHome, "gateway", "voice-usage.json"),
-          ...(voiceDailyLimit !== undefined ? { dailyLimit: voiceDailyLimit } : {}),
-          ...(env.AGENC_GATEWAY_VOICE_DEFAULT_VOICE !== undefined
-            ? { defaultVoice: env.AGENC_GATEWAY_VOICE_DEFAULT_VOICE }
-            : {}),
-          ...(env.AGENC_GATEWAY_VOICE_MALE_VOICE !== undefined
-            ? { maleVoice: env.AGENC_GATEWAY_VOICE_MALE_VOICE }
-            : {}),
-          ...(env.AGENC_GATEWAY_VOICE_FEMALE_VOICE !== undefined
-            ? { femaleVoice: env.AGENC_GATEWAY_VOICE_FEMALE_VOICE }
-            : {}),
-          ...(env.AGENC_GATEWAY_VOICE_LANGUAGE !== undefined
-            ? { language: env.AGENC_GATEWAY_VOICE_LANGUAGE }
-            : {}),
-          log,
-        })
-      : undefined;
-  const xSearchDailyLimit = envPositiveInt(
-    env.AGENC_GATEWAY_X_SEARCH_DAILY_LIMIT,
-  );
-  const xSearchPerPeerLimit = envPositiveInt(
-    env.AGENC_GATEWAY_X_SEARCH_PER_PEER_LIMIT,
-  );
-  const xSearchTimeoutMs = envBoundedPositiveInt(
-    env.AGENC_GATEWAY_X_SEARCH_TIMEOUT_MS,
-    15_000,
-    120_000,
-  );
-  const xSearchMaxTurns = envBoundedPositiveInt(
-    env.AGENC_GATEWAY_X_SEARCH_MAX_TURNS,
-    1,
-    5,
-  );
-  const xSearchMaxAttempts = envBoundedPositiveInt(
-    env.AGENC_GATEWAY_X_SEARCH_MAX_ATTEMPTS,
-    1,
-    3,
-  );
-  const xSearchFeature =
-    xSearchEnabled && xaiKey !== undefined
-      ? new XaiXSearchFeature({
-          apiKey: xaiKey,
-          usageFile: join(options.agencHome, "gateway", "x-search-usage.json"),
-          ...(env.AGENC_GATEWAY_X_SEARCH_MODEL !== undefined
-            ? { model: env.AGENC_GATEWAY_X_SEARCH_MODEL }
-            : {}),
-          ...(xSearchDailyLimit !== undefined
-            ? { dailyLimit: xSearchDailyLimit }
-            : {}),
-          ...(xSearchPerPeerLimit !== undefined
-            ? { perPeerLimit: xSearchPerPeerLimit }
-            : {}),
-          ...(xSearchTimeoutMs !== undefined
-            ? { timeoutMs: xSearchTimeoutMs }
-            : {}),
-          ...(xSearchMaxTurns !== undefined
-            ? { maxTurns: xSearchMaxTurns }
-            : {}),
-          ...(xSearchMaxAttempts !== undefined
-            ? { maxAttempts: xSearchMaxAttempts }
-            : {}),
-          log,
-        })
-      : undefined;
   const heliusEnabled = envFlag(env.AGENC_GATEWAY_HELIUS_ENABLED);
   const heliusKey = loadHeliusGatewayApiKey({
     enabled: heliusEnabled,
@@ -608,9 +498,6 @@ export async function startGateway(
     client,
     config,
     log,
-    ...(memeFeature !== undefined ? { memeFeature } : {}),
-    ...(voiceFeature !== undefined ? { voiceFeature } : {}),
-    ...(xSearchFeature !== undefined ? { xSearchFeature } : {}),
     ...(onchainFeature !== undefined ? { onchainFeature } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
   });

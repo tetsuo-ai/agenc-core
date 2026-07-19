@@ -29,7 +29,7 @@ export default async function () {
   await trustProjectForHome(home, process.cwd());
   try {
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [BIN_AGENC, "-p", "say only the word HELLO and nothing else"], {
+      const child = spawn(process.execPath, [BIN_AGENC, "--yolo", "-p", "say only the word HELLO and nothing else"], {
         stdio: ["ignore", "pipe", "pipe"],
         env: tempDaemonEnv(home, wsPort),
       });

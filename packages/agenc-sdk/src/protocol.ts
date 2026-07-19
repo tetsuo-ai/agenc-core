@@ -35,6 +35,11 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "agent.attach",
   "agent.stop",
   "agent.logs",
+  "run.status",
+  "run.result",
+  "run.replay",
+  "run.evidence",
+  "run.cancel",
   "session.create",
   "session.list",
   "session.attach",
@@ -86,6 +91,7 @@ export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
   "event.mcp_elicitation_request",
   "event.agent_status",
   "event.session_event",
+  "event.event_gap",
   "thread/realtime/started",
   "thread/realtime/itemAdded",
   "thread/realtime/transcript/delta",
@@ -170,6 +176,31 @@ export interface AgentStopParams extends JsonObject {
 
 export interface AgentLogsParams extends JsonObject {
   readonly agentId: string;
+}
+
+export interface RunStatusParams extends JsonObject {
+  readonly runId: string;
+}
+
+export interface RunResultParams extends JsonObject {
+  readonly runId: string;
+}
+
+export interface RunReplayParams extends JsonObject {
+  readonly runId: string;
+  readonly afterSequence?: number;
+  readonly limit?: number;
+}
+
+export interface RunEvidenceParams extends JsonObject {
+  readonly runId: string;
+  readonly afterSequence?: number;
+  readonly limit?: number;
+}
+
+export interface RunCancelParams extends JsonObject {
+  readonly runId: string;
+  readonly reason?: string;
 }
 
 export interface SessionCreateParams extends JsonObject {
@@ -383,6 +414,11 @@ export interface AgencParamsByMethod {
   readonly "agent.attach": AgentAttachParams;
   readonly "agent.stop": AgentStopParams;
   readonly "agent.logs": AgentLogsParams;
+  readonly "run.status": RunStatusParams;
+  readonly "run.result": RunResultParams;
+  readonly "run.replay": RunReplayParams;
+  readonly "run.evidence": RunEvidenceParams;
+  readonly "run.cancel": RunCancelParams;
   readonly "session.create": SessionCreateParams;
   readonly "session.list": SessionListParams;
   readonly "session.attach": SessionAttachParams;
@@ -506,6 +542,349 @@ export interface AgentLogsResult extends JsonObject {
   readonly transcript: string;
   readonly sessions: readonly AgentLogSession[];
   readonly toolOutputs?: readonly JsonObject[];
+}
+
+export interface RunCancelResult extends JsonObject {
+  readonly runId: string;
+  readonly alreadyTerminal: boolean;
+  readonly cancelledRunIds: readonly string[];
+  readonly closedEdgeChildIds: readonly string[];
+  readonly interruptedLiveAgentIds: readonly string[];
+  readonly voidedHolds: number;
+}
+
+export interface RunDurableRecord extends JsonObject {
+  readonly objective: string;
+  readonly status: string;
+  readonly startedAt: string;
+  readonly lastActiveAt: string;
+  readonly currentSessionId?: string;
+  readonly createdByClient?: string;
+  readonly lastSnapshotAt?: string;
+  readonly metadata?: JsonObject;
+}
+
+export interface RunStateSource extends JsonObject {
+  readonly kind: "existing_state_database";
+  readonly projectDir: string;
+  readonly readonly: true;
+}
+
+export interface RunAdmissionSourceAvailability extends JsonObject {
+  readonly jobs: boolean;
+  readonly reservations: boolean;
+  readonly allocations: boolean;
+  readonly journal: boolean;
+}
+
+export type RunAdmissionAggregateStatus =
+  | "none"
+  | "queued"
+  | "running"
+  | "approval_required"
+  | "reconciled"
+  | "voided"
+  | "held_unknown"
+  | "provider_overrun"
+  | "denied"
+  | "cancelled"
+  | "terminal_mixed";
+
+export interface RunAdmissionSummary extends JsonObject {
+  readonly present: boolean;
+  readonly currentStatus: RunAdmissionAggregateStatus;
+  readonly active: boolean;
+  readonly stepCount: number;
+  readonly stepStatusCounts: Readonly<Record<string, number>>;
+  readonly reservationCount: number;
+  readonly reservationStatusCounts: Readonly<Record<string, number>>;
+  readonly openReservationCount: number;
+  readonly reservedTokens: number;
+  readonly reservedCostUsd: number;
+  readonly actualTokens: number;
+  readonly actualCostUsd: number;
+  readonly unpricedActualReservationCount: number;
+  readonly allocationCount: number;
+  readonly usedTokens: number;
+  readonly heldTokens: number;
+  readonly usedCostUsd: number;
+  readonly heldCostUsd: number;
+  readonly providerOverrunBlockedAllocationCount: number;
+  readonly fallbackCount: number;
+  readonly sources: RunAdmissionSourceAvailability;
+  readonly updatedAt?: string;
+}
+
+export interface RunStatusResult extends JsonObject {
+  readonly runId: string;
+  readonly status: string;
+  readonly terminal: boolean;
+  readonly statusSource:
+    | "run_terminal_result"
+    | "run_lifecycle_epoch"
+    | "agent_run"
+    | "admission_state";
+  readonly durableRun?: RunDurableRecord;
+  readonly admission: RunAdmissionSummary;
+  readonly source: RunStateSource;
+}
+
+export type RunTerminalOutcome =
+  "completed" | "failed" | "cancelled" | "stopped" | "unknown_outcome";
+
+export interface RunTerminalOutputAvailability extends JsonObject {
+  readonly available: false;
+  readonly reason: "terminal_output_not_persisted_in_existing_state";
+}
+
+export interface RunUsageTotals extends JsonObject {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly costUsd: number;
+}
+
+/** Terminal output committed by M4 and readable after disconnect/restart. */
+export interface RunTerminalPersistedOutput extends JsonObject {
+  readonly available: true;
+  readonly exitCode: number | null;
+  readonly stopReason: string | null;
+  readonly finalMessage: string | null;
+  readonly usage: RunUsageTotals | null;
+  readonly lastSequence: number | null;
+}
+
+/** Compatibility alias for code that names the unavailable branch directly. */
+export type RunTerminalOutputUnavailable = RunTerminalOutputAvailability;
+export type RunTerminalOutput =
+  | RunTerminalPersistedOutput
+  | RunTerminalOutputAvailability;
+
+export interface RunResultResult extends JsonObject {
+  readonly runId: string;
+  readonly status: string;
+  readonly terminal: true;
+  readonly terminalAt: string;
+  readonly outcome: RunTerminalOutcome;
+  readonly epoch?: number;
+  readonly durableRun?: RunDurableRecord;
+  readonly output: RunTerminalOutput;
+  readonly source: RunStateSource;
+}
+
+export type RunJournalCategory =
+  | "run"
+  | "step"
+  | "admission"
+  | "budget"
+  | "permission"
+  | "approval"
+  | "effect"
+  | "model"
+  | "artifact"
+  | "cancellation"
+  | "recovery"
+  | "terminal"
+  | "session";
+
+/**
+ * One event from the canonical append-only run journal.
+ *
+ * M3 admission events remain valid members of this shape; M4 workflow events
+ * add a canonical category/name/payload envelope without forcing consumers to
+ * understand every future event payload before they can advance a cursor.
+ */
+export interface RunJournalEvent extends JsonObject {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly timestamp?: string;
+  readonly runId: string;
+  readonly childRunId?: string;
+  readonly sessionId?: string;
+  readonly stepId?: string;
+  readonly category: RunJournalCategory;
+  readonly kind: string;
+  readonly event: string;
+  readonly payload?: JsonValue;
+  readonly reason?: string;
+  readonly reservationId?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly reservedTokens?: number;
+  readonly reservedCostUsd?: number;
+  readonly actualTokens?: number;
+  readonly actualCostUsd?: number;
+  readonly details?: JsonObject;
+}
+
+/** Source-compatible M3 admission event contract. */
+export interface RunAdmissionJournalEvent extends JsonObject {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly stepId: string;
+  readonly kind: string;
+  readonly event: string;
+  readonly reason?: string;
+  readonly reservationId?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly reservedTokens?: number;
+  readonly reservedCostUsd?: number;
+  readonly actualTokens?: number;
+  readonly actualCostUsd?: number;
+  readonly details?: JsonObject;
+}
+
+/**
+ * Event returned by the pre-M4 admission-journal compatibility reader.
+ *
+ * `category` is optional because SDK clients can connect to an older daemon
+ * that predates the generalized M4 envelope. Every required M3 field remains
+ * unchanged, so `isRunAdmissionReplayResult` restores the original
+ * source-compatible event type without a cast.
+ */
+export interface RunAdmissionReplayEvent extends RunAdmissionJournalEvent {
+  readonly category?: "admission";
+  readonly payload?: JsonValue;
+}
+
+/** One event from either the canonical M4 or compatibility M3 replay source. */
+export type RunReplayEvent = RunJournalEvent | RunAdmissionReplayEvent;
+
+export interface RunReplaySourceUnavailableGap extends JsonObject {
+  readonly kind: "source_unavailable";
+  readonly reason:
+    | "execution_admission_journal_not_present"
+    | "run_journal_not_present";
+}
+
+/** A cursor range was retired or could not be recovered contiguously. */
+export interface RunReplayRetentionGap extends JsonObject {
+  readonly kind: "event_gap";
+  readonly runId: string;
+  readonly afterSequence: number;
+  readonly firstAvailableSequence: number;
+  readonly reason: "retention" | "corruption_truncated" | "compaction";
+}
+
+/** The supplied cursor is beyond the canonical journal tail. */
+export interface RunReplayCursorAheadGap extends JsonObject {
+  readonly kind: "cursor_ahead";
+  readonly runId: string;
+  readonly afterSequence: number;
+  readonly lastAvailableSequence: number;
+  readonly reason: "cursor_ahead";
+}
+
+export type RunReplayGap =
+  | RunReplayRetentionGap
+  | RunReplayCursorAheadGap
+  | RunReplaySourceUnavailableGap;
+
+export interface RunJournalReplaySource extends JsonObject {
+  readonly kind: "run_journal";
+  readonly available: boolean;
+  readonly sequenceScope: "run";
+  readonly canonical: "rollout_jsonl";
+  readonly projection: "thread_rollout_items";
+  readonly projectDir: string;
+}
+
+export interface RunAdmissionReplaySource extends JsonObject {
+  readonly kind: "execution_admission_journal";
+  readonly available: boolean;
+  readonly sequenceScope: "project_state_database";
+  readonly projectDir: string;
+}
+
+export type RunReplaySource =
+  | RunJournalReplaySource
+  | RunAdmissionReplaySource;
+
+export interface RunReplayPage extends JsonObject {
+  readonly runId: string;
+  readonly afterSequence: number;
+  readonly limit: number;
+  readonly hasMore: boolean;
+  readonly nextAfterSequence: number;
+  readonly firstAvailableSequence?: number;
+  readonly lastAvailableSequence?: number;
+  readonly gap: RunReplayGap | null;
+}
+
+export interface RunJournalReplayResult extends RunReplayPage {
+  readonly events: readonly RunJournalEvent[];
+  readonly source: RunJournalReplaySource;
+}
+
+/** Source-compatible result for the existing M3 admission replay reader. */
+export interface RunAdmissionReplayResult extends RunReplayPage {
+  readonly events: readonly RunAdmissionReplayEvent[];
+  readonly source: RunAdmissionReplaySource;
+}
+
+/** Discriminated by `source.kind`; M3 and M4 event contracts stay precise. */
+export type RunReplayResult =
+  | RunJournalReplayResult
+  | RunAdmissionReplayResult;
+
+export function isRunAdmissionReplayResult(
+  result: RunReplayResult,
+): result is RunAdmissionReplayResult {
+  return result.source.kind === "execution_admission_journal";
+}
+
+export function isRunJournalReplayResult(
+  result: RunReplayResult,
+): result is RunJournalReplayResult {
+  return result.source.kind === "run_journal";
+}
+
+export type RunEvidenceCompleteness =
+  | "complete"
+  | "partial"
+  | "admission_source_unavailable"
+  | "journal_gap";
+
+export interface RunEvidenceSource extends JsonObject {
+  readonly kind: "canonical_run_journal" | "existing_m3_admission_state";
+  readonly projectDir: string;
+  readonly admissionJournal: boolean;
+  readonly workflowEvidenceIncluded: boolean;
+  readonly completeness: RunEvidenceCompleteness;
+}
+
+export interface RunEvidenceCursor extends JsonObject {
+  readonly afterSequence: number;
+  readonly nextAfterSequence: number;
+  readonly limit: number;
+}
+
+export interface RunEvidenceEventHash extends JsonObject {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly sha256: string;
+}
+
+export interface RunEvidenceHashes extends JsonObject {
+  readonly algorithm: "sha256";
+  readonly runStateSha256: string;
+  readonly admissionSummarySha256: string;
+  readonly gapSha256: string;
+  readonly eventHashes: readonly RunEvidenceEventHash[];
+  readonly bundleSha256: string;
+}
+
+export interface RunEvidenceResult extends JsonObject {
+  readonly runId: string;
+  readonly source: RunEvidenceSource;
+  readonly cursor: RunEvidenceCursor;
+  readonly hasMore: boolean;
+  readonly gap: RunReplayGap | null;
+  readonly events: readonly RunReplayEvent[];
+  readonly hashes: RunEvidenceHashes;
 }
 
 export interface SessionCreateResult extends SessionSummary {}
@@ -682,6 +1061,11 @@ export interface AgencResultByMethod {
   readonly "agent.attach": AgentAttachResult;
   readonly "agent.stop": AgentStopResult;
   readonly "agent.logs": AgentLogsResult;
+  readonly "run.status": RunStatusResult;
+  readonly "run.result": RunResultResult;
+  readonly "run.replay": RunReplayResult;
+  readonly "run.evidence": RunEvidenceResult;
+  readonly "run.cancel": RunCancelResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;
@@ -777,6 +1161,23 @@ export interface EventAgentStatusParams extends AgencEventBaseParams {
 
 export interface EventSessionEventParams extends AgencEventBaseParams {
   readonly event: JsonObject;
+}
+
+/** Observable, non-journal sentinel emitted by bounded live-delivery buffers. */
+export interface EventGapParams extends JsonObject {
+  readonly type: "event_gap";
+  readonly kind: "event_gap";
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly eventId?: string;
+  readonly agentId?: string;
+  readonly sequence?: number;
+  readonly reason: "retention";
+  readonly source: "background_runner_retention" | "multiplexer_retention";
+  readonly retiredCount: number;
+  readonly coordinatesAvailable?: boolean;
+  readonly afterSequence?: number;
+  readonly firstAvailableSequence?: number;
 }
 
 // ── Envelopes ────────────────────────────────────────────────────────

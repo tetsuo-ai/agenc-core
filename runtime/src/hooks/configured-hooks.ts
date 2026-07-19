@@ -116,6 +116,8 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly agencHome: string;
   readonly shellPath: string;
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
+  readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
+  readonly admissionRequired?: boolean;
   /**
    * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
    * when the current workspace is trusted (persisted in trusted-projects.json).
@@ -154,6 +156,12 @@ export class ConfiguredHooksRuntime {
       sourcePath: this.sourcePath(),
       ...(opts.sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }
+        : {}),
+      ...(opts.executionAdmission !== undefined
+        ? { executionAdmission: opts.executionAdmission }
+        : {}),
+      ...(opts.admissionRequired !== undefined
+        ? { admissionRequired: opts.admissionRequired }
         : {}),
     });
     this.isWorkspaceTrusted =
@@ -220,7 +228,10 @@ export class ConfiguredHooksRuntime {
 
   async testHook(
     hook: IndividualHookConfig,
-    input: Record<string, unknown> = defaultHookInput(hook.event, this.opts.cwd),
+    input: Record<string, unknown> = defaultHookInput(
+      hook.event,
+      this.opts.cwd,
+    ),
   ): Promise<HookRunDiagnostic> {
     const result = await this.runCommandHook(hook, input);
     return this.latestDiagnostics().find((d) => d.id === result.id) ?? result;
@@ -255,7 +266,9 @@ export class ConfiguredHooksRuntime {
           hasPermissionRequestHook = true;
           break;
         case "UserPromptSubmit":
-          target.userPromptSubmitHooks.push(this.createUserPromptSubmitHook(hook));
+          target.userPromptSubmitHooks.push(
+            this.createUserPromptSubmitHook(hook),
+          );
           break;
         case "Stop":
           target.stopHooks.push(this.createStopHook(hook));
@@ -276,7 +289,7 @@ export class ConfiguredHooksRuntime {
           target.addSubagentStopHook?.(
             this.createGenericLifecycleHook(hook, (input) =>
               input.hook_event_name === "SubagentStop"
-                ? input.agent_type ?? input.task_name
+                ? (input.agent_type ?? input.task_name)
                 : "",
             ),
           );
@@ -370,11 +383,7 @@ export class ConfiguredHooksRuntime {
         response: result,
       });
       if (run.status === "blocking") {
-        const feedback = this.exitCodeTwoStderr(
-          run,
-          "PostToolUse",
-          "feedback",
-        );
+        const feedback = this.exitCodeTwoStderr(run, "PostToolUse", "feedback");
         if (feedback === undefined) return { kind: "continue" };
         return {
           kind: "hook_blocking_error",
@@ -389,7 +398,10 @@ export class ConfiguredHooksRuntime {
         (message) => this.recordHookOutputIssue(run, message),
       );
       if (legacyBlockReason !== null) {
-        return { kind: "hook_blocking_error", blockingError: legacyBlockReason };
+        return {
+          kind: "hook_blocking_error",
+          blockingError: legacyBlockReason,
+        };
       }
       if (specific?.continueProcessing === false) {
         return {
@@ -415,10 +427,13 @@ export class ConfiguredHooksRuntime {
     };
   }
 
-  private createFailureHook(hook: IndividualHookConfig): PostToolUseFailureHook {
+  private createFailureHook(
+    hook: IndividualHookConfig,
+  ): PostToolUseFailureHook {
     return async ({ invocation, tool, args, error, isInterrupt }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) return;
+      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher))
+        return;
       await this.runCommandHook(hook, {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
         hook_event_name: "PostToolUseFailure",
@@ -598,10 +613,7 @@ export class ConfiguredHooksRuntime {
               continuationFragments: [],
             };
           }
-          if (
-            run.rawStdout.trim().length > 0 &&
-            parsed.output === undefined
-          ) {
+          if (run.rawStdout.trim().length > 0 && parsed.output === undefined) {
             this.recordHookOutputIssue(
               run,
               "hook returned invalid stop hook JSON output",
@@ -678,7 +690,8 @@ export class ConfiguredHooksRuntime {
   ) => Promise<HookResult> {
     if (hook.event === "SessionStart") {
       return this.createSessionStartHook(hook) as (
-        input: PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
+        input:
+          PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
         signal?: AbortSignal,
       ) => Promise<HookResult>;
     }
@@ -715,7 +728,10 @@ export class ConfiguredHooksRuntime {
 
   private createSessionStartHook(
     hook: IndividualHookConfig,
-  ): (input: SessionStartHookInput, signal?: AbortSignal) => Promise<HookResult> {
+  ): (
+    input: SessionStartHookInput,
+    signal?: AbortSignal,
+  ) => Promise<HookResult> {
     return async (input, signal) => {
       if (this.isDisabled() || !matchesPattern(input.source, hook.matcher)) {
         return { succeeded: true, output: "", command: hook.command.command };
@@ -899,7 +915,8 @@ function skippedUntrustedDiagnostic(
     durationMs: 0,
     stdout: "",
     stderr: "",
-    error: "skipped: workspace not trusted (set AGENC_ALLOW_UNTRUSTED_HOOKS=1 to override)",
+    error:
+      "skipped: workspace not trusted (set AGENC_ALLOW_UNTRUSTED_HOOKS=1 to override)",
     startedAtUnixMs: Date.now(),
     rawStdout: "",
     rawStderr: "",
@@ -1101,7 +1118,9 @@ function legacyBlockReasonFor(
   const reason = trimmedReason(output?.reason);
   if (decision === "block") {
     if (reason === undefined) {
-      recordIssue(`${event} hook returned decision:block without a non-empty reason`);
+      recordIssue(
+        `${event} hook returned decision:block without a non-empty reason`,
+      );
       return null;
     }
     return redactSecrets(reason);

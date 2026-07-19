@@ -32,7 +32,9 @@ npm --workspace=@tetsuo-ai/runtime run check:eval-suites -- --json
 
 That command and the committed catalog are source-repository tooling, not a new
 installed `agenc` CLI verb. The validator/plan/report APIs are included in the
-built runtime root export; an executor is deliberately deferred.
+built runtime root export. The deterministic trust executor now exists (see
+"Running the trust executor" below); the competitive-coding executors live
+under `eval:executor` (`run-agent`, `run-agent-real`, `run-agent-real-batch`).
 
 The public runtime export exposes the same validators, catalog loader,
 preregistration binder, deterministic plan compilers, and report binders. The legacy
@@ -149,6 +151,44 @@ they never fabricate later events merely to make a valid report. It reports
 Trust Recovery Rate, results per fault family, unknown outcomes, and the
 zero-tolerance counts for policy escapes, duplicated uncertain mutations, and
 hidden event loss. Coding-quality metrics are forbidden in this report.
+
+### Running the trust executor
+
+`runtime/src/eval-executor/trust-run.ts` is the runnable harness for this
+suite. Scenario drivers exercise the real runtime seams offline — the budget
+enforcer/ledger (harness clock injected through their `now` seams), SQLite
+state recovery, the daemon client multiplexer's detached-session replay
+buffer, the durable session-store event dedup, the permission rule evaluator,
+and the permission audit file logger — under the virtual monotonic clock.
+Where the runtime lacks a required capability the invariant fails and that
+failure is the M3/M4 prioritization data; the harness never fakes a pass.
+
+```bash
+npm --workspace=@tetsuo-ai/runtime run eval:executor -- trust-run \
+  --repository-commit "$(git rev-parse HEAD)"
+```
+
+It writes per-scenario reports, raw append-only evidence, preserved
+failed-attempt state (SQLite DBs, ledger, audit JSONL), and a
+content-addressed summary under `--output` (default
+`eval-executor-output/trust`), refusing to clobber existing evidence. Honest
+invariant failures exit 0 — they are the suite's product; only
+infrastructure-invalid attempts exit 1. The current honest baseline on
+`main` is 6/7 families passing (restart, reconnect, permission, budget — the
+M3 reservation kernel — event loss: the client multiplexer's SESSION replay
+buffer announces eviction with in-band `event_gap` markers whose retired
+counts must match the actual loss (capability buffers are a follow-up) — and
+uncertain effect: the STATE LAYER refuses to record a new side-effecting
+mutation for a session holding an unresolved `poisoned` effect — a typed
+error until explicit review via
+`agenc state resolve-tool-call <session-id> <tool-call-id>` — and
+review-locks poisoned rows against status/category rewrites. The running
+daemon today only FLAGS violations (its snapshot observer records
+already-dispatched calls); live pre-dispatch refusal is the M3 admission
+kernel's integration of the same `checkUnknownOutcomeMutationGate` check).
+Only cancellation cascade/admission still fails until the M3 kernel lands. `runtime/tests/eval/trust-conformance-executor.test.ts` pins those
+outcomes in both directions: a runtime regression flips a passing family, a
+harness bug faking a pass flips a failing one, and either turns CI red.
 
 ## Reset, containment, and evidence
 
@@ -274,10 +314,11 @@ The public 30-task source selection, CAS, qualification protocol, pre-run plan
 validator, and pilot-to-confirmatory power analyzer now exist; see
 [`evaluation-pilot-v1.md`](evaluation-pilot-v1.md). No task is relabeled as
 qualified until its cold preflights, independent solve, negative-patch review,
-and stressor mechanism evidence exist. A fault executor and scored results do
-not yet exist. The remaining work is to qualify the pilot, build the real-agent
-and deterministic trust executors, implement comparator adapters, run the paired
-pilot, freeze the powered private holdout under separate custody, publish
-aggregate reports, and turn measured failures into improvements. M3/M4
-implementation will make the current trust scenarios pass; until then, failures
-are data rather than contract defects.
+and stressor mechanism evidence exist. The real-agent executor and the
+deterministic trust executor now exist (`eval:executor run-agent-real-batch`
+reproduced the first seed baseline; `eval:executor trust-run` scores the trust
+suite with an honest 6/7 baseline). The remaining work is to implement
+comparator adapters, run the paired pilot, freeze the powered private holdout
+under separate custody, publish aggregate reports, and turn measured failures
+into improvements. M3/M4 implementation will make the failing trust scenarios
+pass; until then, failures are data rather than contract defects.

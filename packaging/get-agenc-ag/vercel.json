@@ -1,0 +1,36 @@
+{
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests" }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/install.sh",
+      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.sh",
+      "permanent": false
+    },
+    {
+      "source": "/install.ps1",
+      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.ps1",
+      "permanent": false
+    },
+    {
+      "source": "/manifest-v2.json",
+      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/agenc-runtime-manifest-v2.json",
+      "permanent": false
+    },
+    {
+      "source": "/manifest.json",
+      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/agenc-runtime-manifest.json",
+      "permanent": false
+    }
+  ]
+}

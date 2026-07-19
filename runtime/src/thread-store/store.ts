@@ -290,6 +290,11 @@ export interface ThreadStore {
   readThread(params: ReadThreadParams): StoredThread;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
+  /** Indexed count for latency-sensitive health probes. */
+  countThreads?(params: {
+    readonly archived: boolean;
+    readonly excludeThreadIds?: ReadonlySet<string>;
+  }): number;
   updateThreadMetadata(params: UpdateThreadMetadataParams): StoredThread;
   archiveThread(params: ArchiveThreadParams): void;
   unarchiveThread(params: ArchiveThreadParams): StoredThread;
@@ -688,6 +693,52 @@ export class FileThreadStore implements ThreadStore {
     const pageSize = validatePageSize(params.pageSize);
     const scope = normalizeListScope(params);
     const cursor = parseThreadCursor(params.cursor, scope.hash);
+    // Daemon control-plane listings deliberately use the state DB only and do
+    // not request the richer resume-picker filters. Serve that hot path with a
+    // SQL LIMIT page so session.list never materializes the complete persisted
+    // registry merely to return a small page.
+    if (
+      params.useStateDbOnly === true &&
+      scope.allowedSources === undefined &&
+      scope.modelProviders === undefined &&
+      scope.cwdFilters === undefined &&
+      scope.searchTerm === undefined &&
+      (cursor === undefined || cursor.kind === "keyset")
+    ) {
+      const sortKey: ThreadSortKey = params.sortKey ?? "created_at";
+      const sortDirection: SortDirection = params.sortDirection ?? "desc";
+      const page = this.threadIndex.listThreadPage({
+        limit: pageSize,
+        archived: params.archived,
+        sortKey,
+        sortDirection,
+        ...(cursor?.kind === "keyset"
+          ? {
+              after: {
+                sortValue: cursor.sortValue,
+                threadId: cursor.threadId,
+              },
+            }
+          : {}),
+      });
+      const last = page.items.at(-1);
+      return {
+        items: page.items.map((entry) =>
+          toStoredThread(entry, this.defaultModelProviderId),
+        ),
+        ...(page.hasMore && last !== undefined
+          ? {
+              nextCursor: formatKeysetThreadCursor({
+                kind: "keyset",
+                sortValue:
+                  sortKey === "updated_at" ? last.updatedAt : last.createdAt,
+                threadId: last.threadId,
+                scopeHash: scope.hash,
+              }),
+            }
+          : {}),
+      };
+    }
     const registry = this.readRegistry(params.useStateDbOnly !== true);
     const wantArchived = params.archived;
     const entries = Array.from(registry.values()).filter((e) => {
@@ -707,17 +758,39 @@ export class FileThreadStore implements ThreadStore {
         aKey.localeCompare(bKey) || a.threadId.localeCompare(b.threadId);
       return sortDir === "asc" ? cmp : -cmp;
     });
-    const start = cursor?.offset ?? 0;
+    const start = cursor?.kind === "offset" ? cursor.offset : 0;
     const sliced = entries.slice(start, start + pageSize);
     const nextOffset = start + sliced.length;
     const nextCursor =
       nextOffset < entries.length
-        ? formatThreadCursor({ offset: nextOffset, scopeHash: scope.hash })
+        ? formatOffsetThreadCursor({
+            kind: "offset",
+            offset: nextOffset,
+            scopeHash: scope.hash,
+          })
         : undefined;
     return {
       items: sliced.map((e) => toStoredThread(e, this.defaultModelProviderId)),
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     };
+  }
+
+  countThreads(params: {
+    readonly archived: boolean;
+    readonly excludeThreadIds?: ReadonlySet<string>;
+  }): number {
+    this.assertOpen();
+    let count = this.threadIndex.countThreads(params.archived);
+    for (const threadId of params.excludeThreadIds ?? []) {
+      const thread = this.threadIndex.getThread(threadId);
+      if (
+        thread !== undefined &&
+        (thread.archivedAt !== undefined) === params.archived
+      ) {
+        count -= 1;
+      }
+    }
+    return Math.max(0, count);
   }
 
   updateThreadMetadata(params: UpdateThreadMetadataParams): StoredThread {
@@ -1067,7 +1140,7 @@ export class FileThreadStore implements ThreadStore {
         `${Date.now()}-${basename(entry.rolloutPath)}`,
       );
     }
-    renameSync(entry.rolloutPath, targetPath);
+    this.relocateRolloutFile(entry.rolloutPath, targetPath);
     return targetPath;
   }
 
@@ -1080,8 +1153,25 @@ export class FileThreadStore implements ThreadStore {
       entry.rolloutPath ??
       join(this.projectDir, "sessions", entry.threadId, basename(archivedPath));
     mkdirSync(dirname(restoredPath), { recursive: true });
-    renameSync(archivedPath, restoredPath);
+    this.relocateRolloutFile(archivedPath, restoredPath);
     return restoredPath;
+  }
+
+  private relocateRolloutFile(sourcePath: string, targetPath: string): void {
+    renameSync(sourcePath, targetPath);
+    try {
+      this.threadIndex.relocateRolloutSource(sourcePath, targetPath);
+    } catch (error) {
+      try {
+        renameSync(targetPath, sourcePath);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `rollout relocation failed and filesystem rollback could not restore ${sourcePath}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private liveRecorderOrThrow(threadId: ThreadId): RolloutStore {
@@ -1472,10 +1562,20 @@ function matchesListScope(
   return true;
 }
 
-interface ThreadCursor {
+interface OffsetThreadCursor {
+  readonly kind: "offset";
   readonly offset: number;
   readonly scopeHash: string;
 }
+
+interface KeysetThreadCursor {
+  readonly kind: "keyset";
+  readonly sortValue: string;
+  readonly threadId: string;
+  readonly scopeHash: string;
+}
+
+type ThreadCursor = OffsetThreadCursor | KeysetThreadCursor;
 
 function parseThreadCursor(
   cursor: string | undefined,
@@ -1485,21 +1585,43 @@ function parseThreadCursor(
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
-    ) as { v?: unknown; offset?: unknown; scopeHash?: unknown };
-    const offset = parsed.offset;
-    if (
-      parsed.v !== 1 ||
-      typeof offset !== "number" ||
-      !Number.isInteger(offset) ||
-      offset < 0 ||
-      typeof parsed.scopeHash !== "string"
-    ) {
-      throw new Error("invalid cursor shape");
-    }
+    ) as {
+      v?: unknown;
+      offset?: unknown;
+      sortValue?: unknown;
+      threadId?: unknown;
+      scopeHash?: unknown;
+    };
     if (parsed.scopeHash !== scopeHash) {
       throw new Error("cursor scope mismatch");
     }
-    return { offset, scopeHash: parsed.scopeHash };
+    if (
+      parsed.v === 1 &&
+      typeof parsed.offset === "number" &&
+      Number.isInteger(parsed.offset) &&
+      parsed.offset >= 0 &&
+      typeof parsed.scopeHash === "string"
+    ) {
+      return {
+        kind: "offset",
+        offset: parsed.offset,
+        scopeHash: parsed.scopeHash,
+      };
+    }
+    if (
+      parsed.v === 2 &&
+      typeof parsed.sortValue === "string" &&
+      typeof parsed.threadId === "string" &&
+      typeof parsed.scopeHash === "string"
+    ) {
+      return {
+        kind: "keyset",
+        sortValue: parsed.sortValue,
+        threadId: parsed.threadId,
+        scopeHash: parsed.scopeHash,
+      };
+    }
+    throw new Error("invalid cursor shape");
   } catch (cause) {
     throw new ThreadStoreInvalidRequestError(
       `invalid list cursor: ${String((cause as Error).message ?? cause)}`,
@@ -1507,11 +1629,23 @@ function parseThreadCursor(
   }
 }
 
-function formatThreadCursor(cursor: ThreadCursor): string {
+function formatOffsetThreadCursor(cursor: OffsetThreadCursor): string {
   return Buffer.from(
     JSON.stringify({
       v: 1,
       offset: cursor.offset,
+      scopeHash: cursor.scopeHash,
+    }),
+    "utf8",
+  ).toString("base64url");
+}
+
+function formatKeysetThreadCursor(cursor: KeysetThreadCursor): string {
+  return Buffer.from(
+    JSON.stringify({
+      v: 2,
+      sortValue: cursor.sortValue,
+      threadId: cursor.threadId,
       scopeHash: cursor.scopeHash,
     }),
     "utf8",

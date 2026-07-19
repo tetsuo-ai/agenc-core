@@ -11,9 +11,13 @@
  *     runtime execution concerns owned by later daemon/session rows.
  */
 
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
-import { ThreadNotFoundError } from "../thread-store/store.js";
+import {
+  ThreadNotFoundError,
+  ThreadStoreInvalidRequestError,
+} from "../thread-store/store.js";
 import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
@@ -108,6 +112,21 @@ interface MutableSession {
 interface SessionLifecycleState {
   sessions: Map<string, MutableSession>;
 }
+
+interface InMemorySessionListCursor {
+  readonly phase: "memory";
+  readonly offset: number;
+}
+
+interface PersistedSessionListCursor {
+  readonly phase: "persisted";
+  readonly threadCursor?: string;
+  readonly agentId?: string;
+}
+
+type SessionListCursor = InMemorySessionListCursor | PersistedSessionListCursor;
+
+const SESSION_LIST_CURSOR_PREFIX = "agenc-session-list-v1:";
 
 export class AgenCDaemonSessionManager {
   readonly #state = new AsyncLock<SessionLifecycleState>({
@@ -211,40 +230,102 @@ export class AgenCDaemonSessionManager {
   }
 
   async listSessions(params: SessionListParams = {}): Promise<SessionListResult> {
-    return this.#state.with((state) => {
-      const cursor = parseCursor(params.cursor);
-      const limit = normalizeLimit(params.limit);
-      const agentId = nonEmptyString(params.agentId);
-      const matchingSessions = [
-        ...[...state.sessions.values()]
-          .filter(
-            (session) => agentId === undefined || session.agentId === agentId,
-          )
-          .map(toSessionSummary),
-        ...this.#listPersistedSessions(state, agentId),
-      ];
-      const page = matchingSessions.slice(cursor, cursor + limit);
-      const nextCursor =
-        cursor + limit < matchingSessions.length
-          ? String(cursor + limit)
-          : undefined;
+    const cursor = parseSessionListCursor(params.cursor);
+    const limit = normalizeLimit(params.limit);
+    const agentId = nonEmptyString(params.agentId);
+    assertSessionCursorScope(cursor, agentId);
 
+    // The thread store is synchronous and may touch SQLite or discover project
+    // state. Keep that work out of the session mutex: snapshot only the small
+    // in-memory projection and the ids needed for persisted de-duplication.
+    const snapshot = await this.#state.with((state) => ({
+      matchingSessions: [...state.sessions.values()]
+        .filter(
+          (session) => agentId === undefined || session.agentId === agentId,
+        )
+        .map(toSessionSummary),
+      knownSessionIds: new Set(state.sessions.keys()),
+    }));
+
+    if (cursor.phase === "persisted") {
+      return this.#listPersistedSessionPage({
+        agentId,
+        knownSessionIds: snapshot.knownSessionIds,
+        limit,
+        ...(cursor.threadCursor !== undefined
+          ? { threadCursor: cursor.threadCursor }
+          : {}),
+      });
+    }
+
+    const sessions = snapshot.matchingSessions.slice(
+      cursor.offset,
+      cursor.offset + limit,
+    );
+    const nextMemoryOffset = cursor.offset + sessions.length;
+    if (nextMemoryOffset < snapshot.matchingSessions.length) {
+      return { sessions, nextCursor: String(nextMemoryOffset) };
+    }
+
+    if (this.#threadStore === undefined) return { sessions };
+    const remaining = limit - sessions.length;
+    if (remaining === 0) {
+      // The page was filled exactly by live sessions. Peek at one persisted
+      // row outside the mutex so an exhausted listing does not advertise a
+      // spurious follow-up page. The start cursor is retained so the peeked
+      // row is returned (not skipped) on the next request.
+      const persisted = this.#listPersistedSessionPage({
+        agentId,
+        knownSessionIds: snapshot.knownSessionIds,
+        limit: 1,
+      });
+      if (
+        persisted.sessions.length === 0 &&
+        persisted.nextCursor === undefined
+      ) {
+        return { sessions };
+      }
       return {
-        sessions: page,
-        ...(nextCursor !== undefined ? { nextCursor } : {}),
+        sessions,
+        nextCursor: formatPersistedSessionCursor({ agentId }),
       };
+    }
+
+    const persisted = this.#listPersistedSessionPage({
+      agentId,
+      knownSessionIds: snapshot.knownSessionIds,
+      limit: remaining,
     });
+    return {
+      sessions: [...sessions, ...persisted.sessions],
+      ...(persisted.nextCursor !== undefined
+        ? { nextCursor: persisted.nextCursor }
+        : {}),
+    };
   }
 
   async getSession(sessionId: string): Promise<SessionSummary | null> {
-    return this.#state.with((state) => {
-      const session = this.#getOrMaterializeSession(state, sessionId);
+    const existing = await this.#state.with((state) => {
+      const session = state.sessions.get(sessionId);
       return session === undefined ? null : toSessionSummary(session);
+    });
+    if (existing !== null) return existing;
+
+    // Point lookups can touch a project database. Do that without holding the
+    // lifecycle mutex, then install the recovered row idempotently in case a
+    // concurrent caller won the same race.
+    const recovered = this.#readPersistedSession(sessionId);
+    if (recovered === undefined) return null;
+    return this.#state.with((state) => {
+      const raced = state.sessions.get(sessionId);
+      if (raced !== undefined) return toSessionSummary(raced);
+      state.sessions.set(recovered.sessionId, recovered);
+      return toSessionSummary(recovered);
     });
   }
 
   async countSessions(): Promise<AgenCSessionCounts> {
-    return this.#state.with((state) => {
+    const snapshot = await this.#state.with((state) => {
       let active = 0;
       let closed = 0;
       for (const session of state.sessions.values()) {
@@ -254,24 +335,91 @@ export class AgenCDaemonSessionManager {
           active += 1;
         }
       }
-      for (const session of this.#listPersistedSessions(state, undefined)) {
-        if (session.status === "closed") {
-          closed += 1;
-        } else {
-          active += 1;
-        }
-      }
+      return {
+        active,
+        closed,
+        knownSessionIds: new Set(state.sessions.keys()),
+      };
+    });
+    let active = snapshot.active;
+    let closed = snapshot.closed;
+    const indexedPersistedCount = this.#threadStore?.countThreads?.({
+      archived: false,
+      excludeThreadIds: snapshot.knownSessionIds,
+    });
+    if (indexedPersistedCount !== undefined) {
+      active += indexedPersistedCount;
       return {
         active,
         closed,
         total: active + closed,
       };
-    });
+    }
+    for (const session of this.#listAllPersistedSessions(
+      snapshot.knownSessionIds,
+    )) {
+      if (session.status === "closed") {
+        closed += 1;
+      } else {
+        active += 1;
+      }
+    }
+    return {
+      active,
+      closed,
+      total: active + closed,
+    };
   }
 
-  #listPersistedSessions(
-    state: SessionLifecycleState,
-    agentId: string | undefined,
+  #listPersistedSessionPage(params: {
+    readonly knownSessionIds: ReadonlySet<string>;
+    readonly agentId: string | undefined;
+    readonly limit: number;
+    readonly threadCursor?: string;
+  }): SessionListResult {
+    if (this.#threadStore === undefined) return { sessions: [] };
+    let page: ReturnType<ThreadStore["listThreads"]>;
+    try {
+      page = this.#threadStore.listThreads({
+        pageSize: params.limit,
+        archived: false,
+        useStateDbOnly: true,
+        ...(params.threadCursor !== undefined
+          ? { cursor: params.threadCursor }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof ThreadStoreInvalidRequestError) {
+        throw invalidSessionListCursor(params.threadCursor ?? "persisted");
+      }
+      throw error;
+    }
+    const sessions: SessionSummary[] = [];
+    for (const thread of page.items) {
+      if (params.knownSessionIds.has(thread.threadId)) continue;
+      const summary = storedThreadToSessionSummary(
+        thread,
+        this.#defaultAgentId,
+      );
+      if (params.agentId === undefined || summary.agentId === params.agentId) {
+        sessions.push(summary);
+      }
+    }
+    return {
+      sessions,
+      ...(page.nextCursor !== undefined
+        ? {
+            nextCursor: formatPersistedSessionCursor({
+              agentId: params.agentId,
+              threadCursor: page.nextCursor,
+            }),
+          }
+        : {}),
+    };
+  }
+
+  #listAllPersistedSessions(
+    knownSessionIds: ReadonlySet<string>,
   ): SessionSummary[] {
     if (this.#threadStore === undefined) return [];
     const result: SessionSummary[] = [];
@@ -284,14 +432,8 @@ export class AgenCDaemonSessionManager {
         ...(cursor !== undefined ? { cursor } : {}),
       });
       for (const thread of page.items) {
-        if (state.sessions.has(thread.threadId)) continue;
-        const summary = storedThreadToSessionSummary(
-          thread,
-          this.#defaultAgentId,
-        );
-        if (agentId === undefined || summary.agentId === agentId) {
-          result.push(summary);
-        }
+        if (knownSessionIds.has(thread.threadId)) continue;
+        result.push(storedThreadToSessionSummary(thread, this.#defaultAgentId));
       }
       cursor = page.nextCursor;
     } while (cursor !== undefined);
@@ -386,8 +528,14 @@ export class AgenCDaemonSessionManager {
   ): MutableSession | undefined {
     const existing = state.sessions.get(sessionId);
     if (existing !== undefined) return existing;
-    if (this.#threadStore === undefined) return undefined;
+    const session = this.#readPersistedSession(sessionId);
+    if (session === undefined) return undefined;
+    state.sessions.set(session.sessionId, session);
+    return session;
+  }
 
+  #readPersistedSession(sessionId: string): MutableSession | undefined {
+    if (this.#threadStore === undefined) return undefined;
     let thread: StoredThread;
     try {
       thread = this.#threadStore.readThread({
@@ -399,10 +547,7 @@ export class AgenCDaemonSessionManager {
       if (error instanceof ThreadNotFoundError) return undefined;
       throw error;
     }
-
-    const session = storedThreadToMutableSession(thread, this.#defaultAgentId);
-    state.sessions.set(session.sessionId, session);
-    return session;
+    return storedThreadToMutableSession(thread, this.#defaultAgentId);
   }
 
   #requireSession(
@@ -647,16 +792,90 @@ function threadSourceToJson(source: ThreadSource): JsonValue {
   return typeof source === "string" ? source : (source as JsonObject);
 }
 
-function parseCursor(cursor: string | undefined): number {
-  if (cursor === undefined || cursor.length === 0) return 0;
-  const parsed = Number(cursor);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new AgenCSessionLifecycleError(
-      "INVALID_CURSOR",
-      `Invalid AgenC daemon session cursor: ${cursor}`,
+function parseSessionListCursor(cursor: string | undefined): SessionListCursor {
+  if (cursor === undefined || cursor.length === 0) {
+    return { phase: "memory", offset: 0 };
+  }
+  if (cursor.startsWith(SESSION_LIST_CURSOR_PREFIX)) {
+    try {
+      const encoded = cursor.slice(SESSION_LIST_CURSOR_PREFIX.length);
+      const parsed = JSON.parse(
+        Buffer.from(encoded, "base64url").toString("utf8"),
+      ) as {
+        readonly v?: unknown;
+        readonly phase?: unknown;
+        readonly threadCursor?: unknown;
+        readonly agentId?: unknown;
+      };
+      if (
+        parsed.v !== 1 ||
+        parsed.phase !== "persisted" ||
+        (parsed.threadCursor !== undefined &&
+          typeof parsed.threadCursor !== "string") ||
+        (parsed.agentId !== undefined &&
+          parsed.agentId !== null &&
+          typeof parsed.agentId !== "string")
+      ) {
+        throw new Error("invalid cursor shape");
+      }
+      return {
+        phase: "persisted",
+        ...(typeof parsed.threadCursor === "string"
+          ? { threadCursor: parsed.threadCursor }
+          : {}),
+        ...(typeof parsed.agentId === "string"
+          ? { agentId: parsed.agentId }
+          : {}),
+      };
+    } catch {
+      throw invalidSessionListCursor(cursor);
+    }
+  }
+
+  // Numeric cursors are the original public session-list cursor shape. Keep
+  // accepting them for in-memory pages while new persisted pages use the
+  // opaque, scope-bound form above.
+  const offset = Number(cursor);
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw invalidSessionListCursor(cursor);
+  }
+  return { phase: "memory", offset };
+}
+
+function formatPersistedSessionCursor(params: {
+  readonly agentId: string | undefined;
+  readonly threadCursor?: string;
+}): string {
+  const encoded = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      phase: "persisted",
+      agentId: params.agentId ?? null,
+      ...(params.threadCursor !== undefined
+        ? { threadCursor: params.threadCursor }
+        : {}),
+    }),
+    "utf8",
+  ).toString("base64url");
+  return `${SESSION_LIST_CURSOR_PREFIX}${encoded}`;
+}
+
+function assertSessionCursorScope(
+  cursor: SessionListCursor,
+  agentId: string | undefined,
+): void {
+  if (cursor.phase === "persisted" && cursor.agentId !== agentId) {
+    throw invalidSessionListCursor(
+      "cursor does not match the requested agentId filter",
     );
   }
-  return parsed;
+}
+
+function invalidSessionListCursor(cursor: string): AgenCSessionLifecycleError {
+  return new AgenCSessionLifecycleError(
+    "INVALID_CURSOR",
+    `Invalid AgenC daemon session cursor: ${cursor}`,
+  );
 }
 
 function normalizeLimit(limit: number | undefined): number {

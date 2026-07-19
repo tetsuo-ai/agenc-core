@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -181,12 +182,10 @@ describe("session-store", () => {
     expect(appended.eventVersion).toBe(1);
   });
 
-  test("I-23 SessionLock: two-process exclusivity — live holder (this PID) refuses reclaim", () => {
-    // Real-PID-alive variant: write a lock record owned by the
-    // current test process (which is guaranteed to be alive via
-    // kill(pid, 0)) and verify a fresh SessionLock instance refuses
-    // to reclaim it. This is the unambiguous signal that the lock
-    // enforces exclusivity against any live holder, PID reuse notwithstanding.
+  test("I-23 SessionLock: a distinct same-PID owner cannot acquire or release the lease", () => {
+    // Independent stores in one daemon share a PID, so ownership must include
+    // the unique start token. A second wrapper must neither enter nor unlink a
+    // lease held by the first owner identity.
     const dir = mkdtempSync(join(tmpdir(), "agenc-lock-xproc-"));
     try {
       const lockPath = join(dir, "rollout.jsonl.lock");
@@ -197,12 +196,9 @@ describe("session-store", () => {
       });
       writeFileSync(lockPath, `${stamp}\n`);
       const secondLock = new SessionLock(lockPath);
-      // Same-PID acquire is allowed (same-process re-entry). This is
-      // intentional: within a single Node process, acquire() is
-      // idempotent so multiple SessionLock wrappers pointing at the
-      // same path don't deadlock one another.
-      secondLock.acquire();
+      expect(() => secondLock.acquire()).toThrow(SessionLockedError);
       secondLock.release();
+      expect(existsSync(lockPath)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -570,6 +566,296 @@ describe("session-store", () => {
     rolloutStore.close();
   });
 
+  test("Session.emit fsyncs durable events before listener and transport publication", () => {
+    const order: string[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe(() => order.push("listener"));
+    const session = {
+      eventLog,
+      rolloutStore: {
+        append: (_event: unknown, opts: { readonly durable?: boolean }) => {
+          expect(opts.durable).toBe(true);
+          order.push("fsync");
+          return true;
+        },
+      },
+      txEvent: {
+        send: () => {
+          order.push("tx");
+          return true;
+        },
+      },
+      isRolloutPersistenceSuspended: () => false,
+    } as unknown as Session;
+
+    const stamped = Session.prototype.emit.call(session, {
+      id: "effect-intent-id",
+      msg: {
+        type: "effect_intent",
+        payload: {
+          runId: "run-1",
+          stepId: "tool:turn-1:call-1",
+          callId: "call-1",
+          toolName: "system.write",
+          recoveryCategory: "side-effecting",
+          intentDigest: "a".repeat(64),
+          attempt: 1,
+          recordedAt: "2026-07-18T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(stamped.seq).toBe(1);
+    expect(order).toEqual(["fsync", "listener", "tx"]);
+  });
+
+  test("Session.emit does not publish a durable event when fsync fails", () => {
+    const rolloutStore = new RolloutStore({
+      cwd: "/home/test-session-fsync-failure",
+      sessionId: "sess-fsync-failure",
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rolloutStore.open({
+      sessionId: "sess-fsync-failure",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-session-fsync-failure",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    rolloutStore.store.setFsyncImplForTest(() => {
+      throw Object.assign(new Error("injected fsync failure"), { code: "EIO" });
+    });
+    const published: string[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe(() => published.push("listener"));
+    const session = {
+      eventLog,
+      rolloutStore,
+      txEvent: {
+        send: () => {
+          published.push("tx");
+          return true;
+        },
+      },
+      isRolloutPersistenceSuspended: () => false,
+    } as unknown as Session;
+
+    expect(() => Session.prototype.emit.call(session, {
+      id: "effect-result-id",
+      msg: {
+        type: "effect_result",
+        payload: {
+          runId: "run-1",
+          stepId: "tool:turn-1:call-1",
+          callId: "call-1",
+          toolName: "system.write",
+          recoveryCategory: "side-effecting",
+          intentEventSeq: 1,
+          outcome: "committed",
+          recordedAt: "2026-07-18T00:00:00.000Z",
+        },
+      },
+    })).toThrow(/was not fsync-committed/);
+    expect(published).toEqual([]);
+
+    // Let the scheduled retry/close path use the real fsync implementation.
+    rolloutStore.store.setFsyncImplForTest(fsyncSync);
+    rolloutStore.close();
+  });
+
+  test("durable rollout writes loop until every byte is appended", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-short-write",
+      sessionId: "sess-short-write",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-short-write",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-short-write",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    let writes = 0;
+    store.setWriteImplForTest((fd, buffer, offset, length) => {
+      writes += 1;
+      return writeSync(fd, buffer, offset, Math.min(length, 7));
+    });
+    store.append(
+      {
+        id: "short-write-event",
+        seq: 1,
+        msg: {
+          type: "warning",
+          payload: { cause: "short_write", message: "fully committed" },
+        },
+      },
+      { durable: true },
+    );
+    store.close();
+
+    expect(writes).toBeGreaterThan(1);
+    expect(() => {
+      for (const line of readFileSync(store.rolloutPath, "utf8").trimEnd().split("\n")) {
+        JSON.parse(line);
+      }
+    }).not.toThrow();
+    expect(readFileSync(store.rolloutPath, "utf8")).toContain(
+      '"id":"short-write-event"',
+    );
+  });
+
+  test("rolls back a partial append before degraded requeue", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-interrupted-short-write",
+      sessionId: "sess-interrupted-short-write",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-interrupted-short-write",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-interrupted-short-write",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    const committedPrefix = readFileSync(store.rolloutPath, "utf8");
+    let writes = 0;
+    store.setWriteImplForTest((fd, buffer, offset, length) => {
+      writes += 1;
+      if (writes === 1) {
+        return writeSync(fd, buffer, offset, Math.min(length, 7));
+      }
+      throw Object.assign(new Error("injected interrupted write"), {
+        code: "EIO",
+      });
+    });
+
+    expect(
+      store.append(
+        {
+          id: "interrupted-short-write-event",
+          seq: 1,
+          msg: {
+            type: "warning",
+            payload: { cause: "short_write", message: "must not leave a tail" },
+          },
+        },
+        { durable: true },
+      ),
+    ).toBe(false);
+    expect(readFileSync(store.rolloutPath, "utf8")).toBe(committedPrefix);
+
+    store.setWriteImplForTest((fd, buffer, offset, length) =>
+      writeSync(fd, buffer, offset, length),
+    );
+    store.close();
+  });
+
+  test("durable non-event append and explicit rollout flush propagate fsync failure", () => {
+    const rollout = new RolloutStore({
+      cwd: "/home/test-rollout-flush-failure",
+      sessionId: "sess-rollout-flush-failure",
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rollout.open({
+      sessionId: "sess-rollout-flush-failure",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-rollout-flush-failure",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    const failFsync = () => {
+      throw Object.assign(new Error("injected fsync failure"), { code: "EIO" });
+    };
+    rollout.store.setFsyncImplForTest(failFsync);
+    expect(() =>
+      rollout.appendRollout(
+        { type: "response_item", payload: { role: "user", content: "durable" } },
+        { durable: true },
+      ),
+    ).toThrow(/not fsync-committed/);
+
+    rollout.store.setFsyncImplForTest(fsyncSync);
+    rollout.appendRollout({
+      type: "response_item",
+      payload: { role: "user", content: "queued" },
+    });
+    rollout.store.setFsyncImplForTest(failFsync);
+    expect(() => rollout.flushDurable()).toThrow(/not fsync-committed/);
+
+    rollout.store.setFsyncImplForTest(fsyncSync);
+    rollout.close();
+  });
+
+  test("explicit canonical-tail sync fsyncs an empty pending batch and propagates failure", () => {
+    const rollout = new RolloutStore({
+      cwd: "/home/test-explicit-tail-sync",
+      sessionId: "sess-explicit-tail-sync",
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rollout.open({
+      sessionId: "sess-explicit-tail-sync",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-explicit-tail-sync",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    let syncs = 0;
+    rollout.store.setFsyncImplForTest(() => {
+      syncs += 1;
+      throw Object.assign(new Error("injected explicit sync failure"), {
+        code: "EIO",
+      });
+    });
+
+    // The legacy flush API has no bytes to write and therefore no fsync proof.
+    expect(rollout.store.flushBatch(true)).toBe(true);
+    expect(syncs).toBe(0);
+    expect(() => rollout.syncCanonicalTail()).toThrow(
+      /injected explicit sync failure/,
+    );
+    expect(syncs).toBe(1);
+
+    rollout.store.setFsyncImplForTest(fsyncSync);
+    expect(() => rollout.syncCanonicalTail()).not.toThrow();
+    rollout.close();
+  });
+
+  test("resume refuses recovery evidence when the surviving tail cannot be fsynced", () => {
+    const original = new SessionStore({
+      cwd: "/home/test-resume-tail-sync",
+      sessionId: "sess-resume-tail-sync",
+      agencVersion: "0.2.0",
+    });
+    const meta = {
+      sessionId: "sess-resume-tail-sync",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-resume-tail-sync",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    } as const;
+    original.open(meta);
+    original.close();
+
+    const resumed = new SessionStore({
+      cwd: "/home/test-resume-tail-sync",
+      sessionId: "sess-resume-tail-sync",
+      agencVersion: "0.2.0",
+      resume: true,
+    });
+    resumed.setFsyncImplForTest(() => {
+      throw Object.assign(new Error("injected resume sync failure"), {
+        code: "EIO",
+      });
+    });
+    expect(() => resumed.open(meta)).toThrow(/injected resume sync failure/);
+    expect(existsSync(resumed.lockPath)).toBe(false);
+    resumed.close();
+  });
+
   test("UUID dedup: repeated event.id without seq is skipped", () => {
     const store = new SessionStore({
       cwd: "/home/test-dedup",
@@ -594,6 +880,51 @@ describe("session-store", () => {
     const content = readFileSync(store.rolloutPath, "utf8");
     const matches = content.match(/"dup-id"/g) ?? [];
     expect(matches.length).toBe(1);
+  });
+
+  test("fails closed on a repeated sequenced event", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-sequence-conflict",
+      sessionId: "sess-sequence-conflict",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-sequence-conflict",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-sequence-conflict",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    store.append(
+      {
+        id: "first",
+        seq: 1,
+        msg: {
+          type: "warning",
+          payload: { cause: "first", message: "one" },
+        },
+      },
+      { durable: true },
+    );
+
+    expect(() =>
+      store.append(
+        {
+          id: "conflict",
+          seq: 1,
+          msg: {
+            type: "warning",
+            payload: { cause: "conflict", message: "different" },
+          },
+        },
+        { durable: true },
+      ),
+    ).toThrow(/non-monotonic rollout event sequence 1/);
+    store.close();
+
+    const content = readFileSync(store.rolloutPath, "utf8");
+    expect(content).toContain('"id":"first"');
+    expect(content).not.toContain('"id":"conflict"');
   });
 
   test("I-24 close writes atomic index.json snapshot with seq + offsets", () => {
@@ -1010,6 +1341,35 @@ describe("session-store", () => {
       expect(result.truncated).toBe(true);
       const content = readFileSync(path, "utf8");
       expect(content.endsWith("\n")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("I-24 truncateCorruptTail fails closed when truncate or fsync repair fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-corrupt-repair-failure-"));
+    try {
+      const path = join(dir, "rollout.jsonl");
+      const partial = '{"type":"session_meta","payload":{}}\n{"type":"event_msg"';
+      writeFileSync(path, partial, { mode: 0o600 });
+      const truncateFailure = new Error("injected truncate failure");
+      expect(() =>
+        truncateCorruptTail(path, {
+          truncate: () => {
+            throw truncateFailure;
+          },
+        }),
+      ).toThrow(truncateFailure);
+
+      writeFileSync(path, partial, { mode: 0o600 });
+      const syncFailure = new Error("injected repair fsync failure");
+      expect(() =>
+        truncateCorruptTail(path, {
+          sync: () => {
+            throw syncFailure;
+          },
+        }),
+      ).toThrow(syncFailure);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

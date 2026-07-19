@@ -124,21 +124,13 @@ Two related layers:
 Prefer config `[mcp.server]` and the `agenc mcp` CLI rather than importing
 framework modules from embedders.
 
-The inbound server advertises and dispatches only tools whose native contract
-is consistently read-only: `isReadOnly === true`, explicit non-mutating
-metadata, an `idempotent` recovery category, and no approval, interaction, or
-permission hooks. Calls are bound to that audited tool instance rather than
-redispatched by name. All other tool names are omitted from
-`tools/list`; a direct call returns a stable denial without reaching the bare
-tool-registry dispatcher. Environment variables are never mutation
-authorization. Mutation support can return only after it is bound to a native
-daemon session/capability and traverses the common permission, sandbox,
+The inbound server does not advertise tools: `tools/list` is empty and every
+direct `tools/call` fails closed with `ADMISSION_IDENTITY_REQUIRED` and reason
+`mcp_session_admission_identity_missing`. An injected tool registry is never
+materialized or reached. Environment variables are never execution
+authorization. Tool support can return only after requests are bound to a
+native daemon session/capability and traverse the common permission, sandbox,
 admission, redaction, and audit path.
-
-Code-intelligence and git-backed tools are excluded from this inbound registry:
-symbol indexing persists cache files, and git reads can refresh index state.
-They remain available through native sessions where the normal policy boundary
-applies.
 
 Prompts and resources are scoped to the same canonical workspace: project
 `.agenc/skills`, `.agenc/commands`, `.agenc/memory`, and `AGENC.md`. User-global
@@ -151,9 +143,9 @@ the server revalidates and reads only the resource selected by `resources/read`.
 
 - Treat MCP tool results as **untrusted work data** (same framing discipline as
   channel payloads).
-- Inbound `mcp serve` is read-only. Mutating built-ins are neither advertised
-  nor dispatched, even if a legacy environment override is present or a tool
-  has contradictory read-only/mutating metadata.
+- Inbound `mcp serve` exposes prompts and resources only. Tools are neither
+  advertised nor dispatched, even if a registry or legacy environment override
+  is present.
 - SSE remains loopback-only, disabled by default, and has no peer authentication.
   Prefer stdio when process-level peer isolation is required: any local process
   or OS user able to reach loopback may otherwise read the configured workspace

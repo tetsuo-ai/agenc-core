@@ -3,8 +3,8 @@
 > Daemon-backed coding agent: interactive TUI, headless print mode, background
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
-![status](https://img.shields.io/badge/status-pre--release-orange)
-![version](https://img.shields.io/badge/version-0.6.2-blue)
+![status](https://img.shields.io/badge/status-stable-brightgreen)
+![version](https://img.shields.io/badge/version-0.7.0-blue)
 ![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.6.2` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.6.2` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.7.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.7.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -47,9 +47,10 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   attach|stop|logs`), attachable and resumable, independent of the foreground UI.
 - **Channel gateway** — Telegram, Discord, Slack, WebChat, and stdio channels;
   pairing, bindings, in-channel approvals. See [`docs/gateway.md`](docs/gateway.md).
-- **Budget-bounded autonomy** — per-agent spend ledger and caps for heartbeat /
-  cron / hooks turns (`agenc budget`, `agenc gateway run --heartbeat|--hooks`).
-  Design: [`docs/design/budget-enforcement.md`](docs/design/budget-enforcement.md).
+- **Budget-bounded execution** — daemon-owned reservations, hierarchical caps,
+  concurrency, cancellation, and evidence across interactive/background work,
+  including heartbeat / cron / hooks. Design:
+  [`docs/design/execution-admission-kernel.md`](docs/design/execution-admission-kernel.md).
 - **Guided onboarding** — `agenc onboard` plus acts: `identity`, `channel`,
   `autonomy`, `recap` (personas, channels, budget/heartbeat/webhooks).
 - **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
@@ -90,8 +91,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**0.6.2 pre-release.** Runtime and launcher are versioned `0.6.2`; the embedding
-SDK package is intentionally `0.2.0`. The public launcher is
+**Current release: 0.7.0.** Runtime and launcher are versioned `0.7.0`; the
+embedding SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**

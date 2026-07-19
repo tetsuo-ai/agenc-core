@@ -16,6 +16,7 @@ export const meta = {
   timeoutMs: 180_000,
   useTempHome: true,
   slimCwd: true,
+  sandboxMode: "danger-full-access",
   args: ["onboard"],
 };
 

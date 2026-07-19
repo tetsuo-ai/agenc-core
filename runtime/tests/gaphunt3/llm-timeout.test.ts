@@ -15,16 +15,33 @@ import {
 describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
   it("rejects with the signal's string reason, not 'aborted after 0ms'", async () => {
     const controller = new AbortController();
-    // A provider call that never resolves on its own; only the external signal
-    // can settle the race.
+    const physical = Promise.withResolvers<string>();
+    let providerSignal: AbortSignal | undefined;
+    let settled = false;
     const promise = withTimeout<string>(
-      () => new Promise<string>(() => {}),
+      (signal) => {
+        providerSignal = signal;
+        return physical.promise;
+      },
       undefined, // no positive timeout configured
       "TestProvider",
       controller.signal,
     );
+    void promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
     controller.abort("interrupt");
+    expect(providerSignal?.aborted).toBe(true);
+    expect(providerSignal?.reason).toBe("interrupt");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    physical.resolve("late result");
 
     const err = await promise.then(
       () => {
@@ -41,14 +58,16 @@ describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
 
   it("does not downstream-classify the external abort as a retryable timeout", async () => {
     const controller = new AbortController();
+    const physical = Promise.withResolvers<string>();
     const promise = withTimeout<string>(
-      () => new Promise<string>(() => {}),
+      () => physical.promise,
       undefined,
       "TestProvider",
       controller.signal,
     );
 
     controller.abort("interrupt");
+    physical.resolve("late result");
 
     const err = await promise.then(
       () => {
@@ -71,15 +90,17 @@ describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
     const controller = new AbortController();
     const reason = new Error("user cancelled");
     (reason as { name?: unknown }).name = "CancelError";
+    const physical = Promise.withResolvers<string>();
 
     const promise = withTimeout<string>(
-      () => new Promise<string>(() => {}),
+      () => physical.promise,
       undefined,
       "TestProvider",
       controller.signal,
     );
 
     controller.abort(reason);
+    physical.resolve("late result");
 
     const err = await promise.then(
       () => {
@@ -95,13 +116,29 @@ describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
   });
 
   it("still classifies a genuine internal timeout as LLMTimeoutError", async () => {
-    // The real-timeout branch is unchanged and must keep producing an
-    // AbortError/ABORT_ERR-flavored error that mapLLMError maps to a timeout.
+    const physical = Promise.withResolvers<string>();
+    let providerSignal: AbortSignal | undefined;
+    let settled = false;
     const promise = withTimeout<string>(
-      () => new Promise<string>(() => {}),
+      (signal) => {
+        providerSignal = signal;
+        return physical.promise;
+      },
       5, // small positive timeout
       "TestProvider",
     );
+    void promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(providerSignal?.aborted).toBe(true);
+    expect(settled).toBe(false);
+    physical.resolve("late result");
 
     const err = await promise.then(
       () => {
@@ -114,5 +151,25 @@ describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
     expect(err.message).toContain("aborted after 5ms");
     const mapped = mapLLMError("TestProvider", err, 5);
     expect(mapped).toBeInstanceOf(LLMTimeoutError);
+  });
+
+  it("does not start a provider call when the external signal is already aborted", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled before admission dispatch");
+    controller.abort(reason);
+    let invoked = false;
+
+    await expect(
+      withTimeout(
+        async () => {
+          invoked = true;
+          return "unexpected";
+        },
+        100,
+        "TestProvider",
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
+    expect(invoked).toBe(false);
   });
 });

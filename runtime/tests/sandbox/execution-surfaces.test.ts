@@ -8,20 +8,28 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCCommandExecService } from "../../src/app-server/command-exec.js";
 import { runHookCommand } from "../../src/hooks/engine/command-runner.js";
 import { AgenCStdioClientTransport } from "../../src/mcp-client/transports/stdio.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { attachSandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
-import { runWithCurrentRuntimeSession } from "../../src/session/current-session.js";
+import {
+  clearCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../../src/session/current-session.js";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
 import { MonitorTool } from "../../src/tools/MonitorTool/MonitorTool.js";
 import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
 const roots: string[] = [];
+const legacyTestSession = {
+  conversationId: "sandbox-surface-test-session",
+  services: { admissionRequired: false },
+} as never;
 
 function tempRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), label));
@@ -43,7 +51,10 @@ function unavailableBroker(cwd: string): SandboxExecutionBroker {
   });
 }
 
+beforeEach(() => setCurrentRuntimeSession(legacyTestSession));
+
 afterEach(() => {
+  clearCurrentRuntimeSession(legacyTestSession);
   while (roots.length > 0) {
     rmSync(roots.pop()!, { recursive: true, force: true });
   }
@@ -175,7 +186,13 @@ describe("fail-closed process surfaces", () => {
     const broker = unavailableBroker(root);
 
     const result = await runWithCurrentRuntimeSession(
-      { services: { sandboxExecutionBroker: broker } } as never,
+      {
+        conversationId: "sandbox-active-turn-session",
+        services: {
+          admissionRequired: false,
+          sandboxExecutionBroker: broker,
+        },
+      } as never,
       () => CanonicalBashTool.call(
         {
           command: process.execPath,

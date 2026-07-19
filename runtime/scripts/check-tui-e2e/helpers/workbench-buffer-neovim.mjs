@@ -1,10 +1,20 @@
 import { execFile } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { renderPtyRows } from "../harness.mjs";
 
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function anchorWorkbenchProjectRoot(cwd) {
+  // Project trust resolves the nearest ancestor marker. Pin each generated
+  // fixture locally so an unrelated /tmp/package.json cannot turn the trust
+  // target into the shared temp root. A hidden marker avoids changing the
+  // explorer selection whose Enter key opens target.txt in these scenarios.
+  await mkdir(join(cwd, ".git"));
+}
 
 export function workspaceAnchor(text) {
   const line = text.split(/\n/u).find((entry) => /WORKSPACE|target\.txt|agenc/i.test(entry));

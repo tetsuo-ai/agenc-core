@@ -13,6 +13,11 @@ export interface ToolResult {
   content: string;
   isError?: boolean;
   metadata?: Record<string, unknown>;
+  admissionUsage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly costUsd: number;
+  };
 }
 
 export type ToolRecoveryCategory =

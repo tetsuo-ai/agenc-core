@@ -42,7 +42,7 @@ export default async function (session) {
   await trustProjectForHome(home, session.cwd);
   try {
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [BIN_AGENC], {
+      const child = spawn(process.execPath, [BIN_AGENC, "--yolo"], {
         cwd: session.cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: tempDaemonEnv(home, wsPort),

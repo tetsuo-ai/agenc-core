@@ -1,11 +1,24 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
+import { AdmissionDeniedError } from '../../budget/admission-client.js'
+import { readProviderIdentity } from '../../llm/provider.js'
+import {
+  mountChildRunJournal,
+  recordUnconstructedChildRunTerminal,
+  type ChildRunTerminalResult,
+} from '../../session/child-run-journal.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { TerminalRunEpochOpenError } from '../../session/rollout-store.js'
+import type { Session } from '../../session/session.js'
 import {
   createTurnCompatSession,
   structuredOutputFromToolResult,
 } from '../../session/turn-compat.js'
+import {
+  beginLegacyAgentSpawnAdmission,
+  type LegacyAgentSpawnAdmission,
+} from '../../tools/AgentTool/spawnAdmission.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { type Tool, toolMatchesName } from '../../tools/Tool.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
@@ -94,6 +107,15 @@ export async function execAgentHook(
     // always remove it — the success path alone used to clear it, leaking the
     // hook-agent-<uuid> entry on every throw/abort.
     let hookAgentIdForCleanup: ReturnType<typeof asAgentId> | undefined
+    let hookSpawnAdmission: LegacyAgentSpawnAdmission | undefined
+    let hookExecutionSignal = combinedSignal
+    let hookParentSession: Session | undefined
+    let hookChildSession: Session | undefined
+    let hookSpawnDispatched = false
+    let hookTerminalResult: ChildRunTerminalResult = {
+      status: 'failed',
+      stopReason: 'hook_agent_failed',
+    }
 
     try {
       // Create StructuredOutput tool with our schema
@@ -131,12 +153,21 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
 
       // Create unique agentId for this hook agent
       const hookAgentId = asAgentId(`hook-agent-${randomUUID()}`)
+      const parentSession = requireCurrentRuntimeSession('agent hook')
+      hookParentSession = parentSession
+      hookSpawnAdmission = await beginLegacyAgentSpawnAdmission({
+        parent: parentSession,
+        agentId: hookAgentId,
+        sourceAbortController: hookAbortController,
+        stepId: `hook-agent-spawn:${effectiveToolUseID}:${hookAgentId}`,
+      })
+      hookExecutionSignal = hookSpawnAdmission.abortController.signal
 
       // Create a modified toolUseContext for the agent
       const agentToolUseContext: ToolUseContext = {
         ...toolUseContext,
         agentId: hookAgentId,
-        abortController: hookAbortController,
+        abortController: hookSpawnAdmission.abortController,
         options: {
           ...toolUseContext.options,
           tools,
@@ -175,7 +206,6 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       let structuredOutputResult: { ok: boolean; reason?: string } | null = null
       let turnCount = 0
 
-      const parentSession = requireCurrentRuntimeSession('agent hook')
       const turn = await createTurnCompatSession(
         parentSession,
         {
@@ -188,13 +218,30 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           querySource: 'hook_agent',
           maxTurns: MAX_AGENT_TURNS,
         },
-        { conversationId: hookAgentId },
+        {
+          conversationId: hookAgentId,
+          ...(hookSpawnAdmission.childAdmission !== undefined
+            ? { executionAdmission: hookSpawnAdmission.childAdmission }
+            : {}),
+        },
       )
+      hookChildSession = turn.session
+      hookSpawnAdmission.markDispatched()
+      hookSpawnDispatched = true
+      mountChildRunJournal({
+        parent: parentSession,
+        child: turn.session,
+        originator: 'agenc-hook-agent',
+        terminalResult: () => hookTerminalResult,
+      })
+      // The child session and canonical journal now carry the scoped
+      // admission identity. Commit the observable spawn before its first turn.
+      hookSpawnAdmission.commit()
       let lastAssistantLength = 0
       for await (const event of turn.session.runTurn(turn.userMessage, {
         history: turn.history,
         systemPrompt: turn.systemPrompt,
-        signal: combinedSignal,
+        signal: hookExecutionSignal,
         querySource: 'hook_agent',
         configOverrides: { maxTurns: MAX_AGENT_TURNS },
       })) {
@@ -216,6 +263,10 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           const parsed = hookResponseSchema().safeParse(output)
           if (parsed.success) {
             structuredOutputResult = parsed.data
+            hookTerminalResult = {
+              status: 'completed',
+              stopReason: 'structured_output',
+            }
             logForDebugging(
               `Hooks: Got structured output: ${jsonStringify(structuredOutputResult)}`,
             )
@@ -248,7 +299,13 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       // Check if we got a result
       if (!structuredOutputResult) {
         logForDebugging(`Hooks: Agent hook did not return structured output`)
-        if (combinedSignal.aborted) {
+        if (hookExecutionSignal.aborted) {
+          hookTerminalResult = {
+            status: 'cancelled',
+            stopReason: String(
+              hookExecutionSignal.reason ?? 'hook_agent_cancelled',
+            ),
+          }
           return {
             hook,
             outcome: 'cancelled',
@@ -289,7 +346,13 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       parentTimeoutSignal.removeEventListener('abort', onParentTimeout)
       cleanupCombinedSignal()
 
-      if (combinedSignal.aborted) {
+      if (hookExecutionSignal.aborted) {
+        hookTerminalResult = {
+          status: 'cancelled',
+          stopReason: String(
+            hookExecutionSignal.reason ?? 'hook_agent_cancelled',
+          ),
+        }
         return {
           hook,
           outcome: 'cancelled',
@@ -300,11 +363,77 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       // Always remove the per-agent Stop hook, regardless of
       // success/abort/throw. Idempotent Map.delete, and only runs once the
       // hook was actually registered.
-      if (hookAgentIdForCleanup) {
-        clearSessionHooks(toolUseContext.setAppState, hookAgentIdForCleanup)
+      const cleanupErrors: unknown[] = []
+      try {
+        if (hookAgentIdForCleanup) {
+          clearSessionHooks(toolUseContext.setAppState, hookAgentIdForCleanup)
+        }
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      if (
+        hookSpawnDispatched &&
+        hookParentSession !== undefined &&
+        hookChildSession?.rolloutStore === null &&
+        hookParentSession.rolloutStore !== null
+      ) {
+        try {
+          recordUnconstructedChildRunTerminal({
+            parent: hookParentSession,
+            childRunId: hookChildSession.conversationId,
+            cwd: hookChildSession.sessionConfiguration.cwd,
+            model:
+              hookChildSession.sessionConfiguration.collaborationMode.model,
+            modelProvider:
+              readProviderIdentity(hookChildSession.services.provider) ??
+              hookChildSession.services.provider.name,
+            originator: 'agenc-hook-agent-preconstruction',
+            result: hookTerminalResult,
+          })
+        } catch (error) {
+          if (!(error instanceof TerminalRunEpochOpenError)) {
+            cleanupErrors.push(error)
+          }
+        }
+      }
+      if (hookChildSession !== undefined) {
+        try {
+          await hookChildSession.shutdown()
+        } catch (error) {
+          cleanupErrors.push(error)
+        }
+      }
+      try {
+        hookSpawnAdmission?.complete()
+      } catch (error) {
+        cleanupErrors.push(error)
+      }
+      if (cleanupErrors.length === 1) {
+        throw cleanupErrors[0]
+      }
+      if (cleanupErrors.length > 1) {
+        throw new AggregateError(cleanupErrors, 'hook agent cleanup failed')
       }
     }
   } catch (error) {
+    if (error instanceof AdmissionDeniedError) {
+      const denialPayload = JSON.stringify({
+        code: error.code,
+        decision: error.decision,
+        reason: error.reason,
+      })
+      logForDebugging(`Hooks: Blocking agent hook: ${denialPayload}`)
+      return {
+        hook,
+        outcome: 'blocking',
+        blockingError: {
+          blockingError: denialPayload,
+          command: hook.prompt,
+        },
+        preventContinuation: true,
+        stopReason: denialPayload,
+      }
+    }
     const errorMsg = errorMessage(error)
     logForDebugging(`Hooks: Agent hook error: ${errorMsg}`)
     return {

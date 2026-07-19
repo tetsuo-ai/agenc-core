@@ -17,7 +17,7 @@ import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
-  isDaemonPreemptiveMessage,
+  isDaemonPriorityMessage,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
@@ -51,6 +51,9 @@ export class AgenCStdioTransport {
   // promises). Cross-connection concurrency is preserved because each
   // transport instance owns its own chain.
   #dispatchChain: Promise<void> = Promise.resolve();
+  // Priority requests may bypass a streaming turn, but never the initialize
+  // request that authenticates and establishes connection state.
+  #initializeBarrier: Promise<void> = Promise.resolve();
   #queuedNormalMessages = 0;
   #reader: Interface | null = null;
 
@@ -129,16 +132,19 @@ export class AgenCStdioTransport {
       return;
     }
 
-    if (isDaemonPreemptiveMessage(message)) {
-      // Abort controls and interactive decisions must NOT queue behind the
-      // in-flight request they unblock. They reference an explicit target, so
-      // dispatch them off-chain while keeping normal requests FIFO. The promise
-      // is still tracked in #pendingMessages so close() drains it.
-      const pending = Promise.resolve(this.#options.onMessage(message)).catch(
-        (error) => {
+    if (isDaemonPriorityMessage(message)) {
+      // Control-plane requests must NOT queue behind a full model stream.
+      // Dispatch them off-chain while keeping ordinary, order-dependent work
+      // FIFO. The promise is still tracked so close() drains it.
+      const initializeBarrier = this.#initializeBarrier;
+      const pending = Promise.resolve()
+        .then(async () => {
+          await initializeBarrier;
+          await this.#options.onMessage(message);
+        })
+        .catch((error) => {
           this.#options.onError?.(asError(error), line);
-        },
-      );
+        });
       this.#pendingMessages.add(pending);
       pending.finally(() => {
         this.#pendingMessages.delete(pending);
@@ -179,6 +185,9 @@ export class AgenCStdioTransport {
         }
       },
     ));
+    if (message.method === "initialize") {
+      this.#initializeBarrier = pending;
+    }
     this.#pendingMessages.add(pending);
     pending.finally(() => {
       this.#pendingMessages.delete(pending);

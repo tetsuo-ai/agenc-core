@@ -14,12 +14,27 @@ import {
 import { SESSION_ID_ARG } from "../_deps/filesystem-args.js";
 import type { Session } from "../../session/session.js";
 import type { AgentRoleWorkspace } from "../role.js";
-import type { Tool, ToolResult } from "../../tools/types.js";
+import type {
+  Tool,
+  ToolAdmissionEstimate,
+  ToolResult,
+} from "../../tools/types.js";
 import { safeStringify } from "../../tools/types.js";
 
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
+
+const LOCAL_ZERO_ADMISSION_ESTIMATE = Object.freeze({
+  maxInputTokens: 0,
+  maxOutputTokens: 0,
+  maxCostUsd: 0,
+}) satisfies ToolAdmissionEstimate;
+
+/** Collaboration control is local; nested spawn/model work admits separately. */
+export function localZeroAdmissionEstimate(): ToolAdmissionEstimate {
+  return LOCAL_ZERO_ADMISSION_ESTIMATE;
+}
 
 export interface MultiAgentV2Options {
   readonly getSession: () => Session | null;

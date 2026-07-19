@@ -14,6 +14,11 @@ import { getAgencHomeDir } from "../session/session-store.js";
 import { redactSecrets, redactSecretsInValue } from "../secrets/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  checkUnknownOutcomeMutationGate,
+  UnknownOutcomeMutationBlockedError,
+  type UnresolvedUnknownOutcomeEffect,
+} from "./unknown-outcome-gate.js";
 
 export interface ToolOutputRotationPolicy {
   readonly outputPartialMaxBytes?: number;
@@ -37,6 +42,24 @@ export interface InFlightToolCallStartParams {
   readonly recoveryCategory?: ToolRecoveryCategory;
   readonly agencHome?: string;
   readonly outputRotation?: ToolOutputRotationPolicy;
+  /**
+   * Unknown-outcome mutation gate mode (default `"enforce"`). While the
+   * session has unresolved `poisoned` effects, recording a NEW
+   * side-effecting call throws {@link UnknownOutcomeMutationBlockedError}
+   * under `"enforce"`. The daemon's post-dispatch snapshot observer passes
+   * `"flag"` — it records reality (the tool is already running) but the
+   * returned violation is persisted into the session snapshot rather than
+   * silently discarded. `"flag"` is for observers only; admission and
+   * direct writers keep the fail-closed default.
+   */
+  readonly unknownOutcomeGate?: "enforce" | "flag";
+}
+
+export interface InFlightToolCallStartOutcome {
+  /** Present when the gate was violated in `"flag"` mode. */
+  readonly gateViolation?: {
+    readonly blocking: readonly UnresolvedUnknownOutcomeEffect[];
+  };
 }
 
 export interface InFlightToolCallCompletionParams {
@@ -64,6 +87,15 @@ export interface InFlightToolCallProgressParams {
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
 
+export interface InFlightToolCallUnknownOutcomeParams {
+  readonly sessionId: string;
+  readonly agentId?: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly observedAt: string;
+  readonly recoveryCategory: Exclude<ToolRecoveryCategory, "idempotent">;
+}
+
 const DEFAULT_TOOL_OUTPUT_ROTATION_POLICY = Object.freeze({
   outputPartialMaxBytes: 32_768,
   logMaxBytes: 1_048_576,
@@ -78,7 +110,20 @@ const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
 export function recordInFlightToolCallStart(
   driver: StateSqliteDriver,
   params: InFlightToolCallStartParams,
-): void {
+): InFlightToolCallStartOutcome {
+  const recoveryCategory = normalizeToolRecoveryCategory(
+    params.recoveryCategory,
+  );
+  const gate = checkUnknownOutcomeMutationGate(driver, {
+    sessionId: params.sessionId,
+    recoveryCategory,
+  });
+  if (!gate.allowed && (params.unknownOutcomeGate ?? "enforce") === "enforce") {
+    throw new UnknownOutcomeMutationBlockedError(
+      params.sessionId,
+      gate.blocking,
+    );
+  }
   const outputLogPath = resolveToolOutputLogPath({
     agencHome: params.agencHome,
     agentId: params.agentId ?? params.sessionId,
@@ -109,7 +154,8 @@ export function recordInFlightToolCallStart(
         output_log_path = excluded.output_log_path,
         output_log_bytes = excluded.output_log_bytes,
         started_at = excluded.started_at,
-        recovery_category = excluded.recovery_category`,
+        recovery_category = excluded.recovery_category
+      WHERE in_flight_tool_calls.status NOT IN ('poisoned', 'unknown_resolved')`,
     )
     .run(
       params.sessionId,
@@ -121,8 +167,9 @@ export function recordInFlightToolCallStart(
       null,
       0,
       params.startedAt,
-      normalizeToolRecoveryCategory(params.recoveryCategory),
+      recoveryCategory,
     );
+  return gate.allowed ? {} : { gateViolation: { blocking: gate.blocking } };
 }
 
 export function recordInFlightToolCallProgress(
@@ -147,6 +194,11 @@ export function recordInFlightToolCallProgress(
     )
     .get(params.sessionId, params.toolCallId);
   if (row === undefined) {
+    // Observer-context backfill for an orphan (already-running) call: like
+    // the snapshot observer it records reality, so the unknown-outcome gate
+    // must flag rather than throw — an enforce throw here would leave the
+    // running call crash-invisible in exactly the sessions already holding
+    // an unresolved effect.
     recordInFlightToolCallStart(driver, {
       sessionId: params.sessionId,
       agentId,
@@ -157,6 +209,7 @@ export function recordInFlightToolCallProgress(
       recoveryCategory: params.recoveryCategory,
       agencHome: params.agencHome,
       outputRotation: params.outputRotation,
+      unknownOutcomeGate: "flag",
     });
     row = {
       output_partial: null,
@@ -184,7 +237,8 @@ export function recordInFlightToolCallProgress(
            output_log_bytes = ?,
            recovery_category = COALESCE(?, recovery_category)
        WHERE session_id = ?
-         AND tool_call_id = ?`,
+         AND tool_call_id = ?
+         AND status NOT IN ('poisoned', 'unknown_resolved')`,
     )
     .run(
       appended.outputPartial,
@@ -214,6 +268,11 @@ export function recordInFlightToolCallCompletion(
     .prepareState<
       [string, string | null, string | null, number, string | null, string, string]
     >(
+      // A poisoned (unknown-outcome) row is review-locked: recovery only
+      // poisons calls whose execution the crash killed, so a "completion"
+      // arriving afterwards is a stale/duplicate/replayed event, not a
+      // trustworthy acknowledgement — it must not silently lift the review
+      // gate. unknown_resolved is terminal by review and equally immutable.
       `UPDATE in_flight_tool_calls
        SET status = ?,
            output_partial = ?,
@@ -221,7 +280,8 @@ export function recordInFlightToolCallCompletion(
            output_log_bytes = ?,
            recovery_category = COALESCE(?, recovery_category)
        WHERE session_id = ?
-         AND tool_call_id = ?`,
+         AND tool_call_id = ?
+         AND status NOT IN ('poisoned', 'unknown_resolved')`,
     )
     .run(
       status,
@@ -235,11 +295,14 @@ export function recordInFlightToolCallCompletion(
       params.toolCallId,
     );
   if (update.changes > 0) return;
+  // OR IGNORE: zero changes can now also mean "row exists but is
+  // review-locked (poisoned/unknown_resolved)" — the completion is dropped
+  // rather than resurrecting or duplicating the locked row.
   driver
     .prepareState<
       [string, string, string, string, string, string | null, string | null, number, string, string]
     >(
-      `INSERT INTO in_flight_tool_calls (
+      `INSERT OR IGNORE INTO in_flight_tool_calls (
         session_id,
         tool_call_id,
         tool_name,
@@ -263,6 +326,52 @@ export function recordInFlightToolCallCompletion(
       rotated.outputLogBytes,
       params.completedAt,
       normalizeToolRecoveryCategory(params.recoveryCategory),
+    );
+}
+
+/**
+ * Project a canonical effect_unknown_outcome event into the existing recovery
+ * gate. The journal event is the authority; this row is the restart/query
+ * index used to block dependent side-effecting calls until explicit review.
+ */
+export function recordInFlightToolCallUnknownOutcome(
+  driver: StateSqliteDriver,
+  params: InFlightToolCallUnknownOutcomeParams,
+): void {
+  const update = driver
+    .prepareState<[string, string, string]>(
+      `UPDATE in_flight_tool_calls
+       SET status = 'poisoned', recovery_category = ?
+       WHERE session_id = ? AND tool_call_id = ?
+         AND status <> 'unknown_resolved'`,
+    )
+    .run(
+      params.recoveryCategory,
+      params.sessionId,
+      params.toolCallId,
+    );
+  if (update.changes > 0) return;
+  driver
+    .prepareState<
+      [string, string, string, string, string, null, null, number, string, string]
+    >(
+      `INSERT OR IGNORE INTO in_flight_tool_calls (
+        session_id, tool_call_id, tool_name, args_json, status,
+        output_partial, output_log_path, output_log_bytes, started_at,
+        recovery_category
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      params.sessionId,
+      params.toolCallId,
+      params.toolName,
+      "null",
+      "poisoned",
+      null,
+      null,
+      0,
+      params.observedAt,
+      params.recoveryCategory,
     );
 }
 

@@ -45,11 +45,12 @@ export interface SessionLifecycleOpts {
  * Orderly session shutdown:
  *   1. Quiesce the top-level abort controller (I-7) with a benign
  *      reason so phases see a shutdown signal.
- *   2. Cascade-shutdown every live subagent tree via `AgentControl.shutdownAll`.
- *   3. Close live unified exec processes.
- *   4. Delegate to `Session.shutdown()` (drain childInboxes + close
+ *   2. Abort and drain the root session's active task while its journal is open.
+ *   3. Cascade-shutdown every live subagent tree via `AgentControl.shutdownAll`.
+ *   4. Close live unified exec processes.
+ *   5. Delegate to `Session.shutdown()` (drain childInboxes + close
  *      rollout + event log + txEvent).
- *   5. Stop the MCP manager (close all bridges + kill child procs).
+ *   6. Stop the MCP manager (close all bridges + kill child procs).
  *
  * The whole teardown is bounded by `shutdownBudgetMs`. Any step that
  * exceeds the budget emits a warning event + moves on — we prefer
@@ -67,7 +68,23 @@ export async function shutdownSessionLifecycle(
     opts.session.abortController.abort("session_shutdown");
   }
 
-  // Step 2: cascade subagent shutdown (I-33 ordering — must happen
+  // Step 2: settle the root task, including any permission/effect
+  // continuations, before a background-run terminal can seal the journal.
+  const abortAllTasks = (
+    opts.session as Session & {
+      abortAllTasks?: (reason: "interrupted") => Promise<void>;
+    }
+  ).abortAllTasks;
+  if (typeof abortAllTasks === "function") {
+    await raceBudget(
+      abortAllTasks.call(opts.session, "interrupted"),
+      deadlineMs,
+      "session_active_task_shutdown",
+      opts.session,
+    );
+  }
+
+  // Step 3: cascade subagent shutdown (I-33 ordering — must happen
   // before Session.shutdown() drain, else children can refill mailboxes).
   if (opts.agentControl) {
     await raceBudget(
@@ -88,7 +105,7 @@ export async function shutdownSessionLifecycle(
     }
   ).services?.unifiedExecManager;
   if (unifiedExecManager?.closeAll) {
-    // Step 3: live terminal shutdown.
+    // Step 4: live terminal shutdown.
     await raceBudget(
       unifiedExecManager.closeAll("session_shutdown"),
       deadlineMs,
@@ -97,7 +114,7 @@ export async function shutdownSessionLifecycle(
     );
   }
 
-  // Step 4: I-33 + I-87 mailbox drain via Session.shutdown().
+  // Step 5: I-33 + I-87 mailbox drain via Session.shutdown().
   await raceBudget(
     opts.session.shutdown(),
     deadlineMs,
@@ -105,7 +122,7 @@ export async function shutdownSessionLifecycle(
     opts.session,
   );
 
-  // Step 5: MCP manager stop (best-effort; I-6 fail-soft).
+  // Step 6: MCP manager stop (best-effort; I-6 fail-soft).
   if (opts.mcpManager) {
     try {
       await raceBudget(

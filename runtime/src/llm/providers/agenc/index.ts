@@ -69,6 +69,10 @@ export class AgenCProvider implements LLMProvider {
 
   readonly #config: AgenCProviderConfig;
   readonly #delegates = new Map<string, Promise<ResolvedAgenCDelegate>>();
+  readonly #preparedExecutions = new WeakMap<
+    object,
+    ResolvedAgenCDelegate
+  >();
 
   constructor(config: AgenCProviderConfig) {
     this.#config = config;
@@ -78,9 +82,9 @@ export class AgenCProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const delegate = await this.resolveDelegate(options);
+    const { delegate, delegateOptions } = await this.executionFor(options);
     return delegate.instance.chat(messages, {
-      ...options,
+      ...delegateOptions,
       model: delegate.model,
     });
   }
@@ -90,9 +94,9 @@ export class AgenCProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
-    const delegate = await this.resolveDelegate(options);
+    const { delegate, delegateOptions } = await this.executionFor(options);
     return delegate.instance.chatStream(messages, onChunk, {
-      ...options,
+      ...delegateOptions,
       model: delegate.model,
     });
   }
@@ -106,14 +110,57 @@ export class AgenCProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile(): Promise<LLMProviderExecutionProfile> {
-    const delegate = await this.resolveDelegate();
-    return (
-      (await delegate.instance.getExecutionProfile?.()) ?? {
+  async getExecutionProfile(
+    options?: LLMChatOptions,
+  ): Promise<LLMProviderExecutionProfile> {
+    const delegate = await this.resolveDelegate(options);
+    const profile =
+      (await delegate.instance.getExecutionProfile?.({
+        ...withoutExecutionHandle(options),
+        model: delegate.model,
+      })) ?? {
         provider: delegate.provider,
         model: delegate.model,
-      }
-    );
+        usageReporting: "unavailable" as const,
+        supportsMaxOutputTokens: false,
+      };
+    const providerExecutionHandle = Object.freeze({});
+    this.#preparedExecutions.set(providerExecutionHandle, delegate);
+    return {
+      ...profile,
+      // The resolved delegate is authoritative. A concrete adapter profile may
+      // report constructor defaults, but the managed router controls the actual
+      // provider/model selected for this request.
+      provider: delegate.provider,
+      model: delegate.model,
+      providerExecutionHandle,
+    };
+  }
+
+  private async executionFor(options?: LLMChatOptions): Promise<{
+    readonly delegate: ResolvedAgenCDelegate;
+    readonly delegateOptions: LLMChatOptions;
+  }> {
+    const handle = options?.providerExecutionHandle;
+    if (handle === undefined) {
+      return {
+        delegate: await this.resolveDelegate(options),
+        delegateOptions: withoutExecutionHandle(options),
+      };
+    }
+    const delegate = this.#preparedExecutions.get(handle);
+    if (delegate === undefined) {
+      throw new Error(
+        "AgenCProvider received an invalid or already-consumed execution handle",
+      );
+    }
+    // One prepared profile authorizes exactly one adapter invocation. Provider
+    // adapters are separately constrained to one wire attempt by admission.
+    this.#preparedExecutions.delete(handle);
+    return {
+      delegate,
+      delegateOptions: withoutExecutionHandle(options),
+    };
   }
 
   private async resolveDelegate(
@@ -219,6 +266,17 @@ export class AgenCProvider implements LLMProvider {
       ? Math.floor(configured)
       : DEFAULT_DELEGATE_CACHE_TTL_MS;
   }
+}
+
+function withoutExecutionHandle(
+  options: LLMChatOptions | undefined,
+): LLMChatOptions {
+  if (options === undefined) return {};
+  const {
+    providerExecutionHandle: _providerExecutionHandle,
+    ...delegateOptions
+  } = options;
+  return delegateOptions;
 }
 
 function concreteProviderName(provider: string): ConcreteProviderName {

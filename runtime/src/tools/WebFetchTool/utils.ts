@@ -1,6 +1,5 @@
 import axios, { type AxiosResponse } from 'axios'
 import { LRUCache } from 'lru-cache'
-import { queryHaiku } from '../../services/api/anthropic.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -10,12 +9,10 @@ import {
   persistBinaryContent,
 } from '../../utils/mcpOutputStorage.js'
 import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import type { LookupFunction } from 'node:net'
 import type * as undici from 'undici'
 import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'
 import { isPreapprovedHost } from './preapproved.js'
-import { makeSecondaryModelPrompt } from './prompt.js'
 // Custom error classes for domain blocking
 class DomainBlockedError extends Error {
   constructor(domain: string) {
@@ -617,53 +614,10 @@ export async function getURLMarkdownContent(
   return entry
 }
 
-// Budget for the secondary-model summarization after fetch. If the small-
-// fast model is slow (e.g. a 200k-context third-party running a reasoning
-// pass over ~100KB of markdown), we'd rather fall back to raw truncated
-// markdown than hang the tool. Also keeps the worst-case WebFetch bounded
-// to FETCH_TIMEOUT_MS + SECONDARY_MODEL_TIMEOUT_MS regardless of provider.
-const SECONDARY_MODEL_TIMEOUT_MS = 45_000
-
-function raceWithTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  signal: AbortSignal,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const err = new Error(`Secondary-model summarization timed out after ${timeoutMs}ms`)
-      ;(err as NodeJS.ErrnoException).code = 'SECONDARY_MODEL_TIMEOUT'
-      reject(err)
-    }, timeoutMs)
-    const onAbort = () => {
-      clearTimeout(timer)
-      reject(new AbortError())
-    }
-    if (signal.aborted) {
-      clearTimeout(timer)
-      reject(new AbortError())
-      return
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
-      value => {
-        clearTimeout(timer)
-        signal.removeEventListener('abort', onAbort)
-        resolve(value)
-      },
-      err => {
-        clearTimeout(timer)
-        signal.removeEventListener('abort', onAbort)
-        reject(err)
-      },
-    )
-  })
-}
-
 function buildFallbackMarkdownSummary(truncatedContent: string): string {
   return [
-    '[Secondary-model summarization unavailable — returning raw fetched content.',
-    'This typically means the configured small-fast model took too long or errored.]',
+    '[ADMISSION_DENIED: legacy_web_fetch_secondary_model_path_disabled.',
+    'Returning bounded raw fetched content without a secondary model call.]',
     '',
     truncatedContent,
   ].join('\n')
@@ -676,58 +630,22 @@ export async function applyPromptToMarkdown(
   isNonInteractiveSession: boolean,
   isPreapprovedDomain: boolean,
 ): Promise<string> {
-  // Truncate content to avoid "Prompt is too long" errors from the secondary model
+  void prompt
+  void isNonInteractiveSession
+  void isPreapprovedDomain
+
+  if (signal.aborted) {
+    throw new AbortError()
+  }
+
+  // The legacy secondary-model shortcut was outside execution admission.
+  // Keep WebFetch useful and deterministic while failing that model path
+  // closed: return only bounded content that has already been fetched.
   const truncatedContent =
     markdownContent.length > MAX_MARKDOWN_LENGTH
       ? markdownContent.slice(0, MAX_MARKDOWN_LENGTH) +
         '\n\n[Content truncated due to length...]'
       : markdownContent
 
-  const modelPrompt = makeSecondaryModelPrompt(
-    truncatedContent,
-    prompt,
-    isPreapprovedDomain,
-  )
-  let assistantMessage
-  try {
-    assistantMessage = await raceWithTimeout(
-      queryHaiku({
-        systemPrompt: asSystemPrompt([]),
-        userPrompt: modelPrompt,
-        signal,
-        options: {
-          querySource: 'web_fetch_apply',
-          agents: [],
-          isNonInteractiveSession,
-          hasAppendSystemPrompt: false,
-          mcpTools: [],
-        },
-      }),
-      SECONDARY_MODEL_TIMEOUT_MS,
-      signal,
-    )
-  } catch (err) {
-    // User interrupts and SIGINTs still propagate. Everything else (timeout,
-    // provider-side error, unsupported model on third-party endpoint) falls
-    // back to raw markdown so the user still gets usable content rather than
-    // a hang. Log so it's visible in debug traces.
-    if (err instanceof AbortError || (err as Error)?.name === 'AbortError') {
-      throw err
-    }
-    logError(err)
-    return buildFallbackMarkdownSummary(truncatedContent)
-  }
-  // We need to bubble this up, so that the tool call throws, causing us to return
-  // an is_error tool_use block to the server, and render a red dot in the UI.
-  if (signal.aborted) {
-    throw new AbortError()
-  }
-  const { content } = assistantMessage.message
-  if (content.length > 0) {
-    const contentBlock = content[0]
-    if ('text' in contentBlock!) {
-      return contentBlock.text
-    }
-  }
   return buildFallbackMarkdownSummary(truncatedContent)
 }

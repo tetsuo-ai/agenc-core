@@ -18,6 +18,11 @@ export interface IndexedThreadRecord {
   readonly archivedRolloutPath?: string;
 }
 
+export interface IndexedThreadPage {
+  readonly items: ReadonlyArray<IndexedThreadRecord>;
+  readonly hasMore: boolean;
+}
+
 interface ThreadRow {
   readonly thread_id: string;
   readonly name: string | null;
@@ -37,6 +42,59 @@ interface ThreadRow {
 
 export class StateThreadRepository {
   constructor(private readonly driver: StateSqliteDriver) {}
+
+  /**
+   * Relocate every live SQLite reference when a rollout JSONL is archived or
+   * restored. The filesystem rename is owned by FileThreadStore; keeping this
+   * projection move in one immediate transaction prevents replay, retention,
+   * and terminal-epoch checks from retaining a stale source path.
+   */
+  relocateRolloutSource(sourcePath: string, targetPath: string): void {
+    if (sourcePath === targetPath) return;
+    this.driver.transactionImmediate(() => {
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE thread_rollout_items SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE rollout_receipts SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE backfill_files SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE thread_spawn_edges SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+      this.driver
+        .prepareState<[string, string]>(
+          "UPDATE run_journal_bindings SET source_path = ? WHERE source_path = ?",
+        )
+        .run(targetPath, sourcePath);
+    });
+  }
+
+  /**
+   * Commit one bounded rollout projection and validate its filesystem identity
+   * at the final synchronous boundary before SQLite commits. Any failed
+   * validation rolls back both thread metadata and rollout/receipt rows.
+   */
+  commitRolloutProjection<T>(
+    apply: () => T,
+    validateCanonical: () => void,
+  ): T {
+    return this.driver.transactionImmediate(() => {
+      const result = apply();
+      validateCanonical();
+      return result;
+    });
+  }
 
   upsertThread(record: IndexedThreadRecord): void {
     this.driver
@@ -156,6 +214,72 @@ export class StateThreadRepository {
       )
       .all()
       .map((row: ThreadRow) => rowToThread(row));
+  }
+
+  /** Constant-memory count used by daemon health; never materializes rows. */
+  countThreads(archived: boolean): number {
+    const predicate = archived
+      ? "archived_at IS NOT NULL"
+      : "archived_at IS NULL";
+    return (
+      this.driver
+        .prepareState<[], { count: number }>(
+          `SELECT COUNT(*) AS count FROM threads WHERE ${predicate}`,
+        )
+        .get()?.count ?? 0
+    );
+  }
+
+  /**
+   * Read one ordered metadata page without materializing the complete thread
+   * table in daemon heap. Callers own the opaque cursor; this repository takes
+   * its decoded keyset boundary so later pages do not rescan earlier rows.
+   */
+  listThreadPage(params: {
+    readonly limit: number;
+    readonly archived: boolean;
+    readonly sortKey: "created_at" | "updated_at";
+    readonly sortDirection: "asc" | "desc";
+    readonly after?: {
+      readonly sortValue: string;
+      readonly threadId: string;
+    };
+  }): IndexedThreadPage {
+    const direction = params.sortDirection === "asc" ? "ASC" : "DESC";
+    const sortColumn =
+      params.sortKey === "updated_at" ? "updated_at" : "created_at";
+    const archivePredicate = params.archived
+      ? "archived_at IS NOT NULL"
+      : "archived_at IS NULL";
+    const comparison = params.sortDirection === "asc" ? ">" : "<";
+    const pagePredicate =
+      params.after === undefined
+        ? ""
+        : ` AND (${sortColumn}, thread_id) ${comparison} (?, ?)`;
+    const statement = this.driver.prepareState(
+      `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
+          source_json, forked_from_id, model, model_provider, memory_mode,
+          rollout_path, archived_rollout_path
+         FROM threads
+         WHERE ${archivePredicate}${pagePredicate}
+         ORDER BY ${sortColumn} ${direction}, thread_id ${direction}
+         LIMIT ?`,
+    );
+    const rows = (
+      params.after === undefined
+        ? statement.all(params.limit + 1)
+        : statement.all(
+            params.after.sortValue,
+            params.after.threadId,
+            params.limit + 1,
+          )
+    ) as ThreadRow[];
+    return {
+      items: rows
+        .slice(0, params.limit)
+        .map((row: ThreadRow) => rowToThread(row)),
+      hasMore: rows.length > params.limit,
+    };
   }
 
   /**

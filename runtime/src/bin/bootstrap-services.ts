@@ -37,9 +37,7 @@ import type {
   Session,
   SessionServices,
 } from "../session/session.js";
-import {
-  createCodeModeService,
-} from "../tools/code-mode/service.js";
+import { createCodeModeService } from "../tools/code-mode/service.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import {
   ToolLatencyStore,
@@ -49,10 +47,7 @@ import { initMagicDocs } from "../services/MagicDocs/magicDocs.js";
 import { configurePolicyLimitsService } from "../services/policyLimits/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RolloutStore } from "../session/rollout-store.js";
-import {
-  FileThreadStore,
-  ThreadNotFoundError,
-} from "../thread-store/store.js";
+import { FileThreadStore, ThreadNotFoundError } from "../thread-store/store.js";
 import {
   createLiveThread,
   resumeLiveThread,
@@ -60,7 +55,11 @@ import {
 } from "../thread-store/live-thread.js";
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
-import { dispatchPostCompact, dispatchPreCompact, dispatchSessionStart } from "../llm/hooks/dispatcher.js";
+import {
+  dispatchPostCompact,
+  dispatchPreCompact,
+  dispatchSessionStart,
+} from "../llm/hooks/dispatcher.js";
 import { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type {
   NotificationHook,
@@ -95,11 +94,12 @@ import type { ConfigStore } from "../config/store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
-import type {
-  AuthBackend,
-  AuthSubscriptionTier,
-} from "../auth/backend.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
+
+export { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
 
 interface BootstrapShellSnapshot {
   readonly cwd: string;
@@ -130,6 +130,8 @@ export interface BootstrapSessionServicesOptions {
   readonly model: string;
   readonly sessionConfiguration: SessionConfiguration;
   readonly codeModeService?: CodeModeService;
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  readonly admissionRequired?: boolean;
 }
 
 export interface BootstrapRolloutBinding {
@@ -488,8 +490,8 @@ export async function loadBootstrapLspServers(
     configSource: parsed.success
       ? () => parsed.servers
       : () => {
-        throw new Error(`Invalid LSP server config: ${parsed.reason}`);
-      },
+          throw new Error(`Invalid LSP server config: ${parsed.reason}`);
+        },
   };
   if (!parsed.success) {
     const status = getLspInitializationStatus(
@@ -506,9 +508,7 @@ export async function loadBootstrapLspServers(
     await shutdownLspServerManager(opts.sandboxExecutionBroker);
     return;
   }
-  const status = getLspInitializationStatus(
-    opts.sandboxExecutionBroker,
-  ).status;
+  const status = getLspInitializationStatus(opts.sandboxExecutionBroker).status;
   if (status === "not-started" || status === "failed") {
     initializeLspServerManager(managerOptions);
     return;
@@ -526,7 +526,10 @@ export function loadBootstrapLspServersInBackground(
 ): void {
   void loadBootstrapLspServers(cfg, opts).catch((error) => {
     // eslint-disable-next-line no-console
-    console.warn("[lsp] bootstrap config reload failed:", lspErrorMessage(error));
+    console.warn(
+      "[lsp] bootstrap config reload failed:",
+      lspErrorMessage(error),
+    );
   });
 }
 
@@ -569,8 +572,7 @@ function createAuthManager(opts: {
   const providerName = opts.providerName;
   if (
     providerName === "ollama" ||
-    ((providerName === "lmstudio" ||
-      providerName === "openai-compatible") &&
+    ((providerName === "lmstudio" || providerName === "openai-compatible") &&
       !opts.apiKey &&
       !providerOptions.apiKey)
   ) {
@@ -696,6 +698,10 @@ export function buildBootstrapSessionServices(
     agencHome: opts.agencHome,
     shellPath: opts.env.SHELL ?? "/bin/sh",
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
+      : {}),
+    admissionRequired: opts.admissionRequired !== false,
   });
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
@@ -718,13 +724,10 @@ export function buildBootstrapSessionServices(
   });
   const lspManager: NonNullable<SessionServices["lspManager"]> = {
     refreshFromConfig: (config: unknown) =>
-      loadBootstrapLspServers(
-        config as ReturnType<ConfigStore["current"]>,
-        {
-          workspaceRoot: opts.workspaceRoot,
-          sandboxExecutionBroker: opts.sandboxExecutionBroker,
-        },
-      ),
+      loadBootstrapLspServers(config as ReturnType<ConfigStore["current"]>, {
+        workspaceRoot: opts.workspaceRoot,
+        sandboxExecutionBroker: opts.sandboxExecutionBroker,
+      }),
   };
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
     loadHooks(cfg);
@@ -733,6 +736,7 @@ export function buildBootstrapSessionServices(
       sandboxExecutionBroker: opts.sandboxExecutionBroker,
     });
   });
+  let unsubscribeExecutionAdmission: (() => void) | undefined;
 
   const services: SessionServices = {
     mcpConnectionManager,
@@ -747,7 +751,9 @@ export function buildBootstrapSessionServices(
       path: opts.env.SHELL ?? "/bin/sh",
       deriveExecArgs: (input: string) => ["-c", input],
     },
-    agentIdentityManager: new BootstrapAgentIdentityManager(opts.conversationId),
+    agentIdentityManager: new BootstrapAgentIdentityManager(
+      opts.conversationId,
+    ),
     shellSnapshotTx: createShellSnapshotTx(opts.workspaceRoot, opts.env),
     showRawAgentReasoning: false,
     execPolicy,
@@ -811,6 +817,12 @@ export function buildBootstrapSessionServices(
     codeModeService,
     provider: opts.provider,
     registry: opts.registry,
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
+      : {}),
+    ...(opts.admissionRequired !== undefined
+      ? { admissionRequired: opts.admissionRequired }
+      : {}),
     permissionAuditLogger: createPermissionAuditFileLogger({
       agencHome: opts.agencHome,
     }),
@@ -828,6 +840,11 @@ export function buildBootstrapSessionServices(
     threadStore: fileThreadStore,
     bindSession: (session: Session) => {
       execPolicy.bindSession(session);
+      unsubscribeExecutionAdmission?.();
+      unsubscribeExecutionAdmission =
+        opts.executionAdmission === undefined
+          ? undefined
+          : bindExecutionAdmissionJournal(session, opts.executionAdmission);
     },
     bindRolloutStore: (binding: BootstrapRolloutBinding) => {
       rolloutRecorder.attach(binding.rolloutStore);
@@ -862,6 +879,8 @@ export function buildBootstrapSessionServices(
       return liveThread;
     },
     shutdown: async () => {
+      unsubscribeExecutionAdmission?.();
+      unsubscribeExecutionAdmission = undefined;
       unsubscribeHooksConfig();
       await skillsServices.skillsWatcher.stop?.();
       await shutdownBootstrapLspServers(opts.sandboxExecutionBroker);
@@ -902,7 +921,9 @@ function requestBootstrapNetworkApproval(
     });
   }
   return service.requestNetworkApproval(
-    request as Parameters<RuntimeNetworkApprovalService["requestNetworkApproval"]>[0],
+    request as Parameters<
+      RuntimeNetworkApprovalService["requestNetworkApproval"]
+    >[0],
   );
 }
 

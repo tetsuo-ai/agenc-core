@@ -61,7 +61,7 @@ function sha256(bytes) {
 
 test("release attestation gate exactly matches the official client policy", () => {
   const commit = "a".repeat(40);
-  const sourceRef = "refs/tags/agenc-v0.6.2";
+  const sourceRef = `refs/tags/${LEGACY_BRIDGE_CONTRACT.releaseTag}`;
   assert.deepEqual(RELEASE_ATTESTATION_POLICY, {
     repository: "tetsuo-ai/agenc-core",
     signerWorkflow: "tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml",
@@ -246,6 +246,16 @@ function addArtifact(directory, platform, arch, body) {
         : {}),
       ...(platform === "win"
         ? {
+            nodeImportLibraryFile: releaseToolchain.nodeImportLibraries[key].file,
+            nodeImportLibrarySha256: releaseToolchain.nodeImportLibraries[key].sha256,
+            nodeImportLibraryBytes: releaseToolchain.nodeImportLibraries[key].bytes,
+            nodeCommonGypiFile: releaseToolchain.nodeHeaders.windowsCommonGypi.path,
+            nodeCommonGypiSourceSha256:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.sourceSha256,
+            nodeCommonGypiReleaseSha256:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.releaseSha256,
+            nodeCommonGypiTransformation:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.transformation,
             visualStudioVersion: hostedRunner.visualStudioVersion,
             visualStudioInstallPath: hostedRunner.visualStudioInstallPath,
             msvcToolsVersion: hostedRunner.msvcToolsVersion,
@@ -347,7 +357,7 @@ function bridgeV2Fixture() {
   };
 }
 
-test("v0.6.2 legacy projection is deterministic, minimal, and Node 25 exact", () => {
+test("v0.7.0 legacy projection is deterministic, minimal, and Node 25 exact", () => {
   const first = projectLegacyManifest(bridgeV2Fixture());
   const reordered = bridgeV2Fixture();
   reordered.artifacts.reverse();
@@ -388,7 +398,7 @@ test("v0.6.2 legacy projection is deterministic, minimal, and Node 25 exact", ()
 
 test("legacy bridge projection rejects drift and duplicate platform entries", () => {
   const cases = [
-    ["version", (manifest) => { manifest.runtimeVersion = "0.6.3"; }, /runtimeVersion 0\.6\.2/],
+    ["version", (manifest) => { manifest.runtimeVersion = "0.6.2"; }, /runtimeVersion 0\.7\.0/],
     ["Node", (manifest) => { manifest.build.nodeVersion = "v24.18.0"; }, /nodeVersion v25\.9\.0/],
     ["ABI", (manifest) => { manifest.artifacts[0].nodeModuleAbi = "137"; }, /source artifact is invalid/],
     ["URL", (manifest) => { manifest.artifacts[0].url = "https://example.invalid/runtime.tar.gz"; }, /source artifact is invalid/],
@@ -403,7 +413,7 @@ test("legacy bridge projection rejects drift and duplicate platform entries", ()
   }
 });
 
-test("future releases can only reuse exact pinned canonical v0.6.2 legacy bytes", () => {
+test("future releases can only reuse exact pinned canonical v0.7.0 legacy bytes", () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-frozen-legacy-"));
   try {
     const path = join(work, "agenc-runtime-manifest.json");
@@ -922,6 +932,51 @@ test("full release manifest covers the exact five-platform matrix and enforces t
     );
     writeFileSync(outputPath, validManifestText);
 
+    const detachedImportLibraryManifest = JSON.parse(validManifestText);
+    const windowsArtifact = detachedImportLibraryManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    assert.deepEqual(
+      {
+        file: windowsArtifact.nativeToolchain.nodeCommonGypiFile,
+        sourceSha256: windowsArtifact.nativeToolchain.nodeCommonGypiSourceSha256,
+        releaseSha256: windowsArtifact.nativeToolchain.nodeCommonGypiReleaseSha256,
+        transformation: windowsArtifact.nativeToolchain.nodeCommonGypiTransformation,
+      },
+      {
+        file: releaseToolchain.nodeHeaders.windowsCommonGypi.path,
+        sourceSha256: releaseToolchain.nodeHeaders.windowsCommonGypi.sourceSha256,
+        releaseSha256: releaseToolchain.nodeHeaders.windowsCommonGypi.releaseSha256,
+        transformation: releaseToolchain.nodeHeaders.windowsCommonGypi.transformation,
+      },
+    );
+    windowsArtifact.nativeToolchain.nodeImportLibraryBytes += 1;
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(detachedImportLibraryManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /Node import library evidence does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
+    const detachedCommonGypiManifest = JSON.parse(validManifestText);
+    const detachedCommonGypiArtifact = detachedCommonGypiManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    detachedCommonGypiArtifact.nativeToolchain.nodeCommonGypiReleaseSha256 =
+      "0".repeat(64);
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(detachedCommonGypiManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /sanitized Node common\.gypi evidence does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
     const darwinMeta = readdirSync(work).find((name) => name.includes("darwin-arm64") && name.endsWith(".meta.json"));
     const darwinMetaPath = join(work, darwinMeta);
     const meta = JSON.parse(readFileSync(darwinMetaPath, "utf8"));
@@ -1079,6 +1134,27 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "compiler-details", (meta) => { meta.nativeToolchain.compilerDetails = ""; }, /compilerDetails/],
     ["win", "x64", "compiler-hash", (meta) => { meta.nativeToolchain.msvcCompilerSha256 = "0"; }, /msvcCompilerSha256/],
     ["win", "x64", "linker-hash", (meta) => { meta.nativeToolchain.msvcLinkerSha256 = "0"; }, /msvcLinkerSha256/],
+    ["win", "x64", "node-import-library", (meta) => {
+      meta.nativeToolchain.nodeImportLibrarySha256 = "0".repeat(64);
+    }, /Node import library evidence/],
+    ["win", "x64", "node-import-library-file", (meta) => {
+      meta.nativeToolchain.nodeImportLibraryFile = "detached.lib";
+    }, /Node import library evidence/],
+    ["win", "x64", "node-import-library-bytes", (meta) => {
+      meta.nativeToolchain.nodeImportLibraryBytes += 1;
+    }, /Node import library evidence/],
+    ["win", "x64", "common-gypi-file", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiFile = "include/node/detached.gypi";
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-source", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiSourceSha256 = "0".repeat(64);
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-release", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiReleaseSha256 = "0".repeat(64);
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-transformation", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiTransformation = "detached-transformation";
+    }, /sanitized Node common\.gypi evidence/],
   ];
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-native-toolchain-binding-"));
   try {

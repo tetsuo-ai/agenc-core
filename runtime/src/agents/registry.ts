@@ -79,7 +79,8 @@ export function normalizeAgentRoleMetadata(
     true,
   );
   if (
-    (agentRoleWorkspaceId !== undefined || agentRoleFingerprint !== undefined) &&
+    (agentRoleWorkspaceId !== undefined ||
+      agentRoleFingerprint !== undefined) &&
     agentRole === undefined
   ) {
     throw new InvalidAgentMetadataError(
@@ -166,9 +167,24 @@ export class AgentIdExistsError extends Error {
 }
 
 export class InvalidAgentPathError extends Error {
-  constructor(public readonly path: string, message: string) {
+  constructor(
+    public readonly path: string,
+    message: string,
+  ) {
     super(message);
     this.name = "InvalidAgentPathError";
+  }
+}
+
+export class AgentConcurrencyLimitError extends Error {
+  readonly code = "AGENT_CONCURRENCY_LIMIT" as const;
+
+  constructor(
+    public readonly limit: number,
+    public readonly activeCount: number,
+  ) {
+    super(`agent concurrency limit reached (${activeCount}/${limit})`);
+    this.name = "AgentConcurrencyLimitError";
   }
 }
 
@@ -229,9 +245,12 @@ export class SpawnReservation {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface AgentRegistryOpts {
-  /** Deprecated. Root agent spawning is intentionally uncapped. */
+  /** Maximum live or in-flight non-root agents for this session. */
   readonly maxThreads?: number;
 }
+
+/** Safe bound used when the operator has not selected a session limit. */
+export const DEFAULT_MAX_AGENT_THREADS = 32;
 
 export class AgentRegistry {
   private readonly byPath = new Map<AgentPath, AgentMetadata>();
@@ -245,8 +264,16 @@ export class AgentRegistry {
   private nicknameResetCount = 0;
   private readonly slotLock: AsyncLock<void> = new AsyncLock<void>(undefined);
   private totalCount = 0;
-  constructor(_opts: AgentRegistryOpts = {}) {
-    void _opts;
+  readonly maxThreads: number;
+
+  constructor(opts: AgentRegistryOpts = {}) {
+    const configured = opts.maxThreads;
+    this.maxThreads =
+      typeof configured === "number" &&
+      Number.isSafeInteger(configured) &&
+      configured > 0
+        ? configured
+        : DEFAULT_MAX_AGENT_THREADS;
   }
 
   /**
@@ -261,6 +288,9 @@ export class AgentRegistry {
    */
   async reserveSpawnSlot(): Promise<SpawnReservation> {
     return this.slotLock.with(() => {
+      if (this.totalCount >= this.maxThreads) {
+        throw new AgentConcurrencyLimitError(this.maxThreads, this.totalCount);
+      }
       this.totalCount += 1;
       return new SpawnReservation(this, new AbortController());
     });
@@ -394,7 +424,8 @@ export class AgentRegistry {
     }
     if (available.length > 0) {
       const nickname =
-        available[Math.floor(Math.random() * available.length)] ?? available[0]!;
+        available[Math.floor(Math.random() * available.length)] ??
+        available[0]!;
       this.usedNicknames.add(nickname);
       return nickname;
     }

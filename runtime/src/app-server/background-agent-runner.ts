@@ -78,13 +78,11 @@ import { applyUnattendedPermissionPolicyToContext } from "../permissions/unatten
 import {
   ABORT,
   DENIED,
+  TIMED_OUT,
   type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
-import type {
-  McpServerMutationResult,
-  Session,
-} from "../session/session.js";
+import type { McpServerMutationResult, Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
@@ -124,6 +122,11 @@ import {
   type AgenCDaemonRuntimeAuthBackend,
 } from "./provider-key-vending.js";
 import { isRecord } from "../utils/record.js";
+import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import {
+  EVENT_GAP_EVENT,
+  type RunTerminalResult,
+} from "../contracts/run-contracts.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -136,10 +139,7 @@ export interface AgenCBackgroundAgentStartParams {
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
   readonly permissionMode?:
-    | "default"
-    | "plan"
-    | "acceptEdits"
-    | "bypassPermissions";
+    "default" | "plan" | "acceptEdits" | "bypassPermissions";
   /**
    * Per-invocation env overrides forwarded from the CLI. Merged on
    * top of `this.#env` so the user's latest `OPENAI_BASE_URL` /
@@ -193,6 +193,22 @@ export interface AgenCBackgroundAgentSnapshot {
   readonly status: DaemonAgentStatus;
   readonly lastActiveAt: string;
   readonly metadata?: JsonObject;
+  /** Present only after the canonical run_terminal event was fsync-committed. */
+  readonly terminal?: AgenCBackgroundAgentTerminalSnapshot;
+}
+
+export interface AgenCBackgroundAgentTerminalSnapshot {
+  readonly openedAt: string;
+  readonly epoch: number;
+  readonly eventId: string;
+  readonly rolloutPath: string;
+  readonly result: RunTerminalResult;
+}
+
+export interface AgenCBackgroundAgentCancellationPreparation {
+  readonly affectedRunIds: readonly string[];
+  readonly voidedHolds: number;
+  readonly heldUnknownHolds: number;
 }
 
 export interface AgenCBackgroundAgentSessionEventBinding {
@@ -320,6 +336,15 @@ export interface AgenCBackgroundAgentRunner {
   restoreAgent?(
     params: AgenCBackgroundAgentRestoreParams,
   ): Promise<boolean> | boolean;
+  /**
+   * Gate ingress and fsync cancellation/admission evidence while the Session
+   * journal listener is still live. `stopAgent` then owns quiescence and the
+   * terminal-tail append; the lifecycle projects legacy state afterward.
+   */
+  prepareAgentCancellation?(
+    agentId: string,
+    reason: string,
+  ): Promise<AgenCBackgroundAgentCancellationPreparation>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
   attachAgentSessionEvents?(
     agentId: string,
@@ -451,6 +476,28 @@ interface ActiveBackgroundAgent {
   readonly control: AgentControl;
   readonly thread: ManagedThread;
   status: DaemonAgentStatus;
+  readonly startedAt: string;
+  /** Current canonical lifecycle epoch, recovered from run_reopened events. */
+  runEpoch: number;
+  /** True once daemon delivery is sourced from the Session EventLog. */
+  canonicalEventBridgeInstalled: boolean;
+  /** Cached immediately after the fsync-committed run_terminal append. */
+  terminal?: AgenCBackgroundAgentTerminalSnapshot;
+  /** Result selected before shutdown quiescence; committed at journal close. */
+  pendingTerminal?: RunTerminalResult;
+  /** Fsync-committed operator intent that precedes admission cancellation. */
+  cancellationRequest?: {
+    readonly eventId: string;
+    readonly sequence: number;
+    readonly reason: string;
+    readonly requestedAt: string;
+  };
+  /** Preserves a close-boundary append failure through fail-soft teardown. */
+  terminalCommitError?: unknown;
+  /** True when a real Session owns the before-close terminal finalizer. */
+  durableTerminalFinalizerInstalled: boolean;
+  unsubscribeDurableTerminalFinalizer?: () => void;
+  terminationNotified?: boolean;
   lastActiveAt: string;
   budget?: ActiveAgentBudget;
   budgetHalt?: JsonObject;
@@ -476,7 +523,12 @@ interface ActiveBackgroundAgent {
 }
 
 interface BackgroundAgentDaemonEvent {
+  /** Existing session/subscription correlation envelope. */
   readonly id: string;
+  /** Canonical run-journal identity, distinct from the reusable envelope id. */
+  readonly eventId?: string;
+  /** Canonical rollout sequence when this event originated in Session.EventLog. */
+  readonly sequence?: number;
   readonly type: string;
   readonly payload?: JsonObject;
   readonly messageId?: string;
@@ -523,6 +575,8 @@ const MAX_AGENT_BUDGET_TIMER_MS = 2_147_483_647;
  */
 const MAX_BUFFERED_AGENT_EVENTS = 1_000;
 
+const BACKGROUND_RUNNER_GAP_SOURCE = "background_runner_retention";
+
 /**
  * Drops the oldest events in-place until `events` is within
  * {@link MAX_BUFFERED_AGENT_EVENTS}. Returns the same array so callers
@@ -531,11 +585,106 @@ const MAX_BUFFERED_AGENT_EVENTS = 1_000;
  */
 function boundBufferedAgentEvents(
   events: BackgroundAgentDaemonEvent[],
+  runId?: string,
 ): BackgroundAgentDaemonEvent[] {
-  if (events.length > MAX_BUFFERED_AGENT_EVENTS) {
-    events.splice(0, events.length - MAX_BUFFERED_AGENT_EVENTS);
+  const previousMarkers = events.filter(isBackgroundRunnerGapEvent);
+  const realEvents = events.filter((event) => !isBackgroundRunnerGapEvent(event));
+  const retired =
+    realEvents.length > MAX_BUFFERED_AGENT_EVENTS
+      ? realEvents.splice(0, realEvents.length - MAX_BUFFERED_AGENT_EVENTS)
+      : [];
+  const previousRetiredCount = previousMarkers.reduce(
+    (total, marker) => total + positiveInteger(marker.payload?.retiredCount),
+    0,
+  );
+  const retiredCount = previousRetiredCount + retired.length;
+  if (retiredCount === 0) {
+    events.splice(0, events.length, ...realEvents);
+    return events;
   }
+
+  const priorAfterSequence = previousMarkers
+    .map((marker) => nonNegativeSequence(marker.payload?.afterSequence))
+    .find((value) => value !== undefined);
+  const previousCoordinatesUnknown = previousMarkers.some(
+    (marker) => marker.payload?.coordinatesAvailable === false,
+  );
+  const retiredSequences = retired.map((event) => positiveSequence(event.sequence));
+  const firstRetiredSequence = retiredSequences[0];
+  const allNewRetiredEventsSequenced = retiredSequences.every(
+    (value) => value !== undefined,
+  );
+  const afterSequence =
+    !previousCoordinatesUnknown && priorAfterSequence !== undefined
+      ? priorAfterSequence
+      : !previousCoordinatesUnknown &&
+          retired.length > 0 &&
+          allNewRetiredEventsSequenced &&
+          firstRetiredSequence !== undefined
+        ? firstRetiredSequence - 1
+        : undefined;
+  const firstAvailableSequence = positiveSequence(realEvents[0]?.sequence);
+  const coordinatesAvailable =
+    afterSequence !== undefined &&
+    afterSequence >= 0 &&
+    firstAvailableSequence !== undefined &&
+    firstAvailableSequence > afterSequence;
+  const resolvedRunId = runId ?? gapRunId(previousMarkers);
+  const marker: BackgroundAgentDaemonEvent = {
+    id: `runner-gap:${resolvedRunId ?? "unknown"}`,
+    type: EVENT_GAP_EVENT,
+    payload: {
+      kind: EVENT_GAP_EVENT,
+      reason: "retention",
+      source: BACKGROUND_RUNNER_GAP_SOURCE,
+      retiredCount,
+      coordinatesAvailable,
+      ...(resolvedRunId !== undefined ? { runId: resolvedRunId } : {}),
+      ...(coordinatesAvailable
+        ? { afterSequence, firstAvailableSequence }
+        : {}),
+    },
+  };
+  events.splice(0, events.length, marker, ...realEvents);
   return events;
+}
+
+function isBackgroundRunnerGapEvent(
+  event: BackgroundAgentDaemonEvent,
+): boolean {
+  return (
+    event.type === EVENT_GAP_EVENT &&
+    event.payload?.source === BACKGROUND_RUNNER_GAP_SOURCE
+  );
+}
+
+function positiveSequence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function nonNegativeSequence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function positiveInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : 0;
+}
+
+function gapRunId(
+  markers: readonly BackgroundAgentDaemonEvent[],
+): string | undefined {
+  return markers
+    .map((marker) => marker.payload?.runId)
+    .find(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0,
+    );
 }
 
 export interface AgenCAgentBudgetTimer {
@@ -547,6 +696,7 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
   readonly agentBudget?: AgentBudgetConfig;
+  readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly now?: () => string;
@@ -578,6 +728,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
   #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
+  readonly #executionAdmissionKernel: ExecutionAdmissionKernel | undefined;
+  /**
+   * Compatibility-only monitor for injected test bootstraps. Production
+   * sessions enforce `[agent.budget]` inside execution admission, so running
+   * this sidecar monitor too would create a second accounting authority.
+   */
+  readonly #legacyAgentBudgetMonitorEnabled: boolean;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
   readonly #budgetNowMs: () => number;
@@ -609,6 +766,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
+    this.#executionAdmissionKernel = options.executionAdmissionKernel;
+    this.#legacyAgentBudgetMonitorEnabled =
+      options.bootstrap !== undefined &&
+      options.executionAdmissionKernel === undefined;
     this.#env = options.env;
     this.#argv = options.argv;
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -675,10 +836,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
+      // Daemon agents are unattended execution for budget policy, but this
+      // hint deliberately does not enable autonomous keepalive ticks.
+      executionAdmissionAutonomous: true,
       ...(this.#requireSandboxReadyAtStartup
         ? { requireSandboxReadyAtStartup: true }
         : {}),
       ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+      ...(this.#executionAdmissionKernel !== undefined
+        ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+        : {}),
     });
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
@@ -699,16 +866,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // (bin/bootstrap.ts:1303). The first user message arrives via
       // message.stream — the session is idle at startAgent time. No
       // forkSubagent, no buildDirective, no AgentTool dispatcher.
-      const conversationThreadManager =
-        (bootstrap.session.services as {
+      const conversationThreadManager = (
+        bootstrap.session.services as {
           conversationThreadManager?: ConversationThreadManager;
-        }).conversationThreadManager;
+        }
+      ).conversationThreadManager;
       if (conversationThreadManager === undefined) {
         throw new Error(
           "bootstrap.session is missing conversationThreadManager",
         );
       }
-      if (!conversationThreadManager.hasThread(bootstrap.session.conversationId)) {
+      if (
+        !conversationThreadManager.hasThread(bootstrap.session.conversationId)
+      ) {
         throw new Error(
           `expected root managed thread for ${bootstrap.session.conversationId}`,
         );
@@ -728,10 +898,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         control,
         thread: managedThread,
         status: "running",
+        startedAt,
+        runEpoch: currentRunEpochFromRollout(bootstrap, managedThread.threadId),
+        canonicalEventBridgeInstalled: false,
+        durableTerminalFinalizerInstalled: false,
         lastActiveAt: startedAt,
         uninstallApprovalBridge,
         bufferedEvents: boundBufferedAgentEvents(
           this.#pendingEvents.get(managedThread.threadId) ?? [],
+          managedThread.threadId,
         ),
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(managedThread.threadId) ??
@@ -746,18 +921,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
       this.#pendingEvents.delete(managedThread.threadId);
       this.#pendingActiveToolCallIds.delete(managedThread.threadId);
-      this.#trackAgentStatus(active);
       this.#active.set(managedThread.threadId, active);
+      this.#installDurableTerminalFinalizer(
+        active,
+        managedThread.threadId,
+      );
       active.unsubscribeElicitationEvents =
         this.#installSessionEventLogBridge(active);
-      // Pump runTurn PhaseEvents (assistant_text, tool_call, tool_result,
-      // turn_complete) into the daemon's session binding. Without this,
-      // the directive is gone but the TUI sees no streaming output.
+      this.#trackAgentStatus(active);
+      // Phase events update runner-local bookkeeping only. Canonical live
+      // delivery comes from Session.EventLog so replay and live clients see
+      // the exact same event id + positive sequence.
       active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
         (phase) => {
           const progress = phaseEventToProgressEvent(phase);
           if (progress === null) return;
-          void this.#recordProgressEvent(managedThread.threadId, progress);
+          void this.#recordPhaseProgressEvent(managedThread.threadId, progress);
         },
       );
       this.#scheduleAgentBudgetTimer(active);
@@ -839,6 +1018,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return {
       status: active.status,
       lastActiveAt: active.lastActiveAt,
+      ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
       ...(active.budgetHalt !== undefined
         ? { metadata: { budgetHalt: active.budgetHalt } }
         : {}),
@@ -889,10 +1069,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         conversationId: params.agentId,
         resumeConversation: true,
         argv: buildBootstrapArgv(params, this.#argv),
+        executionAdmissionAutonomous: true,
         ...(this.#requireSandboxReadyAtStartup
           ? { requireSandboxReadyAtStartup: true }
           : {}),
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+        ...(this.#executionAdmissionKernel !== undefined
+          ? { executionAdmissionKernel: this.#executionAdmissionKernel }
+          : {}),
       });
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(
         bootstrap.session,
@@ -911,10 +1095,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // ConversationThreadManager.replayRolloutIntoSession in
       // bin/bootstrap.ts). The root ManagedThread is already registered
       // by registerConversationRootSession.
-      const conversationThreadManager =
-        (bootstrap.session.services as {
+      const conversationThreadManager = (
+        bootstrap.session.services as {
           conversationThreadManager?: ConversationThreadManager;
-        }).conversationThreadManager;
+        }
+      ).conversationThreadManager;
       if (conversationThreadManager === undefined) {
         throw new Error(
           "bootstrap.session is missing conversationThreadManager",
@@ -960,10 +1145,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         control,
         thread: managedThread,
         status: "running",
+        startedAt,
+        runEpoch: currentRunEpochFromRollout(bootstrap, params.agentId),
+        canonicalEventBridgeInstalled: false,
+        durableTerminalFinalizerInstalled: false,
         lastActiveAt: restoredAt,
         uninstallApprovalBridge,
         bufferedEvents: boundBufferedAgentEvents(
           this.#pendingEvents.get(params.agentId) ?? [],
+          params.agentId,
         ),
         activeToolCallIds:
           this.#pendingActiveToolCallIds.get(params.agentId) ?? new Set(),
@@ -977,15 +1167,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
       this.#pendingEvents.delete(params.agentId);
       this.#pendingActiveToolCallIds.delete(params.agentId);
-      this.#trackAgentStatus(active);
       this.#active.set(params.agentId, active);
+      this.#installDurableTerminalFinalizer(active, params.agentId);
       active.unsubscribeElicitationEvents =
         this.#installSessionEventLogBridge(active);
+      this.#trackAgentStatus(active);
       active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
         (phase) => {
           const progress = phaseEventToProgressEvent(phase);
           if (progress === null) return;
-          void this.#recordProgressEvent(params.agentId, progress);
+          void this.#recordPhaseProgressEvent(params.agentId, progress);
         },
       );
       this.#scheduleAgentBudgetTimer(active);
@@ -1009,6 +1200,60 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
+  async prepareAgentCancellation(
+    agentId: string,
+    reason: string,
+  ): Promise<AgenCBackgroundAgentCancellationPreparation> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (active.terminal !== undefined) {
+      return {
+        affectedRunIds: [],
+        voidedHolds: 0,
+        heldUnknownHolds: 0,
+      };
+    }
+    if (active.pendingTerminal === undefined) {
+      active.status = "stopping";
+      active.lastActiveAt = this.#now();
+      this.#clearAgentBudgetTimer(active);
+      active.pendingTerminal = cancelledTerminalResult(
+        active,
+        agentId,
+        reason,
+        active.lastActiveAt,
+      );
+    } else if (
+      active.pendingTerminal.status !== "cancelled" ||
+      active.pendingTerminal.stopReason !== reason
+    ) {
+      throw new Error(
+        `run ${agentId} already has a different terminal transition pending`,
+      );
+    }
+
+    commitDurableRunCancellationRequest(active, agentId, reason);
+    this.#abortPendingToolDecisions(agentId);
+    const cancelAdmissions =
+      active.bootstrap.session.services.executionAdmission?.cancelAdmissions;
+    if (typeof cancelAdmissions !== "function") {
+      throw new Error(
+        `run ${agentId} cannot prepare cancellation: admissions-only cancellation is unavailable`,
+      );
+    }
+    const summary = cancelAdmissions.call(
+      active.bootstrap.session.services.executionAdmission,
+      reason,
+    );
+    return {
+      affectedRunIds: summary.affectedRunIds,
+      voidedHolds: summary.voidedReservations,
+      heldUnknownHolds: summary.heldUnknownReservations,
+    };
+  }
+
   async stopAgent(
     agentId: string,
     reason = "daemon_agent_stop",
@@ -1019,36 +1264,61 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.lastActiveAt = this.#now();
     this.#clearAgentBudgetTimer(active);
     let stopError: unknown;
+    active.pendingTerminal ??= cancelledTerminalResult(
+      active,
+      agentId,
+      reason,
+      active.lastActiveAt,
+    );
+    // Resolve permission continuations while the canonical writer is still
+    // open. Session shutdown drains their tracked durable decision records
+    // before its terminal finalizer is allowed to seal the journal.
+    this.#abortPendingToolDecisions(agentId);
     try {
-      // ManagedThread.shutdown for a root session calls
-      // session.shutdown() via submitToSession; AgentControl.shutdown
-      // would no-op for root threads (live.get returns undefined).
-      await active.thread.shutdown(reason);
+      if (!active.durableTerminalFinalizerInstalled) {
+        commitDurableRunTerminal(active, agentId, active.pendingTerminal);
+      }
     } catch (error) {
+      // Stopping must still revoke execution authority, but the caller needs
+      // to know that the durable final-result contract could not be met.
       stopError = error;
     }
     try {
+      // Bootstrap lifecycle quiesces the root turn, descendants, execs, hooks,
+      // and tracked durable continuations before Session's close-boundary
+      // callback appends the terminal as the canonical tail.
+      await this.#drainDispatchChain(active);
       await active.bootstrap.shutdown();
+      await this.#drainDispatchChain(active);
     } catch (error) {
       stopError ??= error;
     }
-    if (stopError !== undefined) {
-      active.status = "error";
-      active.lastActiveAt = this.#now();
-      throw stopError;
+    stopError ??= active.terminalCommitError;
+    if (active.terminal === undefined) {
+      stopError ??= new Error(
+        `run ${agentId} shutdown completed without a durable terminal result`,
+      );
     }
-    this.#abortPendingToolDecisions(agentId);
+    await this.#notifyActiveAgentTerminated(agentId, active);
     this.#active.delete(agentId);
     this.#pendingEvents.delete(agentId);
     this.#assistantTextByAgent.delete(agentId);
     this.#pendingActiveToolCallIds.delete(agentId);
     active.unsubscribeStatus?.();
+    if (active.terminal !== undefined) {
+      active.unsubscribeDurableTerminalFinalizer?.();
+    }
     active.uninstallApprovalBridge?.();
     active.unsubscribeElicitationEvents?.();
     // gaphunt3 #48: the agentId is the session/conversationId used as the
     // vended-key cache key, so evict this session's entries on stop —
     // otherwise non-expiring keys leak for the daemon's lifetime.
     this.#authBackend?.clearVendedKeysForSession(agentId);
+    if (stopError !== undefined) {
+      active.status = "error";
+      active.lastActiveAt = this.#now();
+      throw stopError;
+    }
   }
 
   async #hydrateRecoveredAgentState(params: {
@@ -1071,7 +1341,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       replayToolCalls: params.replayToolCalls,
       currentSessionId: params.currentSessionId,
       onReplayToolResult: params.onReplayToolResult,
-      onProgress: (event) => this.#recordProgressEvent(params.agentId, event),
+      onProgress: (event) =>
+        this.#recordRecoveredProgressEvent(
+          params.agentId,
+          params.session,
+          event,
+        ),
     });
     await hydrateRecoveredSessionHistory(params.session, {
       initialMessages: params.initialMessages,
@@ -1182,7 +1457,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const addServer = active.bootstrap.session.services.mcpManager.addServer;
     if (typeof addServer !== "function") {
-      throw new Error("MCP addServer is not available for this daemon session.");
+      throw new Error(
+        "MCP addServer is not available for this daemon session.",
+      );
     }
     const result = await addServer(params.config);
     return {
@@ -1228,9 +1505,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const enableServer =
       active.bootstrap.session.services.mcpManager.enableServer;
     if (typeof enableServer !== "function") {
-      throw new Error(
-        "MCP enable is not available for this daemon session.",
-      );
+      throw new Error("MCP enable is not available for this daemon session.");
     }
     const result = await enableServer(params.serverName);
     return {
@@ -1252,9 +1527,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const disableServer =
       active.bootstrap.session.services.mcpManager.disableServer;
     if (typeof disableServer !== "function") {
-      throw new Error(
-        "MCP disable is not available for this daemon session.",
-      );
+      throw new Error("MCP disable is not available for this daemon session.");
     }
     const result = await disableServer(params.serverName);
     return {
@@ -1349,9 +1622,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #sessionCacheStatsSnapshot(
     _active: ActiveBackgroundAgent,
   ): Promise<SessionSnapshotResult["cacheStats"]> {
-    const mod = await import(
-      "../services/api/cacheStatsTracker.js"
-    ).catch(() => null);
+    const mod = await import("../services/api/cacheStatsTracker.js").catch(
+      () => null,
+    );
     if (mod === null) {
       return {
         requestCount: 0,
@@ -1361,15 +1634,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         hitRate: null,
       };
     }
-    const metrics = (mod as {
-      getSessionCacheMetrics?: () => {
-        readonly requestCount?: number;
-        readonly cacheReadInputTokens?: number;
-        readonly cacheCreationInputTokens?: number;
-        readonly cacheTotalInputTokens?: number;
-        readonly hitRate?: number | null;
-      };
-    }).getSessionCacheMetrics?.();
+    const metrics = (
+      mod as {
+        getSessionCacheMetrics?: () => {
+          readonly requestCount?: number;
+          readonly cacheReadInputTokens?: number;
+          readonly cacheCreationInputTokens?: number;
+          readonly cacheTotalInputTokens?: number;
+          readonly hitRate?: number | null;
+        };
+      }
+    ).getSessionCacheMetrics?.();
     return {
       requestCount: finiteNumber(metrics?.requestCount ?? 0),
       cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
@@ -1416,7 +1691,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ok: false,
       eventAlreadyEmitted: true,
       code: result.ok ? "NO_EVENT" : result.code,
-      message: result.ok ? "No replacement event was produced." : result.message,
+      message: result.ok
+        ? "No replacement event was produced."
+        : result.message,
     };
   }
 
@@ -1425,7 +1702,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     params: AgenCBackgroundAgentConversationRewindParams,
   ): Promise<SessionRewindConversationToMessageResult> {
     if (params.signal?.aborted) {
-      throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
+      throw Object.assign(new Error("request cancelled"), {
+        name: "AbortError",
+      });
     }
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
@@ -1452,7 +1731,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ok: false,
       eventAlreadyEmitted: true,
       code: result.ok ? "NO_EVENT" : result.code,
-      message: result.ok ? "No replacement event was produced." : result.message,
+      message: result.ok
+        ? "No replacement event was produced."
+        : result.message,
     };
   }
 
@@ -1617,9 +1898,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const target = params.mode as PermissionMode;
     if (
-      !(USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]).includes(
-        target,
-      )
+      !(
+        USER_ADDRESSABLE_PERMISSION_MODES as readonly PermissionMode[]
+      ).includes(target)
     ) {
       throw new Error(
         `Permission mode "${params.mode}" is internal-only and cannot be set this way.`,
@@ -1633,7 +1914,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (current.mode === target) {
       return { applied: false, previousMode: current.mode, mode: target };
     }
-    const transitioned = transitionPermissionMode(current.mode, target, current);
+    const transitioned = transitionPermissionMode(
+      current.mode,
+      target,
+      current,
+    );
     const nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
     await registry.update(nextCtx);
     const result: AgenCBackgroundAgentSetPermissionModeResult = {
@@ -1727,9 +2012,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // setAgentPermissionMode mutating the live permission registry.
     const rt = active.bootstrap.session.services?.hooksRuntime;
     if (rt === undefined) {
-      throw new Error(
-        "Hooks runtime is not available on the daemon session",
-      );
+      throw new Error("Hooks runtime is not available on the daemon session");
     }
     rt.setDisabled(params.disabled);
     return { applied: true, disabled: params.disabled };
@@ -1781,7 +2064,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // subscribers (which a pre-validation reload would do).
     if (params.profile !== undefined) {
       resolveProfile(
-        configStore.current() as unknown as Parameters<typeof resolveProfile>[0],
+        configStore.current() as unknown as Parameters<
+          typeof resolveProfile
+        >[0],
         params.profile,
       );
     }
@@ -1976,7 +2261,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
    */
   async interruptAgentTurn(agentId: string, reason: string): Promise<boolean> {
     const active = this.#active.get(agentId);
-    if (active === undefined || !isRunnableActiveAgent(active)) return false;
+    if (active === undefined || !isInterruptibleActiveAgent(active)) return false;
     try {
       await active.bootstrap.session.abortAllTasks("interrupted");
     } catch {
@@ -2037,15 +2322,53 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  #installSessionEventLogBridge(
+  #installDurableTerminalFinalizer(
     active: ActiveBackgroundAgent,
-  ): () => void {
+    agentId: string,
+  ): void {
+    const session = active.bootstrap.session as LocalRuntimeBootstrap["session"] & {
+      onBeforeDurableClose?: (
+        listener: () => void | Promise<void>,
+      ) => () => void;
+    };
+    if (typeof session.onBeforeDurableClose !== "function") return;
+    active.durableTerminalFinalizerInstalled = true;
+    active.unsubscribeDurableTerminalFinalizer =
+      session.onBeforeDurableClose(() => {
+        if (active.terminal !== undefined) return;
+        if (this.#pendingToolDecisions.has(agentId)) {
+          const error = new Error(
+            `cannot finalize run ${agentId} while permission decisions remain pending`,
+          );
+          active.terminalCommitError = error;
+          throw error;
+        }
+        const result =
+          active.pendingTerminal ??
+          cancelledTerminalResult(
+            active,
+            agentId,
+            "session_shutdown",
+            this.#now(),
+          );
+        try {
+          commitDurableRunTerminal(active, agentId, result);
+        } catch (error) {
+          active.terminalCommitError = error;
+          throw error;
+        }
+      });
+  }
+
+  #installSessionEventLogBridge(active: ActiveBackgroundAgent): () => void {
     const eventLog = (
       active.bootstrap.session as {
         eventLog?: {
           subscribe?: (
             listener: (event: {
+              readonly eventId?: unknown;
               readonly id?: unknown;
+              readonly seq?: unknown;
               readonly msg?: {
                 readonly type?: unknown;
                 readonly payload?: unknown;
@@ -2056,17 +2379,76 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
     ).eventLog;
     if (typeof eventLog?.subscribe !== "function") return () => {};
+    active.canonicalEventBridgeInstalled = true;
     return eventLog.subscribe((event) => {
       const daemonEvent = daemonEventFromUnboundSessionEvent(event);
       if (daemonEvent === null) return;
       active.lastActiveAt = this.#now();
+      this.#applyCanonicalEventBookkeeping(active, daemonEvent);
       void this.#emitOrBufferEvent(active, daemonEvent);
     });
+  }
+
+  #applyCanonicalEventBookkeeping(
+    active: ActiveBackgroundAgent,
+    event: BackgroundAgentDaemonEvent,
+  ): void {
+    const payload = event.payload;
+    switch (event.type) {
+      case "agent_message_delta":
+        if (typeof payload?.delta === "string") {
+          const previous =
+            this.#assistantTextByAgent.get(active.thread.threadId) ?? "";
+          this.#assistantTextByAgent.set(
+            active.thread.threadId,
+            previous + payload.delta,
+          );
+        }
+        return;
+      case "tool_call_started":
+        if (typeof payload?.callId === "string") {
+          active.activeToolCallIds.add(payload.callId);
+        }
+        return;
+      case "tool_call_completed":
+        if (typeof payload?.callId === "string") {
+          active.activeToolCallIds.delete(payload.callId);
+        }
+        return;
+      case "turn_started":
+        active.status = "running";
+        return;
+      case "turn_complete":
+        active.status = "idle";
+        return;
+      case "turn_aborted":
+        active.status = "idle";
+        active.activeToolCallIds.clear();
+        return;
+      case "error":
+        active.status = "error";
+        active.activeToolCallIds.clear();
+        return;
+      case "run_reopened": {
+        const epoch = positiveSequence(payload?.epoch);
+        if (epoch !== undefined) active.runEpoch = epoch;
+        active.status = "idle";
+        return;
+      }
+      case "run_terminal":
+        active.status = daemonStatusFromRunTerminal(payload?.status);
+        active.activeToolCallIds.clear();
+        return;
+      default:
+        return;
+    }
   }
 
   async #requestDaemonToolDecision(ctx: ApprovalCtx): Promise<ReviewDecision> {
     const agentId = readApprovalAgentId(ctx);
     if (agentId === null) return DENIED;
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return DENIED;
     const requestId = ctx.callId;
     // todo-109: default timeout so unattended pauses cannot hang forever.
     const timeoutMsRaw = process.env.AGENC_PERMISSION_TIMEOUT_MS;
@@ -2100,22 +2482,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(() => {
-        settle(DENIED);
+        settle(TIMED_OUT);
       }, timeoutMs);
-    });
-    const input = approvalInputFromPayload(ctx.invocation.payload);
-    await this.#emitOrBufferAgentEvent(agentId, {
-      id: requestId,
-      type: "request_permissions",
-      payload: {
-        callId: requestId,
-        toolName: ctx.toolName,
-        turnId: ctx.turnId,
-        permissions: ["tool.use"],
-        ...(ctx.retryReason !== undefined ? { reason: ctx.retryReason } : {}),
-        input,
-        ...planApprovalPayloadFields(ctx.toolName, agentId, input),
-      },
     });
     return decision;
   }
@@ -2131,7 +2499,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
-    let sawInitialStatus = false;
     active.unsubscribeStatus = active.thread.subscribeStatus((status) => {
       if (active.budgetHalt !== undefined) return;
       active.status = mapThreadStatus(status);
@@ -2146,17 +2513,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ) {
         this.#assistantTextByAgent.delete(active.thread.threadId);
       }
-      if (sawInitialStatus) {
-        active.lastActiveAt = this.#now();
-        void this.#emitOrBufferEvent(
-          active,
-          withAgentBudgetUsage(
-            active,
-            eventFromThreadStatus(status),
-            this.#budgetNowMs(),
-          ),
-        );
-      } else {
+      active.lastActiveAt = this.#now();
+      if (!active.canonicalEventBridgeInstalled) {
         void this.#emitOrBufferEvent(
           active,
           withAgentBudgetUsage(
@@ -2166,14 +2524,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ),
         );
       }
-      sawInitialStatus = true;
     });
   }
 
   #cleanupWhenComplete(agentId: string, thread: ManagedThread): void {
     void awaitTerminalStatus(thread)
-      .catch(() => {})
-      .finally(async () => {
+      .then(async (terminalStatus) => {
         const active = this.#active.get(agentId);
         if (active === undefined || active.thread !== thread) return;
         // Notify the lifecycle of terminal status BEFORE deleting from
@@ -2183,34 +2539,56 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // `running` value. The callback runs synchronously (awaited)
         // so the lifecycle's record is updated before any subsequent
         // `agent.list` resolves.
-        if (this.#onActiveAgentTerminated !== undefined) {
-          const terminalSnapshot: AgenCBackgroundAgentSnapshot = {
-            status: active.status,
-            lastActiveAt: active.lastActiveAt,
-            ...(active.budgetHalt !== undefined
-              ? { metadata: { budgetHalt: active.budgetHalt } }
-              : {}),
-          };
+        if (active.terminal === undefined) {
+          active.pendingTerminal = terminalResultFromThread(
+            active,
+            agentId,
+            terminalStatus,
+          );
           try {
-            await this.#onActiveAgentTerminated(agentId, terminalSnapshot);
+            if (!active.durableTerminalFinalizerInstalled) {
+              commitDurableRunTerminal(
+                active,
+                agentId,
+                active.pendingTerminal,
+              );
+            }
           } catch {
-            // Swallow callback errors so cleanup never leaks. The
-            // lifecycle layer is responsible for its own error
-            // surfacing via onSnapshotError.
+            // A terminal transition is not advertised as M4-durable when its
+            // canonical event could not be fsync-committed. The canonical
+            // recovery path may still find a write that reached disk before
+            // an injected post-commit failure.
           }
         }
+        // Session status becomes terminal synchronously after turn_complete is
+        // journaled, while daemon delivery is intentionally serialized on an
+        // async chain. Drain that already-committed turn tail before shutdown
+        // can close the writer or lifecycle teardown can retire its route.
+        await this.#drainDispatchChain(active);
+        await active.bootstrap.shutdown().catch(() => {});
+        // The durable close finalizer appends run_terminal during shutdown.
+        // Keep the session route live until that new canonical tail has also
+        // crossed the same ordered delivery chain.
+        await this.#drainDispatchChain(active);
+        await this.#notifyActiveAgentTerminated(agentId, active);
         const bufferedEvents = active.bufferedEvents.splice(0);
         this.#active.delete(agentId);
         if (bufferedEvents.length > 0) {
           const pending = this.#pendingEvents.get(agentId) ?? [];
           pending.push(...bufferedEvents);
-          this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
+          this.#pendingEvents.set(
+            agentId,
+            boundBufferedAgentEvents(pending, agentId),
+          );
         } else {
           this.#pendingEvents.delete(agentId);
         }
         this.#assistantTextByAgent.delete(agentId);
         this.#pendingActiveToolCallIds.delete(agentId);
         active.unsubscribeStatus?.();
+        if (active.terminal !== undefined) {
+          active.unsubscribeDurableTerminalFinalizer?.();
+        }
         active.uninstallApprovalBridge?.();
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
@@ -2219,24 +2597,41 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // vended-key cache key, so evict this session's entries on terminal
         // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
         this.#authBackend?.clearVendedKeysForSession(agentId);
-        await active.bootstrap.shutdown().catch(() => {});
-      });
+      })
+      .catch(() => {});
   }
 
-  async #emitOrBufferAgentEvent(
+  async #notifyActiveAgentTerminated(
     agentId: string,
-    event: BackgroundAgentDaemonEvent | null,
+    active: ActiveBackgroundAgent,
   ): Promise<void> {
-    const active = this.#active.get(agentId);
-    if (active === undefined) {
-      if (event !== null) {
-        const pending = this.#pendingEvents.get(agentId) ?? [];
-        pending.push(event);
-        this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
-      }
+    if (active.terminationNotified === true) return;
+    if (
+      active.canonicalEventBridgeInstalled &&
+      active.terminal === undefined
+    ) {
+      // Never project a legacy terminal status for a canonical run whose
+      // durable terminal append failed. Startup recovery can project an append
+      // that committed before a failpoint; otherwise the run stays honestly
+      // non-terminal instead of exposing a result that cannot be fetched.
       return;
     }
-    await this.#emitOrBufferEvent(active, event);
+    active.terminationNotified = true;
+    if (this.#onActiveAgentTerminated === undefined) return;
+    const terminalSnapshot: AgenCBackgroundAgentSnapshot = {
+      status: active.status,
+      lastActiveAt: active.lastActiveAt,
+      ...(active.terminal !== undefined ? { terminal: active.terminal } : {}),
+      ...(active.budgetHalt !== undefined
+        ? { metadata: { budgetHalt: active.budgetHalt } }
+        : {}),
+    };
+    try {
+      await this.#onActiveAgentTerminated(agentId, terminalSnapshot);
+    } catch {
+      // Lifecycle owns projection error reporting; cleanup must still revoke
+      // runtime resources and execution authority.
+    }
   }
 
   async #recordProgressEvent(
@@ -2257,7 +2652,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined) {
       const pending = this.#pendingEvents.get(agentId) ?? [];
       pending.push(...events);
-      this.#pendingEvents.set(agentId, boundBufferedAgentEvents(pending));
+      this.#pendingEvents.set(
+        agentId,
+        boundBufferedAgentEvents(pending, agentId),
+      );
       return;
     }
     this.#applyProgressStatus(active, progress);
@@ -2267,6 +2665,50 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         withAgentBudgetUsage(active, nextEvent, this.#budgetNowMs()),
       );
     }
+  }
+
+  async #recordPhaseProgressEvent(
+    agentId: string,
+    progress: RunAgentProgressEvent,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !active.canonicalEventBridgeInstalled) {
+      await this.#recordProgressEvent(agentId, progress);
+      return;
+    }
+    this.#trackActiveToolCall(agentId, progress);
+    if (await this.#enforceAgentBudget(active)) return;
+    if (progress.kind === "message" && progress.message.role === "assistant") {
+      this.#assistantTextByAgent.set(
+        agentId,
+        messageText(progress.message.content),
+      );
+    }
+    if (
+      progress.kind === "run_interrupted" ||
+      progress.kind === "turn_interrupted"
+    ) {
+      active.activeToolCallIds.clear();
+    }
+    this.#applyProgressStatus(active, progress);
+  }
+
+  async #recordRecoveredProgressEvent(
+    agentId: string,
+    session: LocalRuntimeBootstrap["session"],
+    progress: RunAgentProgressEvent,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active?.canonicalEventBridgeInstalled !== true) {
+      await this.#recordProgressEvent(agentId, progress);
+      return;
+    }
+    const event = canonicalSessionEventFromRecoveredProgress(progress);
+    if (event !== null) {
+      session.emit(event);
+      return;
+    }
+    await this.#recordPhaseProgressEvent(agentId, progress);
   }
 
   #applyProgressStatus(
@@ -2305,6 +2747,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       readonly metadata?: JsonObject;
     },
   ): void {
+    if (!this.#legacyAgentBudgetMonitorEnabled) return;
     const budget = normalizeAgentBudget(this.#agentBudget);
     if (budget === undefined) return;
     const startedAtMs =
@@ -2377,24 +2820,41 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.lastActiveAt = this.#now();
     this.#clearAgentBudgetTimer(active);
     let emitError: unknown;
+    active.pendingTerminal = cancelledTerminalResult(
+      active,
+      agentId,
+      "budget_limit",
+      active.lastActiveAt,
+    );
+    this.#abortPendingToolDecisions(agentId);
     try {
-      await this.#emitOrBufferEvent(active, {
-        id: `agent-budget-${agentId}-${halt.kind}`,
-        type: "agent_status",
-        payload: {
-          status: "stopped",
-          runStatus: "stopped",
-          message: halt.reason,
-          budgetHalt: halt.marker,
-          budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
-        },
-      });
+      if (!active.canonicalEventBridgeInstalled) {
+        await this.#emitOrBufferEvent(active, {
+          id: `agent-budget-${agentId}-${halt.kind}`,
+          type: "agent_status",
+          payload: {
+            status: "stopped",
+            runStatus: "stopped",
+            message: halt.reason,
+            budgetHalt: halt.marker,
+            budgetUsage: budgetUsageMarker(active, this.#budgetNowMs()),
+          },
+        });
+      }
+      if (!active.durableTerminalFinalizerInstalled) {
+        commitDurableRunTerminal(active, agentId, active.pendingTerminal);
+      }
     } catch (error) {
       emitError = error;
     }
     try {
-      await active.thread.shutdown(halt.reason);
       await active.bootstrap.shutdown();
+      emitError ??= active.terminalCommitError;
+      if (active.terminal === undefined) {
+        emitError ??= new Error(
+          `run ${agentId} budget shutdown completed without a durable terminal result`,
+        );
+      }
     } catch (error) {
       active.status = "error";
       active.lastActiveAt = this.#now();
@@ -2531,6 +2991,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (raised) throw emitError;
   }
 
+  async #drainDispatchChain(active: ActiveBackgroundAgent): Promise<void> {
+    for (;;) {
+      const tail = active.dispatchChain;
+      await tail;
+      if (active.dispatchChain === tail) return;
+    }
+  }
+
   async #emitPersistedUserMessage(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
@@ -2564,7 +3032,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const binding = active.sessionBinding;
     if (binding === undefined) {
       active.bufferedEvents.push(event);
-      boundBufferedAgentEvents(active.bufferedEvents);
+      boundBufferedAgentEvents(active.bufferedEvents, active.thread.threadId);
       return;
     }
     await binding.emit(
@@ -2902,7 +3370,17 @@ function formatBudgetSeconds(value: number): string {
 }
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
-  return active.budgetHalt === undefined;
+  return (
+    active.budgetHalt === undefined && active.pendingTerminal === undefined
+  );
+}
+
+function isInterruptibleActiveAgent(active: ActiveBackgroundAgent): boolean {
+  return (
+    active.budgetHalt === undefined &&
+    (active.pendingTerminal === undefined ||
+      active.cancellationRequest !== undefined)
+  );
 }
 
 interface ActiveTurnPeek {
@@ -2914,8 +3392,10 @@ function hasRuntimeActiveTurn(
 ): boolean {
   const activeTurn = (session as unknown as { activeTurn?: ActiveTurnPeek })
     .activeTurn;
-  return typeof activeTurn?.unsafePeek === "function" &&
-    activeTurn.unsafePeek() !== null;
+  return (
+    typeof activeTurn?.unsafePeek === "function" &&
+    activeTurn.unsafePeek() !== null
+  );
 }
 
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
@@ -3070,7 +3550,9 @@ export function notificationFromDaemonEvent(
         ...(agentRunStatusFromPayload(payload.runStatus) !== undefined
           ? { runStatus: agentRunStatusFromPayload(payload.runStatus) }
           : {}),
-        ...(typeof payload.turnId === "string" ? { turnId: payload.turnId } : {}),
+        ...(typeof payload.turnId === "string"
+          ? { turnId: payload.turnId }
+          : {}),
         ...(typeof payload.message === "string"
           ? { message: payload.message }
           : {}),
@@ -3079,6 +3561,62 @@ export function notificationFromDaemonEvent(
           : {}),
         ...(isJsonObject(payload.budgetUsage)
           ? { budgetUsage: payload.budgetUsage }
+          : {}),
+      },
+    };
+  }
+  if (
+    event.type === "run_terminal" &&
+    isJsonObject(payload) &&
+    typeof payload.status === "string"
+  ) {
+    const terminalStatus = daemonStatusFromRunTerminal(payload.status);
+    const runStatus = agentRunStatusFromRunTerminal(payload.status);
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        ...base,
+        agentId: base.agentId ?? sessionId,
+        status: terminalStatus,
+        runStatus,
+        ...(typeof payload.finalMessage === "string"
+          ? { message: payload.finalMessage }
+          : typeof payload.stopReason === "string"
+            ? { message: payload.stopReason }
+            : {}),
+      },
+    };
+  }
+  if (
+    event.type === EVENT_GAP_EVENT &&
+    isJsonObject(payload) &&
+    payload.source === BACKGROUND_RUNNER_GAP_SOURCE &&
+    typeof payload.runId === "string" &&
+    payload.runId.length > 0 &&
+    positiveInteger(payload.retiredCount) > 0
+  ) {
+    const afterSequence = nonNegativeSequence(payload.afterSequence);
+    const firstAvailableSequence = positiveSequence(
+      payload.firstAvailableSequence,
+    );
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.event_gap",
+      params: {
+        ...base,
+        type: EVENT_GAP_EVENT,
+        kind: EVENT_GAP_EVENT,
+        runId: payload.runId,
+        reason: "retention",
+        source: BACKGROUND_RUNNER_GAP_SOURCE,
+        retiredCount: positiveInteger(payload.retiredCount),
+        ...(typeof payload.coordinatesAvailable === "boolean"
+          ? { coordinatesAvailable: payload.coordinatesAvailable }
+          : {}),
+        ...(afterSequence !== undefined ? { afterSequence } : {}),
+        ...(firstAvailableSequence !== undefined
+          ? { firstAvailableSequence }
           : {}),
       },
     };
@@ -3105,9 +3643,9 @@ export function notificationFromDaemonEvent(
           ? { message: payload.message }
           : typeof payload.reason === "string"
             ? { message: payload.reason }
-          : typeof payload.lastAgentMessage === "string"
-            ? { message: payload.lastAgentMessage }
-            : {}),
+            : typeof payload.lastAgentMessage === "string"
+              ? { message: payload.lastAgentMessage }
+              : {}),
         ...(isJsonObject(payload.budgetHalt)
           ? { budgetHalt: payload.budgetHalt }
           : {}),
@@ -3146,12 +3684,14 @@ function eventBaseParams(
   readonly sessionId: string;
   readonly eventId: string;
   readonly agentId: string;
+  readonly sequence?: number;
   readonly acceptedAt?: string;
 } {
   return {
     sessionId,
-    eventId: event.id,
+    eventId: event.eventId ?? event.id,
     agentId,
+    ...(event.sequence !== undefined ? { sequence: event.sequence } : {}),
     ...(event.acceptedAt !== undefined ? { acceptedAt: event.acceptedAt } : {}),
   };
 }
@@ -3163,10 +3703,36 @@ function agentStatusFromEventType(type: string): DaemonAgentStatus {
     case "error":
       return "error";
     case "turn_aborted":
-      return "stopped";
+      return "idle";
     case "turn_complete":
     default:
       return "idle";
+  }
+}
+
+function daemonStatusFromRunTerminal(status: unknown): DaemonAgentStatus {
+  switch (status) {
+    case "completed":
+      return "idle";
+    case "failed":
+    case "unknown_outcome":
+      return "error";
+    case "cancelled":
+    default:
+      return "stopped";
+  }
+}
+
+function agentRunStatusFromRunTerminal(status: unknown): AgentRunStatus {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "failed":
+    case "unknown_outcome":
+      return "errored";
+    case "cancelled":
+    default:
+      return "stopped";
   }
 }
 
@@ -3177,7 +3743,7 @@ function agentRunStatusFromEventType(type: string): AgentRunStatus {
     case "error":
       return "errored";
     case "turn_aborted":
-      return "stopped";
+      return "completed";
     case "turn_complete":
     default:
       return "completed";
@@ -3226,7 +3792,9 @@ async function runRestoredAgentToCompletion(
   }
 }
 
-async function replayRecoveredToolCalls<TThread extends AgentThread | ManagedThread>(opts: {
+async function replayRecoveredToolCalls<
+  TThread extends AgentThread | ManagedThread,
+>(opts: {
   readonly thread: TThread;
   readonly parent: LocalRuntimeBootstrap["session"];
   readonly registry: ToolRegistry;
@@ -3690,8 +4258,40 @@ const COLLAB_AGENT_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "collab_close_end",
 ]);
 
+/**
+ * Core run events whose live representation must be the exact canonical
+ * Session.EventLog record. Returning null for an unsequenced record is
+ * intentional: synthesizing an identity here would make live delivery
+ * impossible to reconcile with run.replay after reconnect.
+ */
+const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "agent_message_delta",
+  "tool_call_started",
+  "tool_call_completed",
+  "turn_started",
+  "turn_complete",
+  "turn_aborted",
+  "error",
+  "stream_error",
+  "effect_intent",
+  "effect_result",
+  "effect_unknown_outcome",
+  "effect_review_resolved",
+  "request_permissions",
+  "permission_decision",
+  "execution_admission",
+  "artifact_intent",
+  "artifact_committed",
+  "recovery_decision",
+  "run_terminal",
+  "run_reopened",
+  "run_cancel_requested",
+]);
+
 export function daemonEventFromUnboundSessionEvent(event: {
+  readonly eventId?: unknown;
   readonly id?: unknown;
+  readonly seq?: unknown;
   readonly msg?: {
     readonly type?: unknown;
     readonly payload?: unknown;
@@ -3705,6 +4305,25 @@ export function daemonEventFromUnboundSessionEvent(event: {
       : typeof type === "string"
         ? type
         : "elicitation";
+  const sequence =
+    typeof event.seq === "number" &&
+    Number.isSafeInteger(event.seq) &&
+    event.seq > 0
+      ? event.seq
+      : undefined;
+  const eventId =
+    typeof event.eventId === "string" && event.eventId.length > 0
+      ? event.eventId
+      : sequence !== undefined
+        ? `legacy-event:${sequence}:${id}`
+        : id;
+  if (
+    typeof type === "string" &&
+    CANONICAL_CORE_SESSION_EVENT_TYPES.has(type)
+  ) {
+    if (sequence === undefined || !isJsonObject(payload)) return null;
+    return { id, eventId, sequence, type, payload };
+  }
   if (
     type === "request_user_input" &&
     isJsonObject(payload) &&
@@ -3714,6 +4333,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         callId: payload.callId,
@@ -3740,6 +4361,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         serverName: payload.serverName,
@@ -3757,6 +4380,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         serverName: payload.serverName,
@@ -3777,6 +4402,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
       typeof payload.acceptedAt === "string" ? payload.acceptedAt : undefined;
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       ...(messageId !== undefined ? { messageId } : {}),
       ...(streamId !== undefined ? { streamId } : {}),
@@ -3801,7 +4428,13 @@ export function daemonEventFromUnboundSessionEvent(event: {
     isJsonObject(payload) &&
     typeof payload.callId === "string"
   ) {
-    return { id, type, payload };
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
   }
   if (
     type === "tool_progress" &&
@@ -3809,7 +4442,13 @@ export function daemonEventFromUnboundSessionEvent(event: {
     typeof payload.callId === "string" &&
     typeof payload.toolName === "string"
   ) {
-    return { id, type, payload };
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
   }
   // Extended-thinking + reasoning-summary events. These are emitted via
   // `session.emit` from `phases/stream-model.ts` and persisted to the
@@ -3824,6 +4463,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         index: payload.index,
@@ -3840,6 +4481,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         delta: payload.delta,
@@ -3855,6 +4498,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         index: payload.index,
@@ -3869,6 +4514,8 @@ export function daemonEventFromUnboundSessionEvent(event: {
   ) {
     return {
       id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
       type,
       payload: {
         text: payload.text,
@@ -3958,13 +4605,9 @@ export function managedTokenUsage(
   };
 }
 
-// Translate session-level PhaseEvents into RunAgentProgressEvents so the
-// existing #recordProgressEvent / #eventFromProgress / #emitOrBufferEvent
-// pipeline (and the agent_message_delta cache) can deliver streaming
-// output to the daemon's session binding. The OLD delegate path got these
-// via runAgent's onProgress callback. The NEW ManagedThread path drives
-// runTurn through Session.submit, which emits PhaseEvents — we subscribe
-// in startAgent/restoreAgent and pump them through the same pipeline.
+// Translate Session PhaseEvents only for runner-local status/tool bookkeeping.
+// Live delivery is owned by the canonical Session.EventLog bridge above; using
+// this phase shape for delivery would invent competing IDs without sequences.
 function phaseEventToProgressEvent(
   event: import("../phases/events.js").PhaseEvent,
 ): RunAgentProgressEvent | null {
@@ -4037,20 +4680,333 @@ function phaseEventToProgressEvent(
   }
 }
 
-function awaitTerminalStatus(thread: ManagedThread): Promise<void> {
+function canonicalSessionEventFromRecoveredProgress(
+  progress: RunAgentProgressEvent,
+): Event | null {
+  if (progress.kind === "tool_call") {
+    return {
+      id: `recovery-tool-start:${progress.callId}`,
+      msg: {
+        type: "tool_call_started",
+        payload: {
+          callId: progress.callId,
+          toolName: progress.toolName,
+          args: progress.arguments ?? "{}",
+        },
+      },
+    };
+  }
+  if (progress.kind === "tool_result") {
+    return {
+      id: `recovery-tool-result:${progress.callId}`,
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: progress.callId,
+          result: progress.result,
+          isError: progress.isError === true,
+          metadata: {
+            toolName: progress.toolName,
+            recovered: true,
+          },
+        },
+      },
+    };
+  }
+  return null;
+}
+
+type TerminalThreadStatus = Extract<
+  ThreadAgentStatus,
+  { readonly status: "completed" | "errored" | "shutdown" | "not_found" }
+>;
+
+function awaitTerminalStatus(
+  thread: ManagedThread,
+): Promise<TerminalThreadStatus> {
   return new Promise((resolve) => {
-    const unsub = thread.subscribeStatus((status) => {
+    let settledSynchronously = false;
+    let unsubscribe = (): void => {};
+    const listener = (status: ThreadAgentStatus): void => {
       if (
         status.status === "completed" ||
         status.status === "errored" ||
         status.status === "shutdown" ||
         status.status === "not_found"
       ) {
-        unsub();
-        resolve();
+        settledSynchronously = true;
+        unsubscribe();
+        resolve(status);
       }
-    });
+    };
+    unsubscribe = thread.subscribeStatus(listener);
+    // ManagedThread subscriptions publish their current value immediately.
+    // If it was already terminal, the callback ran before the real
+    // unsubscribe function was assigned.
+    if (settledSynchronously) unsubscribe();
   });
+}
+
+function commitDurableRunCancellationRequest(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  reason: string,
+): void {
+  const requestedAt = active.pendingTerminal?.finishedAt ?? active.lastActiveAt;
+  const existing = active.cancellationRequest;
+  if (existing !== undefined) {
+    if (existing.reason !== reason || existing.requestedAt !== requestedAt) {
+      throw new Error(`run ${runId} has conflicting cancellation intent`);
+    }
+    return;
+  }
+  const eventId = `run-cancel-request:${runId}:${active.runEpoch}`;
+  const acceptCommitted = (): boolean => {
+    const matches = active.bootstrap.rolloutStore
+      .readAll()
+      .flatMap((item) => {
+        if (item.type !== "event_msg") return [];
+        const event = item.payload;
+        if (
+          event.eventId !== eventId &&
+          event.id !== eventId &&
+          !(
+            event.msg.type === "run_cancel_requested" &&
+            event.msg.payload.runId === runId &&
+            event.msg.payload.epoch === active.runEpoch
+          )
+        ) {
+          return [];
+        }
+        return [event];
+      });
+    if (matches.length === 0) return false;
+    if (matches.length !== 1) {
+      throw new Error(
+        `run cancellation request ${eventId} has duplicate canonical evidence`,
+      );
+    }
+    const event = matches[0]!;
+    const sequence = positiveSequence(event.seq);
+    if (
+      event.id !== eventId ||
+      event.eventId !== eventId ||
+      sequence === undefined ||
+      event.msg.type !== "run_cancel_requested" ||
+      event.msg.payload.runId !== runId ||
+      event.msg.payload.epoch !== active.runEpoch ||
+      event.msg.payload.reason !== reason ||
+      event.msg.payload.requestedAt !== requestedAt
+    ) {
+      throw new Error(
+        `run cancellation request ${eventId} has conflicting canonical evidence`,
+      );
+    }
+    active.cancellationRequest = {
+      eventId,
+      sequence,
+      reason,
+      requestedAt,
+    };
+    return true;
+  };
+  if (acceptCommitted()) return;
+  try {
+    const event = active.bootstrap.session.emit({
+      eventId,
+      id: eventId,
+      msg: {
+        type: "run_cancel_requested",
+        payload: {
+          runId,
+          epoch: active.runEpoch,
+          reason,
+          requestedAt,
+        },
+      },
+    });
+    const sequence = positiveSequence(event.seq);
+    if (
+      event.id !== eventId ||
+      event.eventId !== eventId ||
+      sequence === undefined
+    ) {
+      throw new Error(
+        `run cancellation request ${eventId} has no canonical coordinates`,
+      );
+    }
+    active.cancellationRequest = {
+      eventId,
+      sequence,
+      reason,
+      requestedAt,
+    };
+  } catch (error) {
+    // Session.emit may fail after append+fsync at the publish failpoint. The
+    // deterministic identity makes retry safe only when the bytes on disk are
+    // exactly the requested cancellation evidence.
+    if (!acceptCommitted()) throw error;
+  }
+}
+
+function commitDurableRunTerminal(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  result: RunTerminalResult,
+): AgenCBackgroundAgentTerminalSnapshot {
+  if (active.terminal !== undefined) return active.terminal;
+  const epoch = active.runEpoch;
+  const session = active.bootstrap.session;
+  const lastSequenceBeforeTerminal =
+    positiveSequence(session.eventLog.lastSeq) ?? null;
+  const eventId = `run-terminal:${runId}:${epoch}`;
+  const event = session.emit({
+    eventId,
+    id: eventId,
+    msg: {
+      type: "run_terminal",
+      payload: {
+        runId,
+        epoch,
+        status: result.status,
+        exitCode: result.exitCode,
+        stopReason: result.stopReason,
+        finalMessage: result.finalMessage,
+        usage: result.usage,
+        lastSequenceBeforeTerminal,
+        finishedAt: result.finishedAt,
+      },
+    },
+  });
+  const sequence = positiveSequence(event.seq);
+  if (
+    event.id !== eventId ||
+    event.eventId !== eventId ||
+    sequence === undefined
+  ) {
+    throw new Error(
+      `run_terminal ${eventId} was not assigned its canonical id and positive sequence`,
+    );
+  }
+  const terminal: AgenCBackgroundAgentTerminalSnapshot = {
+    openedAt: active.startedAt,
+    epoch,
+    eventId: event.eventId,
+    rolloutPath: active.bootstrap.rolloutStore.rolloutPath,
+    result: {
+      ...result,
+      lastSequence: sequence,
+    },
+  };
+  active.terminal = terminal;
+  return terminal;
+}
+
+function cancelledTerminalResult(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  stopReason: string,
+  finishedAt: string,
+): RunTerminalResult {
+  return {
+    runId,
+    status: "cancelled",
+    exitCode: null,
+    stopReason,
+    finalMessage: null,
+    usage: budgetUsageForActiveAgent(active),
+    lastSequence: null,
+    finishedAt,
+  };
+}
+
+function currentRunEpochFromRollout(
+  bootstrap: LocalRuntimeBootstrap,
+  runId: string,
+): number {
+  let epoch = 1;
+  try {
+    const items = bootstrap.rolloutStore.readAll() as ReadonlyArray<{
+      readonly type?: unknown;
+      readonly payload?: {
+        readonly msg?: {
+          readonly type?: unknown;
+          readonly payload?: {
+            readonly runId?: unknown;
+            readonly epoch?: unknown;
+          };
+        };
+      };
+    }>;
+    for (const item of items) {
+      if (
+        item.type !== "event_msg" ||
+        item.payload?.msg?.type !== "run_reopened" ||
+        item.payload.msg.payload?.runId !== runId
+      ) {
+        continue;
+      }
+      const reopenedEpoch = positiveSequence(item.payload.msg.payload.epoch);
+      if (reopenedEpoch !== undefined && reopenedEpoch > epoch) {
+        epoch = reopenedEpoch;
+      }
+    }
+  } catch {
+    // A new run has no reopen record. Read failures are surfaced when the
+    // terminal append itself tries to commit; epoch 1 is the only safe default.
+  }
+  return epoch;
+}
+
+function terminalResultFromThread(
+  active: ActiveBackgroundAgent,
+  runId: string,
+  status: TerminalThreadStatus,
+): RunTerminalResult {
+  const usage = budgetUsageForActiveAgent(active);
+  const finishedAt =
+    "endedAtMs" in status && Number.isFinite(status.endedAtMs)
+      ? new Date(status.endedAtMs).toISOString()
+      : active.lastActiveAt;
+  if (status.status === "completed") {
+    return {
+      runId,
+      status: "completed",
+      exitCode: 0,
+      stopReason: "turn_completed",
+      finalMessage: status.lastMessage ?? null,
+      usage,
+      lastSequence: null,
+      finishedAt,
+    };
+  }
+  if (status.status === "errored") {
+    return {
+      runId,
+      status: "failed",
+      exitCode: 1,
+      stopReason: status.error,
+      finalMessage: null,
+      usage,
+      lastSequence: null,
+      finishedAt,
+    };
+  }
+  return {
+    runId,
+    status: "cancelled",
+    exitCode: null,
+    stopReason:
+      active.budgetHalt !== undefined
+        ? "budget_limit"
+        : status.status === "shutdown"
+          ? "shutdown"
+          : "not_found",
+    finalMessage: null,
+    usage,
+    lastSequence: null,
+    finishedAt,
+  };
 }
 
 function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
@@ -4393,63 +5349,13 @@ export function planApprovalPayloadFields(
   return fields;
 }
 
-function approvalInputFromPayload(value: unknown): JsonObject {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  const payload = value as {
-    readonly kind?: unknown;
-    readonly arguments?: unknown;
-    readonly rawArguments?: unknown;
-    readonly input?: unknown;
-    readonly params?: unknown;
-  };
-  if (payload.kind === "function" && typeof payload.arguments === "string") {
-    return parseJsonObject(payload.arguments);
-  }
-  if (payload.kind === "mcp" && typeof payload.rawArguments === "string") {
-    return parseJsonObject(payload.rawArguments);
-  }
-  if (payload.kind === "custom" && typeof payload.input === "string") {
-    return { input: payload.input };
-  }
-  if (
-    payload.kind === "local_shell" &&
-    payload.params !== null &&
-    typeof payload.params === "object" &&
-    !Array.isArray(payload.params)
-  ) {
-    return payload.params as JsonObject;
-  }
-  return {};
-}
-
-function parseJsonObject(raw: string): JsonObject {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      return parsed as JsonObject;
-    }
-  } catch {
-    // Fall through to the raw-input carrier below.
-  }
-  return { input: raw };
-}
-
 function buildBootstrapArgv(
   params: {
     readonly provider?: string;
     readonly model?: string;
     readonly profile?: string;
     readonly permissionMode?:
-      | "default"
-      | "plan"
-      | "acceptEdits"
-      | "bypassPermissions";
+      "default" | "plan" | "acceptEdits" | "bypassPermissions";
   },
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
@@ -4530,8 +5436,7 @@ function installDaemonTurnDriverHooks(
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
       const rootHumanTurnText =
-        opts?.source !== "autonomous_tick" &&
-        opts?.displayUserMessage !== null
+        opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ??
             (typeof message === "string"
               ? message

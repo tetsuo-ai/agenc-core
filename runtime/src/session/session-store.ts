@@ -48,10 +48,10 @@
 
 import {
   accessSync,
-  appendFileSync,
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   ftruncateSync,
   fsyncSync,
   linkSync,
@@ -158,6 +158,33 @@ const DEGRADED_ERRNOS: ReadonlyArray<string> = [
 export function isDegradedErrno(err: unknown): boolean {
   const code = (err as { code?: string } | null)?.code;
   return !!code && DEGRADED_ERRNOS.includes(code);
+}
+
+/**
+ * A short append failed after changing the file and the best-effort rollback
+ * could not itself be made durable.  The caller must not requeue the same
+ * rows: doing so could turn an uncertain partial tail into duplicate canonical
+ * records.  Startup tail repair remains the recovery boundary.
+ */
+class AppendRollbackError extends Error {
+  readonly code?: string;
+
+  constructor(
+    readonly writeError: unknown,
+    readonly rollbackError: unknown,
+    readonly bytesWritten: number,
+    readonly appendStart: number,
+  ) {
+    super(
+      `canonical rollout append failed after ${bytesWritten} bytes and rollback failed`,
+      { cause: rollbackError },
+    );
+    this.name = "AppendRollbackError";
+    const code =
+      (writeError as { readonly code?: string } | null)?.code ??
+      (rollbackError as { readonly code?: string } | null)?.code;
+    if (code !== undefined) this.code = code;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -426,13 +453,6 @@ export class SessionLock {
       const existing = this.readLockRecord();
       if (existing !== null) {
         // Lock file exists. Decide if we can reclaim.
-        if (existing.pid === process.pid) {
-          // We already hold it (re-entry in same process). Treat as
-          // acquired — but prefer this to be a no-op at the caller
-          // level; we still set acquired=true so release() works.
-          this.acquired = true;
-          return;
-        }
         if (processIsAlive(existing.pid)) {
           throw new SessionLockedError(existing.pid, this.lockPath);
         }
@@ -581,12 +601,15 @@ export class SessionLock {
   release(): void {
     if (!this.acquired) return;
     try {
-      // Only remove the lock if we still own it. A stale reclaim by
-      // another process after our death is acceptable, but a live
-      // handoff to another holder must not be clobbered by our
-      // release.
+      // Only remove the lock if this exact SessionLock instance still owns it.
+      // PID equality alone is insufficient: two independent stores in one
+      // daemon have the same PID, and one must never release the other's lease.
       const existing = this.readLockRecord();
-      if (existing === null || existing.pid === process.pid) {
+      if (
+        existing !== null &&
+        existing.pid === process.pid &&
+        existing.startNs === this.startNs
+      ) {
         unlinkSync(this.lockPath);
       }
     } catch {
@@ -709,7 +732,13 @@ export function rewriteAtomically(
  * occurred. Callers should emit a `warning:'rollout_truncated_corrupt_tail'`
  * when truncated.
  */
-export function truncateCorruptTail(rolloutPath: string): {
+export function truncateCorruptTail(
+  rolloutPath: string,
+  repair: {
+    readonly truncate?: (fd: number, length: number) => void;
+    readonly sync?: (fd: number) => void;
+  } = {},
+): {
   readonly truncated: boolean;
   readonly newSize: number;
 } {
@@ -728,14 +757,8 @@ export function truncateCorruptTail(rolloutPath: string): {
     if (lastNewline === -1) {
       // Entire tail window has no newline — file has a single
       // un-terminated line. Truncate to zero.
-      try {
-        // node fs doesn't expose ftruncate on fd directly in sync API
-        // via `fd` — use ftruncateSync.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        ftruncateSync(fd, 0);
-      } catch {
-        /* best-effort */
-      }
+      (repair.truncate ?? ftruncateSync)(fd, 0);
+      (repair.sync ?? fsyncSync)(fd);
       return { truncated: true, newSize: 0 };
     }
     // Check if tail after last newline is empty (normal complete file).
@@ -744,13 +767,8 @@ export function truncateCorruptTail(rolloutPath: string): {
       return { truncated: false, newSize: stat.size };
     }
     // Partial line exists after last newline — truncate.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      ftruncateSync(fd, afterLastNewlineIdx);
-      fsyncSync(fd);
-    } catch {
-      /* best-effort */
-    }
+    (repair.truncate ?? ftruncateSync)(fd, afterLastNewlineIdx);
+    (repair.sync ?? fsyncSync)(fd);
     return { truncated: true, newSize: afterLastNewlineIdx };
   } finally {
     closeSync(fd);
@@ -860,6 +878,15 @@ export class SessionStore {
    * transient and persistent fsync failures.
    */
   private fsyncImpl: (fd: number) => void = fsyncSync;
+  private writeImpl: (
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+  ) => number = (fd, buffer, offset, length) =>
+    writeSync(fd, buffer, offset, length);
+  /** Exact pre-append boundary whose rollback could not be durably proven. */
+  private uncertainAppendStart: number | undefined;
   private readonly trajectoryExport: TrajectoryExportSink;
 
   constructor(opts: SessionStoreOpts) {
@@ -920,6 +947,11 @@ export class SessionStore {
             message: `rollout tail truncated to ${truncResult.newSize} bytes (I-24 recovery)`,
           });
         }
+        // Recovery may encounter complete rows written by a prior process whose
+        // fsync failed before it died. Re-sync the surviving canonical prefix
+        // under this source's exclusive lease before any caller treats those
+        // bytes as durable recovery evidence.
+        this.syncCanonicalFile();
         this.fileSize = statSync(this.rolloutPath).size;
         const snapshot = readIndexSnapshot(this.indexPath);
         if (snapshot && snapshot.rolloutPath === this.rolloutPath) {
@@ -1036,30 +1068,42 @@ export class SessionStore {
     this.fsyncImpl = impl;
   }
 
+  /** @internal Test seam for short-write recovery. */
+  setWriteImplForTest(
+    impl: (
+      fd: number,
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+    ) => number,
+  ): void {
+    this.writeImpl = impl;
+  }
+
   /**
    * Append an event. Called by Session.emit(). Durable events (per
    * isDurableEvent or explicit `opts.durable`) flush immediately +
    * fsync (I-4). Others batch until 100ms or the next durable event.
    *
-   * UUID dedup: events with a `seq` already written are silently
-   * dropped. Events WITHOUT seq (sidecar synth or replay re-entry)
-   * are deduped by `event.id`. Prevents double-append on fork-flush
-   * or replay-merge edge cases.
+   * Sequenced writes are strictly monotonic. A repeated/backward sequence is
+   * a writer bug and fails closed; silently accepting it would let a caller
+   * project or publish an event that the canonical rollout rejected. Events
+   * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
-  append(event: Event, opts: AppendOptions = {}): void {
-    if (!this.opened || this.closed) return;
+  append(event: Event, opts: AppendOptions = {}): boolean {
+    if (!this.opened || this.closed) return false;
     // I-27: seq monotonicity check. Caller assigns via EventLog; we
     // just verify.
     if (event.seq !== undefined && event.seq <= this.lastSeqWritten) {
-      // Reject backward seq — it indicates a reducer bug. Also dedup
-      // when the same seq value repeats (same event emitted twice).
-      return;
+      throw new Error(
+        `non-monotonic rollout event sequence ${event.seq}; canonical tail is ${this.lastSeqWritten}`,
+      );
     }
     // UUID dedup — if we've already seen this event.id, skip. Only
     // applies to events without a seq (sidecar synth / replay); seq'd
     // events are already ordered by the EventLog monotonic counter.
     if (event.seq === undefined) {
-      if (this.seenEventIds.has(event.id)) return;
+      if (this.seenEventIds.has(event.id)) return true;
       this.seenEventIds.add(event.id);
       // Bound the dedup set — evict oldest once it grows past 10K.
       if (this.seenEventIds.size > 10_000) {
@@ -1112,12 +1156,13 @@ export class SessionStore {
 
     const durable = opts.durable === true || isDurableEvent(event);
     if (durable) {
-      this.flushBatch(/*durable*/ true);
+      return this.flushBatch(/*durable*/ true);
     } else if (this.pending.length >= 1024) {
       // Flush if the batch gets large to bound memory even before the
       // 100ms tick.
-      this.flushBatch(/*durable*/ false);
+      return this.flushBatch(/*durable*/ false);
     }
+    return true;
   }
 
   /**
@@ -1126,16 +1171,21 @@ export class SessionStore {
    * batched and eventually flushed.
    */
   appendRollout(item: RolloutItem, opts: AppendOptions = {}): void {
-    if (!this.opened || this.closed) return;
+    const durable =
+      opts.durable === true ||
+      (item.type === "event_msg" && isDurableEvent(item.payload));
+    if (!this.opened || this.closed) {
+      if (durable) {
+        throw new Error("cannot commit durable rollout item to a closed store");
+      }
+      return;
+    }
     if (this.batchOpenedAtMs === null) {
       this.batchOpenedAtMs = monotonicMs();
     }
     this.pending.push(item);
-    const durable =
-      opts.durable === true ||
-      (item.type === "event_msg" && isDurableEvent(item.payload));
-    if (durable) {
-      this.flushBatch(true);
+    if (durable && !this.flushBatch(true)) {
+      throw new Error("durable rollout item was not fsync-committed");
     }
   }
 
@@ -1144,10 +1194,10 @@ export class SessionStore {
    * the sidecar manager or by `append()` on durable events. Exposed
    * for tests.
    */
-  flushBatch(durable: boolean): void {
+  flushBatch(durable: boolean): boolean {
     if (this.pending.length === 0) {
       this.batchOpenedAtMs = null;
-      return;
+      return true;
     }
     // I-83 suspend detection: if the batch was open for > 10s (e.g.
     // system suspend/resume gap), emit TWO marker events (warning +
@@ -1221,10 +1271,12 @@ export class SessionStore {
     this.pending = [];
     this.batchOpenedAtMs = null;
 
-    // `requeue` distinguishes the two failure shapes (#11):
-    //   - writeSync itself threw (ENOSPC/EROFS/…): the bytes never
-    //     reached the file, so the items must be re-queued into the
-    //     degraded ring buffer for a later re-append (requeue=true).
+    // `requeue` distinguishes the failure shapes (#11):
+    //   - writeSync failed before writing, or a partial append was rolled back
+    //     and fsync'd: the items can be re-queued into the degraded ring buffer
+    //     for a later complete re-append (requeue=true).
+    //   - a partial append could not be durably rolled back: the on-disk tail
+    //     is uncertain and re-append could duplicate it (requeue=false).
     //   - writeSync succeeded but fsync (+ its I-38 retry) failed: the
     //     bytes are ALREADY appended to the rollout on disk. Re-queueing
     //     them would re-serialize + re-append the same rows on degraded
@@ -1254,13 +1306,14 @@ export class SessionStore {
       return false;
     };
 
+    let committed = true;
     try {
       if (durable) {
         // I-38: async retry on fsync failure routes to degraded via
         // the callback. The bytes were already writeSync'd by this
         // point, so we MUST NOT re-queue them (#11) — only enter
         // degraded mode.
-        this.writeBytesWithFsync(lines, (err) => {
+        committed = this.writeBytesWithFsync(lines, (err) => {
           routeToDegraded(err, /*requeue*/ false);
         });
       } else {
@@ -1269,15 +1322,50 @@ export class SessionStore {
       this.fileSize += Buffer.byteLength(lines, "utf8");
       this.trajectoryExport.writeItems(toWrite);
     } catch (err) {
-      // writeSync threw — bytes never landed; re-queue for re-append.
-      if (!routeToDegraded(err, /*requeue*/ true)) {
+      const safeToRequeue = !(err instanceof AppendRollbackError);
+      if (!routeToDegraded(err, safeToRequeue)) {
         throw err;
       }
+      committed = false;
+    }
+    return committed;
+  }
+
+  /**
+   * Establish an explicit fsync proof for the complete canonical tail even
+   * when there is no pending in-memory batch. Idempotent recovery paths call
+   * this before accepting already-present journal evidence after an earlier
+   * ambiguous fsync failure.
+   */
+  syncCanonicalTail(): void {
+    if (!this.opened || this.closed) {
+      throw new Error("cannot sync canonical tail on a closed store");
+    }
+    if (this.pending.length > 0 && !this.flushBatch(true)) {
+      throw new Error("canonical rollout tail was not fsync-committed");
+    }
+    this.syncCanonicalFile();
+  }
+
+  private syncCanonicalFile(): void {
+    const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND;
+    const fd = openSync(this.rolloutPath, flags, 0o600);
+    try {
+      this.repairUncertainAppendTail(fd);
+      this.fsyncImpl(fd);
+    } finally {
+      closeSync(fd);
     }
   }
 
   private writeBytesAppendOnly(content: string): void {
-    appendFileSync(this.rolloutPath, content, { mode: 0o600 });
+    const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
+    const fd = openSync(this.rolloutPath, flags, 0o600);
+    try {
+      this.writeAll(fd, content);
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /**
@@ -1305,12 +1393,12 @@ export class SessionStore {
   private writeBytesWithFsync(
     content: string,
     onRetryFailure?: (err: unknown) => void,
-  ): void {
+  ): boolean {
     const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
     const fd = openSync(this.rolloutPath, flags, 0o600);
     let firstErr: unknown;
     try {
-      writeSync(fd, content);
+      this.writeAll(fd, content);
       try {
         this.fsyncImpl(fd);
       } catch (err) {
@@ -1325,7 +1413,57 @@ export class SessionStore {
       // re-opening the file and calling fsyncSync on that fd flushes
       // the same kernel-level buffers to disk.
       this.scheduleFsyncRetry(firstErr, onRetryFailure);
+      return false;
     }
+    return true;
+  }
+
+  private writeAll(fd: number, content: string): void {
+    this.repairUncertainAppendTail(fd);
+    const bytes = Buffer.from(content, "utf8");
+    const appendStart = fstatSync(fd).size;
+    let offset = 0;
+    try {
+      while (offset < bytes.length) {
+        const written = this.writeImpl(fd, bytes, offset, bytes.length - offset);
+        if (
+          !Number.isSafeInteger(written) ||
+          written <= 0 ||
+          written > bytes.length - offset
+        ) {
+          throw new Error(
+            `short write while appending canonical rollout ${this.rolloutPath}`,
+          );
+        }
+        offset += written;
+      }
+    } catch (writeError) {
+      if (offset === 0) throw writeError;
+      try {
+        ftruncateSync(fd, appendStart);
+        this.fsyncImpl(fd);
+      } catch (rollbackError) {
+        this.uncertainAppendStart = Math.min(
+          this.uncertainAppendStart ?? appendStart,
+          appendStart,
+        );
+        throw new AppendRollbackError(
+          writeError,
+          rollbackError,
+          offset,
+          appendStart,
+        );
+      }
+      throw writeError;
+    }
+  }
+
+  private repairUncertainAppendTail(fd: number): void {
+    const boundary = this.uncertainAppendStart;
+    if (boundary === undefined) return;
+    ftruncateSync(fd, boundary);
+    this.fsyncImpl(fd);
+    this.uncertainAppendStart = undefined;
   }
 
   /**
@@ -1475,9 +1613,12 @@ export class SessionStore {
     };
     try {
       const line = serializeRolloutItem(item);
-      this.writeBytesWithFsync(line, (err) => {
+      const committed = this.writeBytesWithFsync(line, (err) => {
         routeToDegraded(err, /*requeue*/ false);
       });
+      if (!committed) {
+        throw new Error("session metadata was not fsync-committed");
+      }
       this.fileSize += Buffer.byteLength(line, "utf8");
       this.trajectoryExport.writeItems([item]);
     } catch (err) {

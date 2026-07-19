@@ -54,8 +54,8 @@ export interface MCPResourceContent {
 
 export interface MCPResourceBridge {
   readonly serverName: string;
-  listResources(): Promise<ReadonlyArray<MCPResourceDescriptor>>;
-  readResource(uri: string): Promise<MCPResourceContent>;
+  listResources(signal?: AbortSignal): Promise<ReadonlyArray<MCPResourceDescriptor>>;
+  readResource(uri: string, signal?: AbortSignal): Promise<MCPResourceContent>;
   dispose(): Promise<void>;
 }
 
@@ -81,16 +81,24 @@ export async function createResourceBridge(
 
   return {
     serverName,
-    async listResources(): Promise<ReadonlyArray<MCPResourceDescriptor>> {
+    async listResources(
+      signal?: AbortSignal,
+    ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
       if (disposed) return [];
       try {
         const response = await withDeadline<unknown>(
           `MCP server "${serverName}" listResources`,
           rpcTimeoutMs,
-          () => client.listResources({}),
+          (effectSignal) =>
+            client.listResources(
+              {},
+              { signal: effectSignal, timeout: rpcTimeoutMs },
+            ),
+          signal,
         );
         return normalizeResourceCatalog(response, serverName);
       } catch (err) {
+        signal?.throwIfAborted();
         logger.warn?.(
           `MCP server "${serverName}" listResources failed:`,
           err,
@@ -98,7 +106,10 @@ export async function createResourceBridge(
         return [];
       }
     },
-    async readResource(uri: string): Promise<MCPResourceContent> {
+    async readResource(
+      uri: string,
+      signal?: AbortSignal,
+    ): Promise<MCPResourceContent> {
       if (disposed) {
         throw new Error(
           `MCP resource bridge for "${serverName}" has been disposed`,
@@ -107,7 +118,12 @@ export async function createResourceBridge(
       const response = await withDeadline<unknown>(
         `MCP server "${serverName}" readResource`,
         rpcTimeoutMs,
-        () => client.readResource({ uri }),
+        (effectSignal) =>
+          client.readResource(
+            { uri },
+            { signal: effectSignal, timeout: rpcTimeoutMs },
+          ),
+        signal,
       );
       const first = firstResourceContent(response);
       if (!first) {
@@ -244,20 +260,47 @@ function firstResourceContent(response: unknown): Record<string, unknown> | unde
     .find((record): record is Record<string, unknown> => record !== null);
 }
 
-function withDeadline<T>(
+async function withDeadline<T>(
   operation: string,
   timeoutMs: number,
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  return Promise.race([task(), timeoutPromise]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
+  callerSignal?.throwIfAborted();
+
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `${operation} timed out after ${timeoutMs}ms`,
+  );
+  let timedOut = false;
+  const forwardCallerAbort = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(callerSignal?.reason);
+    }
+  };
+  callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    if (!controller.signal.aborted) controller.abort(timeoutError);
+  }, timeoutMs);
+
+  try {
+    // Do not race away from the raw RPC. The deadline actively aborts its
+    // signal, but this promise remains pending until the transport confirms
+    // settlement. That keeps the enclosing admission lease's physical
+    // concurrency slot occupied even if an MCP client ignores cancellation.
+    const result = await task(controller.signal);
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    return result;
+  } catch (error) {
+    callerSignal?.throwIfAborted();
+    if (timedOut) throw timeoutError;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", forwardCallerAbort);
+  }
 }
 
 /**

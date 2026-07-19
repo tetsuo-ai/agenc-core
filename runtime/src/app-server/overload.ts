@@ -28,6 +28,7 @@ export interface AgenCDaemonLimiterAdmission {
 
 const DAEMON_CONTROL_METHODS = new Set<string>([
   "request.cancel",
+  "run.cancel",
   "session.cancelTurn",
   "tool.cancel",
   "commandExec.terminate",
@@ -38,6 +39,21 @@ const DAEMON_PREEMPTIVE_METHODS = new Set<string>([
   "tool.approve",
   "tool.deny",
   "elicitation.respond",
+]);
+
+const DAEMON_PRIORITY_METHODS = new Set<string>([
+  ...DAEMON_PREEMPTIVE_METHODS,
+  "agent.list",
+  "run.status",
+  "run.result",
+  "run.replay",
+  "run.evidence",
+  "session.list",
+  "session.snapshot",
+  "session.hooks.status",
+  "health.ping",
+  "health.ready",
+  "health.stats",
 ]);
 
 export function isDaemonControlMessage(message: JsonObject): boolean {
@@ -59,6 +75,23 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
   return (
     typeof message.method === "string" &&
     DAEMON_PREEMPTIVE_METHODS.has(message.method)
+  );
+}
+
+/**
+ * Requests that use the connection's priority lane instead of waiting behind
+ * a full streaming model turn. Abort/decision messages are included, along
+ * with bounded health, status, and session lookup operations. Attach requests
+ * remain in the normal FIFO because they commonly depend on a preceding
+ * create request from the same connection.
+ *
+ * Read-only priority requests remain subject to the normal connection
+ * limiter. Only {@link isDaemonControlMessage} operations are overload-exempt.
+ */
+export function isDaemonPriorityMessage(message: JsonObject): boolean {
+  return (
+    typeof message.method === "string" &&
+    DAEMON_PRIORITY_METHODS.has(message.method)
   );
 }
 

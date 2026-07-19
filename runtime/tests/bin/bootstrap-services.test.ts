@@ -24,12 +24,17 @@ import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
+  bindExecutionAdmissionJournal,
   buildBootstrapSessionServices,
   loadBootstrapHooks,
   loadBootstrapLspServersInBackground,
   loadBootstrapLspServers,
   shutdownBootstrapLspServers,
 } from "./bootstrap-services.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import type { AdmissionJournalEvent } from "../budget/admission-types.js";
+import type { Event } from "../session/event-log.js";
+import type { Session } from "../session/session.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
 import {
   _resetLspManagerForTesting,
@@ -61,20 +66,20 @@ function sessionStartEchoCommand(): string {
     "process.stdin.on('end', () => {",
     "const x = JSON.parse(s);",
     "process.stdout.write('source=' + x.source + ';model=' + x.model + ';mode=' + x.permission_mode);",
-    "});\"",
+    '});"',
   ].join(" ");
 }
 
 function sessionStartStopCommand(): string {
   return [
-    "node -e \"process.stdout.write(JSON.stringify({",
+    'node -e "process.stdout.write(JSON.stringify({',
     "continue: false,",
     "stopReason: 'pause startup',",
     "hookSpecificOutput: {",
     "hookEventName: 'SessionStart',",
     "additionalContext: 'startup context'",
     "}",
-    "}));\"",
+    '}));"',
   ].join(" ");
 }
 
@@ -141,7 +146,9 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
-    expect(target.postToolUseHooks.filter((hook) => hook === autoFixHook)).toHaveLength(1);
+    expect(
+      target.postToolUseHooks.filter((hook) => hook === autoFixHook),
+    ).toHaveLength(1);
 
     loadBootstrapHooks({
       hooksRuntime: runtime,
@@ -150,6 +157,229 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+});
+
+describe("execution admission journal projection", () => {
+  function catchupEvent(sequence: number): AdmissionJournalEvent {
+    return {
+      sequence,
+      eventId: `catchup-${sequence}`,
+      timestamp: "2026-07-18T00:00:00.000Z",
+      runId: "run-catchup",
+      stepId: `model-${sequence}`,
+      kind: "model_turn",
+      event: "queued",
+    };
+  }
+
+  test("persists live admission decisions through the session event stream", () => {
+    let listener: ((event: AdmissionJournalEvent) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const admission = {
+      subscribe: vi.fn((next: (event: AdmissionJournalEvent) => void) => {
+        listener = next;
+        return unsubscribe;
+      }),
+    } as unknown as ExecutionAdmissionClient;
+    const emit = vi.fn();
+    const session = {
+      nextInternalSubId: () => "admission-event-1",
+      emit,
+    } as unknown as Session;
+    const stop = bindExecutionAdmissionJournal(session, admission);
+    const event: AdmissionJournalEvent = {
+      sequence: 7,
+      eventId: "journal-7",
+      timestamp: "2026-07-18T00:00:00.000Z",
+      runId: "run-1",
+      stepId: "model-1",
+      kind: "model_turn",
+      event: "reconciled",
+      reservationId: "reservation-1",
+      actualTokens: 42,
+      actualCostUsd: 0.01,
+    };
+
+    listener?.(event);
+
+    expect(emit).toHaveBeenCalledWith(
+      {
+        eventId: "journal-7",
+        id: "journal-7",
+        msg: { type: "execution_admission", payload: event },
+      },
+      { durable: true },
+    );
+    stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test("converges pre-bind and detached admission history without duplicate identities", () => {
+    const history: AdmissionJournalEvent[] = [];
+    let criticalListener: ((event: AdmissionJournalEvent) => void) | undefined;
+    const subscribe = vi.fn(() => () => {});
+    const subscribeCritical = vi.fn(
+      (next: (event: AdmissionJournalEvent) => void) => {
+        criticalListener = next;
+        return () => {
+          criticalListener = undefined;
+        };
+      },
+    );
+    const admission = {
+      subscribe,
+      subscribeCritical,
+      replayJournal: vi.fn(({ afterSequence = 0, limit = 1_000 } = {}) =>
+        history
+          .filter((event) => event.sequence > afterSequence)
+          .slice(0, limit),
+      ),
+    } as unknown as ExecutionAdmissionClient;
+    const rolloutItems: Array<{
+      readonly type: "event_msg";
+      readonly payload: Event;
+    }> = [];
+    const readAll = vi.fn(() => rolloutItems);
+    const syncCanonicalTail = vi.fn();
+    let sequence = 0;
+    const emit = vi.fn((event: Event): Event => {
+      const stamped = { ...event, seq: ++sequence };
+      rolloutItems.push({ type: "event_msg", payload: stamped });
+      return stamped;
+    });
+    const session = {
+      rolloutStore: { readAll, syncCanonicalTail },
+      emit,
+    } as unknown as Session;
+    const admissionEvent = (
+      journalSequence: number,
+    ): AdmissionJournalEvent => ({
+      sequence: journalSequence,
+      eventId: `journal-${journalSequence}`,
+      timestamp: `2026-07-18T00:00:0${journalSequence}.000Z`,
+      runId: "run-1",
+      stepId: `model-${journalSequence}`,
+      kind: "model_turn",
+      event: "reconciled",
+      reservationId: `reservation-${journalSequence}`,
+      actualTokens: journalSequence,
+      actualCostUsd: 0,
+    });
+
+    history.push(admissionEvent(1));
+    const stopFirstBinding = bindExecutionAdmissionJournal(session, admission);
+    history.push(admissionEvent(2));
+    criticalListener?.(history[1]!);
+    stopFirstBinding();
+
+    // Sequence 3 commits while no Session is attached. Rebinding scans the
+    // SQLite journal from the beginning and idempotently fills only the gap.
+    history.push(admissionEvent(3));
+    const stopSecondBinding = bindExecutionAdmissionJournal(session, admission);
+
+    expect(rolloutItems.map((item) => item.payload.eventId)).toEqual([
+      "journal-1",
+      "journal-2",
+      "journal-3",
+    ]);
+    expect(new Set(rolloutItems.map((item) => item.payload.eventId)).size).toBe(
+      3,
+    );
+    expect(emit).toHaveBeenCalledTimes(3);
+    expect(subscribeCritical).toHaveBeenCalledTimes(2);
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(readAll).toHaveBeenCalledOnce();
+    expect(syncCanonicalTail).toHaveBeenCalledTimes(2);
+    stopSecondBinding();
+  });
+
+  test("re-fsyncs matching admission bytes after an ambiguous append failure", () => {
+    const event: AdmissionJournalEvent = {
+      sequence: 1,
+      eventId: "journal-ambiguous",
+      timestamp: "2026-07-18T00:00:01.000Z",
+      runId: "run-ambiguous",
+      stepId: "model-1",
+      kind: "model_turn",
+      event: "queued",
+    };
+    const rolloutItems: Array<{
+      readonly type: "event_msg";
+      readonly payload: Event;
+    }> = [];
+    const syncCanonicalTail = vi.fn();
+    const unsubscribe = vi.fn();
+    const admission = {
+      subscribeCritical: vi.fn(() => unsubscribe),
+      subscribe: vi.fn(() => () => {}),
+      replayJournal: vi.fn(() => [event]),
+    } as unknown as ExecutionAdmissionClient;
+    const session = {
+      rolloutStore: {
+        readAll: () => rolloutItems,
+        syncCanonicalTail,
+      },
+      emit: (candidate: Event): Event => {
+        const stamped = { ...candidate, seq: 1 };
+        rolloutItems.push({ type: "event_msg", payload: stamped });
+        throw new Error("injected post-write fsync ambiguity");
+      },
+    } as unknown as Session;
+
+    const stop = bindExecutionAdmissionJournal(session, admission);
+
+    expect(syncCanonicalTail).toHaveBeenCalledOnce();
+    expect(rolloutItems).toHaveLength(1);
+    stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  test("fails closed when a custom catch-up client returns a no-progress page", () => {
+    const repeated = catchupEvent(1);
+    const unsubscribe = vi.fn();
+    const admission = {
+      subscribeCritical: vi.fn(() => unsubscribe),
+      subscribe: vi.fn(() => () => {}),
+      replayJournal: vi.fn(() => Array.from({ length: 1_000 }, () => repeated)),
+    } as unknown as ExecutionAdmissionClient;
+    const emit = vi.fn();
+    const session = { emit } as unknown as Session;
+
+    expect(() => bindExecutionAdmissionJournal(session, admission)).toThrow(
+      "execution admission catch-up made no monotonic progress after sequence 1",
+    );
+    expect(emit).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  test("fails closed when custom admission catch-up exceeds the total work cap", () => {
+    const unsubscribe = vi.fn();
+    const replayJournal = vi.fn(
+      ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+        Array.from({ length: 1_000 }, (_, index) =>
+          catchupEvent(afterSequence + index + 1),
+        ),
+    );
+    const admission = {
+      subscribeCritical: vi.fn(() => unsubscribe),
+      subscribe: vi.fn(() => () => {}),
+      replayJournal,
+    } as unknown as ExecutionAdmissionClient;
+    let emitted = 0;
+    const session = {
+      emit: (event: Event): Event => {
+        emitted += 1;
+        return event;
+      },
+    } as unknown as Session;
+
+    expect(() => bindExecutionAdmissionJournal(session, admission)).toThrow(
+      "execution admission catch-up exceeded 100000 events",
+    );
+    expect(emitted).toBe(100_000);
+    expect(replayJournal).toHaveBeenCalledTimes(101);
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 });
 
@@ -237,13 +467,16 @@ describe("SessionStart bootstrap hooks", () => {
       conversationId: "session-sessionstart",
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
+      admissionRequired: false,
     });
     const session = await bootstrapSession({
       conversationId: "session-sessionstart",
       initialState: {
         sessionConfiguration: sessionConfiguration as never,
         history: [],
-        ...(opts.resume ? { pendingSessionStartSource: "resume" as const } : {}),
+        ...(opts.resume
+          ? { pendingSessionStartSource: "resume" as const }
+          : {}),
       },
       features: config.features,
       services: handle.services,
@@ -285,8 +518,10 @@ describe("SessionStart bootstrap hooks", () => {
     });
     try {
       const events = drainSessionEvents(env.session as never);
-      const sessionStartContexts = events.filter((event) =>
-        (event as { msg?: { type?: string } }).msg?.type === "hook_additional_context"
+      const sessionStartContexts = events.filter(
+        (event) =>
+          (event as { msg?: { type?: string } }).msg?.type ===
+          "hook_additional_context",
       );
       expect(sessionStartContexts).toHaveLength(1);
       expect(sessionStartContexts[0]).toMatchObject({
@@ -407,7 +642,9 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         sessionConfiguration: {} as never,
       });
 
-      expect(policyLimitsMocks.configurePolicyLimitsService).toHaveBeenCalledWith(
+      expect(
+        policyLimitsMocks.configurePolicyLimitsService,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
           agencHome: home,
           providerName: "anthropic",
@@ -415,7 +652,9 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
           sessionId: "session-policy-bootstrap",
         }),
       );
-      expect(policyLimits.initializePolicyLimitsLoadingPromise).toHaveBeenCalled();
+      expect(
+        policyLimits.initializePolicyLimitsLoadingPromise,
+      ).toHaveBeenCalled();
       expect(policyLimits.loadPolicyLimits).toHaveBeenCalled();
       expect(handle.services.policyLimits).toBe(policyLimits);
 
@@ -525,7 +764,8 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       );
       const manager = getLspServerManager(sandboxExecutionBroker);
       expect(manager?.getAllServers().has("ts")).toBe(true);
-      if (manager === undefined) throw new Error("LSP manager was not initialized");
+      if (manager === undefined)
+        throw new Error("LSP manager was not initialized");
       await expect(
         manager.ensureServerStarted(join(workspace, "file.ts")),
       ).rejects.toMatchObject({

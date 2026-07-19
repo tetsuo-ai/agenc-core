@@ -21,6 +21,7 @@ import { getPlatform } from './platform.js'
 import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { peekAmbientRuntimeSession } from '../session/current-session.js'
+import { AdmissionDeniedError } from '../budget/admission-client.js'
 import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
 import { buildPowerShellArgs } from './shell/powershellProvider.js'
 import {
@@ -1117,9 +1118,9 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  const sandboxExecutionBroker =
-    peekAmbientRuntimeSession()?.services.sandboxExecutionBroker
-  if (sandboxExecutionBroker === undefined) {
+  const ambientSession = peekAmbientRuntimeSession()
+  const sandboxExecutionBroker = ambientSession?.services.sandboxExecutionBroker
+  if (ambientSession === null || sandboxExecutionBroker === undefined) {
     throw new Error(
       '[sandbox_surface_uncovered] legacy hook execution has no session sandbox boundary',
     )
@@ -1129,57 +1130,161 @@ async function execCommandHook(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   )
-  if (shellType === 'powershell') {
-    const pwshPath = await getCachedPowerShellPath()
-    if (!pwshPath) {
-      throw new Error(
-        `Hook "${hook.command}" has shell: 'powershell' but no PowerShell ` +
-          `executable (pwsh or powershell) was found on PATH. Install ` +
-          `PowerShell, or remove "shell": "powershell" to use bash.`,
-      )
+  const executionAdmission = ambientSession.services.executionAdmission
+  if (
+    executionAdmission === undefined &&
+    ambientSession.services.admissionRequired !== false
+  ) {
+    throw new AdmissionDeniedError('hook_admission_unavailable')
+  }
+  const admissionLease =
+    executionAdmission === undefined
+      ? undefined
+      : await executionAdmission.acquire(
+          {
+            stepId: `hook:${hookEvent}:${hookId}:${
+              hookIndex ?? 0
+            }:${randomUUID()}`,
+            kind: 'tool_exec',
+            sessionId: ambientSession.conversationId,
+            parentScopeId: `hook:${hookEvent}`,
+            maxInputTokens: 0,
+            maxOutputTokens: 0,
+            // This reservation covers the local subprocess effect. Any paid
+            // service called by the command needs its own admitted boundary;
+            // keep the local hook classification consistent with its $0
+            // reconciliation below.
+            maxCostUsd: 0,
+          },
+          signal,
+        )
+  const admissionReservationId = admissionLease?.reservation.reservationId
+  const effectSignal = admissionLease?.signal ?? signal
+  let admissionDispatched = false
+  let admissionSettled = false
+  let admissionCompletionAcknowledged = false
+  const acknowledgeAdmissionCompletion = (): void => {
+    if (
+      admissionCompletionAcknowledged ||
+      executionAdmission === undefined ||
+      admissionReservationId === undefined
+    ) {
+      return
     }
-    const command = sandboxExecutionBroker.prepareSpawn('hook', {
-      program: pwshPath,
-      args: buildPowerShellArgs(finalCommand),
-      env: spawnEnv,
-      cwd: safeCwd,
-    })
-    child = spawn(command.program, [...command.args], {
-      env: command.env,
-      cwd: command.cwd,
-      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-      // Prevent visible console window on Windows (no-op on other platforms)
-      windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
-  } else {
-    // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
-    // On other platforms, shell: true uses /bin/sh.
-    const shell = isWindows ? findGitBashPath() : '/bin/sh'
-    const command = sandboxExecutionBroker.prepareSpawn('hook', {
-      program: shell,
-      args: ['-c', finalCommand],
-      env: spawnEnv,
-      cwd: safeCwd,
-    })
-    child = spawn(command.program, [...command.args], {
-      env: command.env,
-      cwd: command.cwd,
-      ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-      // Prevent visible console window on Windows (no-op on other platforms)
-      windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
+    admissionCompletionAcknowledged = true
+    executionAdmission.acknowledgeCompletion(admissionReservationId)
+  }
+  const effectiveForceSyncExecution =
+    executionAdmission !== undefined || forceSyncExecution === true
+  try {
+    if (shellType === 'powershell') {
+      const pwshPath = await getCachedPowerShellPath()
+      if (!pwshPath) {
+        throw new Error(
+          `Hook "${hook.command}" has shell: 'powershell' but no PowerShell ` +
+            `executable (pwsh or powershell) was found on PATH. Install ` +
+            `PowerShell, or remove "shell": "powershell" to use bash.`,
+        )
+      }
+      const command = sandboxExecutionBroker.prepareSpawn('hook', {
+        program: pwshPath,
+        args: buildPowerShellArgs(finalCommand),
+        env: spawnEnv,
+        cwd: safeCwd,
+      })
+      if (
+        executionAdmission !== undefined &&
+        admissionReservationId !== undefined
+      ) {
+        executionAdmission.markDispatched(admissionReservationId, {
+          boundary: 'tool_effect',
+          details: { hookEvent, hookName, shellType },
+        })
+        admissionDispatched = true
+      }
+      child = spawn(command.program, [...command.args], {
+        env: command.env,
+        cwd: command.cwd,
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+        // Prevent visible console window on Windows (no-op on other platforms)
+        windowsHide: true,
+      }) as ChildProcessWithoutNullStreams
+    } else {
+      // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
+      // On other platforms, shell: true uses /bin/sh.
+      const shell = isWindows ? findGitBashPath() : '/bin/sh'
+      const command = sandboxExecutionBroker.prepareSpawn('hook', {
+        program: shell,
+        args: ['-c', finalCommand],
+        env: spawnEnv,
+        cwd: safeCwd,
+      })
+      if (
+        executionAdmission !== undefined &&
+        admissionReservationId !== undefined
+      ) {
+        executionAdmission.markDispatched(admissionReservationId, {
+          boundary: 'tool_effect',
+          details: { hookEvent, hookName, shellType },
+        })
+        admissionDispatched = true
+      }
+      child = spawn(command.program, [...command.args], {
+        env: command.env,
+        cwd: command.cwd,
+        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
+        // Prevent visible console window on Windows (no-op on other platforms)
+        windowsHide: true,
+      }) as ChildProcessWithoutNullStreams
+    }
+  } catch (error) {
+    try {
+      if (
+        executionAdmission !== undefined &&
+        admissionReservationId !== undefined
+      ) {
+        try {
+          if (admissionDispatched) {
+            executionAdmission.holdUnknown(
+              admissionReservationId,
+              'hook_spawn_failed_after_dispatch',
+            )
+          } else {
+            executionAdmission.void(
+              admissionReservationId,
+              'hook_failed_before_dispatch',
+            )
+          }
+          admissionSettled = true
+        } catch (settlementError) {
+          logForDebugging(
+            `Hook admission settlement failed after spawn error: ${errorMessage(
+              settlementError,
+            )}`,
+          )
+        }
+      }
+    } finally {
+      acknowledgeAdmissionCompletion()
+    }
+    throw error
   }
 
   // Hooks use pipe mode — stdout must be streamed into JS so we can parse
   // the first response line to detect async hooks ({"async": true}).
   const hookTaskOutput = new TaskOutput(`hook_${child.pid}`, null)
-  const shellCommand = wrapSpawn(child, signal, hookTimeoutMs, hookTaskOutput)
+  const shellCommand = wrapSpawn(
+    child,
+    effectSignal,
+    hookTimeoutMs,
+    hookTaskOutput,
+  )
   // Track whether shellCommand ownership was transferred (e.g., to async hook registry)
   let shellCommandTransferred = false
   // Track whether stdin has already been written (to avoid "write after end" errors)
   let stdinWritten = false
 
-  if ((hook.async || hook.asyncRewake) && !forceSyncExecution) {
+  if ((hook.async || hook.asyncRewake) && !effectiveForceSyncExecution) {
     const processId = `async_hook_${child.pid}`
     logForDebugging(
       `Hooks: Config-based async hook, backgrounding process ${processId}`,
@@ -1311,7 +1416,7 @@ async function execCommandHook(
         logForDebugging(
           `Hooks: Parsed initial response: ${jsonStringify(parsed)}`,
         )
-        if (isAsyncHookJSONOutput(parsed) && !forceSyncExecution) {
+        if (isAsyncHookJSONOutput(parsed) && !effectiveForceSyncExecution) {
           const processId = `async_hook_${child.pid}`
           logForDebugging(
             `Hooks: Detected async hook, backgrounding process ${processId}`,
@@ -1336,7 +1441,10 @@ async function execCommandHook(
               status: 0,
             })
           }
-        } else if (isAsyncHookJSONOutput(parsed) && forceSyncExecution) {
+        } else if (
+          isAsyncHookJSONOutput(parsed) &&
+          effectiveForceSyncExecution
+        ) {
           logForDebugging(
             `Hooks: Detected async hook but forceSyncExecution is true, waiting for completion`,
           )
@@ -1440,7 +1548,7 @@ async function execCommandHook(
           stderr,
           output,
           status: exitCode!,
-          aborted: signal.aborted,
+          aborted: effectSignal.aborted,
         })
       })
     })
@@ -1504,6 +1612,37 @@ async function execCommandHook(
       }
     }
   } finally {
+    let admissionSettlementError: unknown
+    try {
+      if (
+        !admissionSettled &&
+        executionAdmission !== undefined &&
+        admissionReservationId !== undefined
+      ) {
+        if (admissionDispatched && (diagAborted || effectSignal.aborted)) {
+          executionAdmission.holdUnknown(
+            admissionReservationId,
+            'hook_cancelled_after_dispatch',
+          )
+        } else if (admissionDispatched) {
+          executionAdmission.reconcile(admissionReservationId, {
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+          })
+        } else {
+          executionAdmission.void(
+            admissionReservationId,
+            'hook_failed_before_dispatch',
+          )
+        }
+        admissionSettled = true
+      }
+    } catch (error) {
+      admissionSettlementError = error
+    } finally {
+      acknowledgeAdmissionCompletion()
+    }
     if (shouldEmitDiag) {
       logForDiagnosticsNoPII('info', 'hook_spawn_completed', {
         hook_event_name: hookEvent,
@@ -1517,6 +1656,9 @@ async function execCommandHook(
     // Clean up stream resources unless ownership was transferred (e.g., to async hook registry)
     if (!shellCommandTransferred) {
       shellCommand.cleanup()
+    }
+    if (admissionSettlementError !== undefined) {
+      throw admissionSettlementError
     }
   }
 }

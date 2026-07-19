@@ -3,6 +3,7 @@ import {
   AgenCDaemonConnectionLimiter,
   isDaemonControlMessage,
   isDaemonPreemptiveMessage,
+  isDaemonPriorityMessage,
 } from "./overload.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 
@@ -17,6 +18,7 @@ function request(method: string): JsonObject {
 describe("AgenC daemon overload control messages", () => {
   it("classifies only abort controls as daemon control messages", () => {
     expect(isDaemonControlMessage(request("request.cancel"))).toBe(true);
+    expect(isDaemonControlMessage(request("run.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("session.cancelTurn"))).toBe(true);
     expect(isDaemonControlMessage(request("tool.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("commandExec.terminate"))).toBe(true);
@@ -33,6 +35,7 @@ describe("AgenC daemon overload control messages", () => {
   it("classifies interactive decisions as preemptive without making them overload-exempt controls", () => {
     for (const method of [
       "request.cancel",
+      "run.cancel",
       "session.cancelTurn",
       "tool.cancel",
       "commandExec.terminate",
@@ -46,6 +49,29 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonPreemptiveMessage(request("message.send"))).toBe(false);
     expect(isDaemonPreemptiveMessage({ jsonrpc: JSON_RPC_VERSION })).toBe(false);
     expect(isDaemonPreemptiveMessage({ method: 1 })).toBe(false);
+  });
+
+  it("prioritizes bounded health, status, and session lookup methods", () => {
+    for (const method of [
+      "agent.list",
+      "run.status",
+      "run.result",
+      "run.replay",
+      "run.evidence",
+      "session.list",
+      "session.snapshot",
+      "session.hooks.status",
+      "health.ping",
+      "health.ready",
+      "health.stats",
+    ]) {
+      expect(isDaemonPriorityMessage(request(method))).toBe(true);
+      expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
+      expect(isDaemonControlMessage(request(method))).toBe(false);
+    }
+    expect(isDaemonPriorityMessage(request("agent.attach"))).toBe(false);
+    expect(isDaemonPriorityMessage(request("session.attach"))).toBe(false);
+    expect(isDaemonPriorityMessage(request("message.stream"))).toBe(false);
   });
 
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {
@@ -90,6 +116,9 @@ describe("AgenC daemon overload control messages", () => {
     });
 
     expect(limiter.tryStart(request("session.cancelTurn"), 0)).toMatchObject({
+      admitted: true,
+    });
+    expect(limiter.tryStart(request("run.cancel"), 0)).toMatchObject({
       admitted: true,
     });
     expect(limiter.tryStart(request("tool.cancel"), 0)).toMatchObject({

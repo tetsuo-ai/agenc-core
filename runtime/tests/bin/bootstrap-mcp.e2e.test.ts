@@ -93,6 +93,12 @@ function makeProviderRecorder(params: {
   let callCount = 0;
   return {
     name: "stub-live-mcp",
+    getExecutionProfile: async () => ({
+      provider: "stub-live-mcp",
+      model: "test-model",
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
+    }),
     chat: async () => response("unused"),
     chatStream: async (messages, _onChunk, options) => {
       params.seenMessagesByCall.push(cloneMessages(messages));
@@ -137,6 +143,12 @@ function makeBuiltinDiscoveryProvider(params: {
   let callCount = 0;
   return {
     name: "stub-builtins",
+    getExecutionProfile: async () => ({
+      provider: "stub-builtins",
+      model: "test-model",
+      usageReporting: "authoritative",
+      supportsMaxOutputTokens: true,
+    }),
     chat: async () => response("unused"),
     chatStream: async (_messages, _onChunk, options) => {
       params.seenToolNamesByCall.push(toolNames(options?.tools));

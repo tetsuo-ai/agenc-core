@@ -22,6 +22,7 @@ import type {
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
 import { randomUUID } from 'crypto'
+import { AdmissionDeniedError } from '../../budget/admission-client.js'
 import {
   getAPIProvider,
   isFirstPartyproviderBaseUrl,
@@ -58,10 +59,7 @@ import {
   toolToAPISchema,
 } from '../../utils/api.js'
 import { getOauthAccountInfo } from '../../utils/auth.js'
-import {
-  getMergedBetas,
-  getModelBetas,
-} from '../../utils/betas.js'
+import { getMergedBetas } from '../../utils/betas.js'
 import { getOrCreateUserID } from '../../utils/config.js'
 import {
   CAPPED_DEFAULT_MAX_TOKENS,
@@ -721,33 +719,28 @@ export async function verifyApiKey(
   }
 
   try {
-    // WARNING: if you change this to use a non-Haiku model, this request will fail in 1P unless it uses getCLISyspromptPrefix.
+    // Authentication is a control-plane probe, not an admitted execution.
+    // Use the non-generative models endpoint so verification cannot create an
+    // unjournaled paid model turn before a Session/run identity exists.
     const model = getSmallFastModel()
-    const betas = getModelBetas(model)
     return await returnValue(
       withRetry(
         () =>
           getproviderClient({
             apiKey,
-            maxRetries: 3,
+            maxRetries: 0,
             model,
             source: 'verify_api_key',
           }),
         async anthropic => {
-          const messages: MessageParam[] = [{ role: 'user', content: 'test' }]
-          // biome-ignore lint/plugin: API key verification is intentionally a minimal direct call
-          await anthropic.beta.messages.create({
-            model,
-            max_tokens: 1,
-            messages,
-            temperature: 1,
-            ...(betas.length > 0 && { betas }),
-            metadata: getAPIMetadata(),
-            ...getExtraBodyParams(),
-          })
+          await (
+            anthropic as unknown as {
+              models: { list: (params: { limit: number }) => Promise<unknown> }
+            }
+          ).models.list({ limit: 1 })
           return true
         },
-        { maxRetries: 2, model, thinkingConfig: { type: 'disabled' } }, // Use fewer retries for API key verification
+        { maxRetries: 0, model, thinkingConfig: { type: 'disabled' } },
       ),
     )
   } catch (errorFromRetry) {
@@ -895,6 +888,11 @@ export type Options = {
   providerOverride?: { model: string; baseURL: string; apiKey: string }
 }
 
+function assertLegacyAnthropicModelApiIsTestOnly(): void {
+  if (process.env.NODE_ENV === 'test') return
+  throw new AdmissionDeniedError('legacy_anthropic_model_api_disabled')
+}
+
 export async function queryModelWithoutStreaming({
   messages,
   systemPrompt,
@@ -910,6 +908,7 @@ export async function queryModelWithoutStreaming({
   signal: AbortSignal
   options: Options
 }): Promise<AssistantMessage> {
+  assertLegacyAnthropicModelApiIsTestOnly()
   // Store the assistant message but continue consuming the generator to ensure
   // logAPISuccessAndDuration gets called (which happens after all yields)
   let assistantMessage: AssistantMessage | undefined
@@ -956,6 +955,7 @@ export async function* queryModelWithStreaming({
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  assertLegacyAnthropicModelApiIsTestOnly()
   return yield* withStreamingVCR(messages, async function* () {
     yield* queryModel(
       messages,
@@ -3151,6 +3151,7 @@ export async function queryHaiku({
   signal: AbortSignal
   options: HaikuOptions
 }): Promise<AssistantMessage> {
+  assertLegacyAnthropicModelApiIsTestOnly()
   const result = await withVCR(
     [
       createUserMessage({
@@ -3210,6 +3211,7 @@ export async function queryWithModel({
   signal: AbortSignal
   options: QueryWithModelOptions
 }): Promise<AssistantMessage> {
+  assertLegacyAnthropicModelApiIsTestOnly()
   const result = await withVCR(
     [
       createUserMessage({

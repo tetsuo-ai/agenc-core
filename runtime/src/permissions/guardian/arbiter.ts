@@ -12,14 +12,12 @@
  * @module
  */
 
-import type { EventLog } from "../../session/event-log.js";
+import type { Event, EventLog } from "../../session/event-log.js";
 import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
-import type {
-  AdditionalSandboxPermissions,
-} from "../../sandbox/escalation/sandboxing.js";
+import type { AdditionalSandboxPermissions } from "../../sandbox/escalation/sandboxing.js";
 import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
@@ -41,10 +39,7 @@ import {
   type PermissionDecisionHook,
   type PermissionDecisionHookInput,
 } from "../../tools/hooks.js";
-import {
-  buildShellApprovalKey,
-  canonicalJsonKey,
-} from "../approval-cache.js";
+import { buildShellApprovalKey, canonicalJsonKey } from "../approval-cache.js";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
   type ApprovalPolicy as PermissionsApprovalPolicy,
@@ -56,12 +51,13 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../review-decision.js";
-import {
-  getAskRuleForTool,
-  getDenyRuleForTool,
-} from "../rules.js";
+import { getAskRuleForTool, getDenyRuleForTool } from "../rules.js";
 import { hookDispatcherApprovalSource } from "../tool-approval.js";
-import type { CanUseToolFn, ToolEvaluatorContext, ToolLike } from "../evaluator.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+  ToolLike,
+} from "../evaluator.js";
 import type {
   PermissionDecisionReason,
   ToolPermissionContext,
@@ -75,17 +71,13 @@ import {
 export type GuardianApprovalPolicy = PermissionsApprovalPolicy;
 
 export type GuardianSandboxMode =
-  | "danger_full_access"
-  | "read_only"
-  | "workspace_write"
-  | "external_sandbox";
+  "danger_full_access" | "read_only" | "workspace_write" | "external_sandbox";
 
 export type GuardianFileSystemSandboxKind =
-  | "restricted"
-  | "unrestricted"
-  | "external_sandbox";
+  "restricted" | "unrestricted" | "external_sandbox";
 
-export type GuardianExecApprovalRequirement = PermissionsExecApprovalRequirement;
+export type GuardianExecApprovalRequirement =
+  PermissionsExecApprovalRequirement;
 
 export interface GuardianClassifyToolOptions {
   readonly approvalPolicy: GuardianApprovalPolicy;
@@ -170,7 +162,8 @@ export function classifyToolApproval(
   }
 
   const sandboxBypass =
-    opts.sandboxMode === "danger_full_access" && opts.approvalPolicy === "never";
+    opts.sandboxMode === "danger_full_access" &&
+    opts.approvalPolicy === "never";
 
   if (tool.requiresUserInteraction?.() === true) {
     return { kind: "needs_approval", reason: "tool requires user interaction" };
@@ -182,7 +175,9 @@ export function classifyToolApproval(
     case "on_failure":
       return { kind: "skip", bypassSandbox: false };
     case "on_request": {
-      const needs = (tool as Tool & { requiresApproval?: boolean }).requiresApproval === true;
+      const needs =
+        (tool as Tool & { requiresApproval?: boolean }).requiresApproval ===
+        true;
       return needs
         ? { kind: "needs_approval", reason: "tool requested approval" }
         : { kind: "skip", bypassSandbox: false };
@@ -192,10 +187,16 @@ export function classifyToolApproval(
         (tool as Tool & { isReadOnly?: boolean }).isReadOnly === true;
       return readOnly
         ? { kind: "skip", bypassSandbox: false }
-        : { kind: "needs_approval", reason: "granular policy: mutation requires approval" };
+        : {
+            kind: "needs_approval",
+            reason: "granular policy: mutation requires approval",
+          };
     }
     case "untrusted":
-      return { kind: "needs_approval", reason: "untrusted policy: approve every call" };
+      return {
+        kind: "needs_approval",
+        reason: "untrusted policy: approve every call",
+      };
     default: {
       const _exhaustive: never = opts.approvalPolicy;
       void _exhaustive;
@@ -298,12 +299,10 @@ type GuardianHookDecisionReason = {
 };
 
 export type GuardianPermissionModeReason =
-  | PermissionDecisionReason
-  | GuardianHookDecisionReason;
+  PermissionDecisionReason | GuardianHookDecisionReason;
 
 export type GuardianPermissionModeSource =
-  | "pre-tool-use-hook"
-  | "permission-evaluator";
+  "pre-tool-use-hook" | "permission-evaluator";
 
 export interface GuardianPermissionModeOptions {
   readonly tool: ToolLike;
@@ -434,7 +433,30 @@ async function awaitWithAbort<T>(
   });
 }
 
-export async function requestApproval(
+export function requestApproval(
+  opts: RequestApprovalOpts,
+): Promise<RequestApprovalResult> {
+  const operation = resolveAndJournalApproval(opts);
+  const session = opts.ctx.invocation.session as
+    | (ToolInvocation["session"] & {
+        trackDurableOperation?<T>(operation: Promise<T>): Promise<T>;
+      })
+    | undefined;
+  return session?.trackDurableOperation?.(operation) ?? operation;
+}
+
+async function resolveAndJournalApproval(
+  opts: RequestApprovalOpts,
+): Promise<RequestApprovalResult> {
+  const journal = beginDurableApprovalJournal(opts);
+  const result = await resolveApproval(opts);
+  if (journal !== null) {
+    appendDurableApprovalDecision(opts.ctx, journal, result);
+  }
+  return result;
+}
+
+async function resolveApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
   const signal = opts.signal ?? opts.ctx.signal;
@@ -478,7 +500,10 @@ export async function requestApproval(
       throw err;
     }
     if (decision.kind === "allow") {
-      return { decision: { kind: "approved" }, source: hookDispatcherApprovalSource };
+      return {
+        decision: { kind: "approved" },
+        source: hookDispatcherApprovalSource,
+      };
     }
     if (decision.kind === "deny") {
       return {
@@ -508,7 +533,11 @@ export async function requestApproval(
       : resolveApprovalCache(opts.ctx.invocation);
     const approvalKeys =
       approvalCache !== null
-        ? buildApprovalCacheKeys(toolFromApprovalCtx(opts.ctx), opts.ctx.invocation, opts.args ?? {})
+        ? buildApprovalCacheKeys(
+            toolFromApprovalCtx(opts.ctx),
+            opts.ctx.invocation,
+            opts.args ?? {},
+          )
         : [];
     let fetchedResult: RequestApprovalResult | undefined;
     const fetchApprovalResult = async (): Promise<RequestApprovalResult> => {
@@ -522,11 +551,12 @@ export async function requestApproval(
           guardianReviewId: reviewId,
           ...(signal !== undefined ? { signal } : {}),
         };
-        const result = await opts.guardianApprovalReviewer!.reviewApprovalRequest({
-          ctx: guardianCtx,
-          args: opts.args ?? {},
-          ...(signal !== undefined ? { signal } : {}),
-        });
+        const result =
+          await opts.guardianApprovalReviewer!.reviewApprovalRequest({
+            ctx: guardianCtx,
+            args: opts.args ?? {},
+            ...(signal !== undefined ? { signal } : {}),
+          });
         if (!activeApprovalTurnStillMatches(opts.ctx, opts.getActiveTurnId)) {
           throw new ModalApprovalError("stale_modal_decision");
         }
@@ -591,9 +621,153 @@ export async function requestApproval(
   return { decision: { kind: "denied" }, source: "default_deny" };
 }
 
-function normalizeGuardianDecision(
-  decision: ReviewDecision,
-): { readonly decision: ReviewDecision; readonly reason?: string } {
+interface DurableApprovalJournalLink {
+  readonly requestEventId: string;
+  readonly requestEventSeq: number;
+}
+
+function beginDurableApprovalJournal(
+  opts: RequestApprovalOpts,
+): DurableApprovalJournalLink | null {
+  const session = (
+    opts.ctx.invocation as unknown as {
+      readonly session?: ToolInvocation["session"];
+    }
+  ).session;
+  // Structural unit-test/embedding shims predate rolloutStore. A real Session
+  // always owns the field; canonical production sessions fail closed when it
+  // has not been attached yet.
+  if (session === undefined) return null;
+  if (!("rolloutStore" in session)) return null;
+  if (session.rolloutStore === null) {
+    if (session.services.admissionRequired !== false) {
+      throw new Error(
+        `permission request ${opts.ctx.callId} has no canonical rollout store`,
+      );
+    }
+    return null;
+  }
+  const input = opts.args ?? approvalInputFromInvocation(opts.ctx.invocation);
+  const planContent =
+    opts.ctx.planContent ??
+    (typeof input.plan === "string" && input.plan.length > 0
+      ? input.plan
+      : undefined);
+  const planFilePath =
+    opts.ctx.planFilePath ??
+    (typeof input.planFilePath === "string" && input.planFilePath.length > 0
+      ? input.planFilePath
+      : undefined);
+  const request = session.emit(
+    {
+      id: opts.ctx.callId,
+      msg: {
+        type: "request_permissions",
+        payload: {
+          callId: opts.ctx.callId,
+          toolName: opts.ctx.toolName,
+          turnId: opts.ctx.turnId,
+          permissions: ["tool.use"],
+          ...(opts.ctx.retryReason !== undefined
+            ? { reason: opts.ctx.retryReason }
+            : {}),
+          input,
+          ...(planContent !== undefined ? { planContent } : {}),
+          ...(planFilePath !== undefined ? { planFilePath } : {}),
+          recordedAt: new Date().toISOString(),
+        },
+      },
+    },
+    { durable: true },
+  );
+  return canonicalApprovalCoordinates(request, opts.ctx.callId, "request");
+}
+
+function appendDurableApprovalDecision(
+  ctx: ApprovalCtx,
+  journal: DurableApprovalJournalLink,
+  result: RequestApprovalResult,
+): void {
+  const session = ctx.invocation.session;
+  const event = session.emit(
+    {
+      id: `permission-decision:${ctx.callId}`,
+      msg: {
+        type: "permission_decision",
+        payload: {
+          runId: session.conversationId,
+          callId: ctx.callId,
+          toolName: ctx.toolName,
+          turnId: ctx.turnId,
+          requestEventId: journal.requestEventId,
+          requestEventSeq: journal.requestEventSeq,
+          decision: result.decision.kind,
+          source: result.source,
+          ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          recordedAt: new Date().toISOString(),
+        },
+      },
+    },
+    { durable: true },
+  );
+  canonicalApprovalCoordinates(event, ctx.callId, "decision");
+}
+
+function canonicalApprovalCoordinates(
+  event: Event,
+  callId: string,
+  boundary: "request" | "decision",
+): DurableApprovalJournalLink {
+  if (
+    typeof event.eventId !== "string" ||
+    event.eventId.length === 0 ||
+    !Number.isSafeInteger(event.seq) ||
+    (event.seq ?? 0) <= 0
+  ) {
+    throw new Error(
+      `permission ${boundary} ${callId} was not assigned canonical journal coordinates`,
+    );
+  }
+  return {
+    requestEventId: event.eventId,
+    requestEventSeq: event.seq!,
+  };
+}
+
+function approvalInputFromInvocation(
+  invocation: ToolInvocation,
+): Record<string, unknown> {
+  switch (invocation.payload.kind) {
+    case "function":
+      return parseApprovalJsonObject(invocation.payload.arguments);
+    case "mcp":
+      return parseApprovalJsonObject(invocation.payload.rawArguments);
+    case "custom":
+      return { input: invocation.payload.input };
+    case "local_shell":
+      return { ...invocation.payload.params };
+    case "tool_search":
+      return { ...invocation.payload.arguments };
+  }
+}
+
+function parseApprovalJsonObject(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : { input: raw };
+  } catch {
+    return { input: raw };
+  }
+}
+
+function normalizeGuardianDecision(decision: ReviewDecision): {
+  readonly decision: ReviewDecision;
+  readonly reason?: string;
+} {
   switch (decision.kind) {
     case "approved":
     case "denied":
@@ -634,7 +808,11 @@ export async function arbitratePermissionMode(
                 readGuardianToolPermissionContext(permissionContext);
               if (permissionSnapshot) {
                 if (
-                  getDenyRuleForTool(permissionSnapshot, opts.tool.name, candidateArgs)
+                  getDenyRuleForTool(
+                    permissionSnapshot,
+                    opts.tool.name,
+                    candidateArgs,
+                  )
                 ) {
                   return {
                     behavior: "deny" as const,
@@ -642,7 +820,11 @@ export async function arbitratePermissionMode(
                   };
                 }
                 if (
-                  getAskRuleForTool(permissionSnapshot, opts.tool.name, candidateArgs)
+                  getAskRuleForTool(
+                    permissionSnapshot,
+                    opts.tool.name,
+                    candidateArgs,
+                  )
                 ) {
                   return {
                     behavior: "ask" as const,
@@ -706,10 +888,7 @@ export async function arbitratePermissionMode(
             ? (floorDecision.updatedInput ?? merged.args ?? opts.args)
             : (merged.args ?? opts.args),
         source: "pre-tool-use-hook",
-        reasonCode: hookPermissionReasonCode(
-          "allow",
-          merged.decisionReason,
-        ),
+        reasonCode: hookPermissionReasonCode("allow", merged.decisionReason),
         ...(merged.message !== undefined ? { message: merged.message } : {}),
         ...(merged.decisionReason !== undefined
           ? { decisionReason: merged.decisionReason }
@@ -721,7 +900,10 @@ export async function arbitratePermissionMode(
       kind: merged.behavior,
       args: merged.args,
       source: "pre-tool-use-hook",
-      reasonCode: hookPermissionReasonCode(merged.behavior, merged.decisionReason),
+      reasonCode: hookPermissionReasonCode(
+        merged.behavior,
+        merged.decisionReason,
+      ),
       ...(merged.message !== undefined ? { message: merged.message } : {}),
       ...(merged.decisionReason !== undefined
         ? { decisionReason: merged.decisionReason }
@@ -762,10 +944,13 @@ export async function arbitratePermissionMode(
     const reasonType = decision.decisionReason?.type;
     const isBypassImmune =
       (reasonType === "rule" &&
-        (decision.decisionReason as { rule?: { ruleBehavior?: string } } | undefined)
-          ?.rule?.ruleBehavior === "ask") ||
+        (
+          decision.decisionReason as
+            { rule?: { ruleBehavior?: string } } | undefined
+        )?.rule?.ruleBehavior === "ask") ||
       reasonType === "safetyCheck";
-    const sessionMode = readGuardianToolPermissionContext(permissionContext)?.mode;
+    const sessionMode =
+      readGuardianToolPermissionContext(permissionContext)?.mode;
     if (sessionMode === "bypassPermissions" && !isBypassImmune) {
       return {
         kind: "allow",
@@ -816,7 +1001,7 @@ export async function requestToolUserApproval(
     return { allow: false, cause: "stale_modal_decision" };
   }
 
-  emitApprovalPromptEvents(opts);
+  const requestEvent = emitApprovalPromptEvents(opts);
   const approvalCache = resolveApprovalCache(opts.invocation);
   const approvalKeys =
     approvalCache !== null
@@ -865,6 +1050,7 @@ export async function requestToolUserApproval(
       );
     });
 
+  let fetchedReviewDecision: ReviewDecision | undefined;
   const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
     const decision = await fetchModalDecision();
     if (!activeTurnStillMatches(opts.currentTurnId, opts.getActiveTurnId)) {
@@ -874,6 +1060,7 @@ export async function requestToolUserApproval(
       throw new ModalApprovalError("stale_modal_decision");
     }
     if (decision.reviewDecision) {
+      fetchedReviewDecision = decision.reviewDecision;
       if (!reviewDecisionIsAllow(decision.reviewDecision)) {
         throw new ModalApprovalError(
           decision.behavior === "deny" ? "denied" : "aborted",
@@ -896,17 +1083,27 @@ export async function requestToolUserApproval(
             fetchDecision: resolveModalReviewDecision,
           })
         : await resolveModalReviewDecision();
+    appendLegacyApprovalDecision(opts, requestEvent, reviewDecision);
     return { allow: true, reviewDecision };
   } catch (error) {
     if (error instanceof ModalApprovalError) {
+      appendLegacyApprovalDecision(
+        opts,
+        requestEvent,
+        fetchedReviewDecision ?? {
+          kind: error.cause === "denied" ? "denied" : "abort",
+        },
+      );
       return { allow: false, cause: error.cause };
     }
     throw error;
   }
 }
 
-function emitApprovalPromptEvents(opts: RequestToolUserApprovalOpts): void {
-  if (!opts.eventLog) return;
+function emitApprovalPromptEvents(
+  opts: RequestToolUserApprovalOpts,
+): Event | null {
+  if (!opts.eventLog) return null;
   const subId = opts.subId ?? opts.callId ?? "approval";
   const callId = opts.callId ?? opts.subId ?? "approval";
   // Notification hooks fire whenever the runtime starts WAITING on the
@@ -914,9 +1111,8 @@ function emitApprovalPromptEvents(opts: RequestToolUserApprovalOpts): void {
   // approval prompt itself).
   void (async () => {
     try {
-      const { dispatchNotification } = await import(
-        "../../llm/hooks/dispatcher.js"
-      );
+      const { dispatchNotification } =
+        await import("../../llm/hooks/dispatcher.js");
       await dispatchNotification({
         hook_event_name: "Notification",
         notification_type: "permission_request",
@@ -939,17 +1135,54 @@ function emitApprovalPromptEvents(opts: RequestToolUserApprovalOpts): void {
       },
     },
   });
-  opts.eventLog.emit({
+  return opts.eventLog.emit({
     id: subId,
     msg: {
       type: "request_permissions",
       payload: {
         callId,
         toolName: opts.tool.name,
+        turnId: opts.currentTurnId,
         permissions: deriveToolPermissions(opts.tool),
+        ...(opts.approvalReason !== undefined
+          ? { reason: opts.approvalReason }
+          : {}),
+        input: opts.args,
+        recordedAt: new Date().toISOString(),
       },
     },
   });
+}
+
+function appendLegacyApprovalDecision(
+  opts: RequestToolUserApprovalOpts,
+  requestEvent: Event | null,
+  decision: ReviewDecision,
+): void {
+  if (requestEvent === null || opts.eventLog === undefined) return;
+  const requestCoordinates = canonicalApprovalCoordinates(
+    requestEvent,
+    opts.callId ?? opts.subId ?? "approval",
+    "request",
+  );
+  const callId = opts.callId ?? opts.subId ?? "approval";
+  const event = opts.eventLog.emit({
+    id: `permission-decision:${callId}`,
+    msg: {
+      type: "permission_decision",
+      payload: {
+        runId: opts.invocation.session.conversationId,
+        callId,
+        toolName: opts.tool.name,
+        turnId: opts.currentTurnId,
+        requestEventId: requestCoordinates.requestEventId,
+        requestEventSeq: requestCoordinates.requestEventSeq,
+        decision: decision.kind,
+        recordedAt: new Date().toISOString(),
+      },
+    },
+  });
+  canonicalApprovalCoordinates(event, callId, "decision");
 }
 
 function readGuardianToolPermissionContext(
@@ -989,18 +1222,21 @@ function activeApprovalTurnStillMatches(
   ctx: ApprovalCtx,
   getActiveTurnId?: (() => string | null) | undefined,
 ): boolean {
-  const active = typeof getActiveTurnId === "function"
-    ? getActiveTurnId()
-    : readSessionActiveTurnId(ctx.invocation.session);
+  const active =
+    typeof getActiveTurnId === "function"
+      ? getActiveTurnId()
+      : readSessionActiveTurnId(ctx.invocation.session);
   return active === undefined || active === ctx.turnId;
 }
 
 function readSessionActiveTurnId(session: unknown): string | null | undefined {
-  const activeTurn = (session as {
-    readonly activeTurn?: {
-      unsafePeek?: () => { readonly turnId?: unknown } | undefined;
-    };
-  })?.activeTurn;
+  const activeTurn = (
+    session as {
+      readonly activeTurn?: {
+        unsafePeek?: () => { readonly turnId?: unknown } | undefined;
+      };
+    }
+  )?.activeTurn;
   if (typeof activeTurn?.unsafePeek !== "function") return undefined;
   const turnId = activeTurn?.unsafePeek?.()?.turnId;
   return typeof turnId === "string" && turnId.length > 0 ? turnId : null;
@@ -1015,9 +1251,12 @@ function toolFromApprovalCtx(ctx: ApprovalCtx): Tool {
 function resolveApprovalCache(
   invocation: ToolInvocation,
 ): ApprovalCacheAdapter | null {
-  const session = asRecord((invocation as { readonly session?: unknown }).session);
+  const session = asRecord(
+    (invocation as { readonly session?: unknown }).session,
+  );
   const services = asRecord(session?.services);
-  const store = services?.toolApprovals as ApprovalCacheAdapter | null | undefined;
+  const store = services?.toolApprovals as
+    ApprovalCacheAdapter | null | undefined;
   return store && typeof store.withCachedApproval === "function" ? store : null;
 }
 
@@ -1041,7 +1280,9 @@ function buildApprovalCacheKeys(
     const command = Array.isArray(args.args)
       ? [
           typeof args.command === "string" ? args.command : "",
-          ...args.args.filter((part): part is string => typeof part === "string"),
+          ...args.args.filter(
+            (part): part is string => typeof part === "string",
+          ),
         ].filter((part) => part.length > 0)
       : invocation.payload.kind === "local_shell"
         ? invocation.payload.params.command
@@ -1051,13 +1292,19 @@ function buildApprovalCacheKeys(
             ? [args.cmd]
             : [];
     if (command.length > 0) {
-      const sandboxPermissions: string[] = [invocation.turn.sandboxPolicy.value];
+      const sandboxPermissions: string[] = [
+        invocation.turn.sandboxPolicy.value,
+      ];
       if (args.sandbox_permissions !== undefined) {
         sandboxPermissions.push(canonicalJsonKey(args.sandbox_permissions));
       }
-      const additionalPermissions: string[] = [invocation.turn.approvalPolicy.value];
+      const additionalPermissions: string[] = [
+        invocation.turn.approvalPolicy.value,
+      ];
       if (args.additional_permissions !== undefined) {
-        additionalPermissions.push(canonicalJsonKey(args.additional_permissions));
+        additionalPermissions.push(
+          canonicalJsonKey(args.additional_permissions),
+        );
       }
       return [
         buildShellApprovalKey({

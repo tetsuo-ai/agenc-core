@@ -184,6 +184,8 @@ export class GrokAcpProvider implements LLMProvider {
     return {
       provider: "grok",
       model: this.config.model,
+      usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
       ...(this.config.contextWindowTokens !== undefined
         ? { contextWindowTokens: this.config.contextWindowTokens }
         : {}),
@@ -258,7 +260,13 @@ export class GrokAcpProvider implements LLMProvider {
       return {
         content: result.text,
         toolCalls: [],
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        usage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          availability: "unknown",
+          provenance: "synthetic",
+        },
         model,
         finishReason: result.stopReason === "max_tokens" ? "length" : "stop",
       };

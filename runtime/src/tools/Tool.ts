@@ -11,6 +11,11 @@ import type { z } from 'zod/v4'
 import type { Command } from '../commands.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
 import type { ThinkingConfig } from '../utils/thinking.js'
+import type {
+  ToolAdmissionEstimate,
+  ToolAdmissionUsage,
+  ToolRecoveryCategory,
+} from './types.js'
 
 export type ToolInputJSONSchema = {
   [x: string]: unknown
@@ -344,6 +349,8 @@ export function filterToolProgressMessages(
 
 export type ToolResult<T> = {
   data: T
+  /** Authoritative metered usage retained across the legacy compatibility adapter. */
+  admissionUsage?: ToolAdmissionUsage
   newMessages?: (
     | UserMessage
     | AssistantMessage
@@ -393,6 +400,12 @@ export type Tool<
    * The tool can be looked up by any of these names in addition to its primary name.
    */
   aliases?: string[]
+  /** Durable execution recovery semantics used by the admission kernel. */
+  recoveryCategory?: ToolRecoveryCategory
+  /** Conservative charge bound for a legacy tool invocation. */
+  admissionEstimate?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => ToolAdmissionEstimate
   /**
    * One-line capability phrase used by ToolSearch for keyword matching.
    * Helps the model find this tool via keyword search when it's deferred.

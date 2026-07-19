@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   InvalidAgentPathError,
+  AgentConcurrencyLimitError,
   AgentPathExistsError,
   AgentRegistry,
   MEMORY_AGENT_PATH,
@@ -17,7 +18,7 @@ import { createAgentRoleWorkspace, resolveAgentRole } from "./role.js";
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 
 describe("AgentRegistry", () => {
-  it("I-63: slot acquisition is atomic and uncapped under the lock", async () => {
+  it("I-63: slot acquisition is atomic and bounded under the lock", async () => {
     const reg = new AgentRegistry({ maxThreads: 3 });
     const reservations = await Promise.all([
       reg.reserveSpawnSlot(),
@@ -25,7 +26,16 @@ describe("AgentRegistry", () => {
       reg.reserveSpawnSlot(),
     ]);
     expect(reservations).toHaveLength(3);
-    await expect(reg.reserveSpawnSlot()).resolves.toBeDefined();
+    await expect(reg.reserveSpawnSlot()).rejects.toEqual(
+      expect.objectContaining({
+        name: "AgentConcurrencyLimitError",
+        limit: 3,
+        activeCount: 3,
+      }),
+    );
+    await expect(reg.reserveSpawnSlot()).rejects.toBeInstanceOf(
+      AgentConcurrencyLimitError,
+    );
   });
 
   it("release() rolls back the slot counter", async () => {
@@ -115,32 +125,29 @@ describe("AgentRegistry", () => {
     expect(reg.activeCount).toBe(0);
   });
 
-  it(
-    "releaseSpawnedThread keeps nicknames reserved like reference",
-    async () => {
-      const reg = new AgentRegistry();
-      const role = resolveAgentRole(ROLE_WORKSPACE, undefined);
-      // Allocate via the registry (the single source of truth).
-      const nickname = reg.allocateNickname(role);
-      const reservation = await reg.reserveSpawnSlot();
-      reservation.finalize(
-        buildChildMetadata({
-          agentId: "t-reuse",
-          parentPath: "/root",
-          role,
-          roleWorkspaceId: ROLE_WORKSPACE.id,
-          roleFingerprint: "test-role-fingerprint",
-          nickname,
-          depth: 1,
-        }),
-      );
-      expect(reg.hasNickname(nickname)).toBe(true);
-      await reg.releaseSpawnedThread("t-reuse");
-      expect(reg.hasNickname(nickname)).toBe(true);
-      const next = reg.allocateNickname(role);
-      expect(next).not.toBe(nickname);
-    },
-  );
+  it("releaseSpawnedThread keeps nicknames reserved like reference", async () => {
+    const reg = new AgentRegistry();
+    const role = resolveAgentRole(ROLE_WORKSPACE, undefined);
+    // Allocate via the registry (the single source of truth).
+    const nickname = reg.allocateNickname(role);
+    const reservation = await reg.reserveSpawnSlot();
+    reservation.finalize(
+      buildChildMetadata({
+        agentId: "t-reuse",
+        parentPath: "/root",
+        role,
+        roleWorkspaceId: ROLE_WORKSPACE.id,
+        roleFingerprint: "test-role-fingerprint",
+        nickname,
+        depth: 1,
+      }),
+    );
+    expect(reg.hasNickname(nickname)).toBe(true);
+    await reg.releaseSpawnedThread("t-reuse");
+    expect(reg.hasNickname(nickname)).toBe(true);
+    const next = reg.allocateNickname(role);
+    expect(next).not.toBe(nickname);
+  });
 
   it("registers the root thread outside the spawn counter", () => {
     const reg = new AgentRegistry({ maxThreads: 1 });
