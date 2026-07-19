@@ -105,6 +105,7 @@ describe("AgenC daemon disconnect resilience", () => {
   it("bounds buffered events and preserves their order for replay", async () => {
     const { sessionManager, multiplexer } = createHarness(2);
     const replayedSequences: number[] = [];
+    let retiredCount = 0;
 
     await sessionManager.createSession({
       agentId: "agent_1",
@@ -137,10 +138,20 @@ describe("AgenC daemon disconnect resilience", () => {
         if (typeof params === "object" && params !== null && "sequence" in params) {
           replayedSequences.push(Number(params.sequence));
         }
+        if (
+          message.method === "event.event_gap" &&
+          typeof params === "object" &&
+          params !== null &&
+          "retiredCount" in params
+        ) {
+          retiredCount = Number(params.retiredCount);
+        }
       },
     });
     await multiplexer.attachClientToSession("session_1", "client_1");
 
-    expect(replayedSequences).toEqual([2, 3]);
+    // The explicit gap marker counts toward the hard two-event cap.
+    expect(retiredCount).toBe(2);
+    expect(replayedSequences).toEqual([3]);
   });
 });

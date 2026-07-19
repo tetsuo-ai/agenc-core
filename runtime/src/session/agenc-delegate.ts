@@ -28,7 +28,7 @@ import type {
 } from "./turn-context.js";
 import { buildTurnContext } from "./turn-context.js";
 import { Session, type AgentStatus, type SessionServices } from "./session.js";
-import type { Event, EventMsg } from "./event-log.js";
+import { emitWarning, type Event, type EventMsg } from "./event-log.js";
 import type { ReviewOutput, ReviewRequest } from "./review.js";
 import {
   REVIEW_SYSTEM_PROMPT,
@@ -47,6 +47,12 @@ import {
 } from "../sandbox/execution-broker.js";
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
+import {
+  mountChildRunJournal,
+  recordUnconstructedChildRunTerminal,
+  type ChildRunTerminalResult,
+} from "./child-run-journal.js";
+import { TerminalRunEpochOpenError } from "./rollout-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
@@ -642,7 +648,9 @@ function buildChildServices(
     ...(parent.services.executionAdmission !== undefined
       ? {
           executionAdmission: parent.services.executionAdmission.forSession({
+            runId: childSessionId,
             sessionId: childSessionId,
+            parentRunId: parent.services.executionAdmission.scope.runId,
             parentScopeId: parent.conversationId,
           }),
         }
@@ -732,6 +740,13 @@ function delegateSpawnCancellationError(
   return new AdmissionDeniedError(reason, "cancelled");
 }
 
+function reviewTerminalReason(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message.length > 0)
+    return reason.message;
+  if (typeof reason === "string" && reason.length > 0) return reason;
+  return fallback;
+}
+
 export async function spawnAgenCDelegateThread(
   parent: Session,
   req: AgenCReviewOneShotRequest,
@@ -785,8 +800,43 @@ export async function spawnAgenCDelegateThread(
   let sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let providerLease: DelegateProviderLease | undefined;
   let childSession: Session | undefined;
+  let childSessionConfiguration: SessionConfiguration | undefined;
   let spawnDispatched = false;
   let spawnSettled = false;
+  let assistantText: string | null = null;
+  let runError: Error | null = null;
+  let delegateInputStarted = false;
+  const terminalResult = (): ChildRunTerminalResult => {
+    if (childController.signal.aborted) {
+      return {
+        status: "cancelled",
+        stopReason: reviewTerminalReason(
+          childController.signal.reason,
+          "review_delegate_interrupted",
+        ),
+        finalMessage: assistantText,
+      };
+    }
+    if (runError !== null) {
+      return {
+        status: "failed",
+        stopReason: runError.message,
+        finalMessage: assistantText,
+      };
+    }
+    if (delegateInputStarted) {
+      return {
+        status: "completed",
+        stopReason: "review_completed",
+        finalMessage: assistantText,
+      };
+    }
+    return {
+      status: "cancelled",
+      stopReason: "review_delegate_shutdown_before_input",
+      finalMessage: null,
+    };
+  };
   try {
     if (childController.signal.aborted || spawnLease?.signal.aborted) {
       throw delegateSpawnCancellationError(
@@ -795,14 +845,13 @@ export async function spawnAgenCDelegateThread(
           : childController.signal,
       );
     }
-    const childSessionConfiguration = buildChildSessionConfiguration(
+    childSessionConfiguration = buildChildSessionConfiguration(
       req.parentContext,
       reviewerModel,
     );
-    sandboxExecutionBroker =
-      parent.services.sandboxExecutionBroker?.forkForCwd(
-        childSessionConfiguration.cwd,
-      );
+    sandboxExecutionBroker = parent.services.sandboxExecutionBroker?.forkForCwd(
+      childSessionConfiguration.cwd,
+    );
     providerLease = createDelegateProvider(
       parent.provider,
       reviewerModel,
@@ -872,6 +921,12 @@ export async function spawnAgenCDelegateThread(
       modelInfo: reviewerModelInfo,
       agentStatus: { status: "pending_init" },
     });
+    mountChildRunJournal({
+      parent,
+      child: childSession,
+      originator: "agenc-review-delegate",
+      terminalResult,
+    });
     if (spawnLease !== undefined) {
       admission?.reconcile(spawnLease.reservation.reservationId, {
         inputTokens: 0,
@@ -881,6 +936,8 @@ export async function spawnAgenCDelegateThread(
       spawnSettled = true;
     }
   } catch (error) {
+    runError ??= error instanceof Error ? error : new Error(String(error));
+    let terminalJournalError: unknown;
     if (spawnLease !== undefined && !spawnSettled) {
       try {
         if (spawnDispatched) {
@@ -907,6 +964,28 @@ export async function spawnAgenCDelegateThread(
         // Preserve the admission/setup failure.
       }
     }
+    if (
+      spawnDispatched &&
+      (childSession === undefined || childSession.rolloutStore === null)
+    ) {
+      try {
+        recordUnconstructedChildRunTerminal({
+          parent,
+          childRunId: childSessionId,
+          cwd: childSessionConfiguration?.cwd ?? req.parentContext.cwd,
+          model: reviewerModel,
+          modelProvider:
+            readProviderIdentity(providerLease?.provider ?? parent.provider) ??
+            (providerLease?.provider ?? parent.provider).name,
+          originator: "agenc-review-delegate-preconstruction",
+          result: terminalResult(),
+        });
+      } catch (journalError) {
+        if (!(journalError instanceof TerminalRunEpochOpenError)) {
+          terminalJournalError = journalError;
+        }
+      }
+    }
     if (sandboxExecutionBroker !== undefined) {
       try {
         await disposeSandboxExecutionBroker(sandboxExecutionBroker);
@@ -919,15 +998,19 @@ export async function spawnAgenCDelegateThread(
     } catch {
       // Preserve the admission/setup failure.
     }
+    if (terminalJournalError !== undefined) {
+      throw new AggregateError(
+        [error, terminalJournalError],
+        "review delegate spawn and terminal journaling failed",
+      );
+    }
     throw error;
   } finally {
     if (spawnLease !== undefined) {
       // The spawn boundary is physically complete once construction either
       // returns or its rollback finishes. Never let a reconciliation/journal
       // fault retain live daemon capacity indefinitely.
-      admission?.acknowledgeCompletion(
-        spawnLease.reservation.reservationId,
-      );
+      admission?.acknowledgeCompletion(spawnLease.reservation.reservationId);
     }
   }
 
@@ -942,8 +1025,6 @@ export async function spawnAgenCDelegateThread(
     maxDepth: DELEGATE_EVENT_QUEUE_DEPTH,
   });
   const txSub = new AsyncQueue<AgenCDelegateOp>();
-  let assistantText: string | null = null;
-  let runError: Error | null = null;
 
   const unsubscribe = activeChildSession.eventLog.subscribe((event) => {
     if (event.msg.type === "agent_message") {
@@ -977,6 +1058,7 @@ export async function spawnAgenCDelegateThread(
           ...req,
           input: op.input,
         });
+        delegateInputStarted = true;
         const reviewCtx = buildReviewTurnContext(
           req.parentContext,
           reviewerModel,
@@ -1017,18 +1099,35 @@ export async function spawnAgenCDelegateThread(
       } catch (error) {
         runError ??= error instanceof Error ? error : new Error(String(error));
       }
+      const cleanupErrors: unknown[] = [];
       if (sandboxExecutionBroker !== undefined) {
         try {
           await disposeSandboxExecutionBroker(sandboxExecutionBroker);
         } catch (error) {
-          runError ??=
-            error instanceof Error ? error : new Error(String(error));
+          cleanupErrors.push(error);
         }
       }
       try {
         await activeProviderLease.ownedProvider?.dispose?.();
       } catch (error) {
-        runError ??= error instanceof Error ? error : new Error(String(error));
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length > 0) {
+        try {
+          emitWarning(
+            parent.eventLog,
+            parent.nextInternalSubId(),
+            "review_delegate_resource_cleanup_failed",
+            cleanupErrors
+              .map((error) =>
+                error instanceof Error ? error.message : String(error),
+              )
+              .join("; "),
+          );
+        } catch {
+          // The child terminal is already sealed. Diagnostic publication must
+          // not change the completed/failed result observed by the caller.
+        }
       }
     }
   })();
@@ -1149,7 +1248,10 @@ export async function runAgenCReviewOneShot(
       providerError = thread.error();
     }
   } catch (err) {
-    if (err instanceof AdmissionDeniedError && !childController.signal.aborted) {
+    if (
+      err instanceof AdmissionDeniedError &&
+      !childController.signal.aborted
+    ) {
       fatalAdmissionError = err;
     } else {
       providerError = err instanceof Error ? err : new Error(String(err));

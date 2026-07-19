@@ -9,22 +9,26 @@
  * already present in session/session-store.ts (maxEventSeqInRollout).
  */
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { serializeRolloutItem } from "../session/rollout-item.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { FileThreadStore } from "../thread-store/store.js";
 import { readRolloutHistory } from "../agents/thread-manager.js";
-import { backfillProjectRollouts } from "./backfill.js";
+import { backfillProjectRollouts, backfillRolloutFile } from "./backfill.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import { StateThreadRepository } from "./threads.js";
 
 let home = "";
 let cwd = "";
@@ -191,6 +195,283 @@ describe("rollout parse guards — corrupt interior line", () => {
           .get()?.count,
       ).toBe(2);
     } finally {
+      driver.close();
+    }
+  });
+
+  it("backfill refuses to index a complete JSON object without its newline commit boundary", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "unterminated-full");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-unterminated-full.jsonl",
+      );
+      const completeLine = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "not committed" },
+      });
+      writeFileSync(rolloutPath, completeLine.slice(0, -1));
+
+      expect(() =>
+        backfillProjectRollouts({ projectDir: driver.projectDir, driver }),
+      ).toThrow(/unterminated canonical rollout/);
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(0);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("incremental backfill leaves an unterminated appended record unprojected", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "unterminated-tail");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-unterminated-tail.jsonl",
+      );
+      writeFileSync(
+        rolloutPath,
+        serializeRolloutItem({
+          type: "response_item",
+          payload: { role: "user", content: "committed" },
+        }),
+      );
+      expect(
+        backfillProjectRollouts({ projectDir: driver.projectDir, driver }),
+      ).toMatchObject({ itemsIndexed: 1 });
+
+      const appended = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "assistant", content: "not committed" },
+      });
+      appendFileSync(rolloutPath, appended.slice(0, -1));
+
+      expect(() =>
+        backfillProjectRollouts({ projectDir: driver.projectDir, driver }),
+      ).toThrow(/unterminated canonical rollout/);
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(1);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("bounds full and incremental reads to the captured file size", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "bounded-snapshot");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-bounded-snapshot.jsonl",
+      );
+      const rows = ["one", "two", "three", "four"].map((content) =>
+        serializeRolloutItem({
+          type: "response_item",
+          payload: { role: "user", content },
+        }),
+      );
+      writeFileSync(rolloutPath, rows[0]);
+      const firstSnapshotSize = statSync(rolloutPath).size;
+      const threads = new StateThreadRepository(driver);
+      const readReceipt = threads.getBackfillFile.bind(threads);
+      const fullRace = vi
+        .spyOn(threads, "getBackfillFile")
+        .mockImplementationOnce((path) => {
+          appendFileSync(rolloutPath, rows[1]);
+          return readReceipt(path);
+        });
+      expect(
+        backfillRolloutFile({ rolloutPath, threads }),
+      ).toMatchObject({ itemsIndexed: 1 });
+      fullRace.mockRestore();
+      expect(threads.getBackfillFile(rolloutPath)).toMatchObject({
+        size: firstSnapshotSize,
+        itemCount: 1,
+      });
+      expect(backfillRolloutFile({ rolloutPath, threads })).toMatchObject({
+        itemsIndexed: 1,
+      });
+
+      appendFileSync(rolloutPath, rows[2]);
+      const thirdSnapshotSize = statSync(rolloutPath).size;
+      const incrementalRace = vi
+        .spyOn(threads, "getBackfillFile")
+        .mockImplementationOnce((path) => {
+          const receipt = readReceipt(path);
+          appendFileSync(rolloutPath, rows[3]);
+          return receipt;
+        });
+      expect(backfillRolloutFile({ rolloutPath, threads })).toMatchObject({
+        itemsIndexed: 1,
+      });
+      incrementalRace.mockRestore();
+      expect(threads.getBackfillFile(rolloutPath)).toMatchObject({
+        size: thirdSnapshotSize,
+        itemCount: 3,
+      });
+      expect(backfillRolloutFile({ rolloutPath, threads })).toMatchObject({
+        itemsIndexed: 1,
+      });
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(4);
+    } finally {
+      vi.restoreAllMocks();
+      driver.close();
+    }
+  });
+
+  it("fails closed when the rollout path is replaced after snapshot open", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "replaced-snapshot");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-replaced-snapshot.jsonl",
+      );
+      const original = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "original" },
+      });
+      const replacement = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "replacement" },
+      });
+      writeFileSync(rolloutPath, original);
+      const threads = new StateThreadRepository(driver);
+      const aside = `${rolloutPath}.replaced`;
+      const receipt = vi
+        .spyOn(threads, "getBackfillFile")
+        .mockImplementationOnce(() => {
+          renameSync(rolloutPath, aside);
+          writeFileSync(rolloutPath, replacement);
+          return undefined;
+        });
+
+      expect(() => backfillRolloutFile({ rolloutPath, threads })).toThrow(
+        /changed while capturing a bounded projection snapshot/,
+      );
+      receipt.mockRestore();
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      driver.close();
+    }
+  });
+
+  it("rolls back a full projection when the path is replaced during its DB write", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "replaced-full-commit");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-replaced-full-commit.jsonl",
+      );
+      const original = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "original" },
+      });
+      const replacement = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "replacement" },
+      });
+      writeFileSync(rolloutPath, original);
+      const threads = new StateThreadRepository(driver);
+      const replace = threads.replaceRolloutItems.bind(threads);
+      const aside = `${rolloutPath}.during-full-commit`;
+      vi.spyOn(threads, "replaceRolloutItems").mockImplementationOnce((params) => {
+        replace(params);
+        renameSync(rolloutPath, aside);
+        writeFileSync(rolloutPath, replacement);
+      });
+
+      expect(() => backfillRolloutFile({ rolloutPath, threads })).toThrow(
+        /changed while capturing a bounded projection snapshot/,
+      );
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(0);
+      expect(threads.getBackfillFile(rolloutPath)).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+      driver.close();
+    }
+  });
+
+  it("rolls back an incremental projection when the path is replaced during its DB write", () => {
+    const driver: StateSqliteDriver = openStateDatabases({ cwd });
+    try {
+      const sessionDir = join(driver.projectDir, "sessions", "replaced-tail-commit");
+      mkdirSync(sessionDir, { recursive: true });
+      const rolloutPath = join(
+        sessionDir,
+        "rollout-2026-04-29T00-00-00-000Z-replaced-tail-commit.jsonl",
+      );
+      const first = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "user", content: "first" },
+      });
+      const second = serializeRolloutItem({
+        type: "response_item",
+        payload: { role: "assistant", content: "second" },
+      });
+      writeFileSync(rolloutPath, first);
+      const threads = new StateThreadRepository(driver);
+      backfillRolloutFile({ rolloutPath, threads });
+      const receiptBefore = threads.getBackfillFile(rolloutPath);
+      appendFileSync(rolloutPath, second);
+      const append = threads.appendRolloutItems.bind(threads);
+      const aside = `${rolloutPath}.during-tail-commit`;
+      vi.spyOn(threads, "appendRolloutItems").mockImplementationOnce((params) => {
+        append(params);
+        renameSync(rolloutPath, aside);
+        writeFileSync(rolloutPath, first);
+      });
+
+      expect(() => backfillRolloutFile({ rolloutPath, threads })).toThrow(
+        /changed while capturing a bounded projection snapshot/,
+      );
+      expect(
+        driver
+          .prepareState<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_rollout_items",
+          )
+          .get()?.count,
+      ).toBe(1);
+      expect(threads.getBackfillFile(rolloutPath)).toEqual(receiptBefore);
+    } finally {
+      vi.restoreAllMocks();
       driver.close();
     }
   });

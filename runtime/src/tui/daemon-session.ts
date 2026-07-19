@@ -1064,7 +1064,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
   }
   if (method === "event.message_chunk" && typeof params.delta === "string") {
     return {
-      id: stringParam(params.eventId, "message-delta"),
+      id: daemonTranscriptEventId(params, "message-delta"),
       type: "agent_message_delta",
       payload: { delta: params.delta },
     };
@@ -1075,7 +1075,10 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     typeof params.toolName === "string"
   ) {
     return {
-      id: stringParam(params.eventId, `tool-request:${params.requestId}`),
+      id: daemonTranscriptEventId(
+        params,
+        `tool-request:${params.requestId}`,
+      ),
       type: "tool_call_started",
       payload: {
         callId: params.requestId,
@@ -1086,7 +1089,10 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
   }
   if (method === "event.permission_request" && typeof params.requestId === "string") {
     return {
-      id: stringParam(params.eventId, `permission-request:${params.requestId}`),
+      id: daemonTranscriptEventId(
+        params,
+        `permission-request:${params.requestId}`,
+      ),
       type: "request_permissions",
       payload: {
         callId: params.requestId,
@@ -1114,7 +1120,10 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     Array.isArray(params.questions)
   ) {
     return {
-      id: stringParam(params.eventId, `user-input-request:${params.requestId}`),
+      id: daemonTranscriptEventId(
+        params,
+        `user-input-request:${params.requestId}`,
+      ),
       type: "request_user_input",
       payload: {
         requestId: params.requestId,
@@ -1136,7 +1145,10 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     isJsonObject(params.request)
   ) {
     return {
-      id: stringParam(params.eventId, `mcp-elicitation:${String(params.requestId)}`),
+      id: daemonTranscriptEventId(
+        params,
+        `mcp-elicitation:${String(params.requestId)}`,
+      ),
       type: "mcp_elicitation_request",
       payload: {
         requestId: params.requestId,
@@ -1150,7 +1162,15 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     return transcriptEventFromAgentStatus(params);
   }
   if (method === "event.session_event" && isJsonObject(params.event)) {
-    return params.event;
+    return {
+      ...params.event,
+      id: daemonTranscriptEventId(
+        params,
+        typeof params.event.id === "string"
+          ? params.event.id
+          : "session-event",
+      ),
+    };
   }
   return event;
 }
@@ -1265,7 +1285,7 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   const turnId = stringParam(params.turnId, stringParam(params.eventId, "status"));
   if (status === "error") {
     return {
-      id: stringParam(params.eventId, turnId),
+      id: daemonTranscriptEventId(params, turnId),
       type: "error",
       payload: {
         turnId,
@@ -1274,7 +1294,7 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
     };
   }
   return {
-    id: stringParam(params.eventId, turnId),
+    id: daemonTranscriptEventId(params, turnId),
     type: "background_agent_status",
     payload: {
       turnId,
@@ -1290,6 +1310,16 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
         : {}),
     },
   };
+}
+
+function daemonTranscriptEventId(
+  params: JsonObject,
+  fallback: string,
+): string {
+  const eventId = stringParam(params.eventId, fallback);
+  const agentId = params.agentId;
+  if (typeof agentId !== "string" || agentId.length === 0) return eventId;
+  return `daemon:${encodeURIComponent(agentId)}:${encodeURIComponent(eventId)}`;
 }
 
 function stringParam(value: JsonValue | undefined, fallback: string): string {

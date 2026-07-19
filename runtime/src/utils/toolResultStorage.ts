@@ -3,7 +3,8 @@
  */
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import { mkdir, writeFile } from 'fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir } from 'fs/promises'
 import { join } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import {
@@ -13,12 +14,20 @@ import {
 } from '../constants/toolLimits.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getErrnoCode, toError } from './errors.js'
+import { toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
 import { isRecord } from './record.js'
 import { getProjectDir } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
+import { commitArtifactAtomically } from '../durability/atomic-artifact.js'
+import { peekAmbientRuntimeSession } from '../session/current-session.js'
+import type { Session } from '../session/session.js'
+import type {
+  ArtifactCommittedEvent,
+  ArtifactIntentEvent,
+  Event,
+} from '../session/event-log.js'
 
 // Subdirectory name for tool results within a session
 export const TOOL_RESULTS_SUBDIR = 'tool-results'
@@ -91,7 +100,32 @@ export const PREVIEW_SIZE_BYTES = 2000
  */
 export function getToolResultPath(id: string, isJson: boolean): string {
   const ext = isJson ? 'json' : 'txt'
-  return join(getToolResultsDir(), `${id}.${ext}`)
+  return join(getToolResultsDir(), `${safeToolResultPathSegment(id)}.${ext}`)
+}
+
+function safeToolResultPathSegment(value: string): string {
+  const windowsDeviceName = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+  if (
+    value !== '.' &&
+    value !== '..' &&
+    !windowsDeviceName.test(value) &&
+    /^[a-zA-Z0-9._-]{1,128}$/.test(value)
+  ) {
+    return value
+  }
+  const readable = value
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80)
+  const digest = createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 12)
+  const prefix =
+    readable.length > 0 &&
+    readable !== '.' &&
+    readable !== '..' &&
+    !windowsDeviceName.test(readable)
+      ? readable
+      : 'tool-result'
+  return `${prefix}-${digest}`
 }
 
 /**
@@ -128,25 +162,77 @@ export async function persistToolResult(
     }
   }
 
-  await ensureToolResultsDir()
   const filepath = getToolResultPath(toolUseId, isJson)
   const contentStr = isJson ? jsonStringify(content, null, 2) : content
+  const contentBytes = Buffer.from(contentStr, 'utf8')
+  const contentSha256 = createHash('sha256').update(contentBytes).digest('hex')
+  const session = peekAmbientRuntimeSession()
+  const runId = session?.rolloutStore?.sessionId ?? session?.conversationId
+  const artifactId = createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 1,
+        runId: runId ?? null,
+        kind: 'tool_result',
+        sourceCallId: toolUseId,
+      }),
+      'utf8',
+    )
+    .digest('hex')
+  let intent: Event | undefined
 
   // tool_use_id is unique per invocation and content is deterministic for a
-  // given id, so skip if the file already exists. This prevents re-writing
-  // the same content on every API turn when microcompact replays the
-  // original messages. Use 'wx' instead of a stat-then-write race.
+  // given id. Publish via temp+fsync+exclusive-link+directory-fsync so the
+  // model never receives a path to partial bytes. Same-byte replay is an
+  // idempotent acknowledgement; conflicting bytes fail closed.
   try {
-    await writeFile(filepath, contentStr, { encoding: 'utf-8', flag: 'wx' })
+    if (session?.rolloutStore && runId !== undefined) {
+      const payload: ArtifactIntentEvent = {
+        runId,
+        artifactId,
+        kind: 'tool_result',
+        sourceCallId: toolUseId,
+        targetPath: filepath,
+        contentSha256,
+        byteLength: contentBytes.byteLength,
+        recordedAt: new Date().toISOString(),
+      }
+      intent = readOrAppendArtifactIntent(session, payload)
+      if (!Number.isSafeInteger(intent.seq) || (intent.seq ?? 0) <= 0) {
+        throw new Error('artifact intent journal sequence is missing')
+      }
+    }
+
+    await ensureToolResultsDir()
+    const outcome = await commitArtifactAtomically(filepath, contentBytes, {
+      trustedRoot: getToolResultsDir(),
+    })
+
+    if (session?.rolloutStore && runId !== undefined && intent !== undefined) {
+      const payload: ArtifactCommittedEvent = {
+        runId,
+        artifactId,
+        kind: 'tool_result',
+        sourceCallId: toolUseId,
+        targetPath: filepath,
+        contentSha256,
+        byteLength: contentBytes.byteLength,
+        recordedAt:
+          intent.msg.type === 'artifact_intent'
+            ? intent.msg.payload.recordedAt
+            : new Date().toISOString(),
+        intentEventSeq: intent.seq!,
+        outcome,
+        committedAt: new Date().toISOString(),
+      }
+      readOrAppendArtifactCommitted(session, payload)
+    }
     logForDebugging(
       `Persisted tool result to ${filepath} (${formatFileSize(contentStr.length)})`,
     )
   } catch (error) {
-    if (getErrnoCode(error) !== 'EEXIST') {
-      logError(toError(error))
-      return { error: getFileSystemErrorMessage(toError(error)) }
-    }
-    // EEXIST: already persisted on a prior turn, fall through to preview
+    logError(toError(error))
+    return { error: getFileSystemErrorMessage(toError(error)) }
   }
 
   // Generate a preview
@@ -159,6 +245,106 @@ export async function persistToolResult(
     preview,
     hasMore,
   }
+}
+
+function readArtifactEvents(session: Session): Event[] {
+  const rolloutStore = session.rolloutStore
+  if (rolloutStore === null) {
+    throw new Error('artifact journal is unavailable')
+  }
+  return rolloutStore
+    .readAll()
+    .flatMap(item => (item.type === 'event_msg' ? [item.payload] : []))
+}
+
+function readOrAppendArtifactIntent(
+  session: Session,
+  payload: ArtifactIntentEvent,
+): Event {
+  const eventId = `artifact-intent:${payload.artifactId}`
+  const candidates = readArtifactEvents(session).filter(
+    event =>
+      event.eventId === eventId ||
+      (event.msg.type === 'artifact_intent' &&
+        event.msg.payload.artifactId === payload.artifactId),
+  )
+  if (candidates.length > 1) {
+    throw artifactJournalConflict(payload.artifactId, 'duplicate intents')
+  }
+  const existing = candidates[0]
+  if (existing !== undefined) {
+    if (
+      existing.msg.type !== 'artifact_intent' ||
+      !artifactIntentMatches(existing.msg.payload, payload)
+    ) {
+      throw artifactJournalConflict(payload.artifactId, 'intent content differs')
+    }
+    // The prior append may have reached the file before its fsync failed.
+    // Re-establish durability before the matching intent authorizes artifact
+    // publication.
+    session.rolloutStore!.syncCanonicalTail()
+    return existing
+  }
+  return session.emit(
+    { eventId, id: eventId, msg: { type: 'artifact_intent', payload } },
+    { durable: true },
+  )
+}
+
+function readOrAppendArtifactCommitted(
+  session: Session,
+  payload: ArtifactCommittedEvent,
+): Event {
+  const eventId = `artifact-committed:${payload.artifactId}`
+  const candidates = readArtifactEvents(session).filter(
+    event =>
+      event.eventId === eventId ||
+      (event.msg.type === 'artifact_committed' &&
+        event.msg.payload.artifactId === payload.artifactId),
+  )
+  if (candidates.length > 1) {
+    throw artifactJournalConflict(payload.artifactId, 'duplicate commits')
+  }
+  const existing = candidates[0]
+  if (existing !== undefined) {
+    if (
+      existing.msg.type !== 'artifact_committed' ||
+      !artifactIntentMatches(existing.msg.payload, payload) ||
+      existing.msg.payload.intentEventSeq !== payload.intentEventSeq
+    ) {
+      throw artifactJournalConflict(payload.artifactId, 'commit content differs')
+    }
+    // A matching line is not itself fsync proof. The caller may be retrying
+    // after publication succeeded but acknowledgement durability failed.
+    session.rolloutStore!.syncCanonicalTail()
+    return existing
+  }
+  return session.emit(
+    { eventId, id: eventId, msg: { type: 'artifact_committed', payload } },
+    { durable: true },
+  )
+}
+
+function artifactIntentMatches(
+  left: ArtifactIntentEvent,
+  right: ArtifactIntentEvent,
+): boolean {
+  return (
+    left.runId === right.runId &&
+    left.artifactId === right.artifactId &&
+    left.kind === right.kind &&
+    left.sourceCallId === right.sourceCallId &&
+    left.targetPath === right.targetPath &&
+    left.contentSha256 === right.contentSha256 &&
+    left.byteLength === right.byteLength
+  )
+}
+
+function artifactJournalConflict(artifactId: string, reason: string): Error {
+  return Object.assign(
+    new Error(`artifact ${artifactId} has conflicting journal evidence: ${reason}`),
+    { code: 'ARTIFACT_JOURNAL_CONFLICT' as const },
+  )
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   type ModelUsage,
 } from "../session/cost.js";
 import { AdmissionDeniedError } from "./admission-client.js";
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 
 export interface AdmittedModelCallOptions {
   readonly session: Session;
@@ -431,6 +432,9 @@ export async function runAdmittedModelCall(
       // daemon shutdown, and restart recovery decisions.
       signal: lease.signal,
     });
+    // The provider has physically answered, but no durable accounting result
+    // has committed. A process loss here must recover as unknown, never free.
+    hitM4DurabilityFailpoint("before_model_response_commit");
     // Snapshot cancellation at physical provider settlement. Reconciliation
     // below may itself abort the lease on overrun, which is a different
     // terminal cause from a cancellation that already won the wire race.
@@ -439,6 +443,7 @@ export async function runAdmittedModelCall(
     if (usage.availability !== "reported" || usage.provenance !== "provider") {
       client.holdUnknown(reservationId, "missing_provider_usage");
       settled = true;
+      hitM4DurabilityFailpoint("after_model_response_commit");
       // An abort-ignoring provider may still resolve after durable
       // cancellation. Keep its conservative settlement, but never revive the
       // cancelled call by returning that response to the caller.
@@ -473,6 +478,7 @@ export async function runAdmittedModelCall(
         client.holdUnknown(reservationId, "unpriced_provider_response");
       }
       settled = true;
+      hitM4DurabilityFailpoint("after_model_response_commit");
       if (hasHardCostCap) {
         params.session.abortTerminal("provider_overrun");
         void params.session.services.agentControl.shutdownAgentTree?.(
@@ -491,6 +497,7 @@ export async function runAdmittedModelCall(
       costUsd: actualCost,
     });
     settled = true;
+    hitM4DurabilityFailpoint("after_model_response_commit");
     if (outcome.outcome === "provider_overrun") {
       params.session.abortTerminal("provider_overrun");
       void params.session.services.agentControl.shutdownAgentTree?.(

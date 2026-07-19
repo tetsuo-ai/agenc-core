@@ -57,7 +57,12 @@ function bigEvent(sequenceNumber: number, payloadBytes: number): JsonObject {
 }
 
 function isGapMarker(event: JsonObject): boolean {
-  return event.type === EVENT_GAP_EVENT && event.reason === "retention";
+  const params = event.params as JsonObject | undefined;
+  return (
+    event.method === "event.event_gap" &&
+    params?.type === EVENT_GAP_EVENT &&
+    params.reason === "retention"
+  );
 }
 
 async function attachAndCollect(
@@ -88,16 +93,24 @@ describe("client multiplexer event-gap markers", () => {
       await multiplexer.broadcastSessionEvent("session_1", smallEvent(index));
     }
     const replayed = await attachAndCollect(multiplexer, "client_1");
-    // One marker + the 5 newest real events, in order.
-    expect(replayed).toHaveLength(6);
+    // The marker itself counts toward the hard five-event cap.
+    expect(replayed).toHaveLength(5);
     expect(isGapMarker(replayed[0]!)).toBe(true);
     expect(replayed[0]).toMatchObject({
-      sessionId: "session_1",
-      retiredCount: 7,
+      jsonrpc: "2.0",
+      method: "event.event_gap",
+      params: {
+        sessionId: "session_1",
+        retiredCount: 8,
+        kind: "event_gap",
+        runId: "session_1",
+        afterSequence: 0,
+        firstAvailableSequence: 9,
+      },
     });
     expect(
       replayed.slice(1).map((event) => (event as { sequence: number }).sequence),
-    ).toEqual([8, 9, 10, 11, 12]);
+    ).toEqual([9, 10, 11, 12]);
     // Exactly one marker in the whole stream.
     expect(replayed.filter(isGapMarker)).toHaveLength(1);
   });
@@ -122,12 +135,12 @@ describe("client multiplexer event-gap markers", () => {
     expect(survivors.length).toBeGreaterThan(0);
     // Newest events survive; retiredCount accounts for every dropped event.
     expect(survivors[survivors.length - 1]!.sequence).toBe(50);
-    expect((replayed[0] as { retiredCount: number }).retiredCount).toBe(
+    expect((replayed[0]!.params as JsonObject).retiredCount).toBe(
       50 - survivors.length,
     );
   });
 
-  it("keeps the newest real event even when it alone exceeds the byte budget", async () => {
+  it("rejects a detached event that alone exceeds the hard byte budget", async () => {
     const { sessionManager, multiplexer } = createHarness({
       maxBufferedBytesPerSession: 1024,
     });
@@ -135,14 +148,11 @@ describe("client multiplexer event-gap markers", () => {
       agentId: "agent_1",
       cwd: await workspaces.create(),
     });
-    await multiplexer.broadcastSessionEvent("session_1", bigEvent(1, 5000));
-    await multiplexer.broadcastSessionEvent("session_1", bigEvent(2, 100_000));
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", bigEvent(1, 5000)),
+    ).rejects.toMatchObject({ code: "EVENT_BUFFER_LIMIT_EXCEEDED" });
     const replayed = await attachAndCollect(multiplexer, "client_1");
-    // Event 1 was evicted (announced); oversized event 2 is retained.
-    expect(replayed).toHaveLength(2);
-    expect(isGapMarker(replayed[0]!)).toBe(true);
-    expect(replayed[0]).toMatchObject({ retiredCount: 1 });
-    expect((replayed[1] as { sequence: number }).sequence).toBe(2);
+    expect(replayed).toHaveLength(0);
   });
 
   it("produces no marker when nothing was evicted", async () => {
@@ -173,19 +183,21 @@ describe("client multiplexer event-gap markers", () => {
       await multiplexer.broadcastSessionEvent("session_1", smallEvent(index));
     }
     const first = await attachAndCollect(multiplexer, "client_1");
-    expect(first[0]).toMatchObject({ retiredCount: 3 });
+    expect(first).toHaveLength(2);
+    expect(first[0]).toMatchObject({ params: { retiredCount: 4 } });
     await multiplexer.disconnectClient("client_1");
-    // New detached window: 3 more events, 1 evicted — the fresh marker must
+    // New detached window: marker + one survivor fit the hard two-event cap.
+    // The fresh marker must
     // count ONLY the new loss (the old one was delivered and acknowledged).
     for (let index = 6; index <= 8; index += 1) {
       await multiplexer.broadcastSessionEvent("session_1", smallEvent(index));
     }
     const second = await attachAndCollect(multiplexer, "client_2");
-    expect(second).toHaveLength(3);
-    expect(second[0]).toMatchObject({ retiredCount: 1 });
+    expect(second).toHaveLength(2);
+    expect(second[0]).toMatchObject({ params: { retiredCount: 2 } });
     expect(
       second.slice(1).map((event) => (event as { sequence: number }).sequence),
-    ).toEqual([7, 8]);
+    ).toEqual([8]);
   });
 
   it("announces loss even when eviction races an in-flight replay (identity splice)", async () => {
@@ -228,19 +240,19 @@ describe("client multiplexer event-gap markers", () => {
       await multiplexer.broadcastSessionEvent("session_1", smallEvent(index));
     }
     // Release A's replay: it fully acks, triggering the buffer cleanup
-    // while the buffer now holds [marker, e5, e6, e7].
+    // while the hard three-event buffer now holds [marker, e6, e7].
     releaseSends();
     await attachInFlight;
     expect(deliveredToA).toHaveLength(3);
     // The next client must still see the announced loss and every
     // never-delivered event.
     const replayed = await attachAndCollect(multiplexer, "client_b");
-    expect(replayed).toHaveLength(4);
+    expect(replayed).toHaveLength(3);
     expect(isGapMarker(replayed[0]!)).toBe(true);
-    expect(replayed[0]).toMatchObject({ retiredCount: 4 });
+    expect(replayed[0]).toMatchObject({ params: { retiredCount: 5 } });
     expect(
       replayed.slice(1).map((event) => (event as { sequence: number }).sequence),
-    ).toEqual([5, 6, 7]);
+    ).toEqual([6, 7]);
   });
 
   it("retains the marker for the next client after a failed (unacked) replay", async () => {
@@ -265,10 +277,10 @@ describe("client multiplexer event-gap markers", () => {
     // The buffer (marker included) was NOT spliced: the next client still
     // sees the announced loss.
     const replayed = await attachAndCollect(multiplexer, "client_2");
-    expect(replayed).toHaveLength(3);
-    expect(replayed[0]).toMatchObject({ retiredCount: 2 });
+    expect(replayed).toHaveLength(2);
+    expect(replayed[0]).toMatchObject({ params: { retiredCount: 3 } });
     expect(
       replayed.slice(1).map((event) => (event as { sequence: number }).sequence),
-    ).toEqual([3, 4]);
+    ).toEqual([4]);
   });
 });

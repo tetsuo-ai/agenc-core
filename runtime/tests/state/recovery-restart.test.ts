@@ -1,8 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { recoverDaemonStateOnStartup } from "./recovery.js";
+import type { Event } from "../../src/session/event-log.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
 
 let home = "";
@@ -23,6 +26,549 @@ afterEach(() => {
 });
 
 describe("recoverDaemonStateOnStartup", () => {
+  it("fails closed when a canonical cancel request committed before its terminal", () => {
+    insertAgentRun({
+      id: "run-cancel-request-crash",
+      objective: "must not resume after cancellation intent",
+      status: "running",
+      currentSessionId: "run-cancel-request-crash",
+    });
+    const rolloutPath = writeRunJournal("run-cancel-request-crash", [
+      {
+        eventId: "run-cancel-request:run-cancel-request-crash:1",
+        id: "run-cancel-request:run-cancel-request-crash:1",
+        seq: 1,
+        msg: {
+          type: "run_cancel_requested",
+          payload: {
+            runId: "run-cancel-request-crash",
+            epoch: 1,
+            reason: "operator",
+            requestedAt: "2026-05-01T00:06:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-cancel-request-crash", rolloutPath);
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(agentRunStatus("run-cancel-request-crash")).toBe("cancelled");
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-cancel-request-crash",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("fails closed when admission cancellation committed before the canonical terminal", () => {
+    insertAgentRun({
+      id: "run-admission-cancel-crash",
+      objective: "must not regain execution authority",
+      status: "running",
+      currentSessionId: "run-admission-cancel-crash",
+    });
+    driver
+      .prepareState(
+        `INSERT INTO execution_admission_cancellations (
+           run_id, reason, cancelled_at
+         ) VALUES (?, ?, ?)`,
+      )
+      .run(
+        "run-admission-cancel-crash",
+        "operator",
+        "2026-05-01T00:06:00.000Z",
+      );
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(agentRunStatus("run-admission-cancel-crash")).toBe("cancelled");
+  });
+
+  it("projects a fsynced terminal event before a stale running row can be restored", () => {
+    insertAgentRun({
+      id: "run-terminal-journal",
+      objective: "must stay finished",
+      status: "running",
+      currentSessionId: "run-terminal-journal",
+    });
+    const rolloutPath = writeRunJournal("run-terminal-journal", [
+      {
+        id: "run-terminal:run-terminal-journal:1",
+        seq: 1,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-terminal-journal",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "completed",
+            finalMessage: "durable answer",
+            usage: null,
+            lastSequenceBeforeTerminal: null,
+            finishedAt: "2026-05-01T00:06:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-terminal-journal", rolloutPath);
+
+    const report = recoverDaemonStateOnStartup(driver, {
+      now: () => "2026-05-01T00:20:00.000Z",
+    });
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(agentRunStatus("run-terminal-journal")).toBe("completed");
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-terminal-journal",
+      ),
+    ).toMatchObject({
+      eventId: "legacy-event:1:run-terminal:run-terminal-journal:1",
+      status: "completed",
+      finalMessage: "durable answer",
+      lastSequence: 1,
+    });
+
+    // Once repaired, a second daemon start does not even classify the row as
+    // recoverable. Removing the startup projection makes the first assertion
+    // fail red with a resurrected run.
+    expect(recoverDaemonStateOnStartup(driver).recoveredRuns).toEqual([]);
+  });
+
+  it("repairs a legacy DB-first cancellation when its canonical terminal landed before the crash", () => {
+    insertAgentRun({
+      id: "run-legacy-db-first-cancel",
+      objective: "repair cancelled terminal projection",
+      status: "cancelled",
+      currentSessionId: "run-legacy-db-first-cancel",
+    });
+    const rolloutPath = writeRunJournal("run-legacy-db-first-cancel", [
+      {
+        id: "run-terminal:run-legacy-db-first-cancel:1",
+        seq: 3,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-legacy-db-first-cancel",
+            epoch: 1,
+            status: "cancelled",
+            exitCode: null,
+            stopReason: "operator",
+            finalMessage: null,
+            usage: null,
+            lastSequenceBeforeTerminal: 2,
+            finishedAt: "2026-05-01T00:06:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-legacy-db-first-cancel", rolloutPath);
+
+    const report = recoverDaemonStateOnStartup(driver, {
+      now: () => "2026-05-01T00:20:00.000Z",
+    });
+
+    expect(report.recoveredRuns).toEqual([]);
+    expect(agentRunStatus("run-legacy-db-first-cancel")).toBe("cancelled");
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-legacy-db-first-cancel",
+      ),
+    ).toMatchObject({
+      eventId:
+        "legacy-event:3:run-terminal:run-legacy-db-first-cancel:1",
+      status: "cancelled",
+      stopReason: "operator",
+      lastSequence: 3,
+    });
+  });
+
+  it("does not invent terminal output for an offline cancelled run with no canonical journal", () => {
+    insertAgentRun({
+      id: "run-offline-cancel-no-writer",
+      objective: "remain honestly unavailable",
+      status: "cancelled",
+      currentSessionId: "run-offline-cancel-no-writer",
+    });
+
+    expect(() => recoverDaemonStateOnStartup(driver)).not.toThrow();
+    expect(
+      new StateRunDurabilityRepository(driver).getCurrentTerminalResult(
+        "run-offline-cancel-no-writer",
+      ),
+    ).toBeUndefined();
+    expect(agentRunStatus("run-offline-cancel-no-writer")).toBe("cancelled");
+  });
+
+  it("projects an acknowledged effect before stale-call recovery can replay it", () => {
+    insertAgentRun({
+      id: "run-effect-journal",
+      objective: "do not duplicate the acknowledged read",
+      status: "running",
+      currentSessionId: "run-effect-journal",
+    });
+    insertToolCall({
+      sessionId: "run-effect-journal",
+      toolCallId: "call-acknowledged",
+      toolName: "ReadOnce",
+      args: { path: "evidence.txt" },
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+    const rolloutPath = writeRunJournal("run-effect-journal", [
+      {
+        id: "intent-call-acknowledged",
+        seq: 1,
+        msg: {
+          type: "effect_intent",
+          payload: {
+            runId: "run-effect-journal",
+            stepId: "tool:turn-1:call-acknowledged",
+            callId: "call-acknowledged",
+            toolName: "ReadOnce",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:stable-read",
+            intentDigest: "sha256:intent",
+            attempt: 1,
+            recordedAt: "2026-05-01T00:05:00.000Z",
+          },
+        },
+      },
+      {
+        id: "result-call-acknowledged",
+        seq: 2,
+        msg: {
+          type: "effect_result",
+          payload: {
+            runId: "run-effect-journal",
+            stepId: "tool:turn-1:call-acknowledged",
+            callId: "call-acknowledged",
+            toolName: "ReadOnce",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:stable-read",
+            intentEventSeq: 1,
+            outcome: "committed",
+            resultDigest: "sha256:result",
+            recordedAt: "2026-05-01T00:05:01.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-effect-journal", rolloutPath);
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredToolCalls).toEqual([]);
+    expect(toolCallStatus("run-effect-journal", "call-acknowledged")).toBe(
+      "completed",
+    );
+    expect(
+      new StateRunDurabilityRepository(driver).getEffect(
+        "run-effect-journal",
+        "tool:turn-1:call-acknowledged",
+      ),
+    ).toMatchObject({
+      outcome: "committed",
+      resultEventId: "legacy-event:2:result-call-acknowledged",
+      resultSequence: 2,
+    });
+  });
+
+  it("rebuilds pre-reopen effects into their historical epoch from a partial projection", () => {
+    insertAgentRun({
+      id: "run-partial-reopen",
+      objective: "preserve historical effect epoch",
+      status: "running",
+      currentSessionId: "run-partial-reopen",
+    });
+    insertToolCall({
+      sessionId: "run-partial-reopen",
+      toolCallId: "call-before-reopen",
+      toolName: "ReadOnce",
+      args: { path: "before.txt" },
+      status: "running",
+      recoveryCategory: "idempotent",
+    });
+    const repository = new StateRunDurabilityRepository(driver);
+    repository.ensureInitialEpoch({
+      runId: "run-partial-reopen",
+      openedAt: "2026-05-01T00:00:00.000Z",
+    });
+    repository.recordTerminalResult({
+      epoch: 1,
+      eventId: "legacy-event:3:terminal-before-reopen",
+      result: {
+        runId: "run-partial-reopen",
+        status: "completed",
+        exitCode: 0,
+        stopReason: "completed",
+        finalMessage: "epoch one",
+        usage: null,
+        lastSequence: 3,
+        finishedAt: "2026-05-01T00:06:00.000Z",
+      },
+    });
+    repository.reopenRun({
+      runId: "run-partial-reopen",
+      fromEpoch: 1,
+      openedAt: "2026-05-01T00:07:00.000Z",
+      eventId: "legacy-event:4:reopen-epoch-two",
+      reason: "operator_review",
+    });
+    const rolloutPath = writeRunJournal("run-partial-reopen", [
+      {
+        id: "intent-before-reopen",
+        seq: 1,
+        msg: {
+          type: "effect_intent",
+          payload: {
+            runId: "run-partial-reopen",
+            stepId: "tool:turn-1:call-before-reopen",
+            callId: "call-before-reopen",
+            toolName: "ReadOnce",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:historical-read",
+            intentDigest: "sha256:historical-intent",
+            attempt: 1,
+            recordedAt: "2026-05-01T00:04:00.000Z",
+          },
+        },
+      },
+      {
+        id: "result-before-reopen",
+        seq: 2,
+        msg: {
+          type: "effect_result",
+          payload: {
+            runId: "run-partial-reopen",
+            stepId: "tool:turn-1:call-before-reopen",
+            callId: "call-before-reopen",
+            toolName: "ReadOnce",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:historical-read",
+            intentEventSeq: 1,
+            outcome: "committed",
+            recordedAt: "2026-05-01T00:05:00.000Z",
+          },
+        },
+      },
+      {
+        id: "terminal-before-reopen",
+        seq: 3,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-partial-reopen",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "completed",
+            finalMessage: "epoch one",
+            usage: null,
+            lastSequenceBeforeTerminal: 2,
+            finishedAt: "2026-05-01T00:06:00.000Z",
+          },
+        },
+      },
+      {
+        id: "reopen-epoch-two",
+        seq: 4,
+        msg: {
+          type: "run_reopened",
+          payload: {
+            runId: "run-partial-reopen",
+            previousEpoch: 1,
+            epoch: 2,
+            reason: "operator_review",
+            reopenedAt: "2026-05-01T00:07:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-partial-reopen", rolloutPath);
+
+    const report = recoverDaemonStateOnStartup(driver);
+
+    expect(report.recoveredToolCalls).toEqual([]);
+    expect(
+      repository.getEffect(
+        "run-partial-reopen",
+        "tool:turn-1:call-before-reopen",
+      ),
+    ).toMatchObject({ epoch: 1, outcome: "committed" });
+    expect(repository.currentEpoch("run-partial-reopen")?.epoch).toBe(2);
+  });
+
+  it("fails closed instead of restoring a run whose active canonical journal is missing", () => {
+    insertAgentRun({
+      id: "run-missing-journal",
+      objective: "do not guess past missing evidence",
+      status: "running",
+      currentSessionId: "run-missing-journal",
+    });
+    bindRunJournal(
+      "run-missing-journal",
+      join(driver.projectDir, "sessions", "run-missing-journal", "missing.jsonl"),
+    );
+
+    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
+      /canonical rollout source is missing/,
+    );
+    expect(agentRunStatus("run-missing-journal")).toBe("running");
+  });
+
+  it("fails closed when canonical event identities reuse one run sequence", () => {
+    insertAgentRun({
+      id: "run-sequence-conflict",
+      objective: "reject ambiguous history",
+      status: "running",
+      currentSessionId: "run-sequence-conflict",
+    });
+    const rolloutPath = writeRunJournal("run-sequence-conflict", [
+      {
+        id: "intent-sequence-one",
+        seq: 1,
+        msg: {
+          type: "effect_intent",
+          payload: {
+            runId: "run-sequence-conflict",
+            stepId: "tool:turn-1:call-1",
+            callId: "call-1",
+            toolName: "ReadOnce",
+            recoveryCategory: "idempotent",
+            idempotencyKey: "sha256:key",
+            intentDigest: "sha256:intent",
+            attempt: 1,
+            recordedAt: "2026-05-01T00:04:00.000Z",
+          },
+        },
+      },
+      {
+        id: "terminal-sequence-one",
+        seq: 1,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-sequence-conflict",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "completed",
+            finalMessage: null,
+            usage: null,
+            lastSequenceBeforeTerminal: null,
+            finishedAt: "2026-05-01T00:05:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-sequence-conflict", rolloutPath);
+
+    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
+      /sequence is also claimed by event legacy-event:1:intent-sequence-one/,
+    );
+    expect(agentRunStatus("run-sequence-conflict")).toBe("running");
+  });
+
+  it("rejects a terminal sequence also claimed by an unrelated user event", () => {
+    insertAgentRun({
+      id: "run-user-terminal-sequence-conflict",
+      objective: "reject cross-category sequence ambiguity",
+      status: "running",
+      currentSessionId: "run-user-terminal-sequence-conflict",
+    });
+    const rolloutPath = writeRunJournal(
+      "run-user-terminal-sequence-conflict",
+      [
+        {
+          eventId: "user-visible-event",
+          id: "user-visible-event",
+          seq: 1,
+          msg: {
+            type: "agent_message",
+            payload: { message: "unrelated output" },
+          },
+        },
+        {
+          eventId: "terminal-at-user-sequence",
+          id: "terminal-at-user-sequence",
+          seq: 1,
+          msg: {
+            type: "run_terminal",
+            payload: {
+              runId: "run-user-terminal-sequence-conflict",
+              epoch: 1,
+              status: "completed",
+              exitCode: 0,
+              stopReason: "completed",
+              finalMessage: "must not be selected",
+              usage: null,
+              lastSequenceBeforeTerminal: null,
+              finishedAt: "2026-05-01T00:05:00.000Z",
+            },
+          },
+        },
+      ],
+    );
+    bindRunJournal("run-user-terminal-sequence-conflict", rolloutPath);
+
+    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
+      /sequence is also claimed by event user-visible-event/,
+    );
+    expect(agentRunStatus("run-user-terminal-sequence-conflict")).toBe(
+      "running",
+    );
+  });
+
+  it("rejects event ID reuse across unrelated and lifecycle event types", () => {
+    insertAgentRun({
+      id: "run-cross-type-id-conflict",
+      objective: "reject cross-category identity reuse",
+      status: "running",
+      currentSessionId: "run-cross-type-id-conflict",
+    });
+    const rolloutPath = writeRunJournal("run-cross-type-id-conflict", [
+      {
+        eventId: "reused-cross-type-id",
+        id: "reused-cross-type-id",
+        seq: 1,
+        msg: {
+          type: "agent_message",
+          payload: { message: "ordinary output" },
+        },
+      },
+      {
+        eventId: "reused-cross-type-id",
+        id: "reused-cross-type-id",
+        seq: 2,
+        msg: {
+          type: "run_terminal",
+          payload: {
+            runId: "run-cross-type-id-conflict",
+            epoch: 1,
+            status: "completed",
+            exitCode: 0,
+            stopReason: "completed",
+            finalMessage: "must not be selected",
+            usage: null,
+            lastSequenceBeforeTerminal: 1,
+            finishedAt: "2026-05-01T00:05:00.000Z",
+          },
+        },
+      },
+    ]);
+    bindRunJournal("run-cross-type-id-conflict", rolloutPath);
+
+    expect(() => recoverDaemonStateOnStartup(driver)).toThrow(
+      /event ID has conflicting content/,
+    );
+    expect(agentRunStatus("run-cross-type-id-conflict")).toBe("running");
+  });
+
   it("loads recoverable runs from their latest snapshot and applies stale tool recovery policy", () => {
     insertAgentRun({
       id: "run-1",
@@ -456,4 +1002,49 @@ function toolCallStatus(
        WHERE session_id = ? AND tool_call_id = ?`,
     )
     .get(sessionId, toolCallId)?.status;
+}
+
+function agentRunStatus(runId: string): string | undefined {
+  return driver
+    .prepareState<[string], { status: string }>(
+      "SELECT status FROM agent_runs WHERE id = ?",
+    )
+    .get(runId)?.status;
+}
+
+function writeRunJournal(runId: string, events: readonly Event[]): string {
+  const directory = join(driver.projectDir, "sessions", runId);
+  mkdirSync(directory, { recursive: true });
+  const rolloutPath = join(
+    directory,
+    `rollout-2026-05-01T00-00-00-000Z-${runId}.jsonl`,
+  );
+  writeFileSync(
+    rolloutPath,
+    events
+      .map((event) =>
+        serializeRolloutItem({ type: "event_msg", payload: event }),
+      )
+      .join(""),
+    { mode: 0o600 },
+  );
+  return rolloutPath;
+}
+
+function bindRunJournal(runId: string, rolloutPath: string): void {
+  const repository = new StateRunDurabilityRepository(driver);
+  if (repository.currentEpoch(runId) === undefined) {
+    repository.ensureInitialEpoch({
+      runId,
+      openedAt: "2026-05-01T00:00:00.000Z",
+    });
+  }
+  repository.bindJournalSource({
+    runId,
+    epoch: 1,
+    childRunId: runId,
+    sessionId: runId,
+    sourcePath: rolloutPath,
+    boundAt: "2026-05-01T00:00:00.000Z",
+  });
 }

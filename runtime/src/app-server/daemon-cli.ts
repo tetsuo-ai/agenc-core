@@ -19,6 +19,7 @@ import {
   type AgenCDaemonAgentSnapshotFlush,
   type AgenCDaemonAgentStatusSnapshot,
   type AgenCDaemonMessageExchangeSnapshot,
+  type AgenCDaemonRunTerminalSnapshot,
   type AgenCDaemonSnapshotSessionRoute,
 } from "./agent-lifecycle.js";
 import {
@@ -115,6 +116,8 @@ import {
 } from "../state/pruning.js";
 import { StateSqliteHealthStatsReader } from "../state/health-stats.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
+import { StateRunDurabilityRepository } from "../state/run-durability.js";
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
 import { ExecutionAdmissionRepository } from "../state/execution-admission.js";
 import { cancelRunTreeAndAdmission } from "../state/run-admission-cancellation.js";
@@ -1524,6 +1527,16 @@ async function runAgenCDaemonForeground(
         throw error;
       }
     },
+    recordRunTerminal: (terminal) => {
+      try {
+        snapshotPolicies.recordRunTerminal(terminal);
+      } catch (error) {
+        io.stderr.write(
+          `agenc: durable run terminal commit failed: ${formatCleanupError(error)}\n`,
+        );
+        throw error;
+      }
+    },
     registerSnapshotSession: (session) => {
       try {
         snapshotPolicies.registerSession(session);
@@ -2438,10 +2451,47 @@ class AgenCDaemonSnapshotPolicyRegistry {
   recordAgentRun(run: AgenCDaemonAgentRunSnapshot): void {
     const entry = this.#policyForRoute(run);
     upsertAgentRun(entry.driver, run);
+    new StateRunDurabilityRepository(entry.driver).ensureInitialEpoch({
+      runId: run.id,
+      openedAt: run.startedAt,
+    });
     if (run.currentSessionId !== undefined) {
       this.#rememberSession(run.currentSessionId, entry.driver.stateDbPath);
       entry.policy.trackSession(run.currentSessionId, run.id);
     }
+  }
+
+  recordRunTerminal(terminal: AgenCDaemonRunTerminalSnapshot): void {
+    const entry = this.#policyForRoute(terminal);
+    const repository = new StateRunDurabilityRepository(entry.driver);
+    const current = repository.currentEpoch(terminal.agentId);
+    if (current === undefined) {
+      repository.ensureInitialEpoch({
+        runId: terminal.agentId,
+        openedAt: terminal.openedAt,
+      });
+    } else if (current.epoch !== terminal.epoch) {
+      throw new Error(
+        `run ${terminal.agentId} terminal epoch ${terminal.epoch} does not match current epoch ${current.epoch}`,
+      );
+    }
+    if (repository.getJournalBinding(terminal.rolloutPath) === undefined) {
+      repository.bindJournalSource({
+        runId: terminal.agentId,
+        epoch: terminal.epoch,
+        childRunId: terminal.agentId,
+        sessionId: terminal.sessionId,
+        sourcePath: terminal.rolloutPath,
+        boundAt: terminal.openedAt,
+      });
+    }
+    hitM4DurabilityFailpoint("before_terminal_commit");
+    repository.recordTerminalResult({
+      epoch: terminal.epoch,
+      result: terminal.result,
+      eventId: terminal.eventId,
+    });
+    hitM4DurabilityFailpoint("after_terminal_commit");
   }
 
   threadStoreForAgentLogs(

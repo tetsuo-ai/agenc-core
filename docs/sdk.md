@@ -70,7 +70,7 @@ Key `AgencClient` methods:
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
 - `listAgents()` / `stopAgent(id)` / `agentLogs(id)`
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
-  `runEvidence(params)` / `cancelRun(id, reason?)`
+  `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
 - `request(method, params)` → raw typed JSON-RPC for any of the **45** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
@@ -168,32 +168,63 @@ node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ### Durable run inspection
 
 ```ts
-const status = await client.runStatus(runId);
-if (status.terminal) {
-  const result = await client.runResult(runId);
-  console.log(result.outcome, result.output.available);
+import { AgencRunReplayGapError } from "@tetsuo-ai/agenc-sdk";
+
+const attachment = client.reattachRun({
+  runId,
+  afterSequence: savedAfterSequence ?? 0,
+  onDuplicate: ({ event }) => console.warn("duplicate", event.eventId),
+});
+
+try {
+  for await (const event of attachment) {
+    await applyEventIdempotently(event);
+    // Save only after the application has processed this event.
+    await saveAfterSequence(attachment.cursor().afterSequence);
+  }
+} catch (error) {
+  if (error instanceof AgencRunReplayGapError) {
+    // The cursor stops at the last event yielded before the gap. Reconcile the
+    // missing range before choosing a replacement; the SDK never jumps it.
+    console.error(error.gap, attachment.cursor());
+  } else {
+    throw error;
+  }
 }
 
-let afterSequence = 0;
-do {
-  const page = await client.replayRun({ runId, afterSequence, limit: 100 });
-  for (const event of page.events) console.log(event.sequence, event.event);
-  afterSequence = page.nextAfterSequence;
-  if (!page.hasMore) break;
-} while (true);
+const status = await client.runStatus(runId);
+if (status.terminal) {
+  const result = await attachment.result();
+  console.log(result.outcome, result.output);
+}
 
 const evidence = await client.runEvidence({ runId, limit: 100 });
 console.log(evidence.source.completeness, evidence.hashes.bundleSha256);
 ```
 
 `run.result` rejects through `AgencRpcError` with
-`error.data.code === "RUN_NOT_TERMINAL"` until an `agent_runs` row is durably
-terminal. `run.replay` cursors are exclusive database-global sequences and
-always return `hasMore` and `nextAfterSequence`; skipped numbers can belong to
-other runs. `run.evidence` is explicitly limited to existing M3 admission
-state (`workflowEvidenceIncluded: false`) and marks partial pages. No helper
-claims a terminal assistant payload or future workflow evidence that the
-current database does not store.
+`error.data.code === "RUN_NOT_TERMINAL"` until the run is durably terminal. A
+canonical M4 result returns `output.available: true`; a legacy terminal row
+without a canonical terminal payload returns `output.available: false` rather
+than inventing one.
+
+Canonical `run.replay` cursors are exclusive, per-run sequences. Pages are
+contiguous and expose durable `eventId` values. Retention, compaction,
+corruption truncation, a missing source, and a cursor beyond the durable tail
+are explicit gaps; none authorizes cursor advancement. The safer
+`reattachRun()` helper validates page ordering and identity consistency,
+suppresses exact duplicates, throws `AgencRunReplayGapError` without moving
+past a gap, and fails closed with `AgencRunReplayProtocolError` on an
+unexplained jump or conflicting identity.
+
+Raw `replayRun()` callers must inspect `page.gap` before adopting
+`page.nextAfterSequence`. A pre-M4 compatibility page can instead come from
+the execution-admission journal; its source declares
+`sequenceScope: "project_state_database"`, where skipped numbers may belong to
+other runs. `run.evidence` declares
+`workflowEvidenceIncluded: true` for canonical journal pages and `false` for
+that compatibility source, together with an explicit completeness value and
+content hashes.
 
 ## Daemon method surface (45 methods)
 
@@ -277,6 +308,9 @@ sees the same output and completion behavior as `agenc -p`.
   process (argv contract, event mapping, exit-code-2 mapping, error paths).
 - `events.contract.test.ts` — trusted object `clientAction` preservation and
   malformed/scalar rejection at the SDK event boundary.
+- `replay-safe-client.contract.test.ts` — reconnect cursors, duplicate
+  suppression, explicit gaps, protocol-conflict rejection, and durable result
+  lookup.
 
 ```bash
 cd runtime && npx vitest run tests/sdk-package

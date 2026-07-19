@@ -267,16 +267,23 @@ agenc run cancel <run-id> [--reason <text>]
 
 These commands use the daemon's durable run/admission contract and print
 canonical JSON. `status` includes aggregate admission and budget/hold state;
-`result` succeeds only after the durable run is terminal. `replay` pages the
-append-only admission journal with an exclusive sequence cursor. `evidence`
-adds source/completeness metadata and SHA-256 hashes for mechanical review.
-`cancel` durably locks the run tree, cancels queued descendants, and propagates
-to running descendants without deleting partial evidence.
+`result` succeeds only after the durable run is terminal; its `lastSequence`
+is the terminal snapshot coordinate. A later exclusively leased offline effect
+review can advance the replay tail without resuming execution or changing that
+result. `replay` pages the
+canonical append-only rollout journal with an exclusive per-run sequence
+cursor. `evidence` adds source/completeness metadata and SHA-256 hashes for
+mechanical review. `cancel` durably locks the run tree, cancels queued
+descendants, and propagates to running descendants without deleting partial
+evidence.
 
 Replay and evidence pages default to the daemon's bounded page size and never
-accept more than 200 events. A missing retained source is returned as an
-explicit gap; an admission-only record is not presented as a fabricated
-terminal result.
+accept more than 200 events. Retention, compaction, corruption truncation, a
+missing source, and a cursor beyond the canonical tail are explicit gaps and
+do not advance the returned cursor past a missing range. Pre-M4 runs can fall
+back to the project-database-scoped execution-admission journal, which is
+labeled as a compatibility source. An admission-only record is not presented
+as a fabricated terminal result.
 
 ---
 
@@ -433,17 +440,29 @@ agenc permissions approve --session session_123 call_456
 ```text
 agenc state export <agent-id>
 agenc state import
+agenc state resolve-tool-call <session-id> <tool-call-id>
 ```
 
 | Command | Meaning |
 | --- | --- |
 | `export <agent-id>` | Print a JSON state export for one agent |
 | `import` | Read a JSON state export from stdin and import it |
+| `resolve-tool-call <session-id> <tool-call-id>` | Record an operator review for one unresolved `unknown_outcome` tool call and lift the session's side-effecting mutation gate once no unresolved effects remain |
 
 ```bash
 agenc state export agent_123 > state.json
 agenc state import < state.json
+AGENC_REVIEWER_ID=operator_7 \
+  agenc state resolve-tool-call session_abc call_42
 ```
+
+Run `resolve-tool-call` from the affected session's project directory after
+stopping the live session. For an M4 effect, it appends and fsyncs a canonical
+`effect_review_resolved` event before advancing the SQLite review projection;
+it never reruns the tool or rewrites `unknown_outcome` as success. Reviewer
+identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
+`local_operator` as the final fallback. If the requested call is not found,
+the error lists any unresolved calls known for that session.
 
 ---
 

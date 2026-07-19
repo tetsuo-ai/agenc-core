@@ -36,6 +36,8 @@ describe("agenc-sdk prompt event mapping", () => {
       type: "elicitation_request",
       kind: "request_user_input",
       requestId: "request_1",
+      eventId: "event_1",
+      sequence: 1,
       clientAction,
     });
   });
@@ -58,5 +60,34 @@ describe("agenc-sdk prompt event mapping", () => {
         },
       }),
     ).not.toHaveProperty("clientAction");
+  });
+
+  it("surfaces a JSON-RPC live retention gap instead of dropping it", () => {
+    expect(
+      promptEventFromNotification({
+        jsonrpc: "2.0",
+        method: "event.event_gap",
+        params: {
+          type: "event_gap",
+          kind: "event_gap",
+          sessionId: "session_1",
+          runId: "run_1",
+          reason: "retention",
+          retiredCount: 7,
+          afterSequence: 3,
+          firstAvailableSequence: 11,
+          source: "multiplexer_retention",
+        },
+      }),
+    ).toEqual({
+      type: "gap",
+      kind: "event_gap",
+      sessionId: "session_1",
+      runId: "run_1",
+      reason: "retention",
+      retiredCount: 7,
+      afterSequence: 3,
+      firstAvailableSequence: 11,
+    });
   });
 });

@@ -5,13 +5,17 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { isProcessRunning } from "../utils/genericProcessUtils.js";
 import { StateThreadRepository } from "./threads.js";
 import type { StateSqliteDriver } from "./sqlite-driver.js";
 import { sqlPlaceholders } from "./sql.js";
 import { agentIdFromThreadSourceJson } from "../thread-store/thread-source.js";
+import { StateRunDurabilityRepository } from "./run-durability.js";
+import { parseRolloutLine } from "../session/rollout-item.js";
+import { SessionLock, SessionLockedError } from "../session/session-store.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
 const FAILED_AGENT_RUN_STATUSES = ["failed", "error", "errored"] as const;
@@ -259,10 +263,8 @@ export function pruneRolloutSessions(
   driver: StateSqliteDriver,
   options: RolloutPruningOptions,
 ): RolloutPruningReport {
-  const cutoffMs = rolloutCutoffMs(
-    options.now?.() ?? new Date().toISOString(),
-    options.retention_days,
-  );
+  const observedAt = options.now?.() ?? new Date().toISOString();
+  const cutoffMs = rolloutCutoffMs(observedAt, options.retention_days);
   // Disabled by default: no retention window → never delete anything.
   if (cutoffMs === undefined) return emptyRolloutReport();
   if (!existsSync(options.sessionsDir)) return emptyRolloutReport();
@@ -279,6 +281,7 @@ export function pruneRolloutSessions(
   }
 
   const threads = new StateThreadRepository(driver);
+  const runs = new StateRunDurabilityRepository(driver);
   const prunedSessionIds: string[] = [];
   let prunedRolloutFiles = 0;
   let prunedMirrorRows = 0;
@@ -302,26 +305,61 @@ export function pruneRolloutSessions(
     // block pruning, so a crashed session is still reclaimable.
     if (sessionHasLiveRolloutLock(sessionDir)) continue;
 
-    // Drop the SQLite mirror rows first: if the FS removal later fails the
-    // mirror is already gone (it can't outlive its source), and a re-index
-    // would only re-add rows for files that still exist.
-    let removedRows = 0;
+    // Close the check/use race by acquiring every canonical rollout lease and
+    // holding it through retirement plus rename/removal. The preliminary live
+    // check above is still required because SessionLock ownership is per
+    // instance, not merely per PID; acquisition is the authoritative gate.
+    const heldLocks = acquireRolloutLocks(rollout.rolloutPaths, onError);
+    if (heldLocks === undefined) continue;
+
     try {
-      for (const sourcePath of rollout.rolloutPaths) {
-        removedRows += threads.deleteRolloutItemsForSource(sourcePath);
+      // Retire each durable binding and drop its SQLite mirror rows in one
+      // transaction before removing the canonical file. A crash can therefore
+      // leave either the complete pre-prune state or an inactive binding that
+      // explicitly explains the missing journal; it cannot leave an active
+      // binding pointing at a deleted source.
+      let removedRows = 0;
+      try {
+        const canonicalTails = new Map<string, number>();
+        for (const sourcePath of rollout.rolloutPaths) {
+          // Parse every candidate, including legacy/unbound sources. Deleting
+          // the enclosing directory is unsafe if any canonical sibling cannot
+          // be validated under its lease.
+          const canonicalTail = canonicalRolloutLastSequence(sourcePath);
+          if (runs.getJournalBinding(sourcePath) !== undefined) {
+            canonicalTails.set(sourcePath, canonicalTail);
+          }
+        }
+        removedRows = driver.transactionImmediate(() => {
+          let removed = 0;
+          for (const sourcePath of rollout.rolloutPaths) {
+            runs.retireJournalSource({
+              sourcePath,
+              reason: "retention",
+              observedAt,
+              ...(canonicalTails.has(sourcePath)
+                ? { canonicalLastSequence: canonicalTails.get(sourcePath)! }
+                : {}),
+            });
+            removed += threads.deleteRolloutItemsForSource(sourcePath);
+          }
+          return removed;
+        });
+      } catch (error) {
+        onError(error);
+        continue;
       }
-    } catch (error) {
-      onError(error);
-      continue;
+
+      // Atomic directory removal: rename aside so a crash mid-rm never leaves a
+      // partially-deleted session dir under its real name, then recursive rm.
+      if (!removeSessionDirAtomically(sessionDir, heldLocks, onError)) continue;
+
+      prunedSessionIds.push(sessionId);
+      prunedRolloutFiles += rollout.rolloutPaths.length;
+      prunedMirrorRows += removedRows;
+    } finally {
+      releaseRolloutLocks(heldLocks);
     }
-
-    // Atomic directory removal: rename aside so a crash mid-rm never leaves a
-    // partially-deleted session dir under its real name, then recursive rm.
-    if (!removeSessionDirAtomically(sessionDir, onError)) continue;
-
-    prunedSessionIds.push(sessionId);
-    prunedRolloutFiles += rollout.rolloutPaths.length;
-    prunedMirrorRows += removedRows;
   }
 
   return {
@@ -330,6 +368,46 @@ export function pruneRolloutSessions(
     prunedMirrorRows,
     prunedSessionIds,
   };
+}
+
+/**
+ * Resolve the sequence tail from the authority before deleting it. Retention
+ * must fail closed on a partial/corrupt/non-monotonic source: once the bytes are
+ * gone there is no honest way to reconstruct the missing cursor boundary.
+ */
+function canonicalRolloutLastSequence(sourcePath: string): number {
+  const raw = readFileSync(sourcePath, "utf8");
+  if (raw.length > 0 && !raw.endsWith("\n")) {
+    throw new Error(
+      `refusing to retire canonical rollout with an incomplete tail: ${sourcePath}`,
+    );
+  }
+  let lastSequence = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.trim().length === 0) continue;
+    let item;
+    try {
+      item = parseRolloutLine(line);
+    } catch (error) {
+      throw new Error(
+        `refusing to retire corrupt canonical rollout: ${sourcePath}`,
+        { cause: error },
+      );
+    }
+    if (item?.type !== "event_msg" || item.payload.seq === undefined) continue;
+    const sequence = item.payload.seq;
+    if (
+      !Number.isSafeInteger(sequence) ||
+      sequence <= 0 ||
+      sequence <= lastSequence
+    ) {
+      throw new Error(
+        `refusing to retire non-monotonic canonical rollout at sequence ${String(sequence)}: ${sourcePath}`,
+      );
+    }
+    lastSequence = sequence;
+  }
+  return lastSequence;
 }
 
 interface SessionRolloutSummary {
@@ -364,10 +442,13 @@ function describeSessionRollouts(
     const filePath = join(sessionDir, file);
     try {
       const fileStat = statSync(filePath);
+      if (!fileStat.isFile()) return undefined;
       rolloutPaths.push(filePath);
       if (fileStat.mtimeMs > newestMtimeMs) newestMtimeMs = fileStat.mtimeMs;
     } catch {
-      // Unreadable rollout — skip it; siblings still gate the decision.
+      // Deletion is directory-wide, so one uninspectable canonical sibling
+      // makes the entire session ineligible for this sweep.
+      return undefined;
     }
   }
   if (rolloutPaths.length === 0) return undefined;
@@ -423,8 +504,63 @@ function parseLockHolderPid(raw: string): number | undefined {
   }
 }
 
+interface HeldRolloutLock {
+  readonly lockPath: string;
+  readonly lease: SessionLock;
+}
+
+function acquireRolloutLocks(
+  rolloutPaths: readonly string[],
+  onError: (error: unknown) => void,
+): HeldRolloutLock[] | undefined {
+  const held: HeldRolloutLock[] = [];
+  try {
+    for (const rolloutPath of [...new Set(rolloutPaths)].sort()) {
+      const lockPath = `${rolloutPath}.lock`;
+      const lease = new SessionLock(lockPath);
+      lease.acquire();
+      held.push({ lockPath, lease });
+    }
+    return held;
+  } catch (error) {
+    releaseRolloutLocks(held);
+    // A writer won the race after the preliminary observation. That is an
+    // expected retention deferral, not an operator error.
+    if (!(error instanceof SessionLockedError)) onError(error);
+    return undefined;
+  }
+}
+
+function releaseRolloutLocks(heldLocks: readonly HeldRolloutLock[]): void {
+  for (const held of [...heldLocks].reverse()) held.lease.release();
+}
+
+function cleanupRenamedRolloutLocks(
+  sessionDir: string,
+  aside: string,
+  heldLocks: readonly HeldRolloutLock[],
+  onError: (error: unknown) => void,
+): void {
+  for (const held of heldLocks) {
+    const relativeLock = relative(sessionDir, held.lockPath);
+    if (
+      relativeLock.length === 0 ||
+      relativeLock.startsWith("..") ||
+      isAbsolute(relativeLock)
+    ) {
+      continue;
+    }
+    try {
+      unlinkSync(join(aside, relativeLock));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") onError(error);
+    }
+  }
+}
+
 function removeSessionDirAtomically(
   sessionDir: string,
+  heldLocks: readonly HeldRolloutLock[],
   onError: (error: unknown) => void,
 ): boolean {
   const aside = `${sessionDir}.pruning-${process.pid}-${Date.now().toString(36)}`;
@@ -441,6 +577,7 @@ function removeSessionDirAtomically(
     // The live name is already gone (rename succeeded), so retention held;
     // only the renamed husk lingers. Report and move on.
     onError(error);
+    cleanupRenamedRolloutLocks(sessionDir, aside, heldLocks, onError);
   }
   return true;
 }

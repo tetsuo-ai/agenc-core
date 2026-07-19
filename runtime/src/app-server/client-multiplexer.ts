@@ -34,6 +34,8 @@ export type AgenCClientMultiplexerErrorCode =
   | "CLIENT_ALREADY_REGISTERED"
   | "CLIENT_NOT_ATTACHED"
   | "CLIENT_NOT_FOUND"
+  | "EVENT_BUFFER_LIMIT_EXCEEDED"
+  | "EVENT_DELIVERY_LIMIT_EXCEEDED"
   | "SESSION_NOTIFICATION_MISMATCH";
 
 export class AgenCClientMultiplexerError extends Error {
@@ -52,19 +54,15 @@ export interface AgenCClientMultiplexerOptions {
   readonly maxBufferedEventsPerSession?: number;
   readonly maxBufferedBytesPerSession?: number;
   /**
-   * Live-broadcast per-client pending-backlog caps. These gate the slow-consumer
-   * eviction on the ONGOING broadcast path (an already-attached client falling
-   * behind); they do NOT apply to the one-shot replay hand-off, which never
-   * evicts. When omitted they default to the detached-session buffer caps
+   * Per-client pending-delivery caps. Live broadcasts evict a client before an
+   * enqueue would exceed either cap. Detached replay reserves the complete
+   * retained batch before queueing it, so concurrent attaches and capability
+   * replays cannot hide unbounded closures behind a blocked send. When omitted
+   * the caps default to the detached-session buffer caps
    * ({@link maxBufferedBytesPerSession} / {@link maxBufferedEventsPerSession}),
    * which is the production wiring — the daemon never overrides them, so default
-   * behavior is unchanged. They exist as an independent seam because the live
-   * pending cap and the detached-buffer cap are conceptually distinct bounds:
-   * the detached buffer trims itself to within its cap before any replay, so a
-   * cap-on-replay regression is only observable when the live pending cap is set
-   * STRICTLY SMALLER than the detached-buffer cap (a legitimately-buffered
-   * multi-event replay then exceeds the live pending cap). Tests use that to
-   * exercise the replay-vs-live boundary; production leaves them coupled.
+   * behavior is unchanged. They remain independently configurable so an
+   * embedder can use a smaller socket backlog than detached retention budget.
    */
   readonly maxPendingDeliveryBytesPerClient?: number;
   readonly maxPendingDeliveryCountPerClient?: number;
@@ -187,19 +185,27 @@ export class AgenCDaemonClientMultiplexer {
     this.#sessionManager = options.sessionManager;
     this.#createClientId =
       options.createClientId ?? (() => `client_${randomUUID()}`);
-    this.#maxBufferedEventsPerSession =
-      options.maxBufferedEventsPerSession ?? 1000;
-    this.#maxBufferedBytesPerSession =
+    this.#maxBufferedEventsPerSession = normalizePositiveLimit(
+      options.maxBufferedEventsPerSession ?? 1000,
+      "maxBufferedEventsPerSession",
+    );
+    this.#maxBufferedBytesPerSession = normalizePositiveLimit(
       options.maxBufferedBytesPerSession ??
-      DEFAULT_MAX_BUFFERED_BYTES_PER_SESSION;
-    // Default the live pending caps to the detached-buffer caps so production
-    // (which never overrides them) keeps the exact prior behavior.
-    this.#maxPendingDeliveryBytesPerClient =
+        DEFAULT_MAX_BUFFERED_BYTES_PER_SESSION,
+      "maxBufferedBytesPerSession",
+    );
+    // Default pending caps to the detached-buffer caps; production leaves the
+    // two bounds coupled.
+    this.#maxPendingDeliveryBytesPerClient = normalizePositiveLimit(
       options.maxPendingDeliveryBytesPerClient ??
-      this.#maxBufferedBytesPerSession;
-    this.#maxPendingDeliveryCountPerClient =
+        this.#maxBufferedBytesPerSession,
+      "maxPendingDeliveryBytesPerClient",
+    );
+    this.#maxPendingDeliveryCountPerClient = normalizePositiveLimit(
       options.maxPendingDeliveryCountPerClient ??
-      this.#maxBufferedEventsPerSession;
+        this.#maxBufferedEventsPerSession,
+      "maxPendingDeliveryCountPerClient",
+    );
     this.#onClientEvicted = options.onClientEvicted;
   }
 
@@ -207,7 +213,6 @@ export class AgenCDaemonClientMultiplexer {
     options: RegisterAgenCClientOptions,
   ): Promise<AgenCClientRegistration> {
     const clientId = options.clientId ?? this.#createClientId();
-    const replayEvictedClientIds: string[] = [];
     const {
       registration,
       replay,
@@ -233,35 +238,54 @@ export class AgenCDaemonClientMultiplexer {
         evicted: false,
         capabilities: advertisedCapabilities(options.capabilities),
       };
-      state.clients.set(clientId, client);
-
-      const replay: EnqueuedDelivery[] = [];
+      // Validate every one-shot replay candidate before registering the client
+      // or leasing a capability. A smaller delivery cap than buffer cap must
+      // fail without leaving a registered half-client or a stuck replay lease.
+      for (const capability of client.capabilities) {
+        if (state.capabilityReplayInFlight.has(capability)) continue;
+        for (const item of state.capabilityBuffers.get(capability) ?? []) {
+          assertEventFitsDeliveryLimit(
+            item.event,
+            this.#maxPendingDeliveryBytesPerClient,
+            this.#maxPendingDeliveryCountPerClient,
+          );
+        }
+      }
+      if (
+        client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY) &&
+        !state.capabilityReplayInFlight.has(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        )
+      ) {
+        for (const route of state.sessions.values()) {
+          for (const event of route.bufferedEvents.filter(
+            isMobileStatusPushEvent,
+          )) {
+            assertEventFitsDeliveryLimit(
+              event,
+              this.#maxPendingDeliveryBytesPerClient,
+              this.#maxPendingDeliveryCountPerClient,
+            );
+          }
+        }
+      }
+      const replayEvents: JsonObject[] = [];
       const replayCounts = new Map<string, number>();
       for (const capability of client.capabilities) {
         if (state.capabilityReplayInFlight.has(capability)) continue;
         const buffered = state.capabilityBuffers.get(capability) ?? [];
         if (buffered.length === 0) continue;
-        state.capabilityReplayInFlight.add(capability);
         replayCounts.set(capability, buffered.length);
         for (const item of buffered) {
-          const delivery = enqueueDelivery(
-            client,
-            item.event,
-            this.#maxBufferedBytesPerSession,
-            this.#maxBufferedEventsPerSession,
-            replayEvictedClientIds,
-            false,
-          );
-          if (delivery !== null) replay.push(delivery);
+          replayEvents.push(item.event);
         }
       }
-
       // Mobile status is a fan-out observer capability, not a Ledger-style
       // single-consumer client action. Replay only status frames from each
       // session's ordinary bounded buffer; leave transcript/tool events for a
       // later explicit session.attach. One registering observer leases this
       // replay batch at a time so concurrent phones cannot both drain it.
-      const statusReplay: EnqueuedDelivery[] = [];
+      const statusReplayBatch: JsonObject[] = [];
       const statusReplayEvents = new Map<string, JsonObject[]>();
       if (
         client.capabilities.has(AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY) &&
@@ -276,23 +300,45 @@ export class AgenCDaemonClientMultiplexer {
           if (bufferedStatuses.length === 0) continue;
           statusReplayEvents.set(route.sessionId, bufferedStatuses);
           for (const event of bufferedStatuses) {
-            const delivery = enqueueDelivery(
-              client,
-              event,
-              this.#maxBufferedBytesPerSession,
-              this.#maxBufferedEventsPerSession,
-              replayEvictedClientIds,
-              false,
-            );
-            if (delivery !== null) statusReplay.push(delivery);
+            statusReplayBatch.push(event);
           }
         }
-        if (statusReplay.length > 0) {
-          state.capabilityReplayInFlight.add(
-            AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
-          );
-        }
       }
+
+      // Reserve the aggregate before registering the client or leasing any
+      // capability buffer. A failed hard-cap check must leave no half-client,
+      // replay lease, or queued closure behind.
+      assertReplayDeliveriesFitAvailable(
+        client,
+        [replayEvents, statusReplayBatch],
+        this.#maxPendingDeliveryBytesPerClient,
+        this.#maxPendingDeliveryCountPerClient,
+      );
+      state.clients.set(clientId, client);
+      for (const capability of replayCounts.keys()) {
+        state.capabilityReplayInFlight.add(capability);
+      }
+      if (statusReplayBatch.length > 0) {
+        state.capabilityReplayInFlight.add(
+          AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+        );
+      }
+
+      const replayDelivery = enqueueReplayDelivery(
+        client,
+        replayEvents,
+        this.#maxPendingDeliveryBytesPerClient,
+        this.#maxPendingDeliveryCountPerClient,
+      );
+      const replay = replayDelivery === null ? [] : [replayDelivery];
+      const statusReplayDelivery = enqueueReplayDelivery(
+        client,
+        statusReplayBatch,
+        this.#maxPendingDeliveryBytesPerClient,
+        this.#maxPendingDeliveryCountPerClient,
+      );
+      const statusReplay =
+        statusReplayDelivery === null ? [] : [statusReplayDelivery];
       return {
         registration: { clientId },
         replay,
@@ -348,12 +394,20 @@ export class AgenCDaemonClientMultiplexer {
     sessionId: string,
     clientId: string,
   ): Promise<SessionAttachResult> {
-    // Replay never evicts (allowEvict=false below), so nothing is ever pushed
-    // here; the array only satisfies the shared enqueueDelivery signature.
-    const replayEvictedClientIds: string[] = [];
+    // Replay reserves its complete bounded batch before attachment. This keeps
+    // a blocked client's queued closures within the same byte/count caps as
+    // live delivery and rejects before the session manager gains an attachment.
     const { attachment, replayedEvents, replay } = await this.#state.with(
       async (state) => {
         const client = requireClient(state, clientId);
+        const existingRoute = state.sessions.get(sessionId);
+        const replayedEvents = [...(existingRoute?.bufferedEvents ?? [])];
+        assertReplayDeliveriesFitAvailable(
+          client,
+          [replayedEvents],
+          this.#maxPendingDeliveryBytesPerClient,
+          this.#maxPendingDeliveryCountPerClient,
+        );
         const attachment = await this.#sessionManager.attachSession({
           sessionId,
           clientId,
@@ -362,20 +416,13 @@ export class AgenCDaemonClientMultiplexer {
 
         client.sessionIds.add(sessionId);
         route.clientAttachmentIds.set(clientId, attachment.attachmentId);
-        const replayedEvents = [...route.bufferedEvents];
-        const replay = route.bufferedEvents
-          .map((event) =>
-            enqueueDelivery(
-              client,
-              event,
-              this.#maxBufferedBytesPerSession,
-              this.#maxBufferedEventsPerSession,
-              replayEvictedClientIds,
-              // REPLAY is a bounded one-shot hand-off: never evict, never drop.
-              false,
-            ),
-          )
-          .filter((delivery): delivery is EnqueuedDelivery => delivery !== null);
+        const replayDelivery = enqueueReplayDelivery(
+          client,
+          replayedEvents,
+          this.#maxPendingDeliveryBytesPerClient,
+          this.#maxPendingDeliveryCountPerClient,
+        );
+        const replay = replayDelivery === null ? [] : [replayDelivery];
 
         return { attachment, replayedEvents, replay };
       },
@@ -540,6 +587,7 @@ export class AgenCDaemonClientMultiplexer {
       );
     }
     const evictedClientIds: string[] = [];
+    const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const isMobileStatus = isMobileStatusPushEvent(event);
     const { deliveries, hadLiveTargets, bufferedWithoutTarget } =
       await this.#state.with(async (state) => {
@@ -587,12 +635,17 @@ export class AgenCDaemonClientMultiplexer {
           };
         }
         const route = existingRoute ?? getOrCreateRoute(state, sessionId);
-        bufferSessionEvent(
-          route,
-          event,
-          this.#maxBufferedEventsPerSession,
-          this.#maxBufferedBytesPerSession,
-        );
+        try {
+          bufferSessionEvent(
+            route,
+            event,
+            this.#maxBufferedEventsPerSession,
+            this.#maxBufferedBytesPerSession,
+          );
+        } catch (error) {
+          deleteRouteIfEmpty(state, route);
+          throw error;
+        }
         return {
           deliveries: [] as EnqueuedDelivery[],
           hadLiveTargets: false,
@@ -609,8 +662,7 @@ export class AgenCDaemonClientMultiplexer {
             this.#maxPendingDeliveryBytesPerClient,
             this.#maxPendingDeliveryCountPerClient,
             evictedClientIds,
-            // Live broadcast: enforce the per-client backlog cap.
-            true,
+            rejectedDeliveries,
           ),
         )
         .filter((delivery): delivery is EnqueuedDelivery => delivery !== null),
@@ -618,7 +670,6 @@ export class AgenCDaemonClientMultiplexer {
         bufferedWithoutTarget: false,
       };
     });
-
     await this.#evictSlowClients(evictedClientIds);
     const settled = await settleDeliveries(deliveries);
 
@@ -640,16 +691,26 @@ export class AgenCDaemonClientMultiplexer {
         ) {
           return;
         }
-        bufferSessionEvent(
-          existingRoute ?? getOrCreateRoute(state, sessionId),
-          event,
-          this.#maxBufferedEventsPerSession,
-          this.#maxBufferedBytesPerSession,
-        );
+        const route = existingRoute ?? getOrCreateRoute(state, sessionId);
+        try {
+          bufferSessionEvent(
+            route,
+            event,
+            this.#maxBufferedEventsPerSession,
+            this.#maxBufferedBytesPerSession,
+          );
+        } catch (error) {
+          deleteRouteIfEmpty(state, route);
+          throw error;
+        }
       });
     }
 
-    return { sessionId, ...settled };
+    return {
+      sessionId,
+      deliveredClientIds: settled.deliveredClientIds,
+      failed: [...settled.failed, ...rejectedDeliveries],
+    };
   }
 
   /**
@@ -666,6 +727,7 @@ export class AgenCDaemonClientMultiplexer {
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
     const evictedClientIds: string[] = [];
+    const rejectedDeliveries: AgenCSessionBroadcastFailure[] = [];
     const { deliveries, bufferAfterDelivery } = await this.#state.with(
       async (state) => {
         // Map iteration order is registration order. Retaining the last match
@@ -682,9 +744,9 @@ export class AgenCDaemonClientMultiplexer {
             bufferAfterDelivery: false,
           };
           const buffered = state.capabilityBuffers.get(capability) ?? [];
-          buffered.push({ sessionId, event });
-          boundCapabilityBuffer(
+          bufferCapabilityEvent(
             buffered,
+            { sessionId, event },
             this.#maxBufferedEventsPerSession,
             this.#maxBufferedBytesPerSession,
           );
@@ -700,7 +762,7 @@ export class AgenCDaemonClientMultiplexer {
           this.#maxPendingDeliveryBytesPerClient,
           this.#maxPendingDeliveryCountPerClient,
           evictedClientIds,
-          true,
+          rejectedDeliveries,
         );
         return {
           deliveries: delivery === null ? [] : [delivery],
@@ -716,9 +778,9 @@ export class AgenCDaemonClientMultiplexer {
       await this.#state.with(async (state) => {
         if (!(await this.#isSessionLive(sessionId))) return [];
         const buffered = state.capabilityBuffers.get(capability) ?? [];
-        buffered.push({ sessionId, event });
-        boundCapabilityBuffer(
+        bufferCapabilityEvent(
           buffered,
+          { sessionId, event },
           this.#maxBufferedEventsPerSession,
           this.#maxBufferedBytesPerSession,
         );
@@ -728,7 +790,8 @@ export class AgenCDaemonClientMultiplexer {
     }
     return {
       sessionId,
-      ...result,
+      deliveredClientIds: result.deliveredClientIds,
+      failed: [...result.failed, ...rejectedDeliveries],
     };
   }
 
@@ -805,6 +868,95 @@ function routeClientIdForDetach(
   return undefined;
 }
 
+interface ReplayDeliveryReservation {
+  readonly bytes: number;
+  readonly count: number;
+}
+
+/**
+ * Validate the aggregate retained references before any replay closure is
+ * queued. Per-event validation alone is insufficient: concurrent attaches can
+ * otherwise chain arbitrarily many bounded arrays behind one blocked send
+ * while the live pending counters still read zero.
+ */
+function assertReplayDeliveriesFitAvailable(
+  client: MutableClient,
+  batches: readonly (readonly JsonObject[])[],
+  maxPendingBytes: number,
+  maxPendingCount: number,
+): ReplayDeliveryReservation {
+  let bytes = 0;
+  let count = 0;
+  for (const batch of batches) {
+    for (const event of batch) {
+      const eventBytes = bufferedEventByteSize(event);
+      if (eventBytes > maxPendingBytes || maxPendingCount < 1) {
+        throw deliveryLimitError(eventBytes, maxPendingBytes);
+      }
+      bytes += eventBytes;
+      count += 1;
+      if (
+        !Number.isSafeInteger(bytes) ||
+        client.pendingDeliveryBytes + bytes > maxPendingBytes ||
+        client.pendingDeliveryCount + count > maxPendingCount
+      ) {
+        throw new AgenCClientMultiplexerError(
+          "EVENT_DELIVERY_LIMIT_EXCEEDED",
+          "AgenC replay batch exceeds the client pending delivery byte/count limits",
+        );
+      }
+    }
+  }
+  return { bytes, count };
+}
+
+/**
+ * Replay payloads already live in bounded retention buffers. Reserve the whole
+ * batch synchronously, then send its events in order through one queued task.
+ * The reservation includes closures waiting behind an earlier blocked send.
+ */
+function enqueueReplayDelivery(
+  client: MutableClient | undefined,
+  events: readonly JsonObject[],
+  maxPendingBytes: number,
+  maxPendingCount: number,
+): EnqueuedDelivery | null {
+  if (client === undefined || client.evicted || events.length === 0) return null;
+  const reservation = assertReplayDeliveriesFitAvailable(
+    client,
+    [events],
+    maxPendingBytes,
+    maxPendingCount,
+  );
+  client.pendingDeliveryBytes += reservation.bytes;
+  client.pendingDeliveryCount += reservation.count;
+
+  const delivered = client.deliveryQueue.then(async () => {
+    try {
+      if (client.evicted) {
+        throw new AgenCClientMultiplexerError(
+          "EVENT_DELIVERY_LIMIT_EXCEEDED",
+          "AgenC replay delivery was cancelled after client eviction",
+        );
+      }
+      for (const event of events) {
+        await client.send(event);
+      }
+    } finally {
+      client.pendingDeliveryBytes -= reservation.bytes;
+      client.pendingDeliveryCount -= reservation.count;
+    }
+  });
+  client.deliveryQueue = delivered.then(
+    () => undefined,
+    () => undefined,
+  );
+  return {
+    clientId: client.clientId,
+    delivered,
+  };
+}
+
 /**
  * Bound on a single attached client's pending (queued-but-undelivered) delivery
  * backlog for the ONGOING broadcast path. Mirrors the detached-session
@@ -812,19 +964,8 @@ function routeClientIdForDetach(
  * bytes OR {@link maxPendingCount} events is a stuck/backpressured slow consumer
  * and is evicted rather than allowed to pin daemon heap without limit.
  *
- * `allowEvict` gates the cap. It is TRUE only for the live broadcast path
- * (an already-attached client falling behind). It is FALSE for the one-shot
- * REPLAY path in {@link AgenCDaemonClientMultiplexer.attachClientToSession},
- * which maps this function SYNCHRONOUSLY over the detached buffer inside the
- * state lock: the per-delivery decrement microtasks cannot run during that
- * synchronous map, so the pending counters would only ever accumulate across
- * the batch and a perfectly healthy client replaying a buffer near the 8 MB
- * detached cap would be falsely evicted mid-replay (and its un-delivered
- * boundary event then spliced away and lost). The replay batch is already
- * bounded by the detached-buffer cap and is a controlled hand-off to a freshly
- * attaching client, so it must never trip eviction or drop an event — when
- * `allowEvict` is false this function performs the original unbounded enqueue
- * (no cap, no counter bookkeeping).
+ * Live broadcasts evict a slow client and report the rejected delivery.
+ * Detached replay uses the separate sequential path above.
  *
  * When the broadcast path trips the cap, the client's id is pushed onto
  * `evictedClientIds`; the caller (outside the lock-managed section) tears it
@@ -838,41 +979,36 @@ function enqueueDelivery(
   maxPendingBytes: number,
   maxPendingCount: number,
   evictedClientIds: string[],
-  allowEvict: boolean,
+  rejectedDeliveries: AgenCSessionBroadcastFailure[],
 ): EnqueuedDelivery | null {
   if (client === undefined || client.evicted) return null;
 
-  if (!allowEvict) {
-    // REPLAY path: original unbounded enqueue. No cap and no pending-counter
-    // bookkeeping (those counters track the live broadcast backlog only), so a
-    // healthy client's bounded one-shot replay is never evicted and no buffered
-    // event is ever dropped.
-    const delivered = client.deliveryQueue.then(() =>
-      Promise.resolve(client.send(event)),
-    );
-    client.deliveryQueue = delivered.then(
-      () => undefined,
-      () => undefined,
-    );
-    return {
+  const eventBytes = bufferedEventByteSize(event);
+  if (eventBytes > maxPendingBytes || maxPendingCount < 1) {
+    const error = deliveryLimitError(eventBytes, maxPendingBytes);
+    client.evicted = true;
+    evictedClientIds.push(client.clientId);
+    rejectedDeliveries.push({
       clientId: client.clientId,
-      delivered,
-    };
+      message: error.message,
+    });
+    return null;
   }
 
-  const eventBytes = bufferedEventByteSize(event);
   // Trip the cap when this event WOULD push the pending backlog over either
-  // budget. Always allow the very first pending event through (count 0) so a
-  // single oversized payload is still delivered to an otherwise-idle client
-  // rather than evicting it for one event, mirroring the byte-budget path's
-  // "retain at least the most recent event" rule.
+  // budget. A single oversized event was rejected above even for an idle
+  // client, so neither byte nor count accounting can exceed its hard cap.
   if (
-    client.pendingDeliveryCount > 0 &&
     (client.pendingDeliveryBytes + eventBytes > maxPendingBytes ||
       client.pendingDeliveryCount + 1 > maxPendingCount)
   ) {
     client.evicted = true;
     evictedClientIds.push(client.clientId);
+    rejectedDeliveries.push({
+      clientId: client.clientId,
+      message:
+        "AgenC client pending delivery limit exceeded while enqueueing an event",
+    });
     return null;
   }
 
@@ -940,56 +1076,122 @@ async function settleDeliveries(
 /**
  * In-band retention-gap marker announcing evicted buffered events, using the
  * frozen vocabulary (EVENT_GAP_EVENT + RunEventGap reason "retention",
- * contracts/run-contracts.ts). Buffered events are opaque to the multiplexer,
- * so the marker is a flat object rather than a session-event envelope;
- * sequence-addressed RunEventGap markers arrive with the M4 journal
- * (run.replay). JSON-RPC clients that dispatch on `method` ignore it;
- * gap-aware clients read `type`/`retiredCount`.
+ * contracts/run-contracts.ts). It is a real JSON-RPC notification so socket
+ * clients cannot silently discard the loss marker while dispatching by
+ * `method`. Sequence-addressed durable gaps remain authoritative via
+ * `run.replay`; this notification tells a live client when it must reattach.
  *
  * Invariants: at most ONE marker per session buffer, always at the head,
- * merged (retiredCount accumulates) across evictions, never itself evicted,
- * exempt from the event-count capacity. It leaves the buffer only by being
- * replayed — a fully-acked replay splices it out with the replayed prefix,
- * so a later eviction starts a fresh marker for the next reconnecting
- * client. After a failed (unacked) replay the buffer — marker included — is
- * retained for the next attach.
+ * merged (retiredCount accumulates) across evictions, and counted against both
+ * hard capacities. It leaves the buffer only by being replayed — a fully-acked
+ * replay splices it out with the replayed prefix, so a later eviction starts a
+ * fresh marker for the next reconnecting client. After a failed (unacked)
+ * replay the buffer — marker included — is retained for the next attach.
  */
-function makeEventGapMarker(sessionId: string, retiredCount: number): JsonObject {
+function makeEventGapMarker(
+  sessionId: string,
+  retiredCount: number,
+  coordinates: {
+    readonly runId?: string;
+    readonly afterSequence?: number;
+    readonly firstAvailableSequence?: number;
+  } = {},
+): JsonObject {
   return {
-    type: EVENT_GAP_EVENT,
-    sessionId,
-    reason: "retention",
-    retiredCount,
-    // Brand so the predicate below can never confuse a future
-    // sequence-addressed RunEventGap journal event (same frozen type
-    // vocabulary) with a multiplexer-owned retention marker.
-    source: "multiplexer_retention",
+    jsonrpc: "2.0",
+    method: "event.event_gap",
+    params: {
+      type: EVENT_GAP_EVENT,
+      kind: EVENT_GAP_EVENT,
+      sessionId,
+      ...(coordinates.runId !== undefined ? { runId: coordinates.runId } : {}),
+      ...(coordinates.afterSequence !== undefined
+        ? { afterSequence: coordinates.afterSequence }
+        : {}),
+      ...(coordinates.firstAvailableSequence !== undefined
+        ? { firstAvailableSequence: coordinates.firstAvailableSequence }
+        : {}),
+      reason: "retention",
+      retiredCount,
+      // Brand so the predicate below can never confuse a future
+      // sequence-addressed RunEventGap journal event (same frozen type
+      // vocabulary) with a multiplexer-owned retention marker.
+      source: "multiplexer_retention",
+    },
   };
 }
 
 function isBufferedEventGapMarker(event: JsonObject): boolean {
+  const params = bufferedEventGapParams(event);
   return (
-    event.type === EVENT_GAP_EVENT &&
-    event.reason === "retention" &&
-    event.source === "multiplexer_retention"
+    event.method === "event.event_gap" &&
+    params?.type === EVENT_GAP_EVENT &&
+    params.reason === "retention" &&
+    params.source === "multiplexer_retention"
   );
+}
+
+function bufferedEventGapParams(event: JsonObject): JsonObject | undefined {
+  const params = event.params;
+  return params !== null && typeof params === "object" && !Array.isArray(params)
+    ? (params as JsonObject)
+    : undefined;
 }
 
 /** Merge newly retired events into the head marker (creating it if absent). */
 function recordRetiredEvents(
   bufferedEvents: JsonObject[],
   sessionId: string,
-  retiredCount: number,
+  retiredEvents: readonly JsonObject[],
 ): void {
+  const retiredCount = retiredEvents.length;
   if (retiredCount <= 0) return;
   const head = bufferedEvents[0];
+  const firstReal =
+    head !== undefined && isBufferedEventGapMarker(head)
+      ? bufferedEvents[1]
+      : head;
+  const retiredSequences = retiredEvents
+    .map(bufferedEventSequence)
+    .filter((value): value is number => value !== undefined)
+    .sort((left, right) => left - right);
+  const previousAfter =
+    head !== undefined && isBufferedEventGapMarker(head) &&
+    typeof bufferedEventGapParams(head)?.afterSequence === "number"
+      ? (bufferedEventGapParams(head)!.afterSequence as number)
+      : undefined;
+  const afterSequence =
+    previousAfter ??
+    (retiredSequences.length > 0 ? retiredSequences[0]! - 1 : undefined);
+  const firstAvailableSequence = bufferedEventSequence(firstReal);
+  const runId =
+    bufferedEventRunId(firstReal) ??
+    retiredEvents.map(bufferedEventRunId).find((value) => value !== undefined) ??
+    (head !== undefined && isBufferedEventGapMarker(head) &&
+    typeof bufferedEventGapParams(head)?.runId === "string"
+      ? (bufferedEventGapParams(head)!.runId as string)
+      : sessionId);
+  const coordinates = {
+    ...(runId !== undefined ? { runId } : {}),
+    ...(afterSequence !== undefined ? { afterSequence } : {}),
+    ...(firstAvailableSequence !== undefined
+      ? { firstAvailableSequence }
+      : {}),
+  };
   if (head !== undefined && isBufferedEventGapMarker(head)) {
+    const headParams = bufferedEventGapParams(head);
     const previous =
-      typeof head.retiredCount === "number" ? head.retiredCount : 0;
-    bufferedEvents[0] = makeEventGapMarker(sessionId, previous + retiredCount);
+      typeof headParams?.retiredCount === "number" ? headParams.retiredCount : 0;
+    bufferedEvents[0] = makeEventGapMarker(
+      sessionId,
+      previous + retiredCount,
+      coordinates,
+    );
     return;
   }
-  bufferedEvents.unshift(makeEventGapMarker(sessionId, retiredCount));
+  bufferedEvents.unshift(
+    makeEventGapMarker(sessionId, retiredCount, coordinates),
+  );
 }
 
 function bufferSessionEvent(
@@ -998,25 +1200,38 @@ function bufferSessionEvent(
   maxBufferedEvents: number,
   maxBufferedBytes: number,
 ): void {
-  route.bufferedEvents.push(event);
-  const startIndex =
-    route.bufferedEvents[0] !== undefined &&
-    isBufferedEventGapMarker(route.bufferedEvents[0])
-      ? 1
-      : 0;
-  const realCount = route.bufferedEvents.length - startIndex;
-  if (realCount > maxBufferedEvents) {
-    const evicted = route.bufferedEvents.splice(
-      startIndex,
-      realCount - maxBufferedEvents,
-    );
-    recordRetiredEvents(route.bufferedEvents, route.sessionId, evicted.length);
+  const eventBytes = bufferedEventByteSize(event);
+  if (eventBytes > maxBufferedBytes || maxBufferedEvents < 1) {
+    throw bufferLimitError(eventBytes, maxBufferedBytes);
   }
-  evictBufferedEventsByBytes(
-    route.bufferedEvents,
-    maxBufferedBytes,
-    route.sessionId,
-  );
+  const previous = [...route.bufferedEvents];
+  route.bufferedEvents.push(event);
+  while (
+    !bufferWithinLimits(
+      route.bufferedEvents,
+      maxBufferedEvents,
+      maxBufferedBytes,
+    )
+  ) {
+    const startIndex =
+      route.bufferedEvents[0] !== undefined &&
+      isBufferedEventGapMarker(route.bufferedEvents[0])
+        ? 1
+        : 0;
+    const [retired] = route.bufferedEvents.splice(startIndex, 1);
+    if (retired === undefined) {
+      route.bufferedEvents.splice(
+        0,
+        route.bufferedEvents.length,
+        ...previous,
+      );
+      throw new AgenCClientMultiplexerError(
+        "EVENT_BUFFER_LIMIT_EXCEEDED",
+        "AgenC event buffer limit cannot retain its explicit gap marker",
+      );
+    }
+    recordRetiredEvents(route.bufferedEvents, route.sessionId, [retired]);
+  }
 }
 
 function advertisedCapabilities(capabilities: JsonObject | undefined): Set<string> {
@@ -1054,74 +1269,133 @@ function targetCapabilityFromEvent(event: JsonObject): string | null {
     : null;
 }
 
-function boundCapabilityBuffer(
+function bufferCapabilityEvent(
   buffered: BufferedCapabilityEvent[],
+  item: BufferedCapabilityEvent,
   maxBufferedEvents: number,
   maxBufferedBytes: number,
 ): void {
-  if (buffered.length > maxBufferedEvents) {
-    buffered.splice(0, buffered.length - maxBufferedEvents);
-  }
-  if (maxBufferedBytes <= 0 || buffered.length === 0) return;
-  let total = buffered.reduce(
+  const eventBytes = bufferedEventByteSize(item.event);
+  const total = buffered.reduce(
     (sum, item) => sum + bufferedEventByteSize(item.event),
     0,
   );
-  while (total > maxBufferedBytes && buffered.length > 1) {
-    const removed = buffered.shift();
-    if (removed === undefined) break;
-    total -= bufferedEventByteSize(removed.event);
+  if (
+    buffered.length + 1 > maxBufferedEvents ||
+    total + eventBytes > maxBufferedBytes
+  ) {
+    throw new AgenCClientMultiplexerError(
+      "EVENT_BUFFER_LIMIT_EXCEEDED",
+      "AgenC capability event buffer limit exceeded; the event was not queued",
+    );
   }
+  buffered.push(item);
 }
 
 /**
  * Approximate the serialized byte size of a buffered event. Buffered events
  * are JSON notifications, so the UTF-8 length of their JSON encoding is a
- * faithful proxy for the memory they pin. Falls back to 0 for values that
- * cannot be stringified so eviction never throws.
+ * faithful proxy for the memory they pin. Values that cannot be stringified
+ * are treated as maximally large so every valid byte cap rejects them.
  */
 function bufferedEventByteSize(event: JsonObject): number {
   try {
     return Buffer.byteLength(JSON.stringify(event));
   } catch {
-    return 0;
+    // Non-serializable/cyclic input must fail closed against every valid cap;
+    // treating it as zero would make the byte budget advisory.
+    return Number.MAX_SAFE_INTEGER;
   }
 }
 
-/**
- * Drops the oldest buffered events in-place until the total approximate byte
- * size is within `maxBufferedBytes`. Always retains at least the most recent
- * REAL event so a single oversized payload is still replayable rather than
- * silently lost, and never evicts the head gap marker (announced loss must
- * not itself be lost). Every eviction is folded into the marker via
- * {@link recordRetiredEvents}; the marker's own ~130 bytes are deliberately
- * not re-looped against KB-scale budgets. Pairs with the count cap in
- * {@link bufferSessionEvent}.
- */
-function evictBufferedEventsByBytes(
-  bufferedEvents: JsonObject[],
+function bufferedEventsByteSize(events: readonly JsonObject[]): number {
+  return events.reduce(
+    (total, event) => total + bufferedEventByteSize(event),
+    0,
+  );
+}
+
+function bufferWithinLimits(
+  events: readonly JsonObject[],
+  maxBufferedEvents: number,
   maxBufferedBytes: number,
-  sessionId: string,
+): boolean {
+  return (
+    events.length <= maxBufferedEvents &&
+    bufferedEventsByteSize(events) <= maxBufferedBytes
+  );
+}
+
+function bufferLimitError(
+  eventBytes: number,
+  maxBufferedBytes: number,
+): AgenCClientMultiplexerError {
+  return new AgenCClientMultiplexerError(
+    "EVENT_BUFFER_LIMIT_EXCEEDED",
+    "AgenC event buffer limit exceeded: event requires " +
+      String(eventBytes) +
+      " bytes but the detached-session cap is " +
+      String(maxBufferedBytes),
+  );
+}
+
+function deliveryLimitError(
+  eventBytes: number,
+  maxPendingBytes: number,
+): AgenCClientMultiplexerError {
+  return new AgenCClientMultiplexerError(
+    "EVENT_DELIVERY_LIMIT_EXCEEDED",
+    "AgenC event delivery limit exceeded: event requires " +
+      String(eventBytes) +
+      " bytes but the per-client cap is " +
+      String(maxPendingBytes),
+  );
+}
+
+function assertEventFitsDeliveryLimit(
+  event: JsonObject,
+  maxPendingBytes: number,
+  maxPendingCount: number,
 ): void {
-  if (maxBufferedBytes <= 0 || bufferedEvents.length === 0) return;
-  let total = 0;
-  for (const event of bufferedEvents) {
-    total += bufferedEventByteSize(event);
+  const eventBytes = bufferedEventByteSize(event);
+  if (eventBytes > maxPendingBytes || maxPendingCount < 1) {
+    throw deliveryLimitError(eventBytes, maxPendingBytes);
   }
-  let retired = 0;
-  while (total > maxBufferedBytes) {
-    const startIndex =
-      bufferedEvents[0] !== undefined &&
-      isBufferedEventGapMarker(bufferedEvents[0])
-        ? 1
-        : 0;
-    if (bufferedEvents.length - startIndex <= 1) break;
-    const [removed] = bufferedEvents.splice(startIndex, 1);
-    if (removed === undefined) break;
-    total -= bufferedEventByteSize(removed);
-    retired += 1;
+}
+
+function bufferedEventSequence(event: JsonObject | undefined): number | undefined {
+  if (event === undefined) return undefined;
+  const direct = event.sequence;
+  if (typeof direct === "number" && Number.isSafeInteger(direct) && direct > 0) {
+    return direct;
   }
-  if (retired > 0) recordRetiredEvents(bufferedEvents, sessionId, retired);
+  const params = event.params;
+  if (params !== null && typeof params === "object" && !Array.isArray(params)) {
+    const nested = (params as JsonObject).sequence;
+    if (
+      typeof nested === "number" &&
+      Number.isSafeInteger(nested) &&
+      nested > 0
+    ) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
+function bufferedEventRunId(event: JsonObject | undefined): string | undefined {
+  if (event === undefined) return undefined;
+  for (const value of [event.runId, event.agentId]) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  const params = event.params;
+  if (params !== null && typeof params === "object" && !Array.isArray(params)) {
+    const object = params as JsonObject;
+    for (const value of [object.runId, object.agentId]) {
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -1143,4 +1417,11 @@ function deleteRouteIfEmpty(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizePositiveLimit(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError(name + " must be a positive safe integer");
+  }
+  return value;
 }

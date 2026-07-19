@@ -18,6 +18,7 @@ import {
 } from '../../../src/bootstrap/state.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
 import type { Session } from '../../../src/session/session.js'
+import { createTestEffectJournal } from '../../helpers/test-effect-journal.js'
 import { resetProjectForTesting } from '../../../src/utils/sessionStorage.js'
 import { getToolResultsDir } from '../../../src/utils/toolResultStorage.js'
 import {
@@ -145,6 +146,7 @@ function promptAdmissionSession() {
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient
   const session = {
+    ...createTestEffectJournal(),
     conversationId: 'session-prompt',
     services: { executionAdmission: admission, admissionRequired: true },
   } as unknown as Session

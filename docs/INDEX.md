@@ -73,6 +73,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [design/secure-project-instructions.md](design/secure-project-instructions.md) | Live instruction delivery, precedence, descriptor-bound reads, approvals, and threat model |
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, failure semantics, and research |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
+| [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
 ---

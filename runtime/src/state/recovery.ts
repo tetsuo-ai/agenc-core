@@ -3,8 +3,15 @@ import type { JsonObject } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import { sqlPlaceholders } from "./sql.js";
 import { normalizeToolRecoveryCategory } from "./tool-output-rotation.js";
-import { repairCancelledSubtrees } from "./run-cancellation.js";
+import {
+  cancelAgentRunTree,
+  repairCancelledSubtrees,
+} from "./run-cancellation.js";
 import { asRecord } from "../utils/record.js";
+import {
+  recoverCanonicalRunJournalsOnStartup,
+  recoverPendingEffectReviewsOnStartup,
+} from "./startup-run-journal-recovery.js";
 
 const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
@@ -14,6 +21,8 @@ const RECOVERABLE_AGENT_RUN_STATUSES = [
   "blocked",
   "suspended",
 ] as const;
+
+const MAX_ADMISSION_CANCEL_REPAIRS = 4_096;
 
 const TERMINAL_TOOL_CALL_STATUSES = [
   "completed",
@@ -138,7 +147,35 @@ export function recoverDaemonStateOnStartup(
 ): DaemonStartupRecoveryReport {
   const warnings: DaemonStartupRecoveryWarning[] = [];
   const recoveredAt = options.now?.() ?? new Date().toISOString();
+  // The rollout JSONL is the M4 authority. Rebuild its SQLite projection
+  // before stale tool classification or the recoverable-run load so a crash
+  // after fsyncing `run_terminal`/`effect_result` cannot resurrect or replay
+  // work merely because the legacy snapshot write did not happen.
+  recoverCanonicalRunJournalsOnStartup(driver, {
+    recoverableStatuses: RECOVERABLE_AGENT_RUN_STATUSES,
+  });
+  // Older run.cancel implementations could commit the SQLite cancellation
+  // cascade immediately before the live writer projected its canonical
+  // terminal. Repair only the bounded set of cancelled M4 runs that have an
+  // explicit journal binding and still lack a current terminal result. This
+  // avoids making all historical offline cancellations part of startup work.
+  // If no canonical terminal is present, the row remains cancelled with
+  // deliberately unavailable output; recovery never invents a result.
+  recoverCanonicalRunJournalsOnStartup(driver, {
+    recoverableStatuses: ["cancelled"],
+    onlyMissingTerminalResults: true,
+    requireJournalBinding: true,
+  });
+  // A stopped terminal run may later receive one explicitly leased operator
+  // review event. Catch up that durable audit evidence independently of run
+  // status so a crash after journal fsync cannot strand the mutation gate.
+  recoverPendingEffectReviewsOnStartup(driver);
   return driver.transaction(() => {
+    // A live two-phase cancellation settles admissions while the canonical
+    // Session listener is still open, then writes the terminal tail, then
+    // projects agent_runs/spawn edges. A crash between the first two phases
+    // leaves an admission cancel-lock but must never restore runnable work.
+    repairAdmissionCancelledAgentRuns(driver);
     // Crash-mid-cascade repair MUST precede the recoverable-run load: a
     // surviving descendant of a cancelled parent is finished off here so
     // the restore loop never resurrects it.
@@ -156,6 +193,35 @@ export function recoverDaemonStateOnStartup(
       warnings,
     };
   });
+}
+
+function repairAdmissionCancelledAgentRuns(driver: StateSqliteDriver): void {
+  const rows = driver
+    .prepareState<
+      unknown[],
+      { readonly id: string; readonly reason: string; readonly cancelled_at: string }
+    >(
+      `SELECT runs.id, cancellation.reason, cancellation.cancelled_at
+       FROM agent_runs AS runs
+       JOIN execution_admission_cancellations AS cancellation
+         ON cancellation.run_id = runs.id
+       WHERE runs.status IN (${sqlPlaceholders(RECOVERABLE_AGENT_RUN_STATUSES.length)})
+       ORDER BY cancellation.cancelled_at ASC, runs.id ASC
+       LIMIT ?`,
+    )
+    .all(...RECOVERABLE_AGENT_RUN_STATUSES, MAX_ADMISSION_CANCEL_REPAIRS + 1);
+  if (rows.length > MAX_ADMISSION_CANCEL_REPAIRS) {
+    throw new Error(
+      `daemon startup admission-cancellation repair exceeds ${MAX_ADMISSION_CANCEL_REPAIRS} runs`,
+    );
+  }
+  for (const row of rows) {
+    cancelAgentRunTree(driver, {
+      runId: row.id,
+      reason: row.reason,
+      cancelledAt: row.cancelled_at,
+    });
+  }
 }
 
 function loadRecoverableAgentRuns(

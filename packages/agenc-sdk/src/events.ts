@@ -18,49 +18,67 @@ import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
 
 export type AgencStopReason = "completed" | "errored" | "stopped";
 
+/** Durable identity carried unchanged from a daemon event notification. */
+export interface AgencPromptEventIdentity {
+  readonly eventId?: string;
+  readonly sequence?: number;
+}
+
 /** One streamed event observed while a prompt turn runs. */
-export type AgencPromptEvent =
-  | {
-      readonly type: "text";
-      readonly delta: string;
-      readonly messageId?: string;
-      readonly streamId?: string;
-    }
-  | {
-      readonly type: "tool_call";
-      readonly requestId: string;
-      readonly toolName: string;
-      readonly turnId?: string;
-      readonly input?: JsonValue;
-      readonly recoveryCategory?: string;
-    }
-  | {
-      readonly type: "permission_request";
-      readonly requestId: string;
-      readonly toolName?: string;
-      readonly permissions: readonly string[];
-      readonly input?: JsonValue;
-      readonly reason?: string;
-    }
-  | {
-      readonly type: "elicitation_request";
-      readonly kind: "request_user_input" | "mcp";
-      readonly requestId: string | number;
-      readonly serverName?: string;
-      readonly questions?: readonly JsonObject[];
-      readonly request?: JsonObject;
-      readonly clientAction?: JsonObject;
-    }
-  | {
-      readonly type: "status";
-      readonly status?: string;
-      readonly runStatus?: string;
-      readonly message?: string;
-    }
-  | {
-      readonly type: "session_event";
-      readonly event: JsonObject;
-    };
+export type AgencPromptEvent = AgencPromptEventIdentity &
+  (| {
+        readonly type: "text";
+        readonly delta: string;
+        readonly messageId?: string;
+        readonly streamId?: string;
+      }
+    | {
+        readonly type: "tool_call";
+        readonly requestId: string;
+        readonly toolName: string;
+        readonly turnId?: string;
+        readonly input?: JsonValue;
+        readonly recoveryCategory?: string;
+      }
+    | {
+        readonly type: "permission_request";
+        readonly requestId: string;
+        readonly toolName?: string;
+        readonly permissions: readonly string[];
+        readonly input?: JsonValue;
+        readonly reason?: string;
+      }
+    | {
+        readonly type: "elicitation_request";
+        readonly kind: "request_user_input" | "mcp";
+        readonly requestId: string | number;
+        readonly serverName?: string;
+        readonly questions?: readonly JsonObject[];
+        readonly request?: JsonObject;
+        readonly clientAction?: JsonObject;
+      }
+    | {
+        readonly type: "status";
+        readonly status?: string;
+        readonly runStatus?: string;
+        readonly message?: string;
+      }
+    | {
+        /** Detached live-buffer loss; reattach with the durable run cursor. */
+        readonly type: "gap";
+        readonly kind: "event_gap";
+        readonly reason: "retention";
+        readonly sessionId: string;
+        readonly runId?: string;
+        readonly afterSequence?: number;
+        readonly firstAvailableSequence?: number;
+        readonly retiredCount: number;
+      }
+    | {
+        readonly type: "session_event";
+        readonly event: JsonObject;
+      }
+  );
 
 export interface AgencUsage extends JsonObject {
   readonly inputTokens: number;
@@ -198,6 +216,34 @@ export function promptEventFromNotification(
 ): AgencPromptEvent | null {
   const params = eventParams(message);
   const method = message.method;
+  const identity = eventIdentityFromParams(params);
+
+  if (method === "event.event_gap" && params !== null) {
+    if (
+      params.kind !== "event_gap" ||
+      params.reason !== "retention" ||
+      typeof params.sessionId !== "string" ||
+      !Number.isSafeInteger(params.retiredCount) ||
+      (params.retiredCount as number) < 1
+    ) {
+      return null;
+    }
+    const afterSequence = positiveOrZeroInteger(params.afterSequence);
+    const firstAvailableSequence = positiveInteger(params.firstAvailableSequence);
+    return {
+      type: "gap",
+      kind: "event_gap",
+      reason: "retention",
+      ...identity,
+      sessionId: params.sessionId,
+      retiredCount: params.retiredCount as number,
+      ...(typeof params.runId === "string" ? { runId: params.runId } : {}),
+      ...(afterSequence !== undefined ? { afterSequence } : {}),
+      ...(firstAvailableSequence !== undefined
+        ? { firstAvailableSequence }
+        : {}),
+    };
+  }
 
   if (method === "event.message_chunk" || method === "event.session_event") {
     const delta = messageChunkFromNotification(message);
@@ -206,6 +252,7 @@ export function promptEventFromNotification(
       return {
         type: "text",
         delta,
+        ...identity,
         ...(typeof chunkParams.messageId === "string"
           ? { messageId: chunkParams.messageId }
           : {}),
@@ -216,7 +263,7 @@ export function promptEventFromNotification(
     }
     if (method === "event.session_event" && params !== null) {
       const nested = isJsonObject(params.event) ? params.event : params;
-      return { type: "session_event", event: nested };
+      return { type: "session_event", event: nested, ...identity };
     }
     return null;
   }
@@ -229,6 +276,7 @@ export function promptEventFromNotification(
       type: "tool_call",
       requestId: params.requestId,
       toolName: typeof params.toolName === "string" ? params.toolName : "",
+      ...identity,
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
       ...(params.input !== undefined ? { input: params.input } : {}),
       ...(typeof params.recoveryCategory === "string"
@@ -250,6 +298,7 @@ export function promptEventFromNotification(
       type: "permission_request",
       requestId: params.requestId,
       permissions,
+      ...identity,
       ...(typeof params.toolName === "string"
         ? { toolName: params.toolName }
         : {}),
@@ -268,6 +317,7 @@ export function promptEventFromNotification(
       kind: "request_user_input",
       requestId: params.requestId,
       questions,
+      ...identity,
       ...(isJsonObject(params.clientAction)
         ? { clientAction: params.clientAction }
         : {}),
@@ -283,6 +333,7 @@ export function promptEventFromNotification(
       type: "elicitation_request",
       kind: "mcp",
       requestId,
+      ...identity,
       ...(typeof params.serverName === "string"
         ? { serverName: params.serverName }
         : {}),
@@ -293,6 +344,7 @@ export function promptEventFromNotification(
   if (method === "event.agent_status") {
     return {
       type: "status",
+      ...identity,
       ...(typeof params.status === "string" ? { status: params.status } : {}),
       ...(typeof params.runStatus === "string"
         ? { runStatus: params.runStatus }
@@ -302,6 +354,35 @@ export function promptEventFromNotification(
   }
 
   return null;
+}
+
+function eventIdentityFromParams(
+  params: JsonObject | null,
+): AgencPromptEventIdentity {
+  if (params === null) return {};
+  const sequence = params.sequence;
+  const hasSequence =
+    typeof sequence === "number" &&
+    Number.isSafeInteger(sequence) &&
+    sequence > 0;
+  return {
+    ...(typeof params.eventId === "string"
+      ? { eventId: params.eventId }
+      : {}),
+    ...(hasSequence ? { sequence } : {}),
+  };
+}
+
+function positiveOrZeroInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 /** sessionId carried by a daemon notification, if any. */

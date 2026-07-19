@@ -11,6 +11,7 @@ import {
   runWithCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
 import type { Session } from "../../src/session/session.js";
+import { createTestEffectJournal } from "../helpers/test-effect-journal.js";
 import {
   attachToolRuntimeContext,
   type ToolRuntimeAttemptContext,
@@ -78,10 +79,11 @@ function admissionHarness(signal = new AbortController().signal) {
     forSession: vi.fn(),
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient;
+  const effectJournal = createTestEffectJournal();
   const session = {
+    ...effectJournal,
     conversationId: "session-legacy",
     activeTurn: { unsafePeek: () => ({ turnId: "turn-legacy" }) },
-    rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
     services: {
       executionAdmission: admission,
       admissionRequired: true,

@@ -166,27 +166,10 @@ describe("client multiplexer slow-consumer eviction", () => {
     void broadcasts;
   });
 
-  it("never evicts or drops events for a HEALTHY client replaying a buffer larger than the LIVE pending cap", async () => {
-    // Correctness guard for the replay path: a freshly-attaching client replays
-    // the WHOLE detached buffer in one synchronous batch inside the state lock,
-    // and the per-delivery decrement microtasks cannot run during that
-    // synchronous map. The fix makes replay BYPASS the live-broadcast eviction
-    // cap (allowEvict=false) precisely so that synchronous accumulation can
-    // never falsely evict a healthy client mid-replay or let the post-replay
-    // splice drop an un-delivered boundary event.
-    //
-    // REVERT-SENSITIVITY: this only catches the cap-on-replay bug when the LIVE
-    // pending cap is STRICTLY SMALLER than the detached-buffer cap. The detached
-    // buffer trims itself to within its own cap before any replay, so when both
-    // caps share one value the replay's running partial sums can never cross it
-    // (the whole buffer already fits) — that coupling is exactly why the old
-    // version of this test was a false guard. Here the detached buffer keeps a
-    // multi-event run (~12 KB) that is far larger than the small live pending
-    // cap (2 KB / 3 events). If replay enqueued with allowEvict=true (the v1
-    // bug) the running pending backlog crosses the small live cap mid-replay and
-    // the healthy client is wrongly evicted and its boundary events dropped.
-    // With the shipped fix (allowEvict=false) the live cap is bypassed on replay
-    // and every buffered event is delivered.
+  it("rejects a retained replay batch larger than the client pending cap before attaching", async () => {
+    // A retained buffer may use a larger budget than one client's socket
+    // backlog. The aggregate replay must fail before session attachment rather
+    // than hiding a large queued closure behind per-event accounting.
     const detachedBufferCap = 1024 * 1024; // generous: keep the whole run
     const { sessionManager, multiplexer, evicted } = createUnsequencedHarness(
       detachedBufferCap,
@@ -202,7 +185,7 @@ describe("client multiplexer slow-consumer eviction", () => {
     });
 
     // Buffer a contiguous multi-event run whose TOTAL bytes (~12 KB over 12
-    // events) far exceed the 2 KB / 3-event live pending cap, while staying well
+    // events) far exceed the 2 KB / 3-event pending cap, while staying well
     // under the 1 MB detached-buffer cap so the detached eviction retains ALL of
     // them (no buffer trimming — every event is a replay survivor). ~1 KB each,
     // no single oversized payload.
@@ -211,8 +194,8 @@ describe("client multiplexer slow-consumer eviction", () => {
       await multiplexer.broadcastSessionEvent("session_1", bigEvent(i, 1000));
     }
 
-    // A perfectly HEALTHY client (send resolves immediately) attaches and the
-    // bounded buffer is replayed to it.
+    // A perfectly healthy client is still not permission to exceed its
+    // configured pending backlog.
     const replayed: JsonObject[] = [];
     await multiplexer.registerClient({
       clientId: "healthy_replay_client",
@@ -221,54 +204,105 @@ describe("client multiplexer slow-consumer eviction", () => {
         return Promise.resolve();
       },
     });
-    await multiplexer.attachClientToSession(
-      "session_1",
-      "healthy_replay_client",
-    );
-    await new Promise((resolve) => setImmediate(resolve));
-
-    // The healthy client was NOT evicted — even though the replayed run is far
-    // larger than the live pending cap. Under the v1 cap-on-replay bug it WOULD
-    // be evicted here (synchronous replay accumulation crosses the 2 KB cap).
+    await expect(
+      multiplexer.attachClientToSession(
+        "session_1",
+        "healthy_replay_client",
+      ),
+    ).rejects.toMatchObject({ code: "EVENT_DELIVERY_LIMIT_EXCEEDED" });
     expect(evicted).not.toContain("healthy_replay_client");
     const stillAttached = await multiplexer.attachedClientIds("session_1");
-    expect(stillAttached).toContain("healthy_replay_client");
+    expect(stillAttached).not.toContain("healthy_replay_client");
+    expect(replayed).toHaveLength(0);
+  });
 
-    // ...and received EVERY buffered event, in order, with NO data loss. All
-    // `newestSequence` events were retained by the detached buffer (it never
-    // trimmed), so the replay must deliver the FULL contiguous run 1..N with the
-    // newest (boundary) event present — the bug drops the boundary event and any
-    // events past the point the running cap trips.
-    expect(replayed.length).toBe(newestSequence);
-    const replayedSequences = replayed.map(
-      (event) => (event as { sequence: number }).sequence,
+  it("reserves a blocked replay batch so a concurrent attach cannot queue another", async () => {
+    const { sessionManager, multiplexer } = createUnsequencedHarness(
+      1024 * 1024,
+      {
+        maxPendingDeliveryBytesPerClient: 8 * 1024,
+        maxPendingDeliveryCountPerClient: 3,
+      },
     );
-    expect(replayedSequences[0]).toBe(1);
-    expect(replayedSequences[replayedSequences.length - 1]).toBe(newestSequence);
-    for (let i = 1; i < replayedSequences.length; i += 1) {
-      const prev = replayedSequences[i - 1] as number;
-      const cur = replayedSequences[i] as number;
-      expect(cur).toBe(prev + 1);
-    }
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
+    await multiplexer.broadcastSessionEvent("session_1", bigEvent(1, 1000));
+    await multiplexer.broadcastSessionEvent("session_1", bigEvent(2, 1000));
 
-    // The buffer was fully drained on a clean replay (every retained event was
-    // delivered and the buffer spliced empty), proving no event was lost AND the
-    // splice did not discard an undelivered boundary event.
-    await multiplexer.detachClientFromSession(
-      "session_1",
-      "healthy_replay_client",
-    );
-    // Re-attach and confirm nothing is re-replayed (buffer was fully consumed).
-    const secondReplay: JsonObject[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await multiplexer.registerClient({
-      clientId: "second_client",
-      send: (message) => {
-        secondReplay.push(message);
-        return Promise.resolve();
+      clientId: "blocked_replay_client",
+      send: () => blocked,
+    });
+
+    const firstAttach = multiplexer.attachClientToSession(
+      "session_1",
+      "blocked_replay_client",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      multiplexer.attachClientToSession(
+        "session_1",
+        "blocked_replay_client",
+      ),
+    ).rejects.toMatchObject({ code: "EVENT_DELIVERY_LIMIT_EXCEEDED" });
+
+    release();
+    await firstAttach;
+  });
+
+  it("rejects oversized live and replay events without exceeding either pending cap", async () => {
+    const { sessionManager, multiplexer, evicted } = createUnsequencedHarness(
+      1024 * 1024,
+      {
+        maxPendingDeliveryBytesPerClient: 1024,
+        maxPendingDeliveryCountPerClient: 2,
+      },
+    );
+    await sessionManager.createSession({
+      agentId: "agent_1",
+      cwd: await workspaces.create(),
+    });
+
+    let liveSends = 0;
+    await multiplexer.registerClient({
+      clientId: "live_client",
+      send: () => {
+        liveSends += 1;
       },
     });
-    await multiplexer.attachClientToSession("session_1", "second_client");
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(secondReplay).toHaveLength(0);
+    await multiplexer.attachClientToSession("session_1", "live_client");
+    const liveResult = await multiplexer.broadcastSessionEvent(
+      "session_1",
+      bigEvent(1, 5000),
+    );
+    expect(liveSends).toBe(0);
+    expect(evicted).toContain("live_client");
+    expect(liveResult.failed).toMatchObject([
+      {
+        clientId: "live_client",
+        message: expect.stringMatching(/delivery limit/i),
+      },
+    ]);
+
+    // With no client attached, the same event fits the detached 1 MB buffer.
+    await multiplexer.broadcastSessionEvent("session_1", bigEvent(2, 5000));
+    let replaySends = 0;
+    await multiplexer.registerClient({
+      clientId: "replay_client",
+      send: () => {
+        replaySends += 1;
+      },
+    });
+    await expect(
+      multiplexer.attachClientToSession("session_1", "replay_client"),
+    ).rejects.toMatchObject({ code: "EVENT_DELIVERY_LIMIT_EXCEEDED" });
+    expect(replaySends).toBe(0);
+    expect(evicted).not.toContain("replay_client");
   });
 });

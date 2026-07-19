@@ -51,6 +51,12 @@ export interface AdmissionDispatchEvidence {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+export interface AdmissionRunCancellationSummary {
+  readonly affectedRunIds: readonly string[];
+  readonly voidedReservations: number;
+  readonly heldUnknownReservations: number;
+}
+
 export interface ExecutionAdmissionClient {
   readonly scope: AdmissionClientScope;
   /**
@@ -80,6 +86,14 @@ export interface ExecutionAdmissionClient {
    * in the same SQLite transaction before this method returns.
    */
   cancelRun(reason: string): void;
+  /**
+   * Cancel only queued/reserved/dispatched admission work for this run tree.
+   * Unlike {@link cancelRun}, this deliberately leaves the legacy agent-run
+   * and spawn-edge projection untouched. Live run cancellation uses this
+   * phase while the canonical Session listener is still open, then seals the
+   * terminal journal tail before rebuilding the legacy projection.
+   */
+  cancelAdmissions?(reason: string): AdmissionRunCancellationSummary;
   /** Pre-dispatch cancellation/failure. The reservation is fully released. */
   void(reservationId: string, reason: string): void;
   /**
@@ -105,6 +119,20 @@ export interface ExecutionAdmissionClient {
     readonly parentScopeId?: string;
     readonly deadlineAt?: string;
   }): ExecutionAdmissionClient;
+  /**
+   * Commit-critical journal projection. A listener failure is allowed to stop
+   * the caller after the SQLite admission transition commits but before the
+   * provider/tool/spawn boundary proceeds. Ordinary `subscribe` listeners
+   * remain best-effort observers.
+   */
+  subscribeCritical?(
+    listener: (event: AdmissionJournalEvent) => void,
+  ): () => void;
+  /** Bounded catch-up for canonical projection after attach/re-attach. */
+  replayJournal?(options?: {
+    readonly afterSequence?: number;
+    readonly limit?: number;
+  }): readonly AdmissionJournalEvent[];
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void;
 }
 

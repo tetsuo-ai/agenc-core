@@ -103,7 +103,7 @@ function runningStatus(turnId: string, startedAtMs: number): AgentStatus {
 }
 
 describe("AgenC background-agent runner: bounded + ordered events", () => {
-  it("evicts oldest buffered events once the per-agent cap is exceeded (FIFO, newest retained)", async () => {
+  it("announces buffered-event eviction while retaining the newest events", async () => {
     const { runner, stub } = makeTopLevelRunner({
       conversationId: "session-bounded",
     });
@@ -129,34 +129,49 @@ describe("AgenC background-agent runner: bounded + ordered events", () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    const emitted: Array<{ eventId?: unknown }> = [];
+    const emitted: unknown[] = [];
     await runner.attachAgentSessionEvents("session-bounded", {
       sessionId: "session_1",
       emit: (event) => {
-        const params = (event as { params?: { eventId?: unknown } }).params;
-        emitted.push({ eventId: params?.eventId });
+        emitted.push(event);
       },
     });
 
-    // The buffer is bounded: it never grows without limit regardless of how
-    // many events were pushed pre-attach.
-    expect(emitted.length).toBeLessThanOrEqual(1_000);
-    expect(emitted.length).toBeGreaterThan(0);
+    // One observable gap sentinel is exempt from the 1,000 real-event cap.
+    expect(emitted).toHaveLength(1_001);
+    expect(emitted[0]).toMatchObject({
+      method: "event.event_gap",
+      params: {
+        type: "event_gap",
+        kind: "event_gap",
+        source: "background_runner_retention",
+        reason: "retention",
+        retiredCount: 1_502,
+        coordinatesAvailable: false,
+      },
+    });
 
     // FIFO eviction keeps the NEWEST events. The final push (turn-2499) must
     // survive; an old event well beyond the cap (turn-0) must have been
     // dropped.
-    const survivingIds = new Set(emitted.map((event) => event.eventId));
+    const survivingIds = new Set(
+      emitted.map(
+        (event) =>
+          (event as { params?: { eventId?: unknown } }).params?.eventId,
+      ),
+    );
     expect(survivingIds.has(`turn-${PUSH_COUNT - 1}`)).toBe(true);
     expect(survivingIds.has("turn-0")).toBe(false);
 
     // Surviving events remain in arrival order (oldest-kept first).
     const turnNumbers = emitted
-      .map((event) =>
-        typeof event.eventId === "string" && event.eventId.startsWith("turn-")
-          ? Number.parseInt(event.eventId.slice("turn-".length), 10)
-          : Number.NaN,
-      )
+      .map((event) => {
+        const eventId = (event as { params?: { eventId?: unknown } }).params
+          ?.eventId;
+        return typeof eventId === "string" && eventId.startsWith("turn-")
+          ? Number.parseInt(eventId.slice("turn-".length), 10)
+          : Number.NaN;
+      })
       .filter((value) => Number.isFinite(value));
     for (let i = 1; i < turnNumbers.length; i += 1) {
       expect(turnNumbers[i]!).toBeGreaterThan(turnNumbers[i - 1]!);

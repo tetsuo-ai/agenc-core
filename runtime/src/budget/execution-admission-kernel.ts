@@ -41,6 +41,8 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { AsyncLock } from "../utils/async-lock.js";
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
+import { recoverExecutionAdmissionCanonicalJournals } from "../state/execution-admission-canonical-recovery.js";
 
 const DEFAULT_QUEUE_AGING_MS = 30_000;
 const JOURNAL_PAGE_SIZE = 1_000;
@@ -165,6 +167,10 @@ export class ExecutionAdmissionKernel {
     string,
     Set<(event: AdmissionJournalEvent) => void>
   >();
+  readonly #criticalListeners = new Map<
+    string,
+    Set<(event: AdmissionJournalEvent) => void>
+  >();
   #limits: AdmissionConcurrencyLimits;
   #drainScheduled = false;
   #closed = false;
@@ -217,6 +223,10 @@ export class ExecutionAdmissionKernel {
       totals.heldUnknown += report.heldUnknownReservationIds.length;
       totals.expired += report.cancelledExpiredJobIds.length;
       totals.detachedQueued += report.detachedQueuedJobIds.length;
+      recoverExecutionAdmissionCanonicalJournals(
+        binding.driver,
+        binding.repository,
+      );
       this.#hydrateQueued(binding);
       this.#publishNewJournal(binding);
     }
@@ -359,7 +369,10 @@ export class ExecutionAdmissionKernel {
           new AdmissionDeniedError("admission_step_already_waiting"),
         );
       }
-      if (existing.binding.paths.stateDbPath !== binding.workspace.paths.stateDbPath) {
+      if (
+        existing.binding.paths.stateDbPath !==
+        binding.workspace.paths.stateDbPath
+      ) {
         return Promise.reject(
           new AdmissionDeniedError("admission_step_workspace_conflict"),
         );
@@ -516,8 +529,7 @@ export class ExecutionAdmissionKernel {
     ) {
       throw new AdmissionDeniedError("admission_parent_run_conflict");
     }
-    const parentRunId =
-      options.parentRunId ?? expectedParentRunId;
+    const parentRunId = options.parentRunId ?? expectedParentRunId;
     this.#bindRunWorkspace(runId, binding.workspace);
     const deadlineAt = binding.workspace.repository.bindRunDeadline(
       runId,
@@ -576,6 +588,35 @@ export class ExecutionAdmissionKernel {
     };
   }
 
+  subscribeCritical(
+    runId: string,
+    listener: (event: AdmissionJournalEvent) => void,
+  ): () => void {
+    const listeners = this.#criticalListeners.get(runId) ?? new Set();
+    listeners.add(listener);
+    this.#criticalListeners.set(runId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#criticalListeners.delete(runId);
+    };
+  }
+
+  replayClientJournal(
+    binding: ClientBinding,
+    options: {
+      readonly afterSequence?: number;
+      readonly limit?: number;
+    } = {},
+  ): readonly AdmissionJournalEvent[] {
+    return binding.workspace.repository.listJournal({
+      runId: binding.scope.runId,
+      ...(options.afterSequence !== undefined
+        ? { afterSequence: options.afterSequence }
+        : {}),
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    });
+  }
+
   cancelRun(
     runId: string,
     reason: string,
@@ -599,6 +640,50 @@ export class ExecutionAdmissionKernel {
       heldUnknownReservations += report.heldUnknownReservationIds.length;
       this.#publishNewJournal(binding);
     }
+    this.#abortCancelledAdmissionWork(affected, reason);
+    return {
+      affectedRunIds: [...affected],
+      voidedReservations,
+      heldUnknownReservations,
+    };
+  }
+
+  /**
+   * Settle admission work without advancing the legacy agent-run projection.
+   * The live run.cancel path calls this while its Session critical listener is
+   * still attached, so every resulting journal row is fsync-projected before
+   * the run terminal seals the canonical tail.
+   */
+  cancelAdmissions(
+    runId: string,
+    reason: string,
+  ): ExecutionAdmissionCancellationSummary {
+    this.#assertOpen();
+    const affected = new Set<string>();
+    let voidedReservations = 0;
+    let heldUnknownReservations = 0;
+    for (const binding of this.#byStatePath.values()) {
+      const report = binding.repository.cancel(runId, {
+        reason,
+        cancelledAt: this.#timestamp(),
+      });
+      for (const id of report.affectedRunIds) affected.add(id);
+      voidedReservations += report.voidedReservationIds.length;
+      heldUnknownReservations += report.heldUnknownReservationIds.length;
+      this.#publishNewJournal(binding);
+    }
+    this.#abortCancelledAdmissionWork(affected, reason);
+    return {
+      affectedRunIds: [...affected],
+      voidedReservations,
+      heldUnknownReservations,
+    };
+  }
+
+  #abortCancelledAdmissionWork(
+    affected: ReadonlySet<string>,
+    reason: string,
+  ): void {
     for (const [key, pending] of this.#pending) {
       if (
         !affected.has(pending.record.request.step.runId) &&
@@ -628,11 +713,6 @@ export class ExecutionAdmissionKernel {
       }
     }
     this.#scheduleDrain();
-    return {
-      affectedRunIds: [...affected],
-      voidedReservations,
-      heldUnknownReservations,
-    };
   }
 
   listJournal(params: {
@@ -684,6 +764,7 @@ export class ExecutionAdmissionKernel {
     this.#pending.clear();
     this.#active.clear();
     this.#listeners.clear();
+    this.#criticalListeners.clear();
     for (const binding of this.#byStatePath.values()) {
       binding.driver.close();
     }
@@ -728,6 +809,10 @@ export class ExecutionAdmissionKernel {
         now: this.#timestamp(),
         activeOwnerIds: new Set([this.#ownerId]),
       });
+      recoverExecutionAdmissionCanonicalJournals(
+        binding.driver,
+        binding.repository,
+      );
       this.#hydrateQueued(binding);
       this.#publishNewJournal(binding);
     }
@@ -773,10 +858,9 @@ export class ExecutionAdmissionKernel {
   #drainQueue(): void {
     if (this.#closed || this.#pending.size === 0) return;
     const nowMs = this.#now().getTime();
-    const pending = [...this.#pending.values()]
-      .sort((left, right) =>
-        comparePending(left, right, nowMs, this.#queueAgingMs),
-      );
+    const pending = [...this.#pending.values()].sort((left, right) =>
+      comparePending(left, right, nowMs, this.#queueAgingMs),
+    );
     let earliestAvailableAt: number | undefined;
     let madeProgress = false;
     for (const entry of pending) {
@@ -794,6 +878,11 @@ export class ExecutionAdmissionKernel {
       // runnable work forever.
       if (entry.resolve === undefined || entry.reject === undefined) continue;
       if (!this.#hasCapacity(entry.record.request)) continue;
+      // `claim()` is the transaction that creates the budget reservation and
+      // changes the job from queued to running. Queue insertion is durable too,
+      // but it is not a reservation commit and must not be labelled as one in
+      // crash-injection evidence.
+      hitM4DurabilityFailpoint("before_reservation_commit");
       const result = entry.binding.repository.claim({
         key: entry.key,
         ownerId: this.#ownerId,
@@ -801,6 +890,12 @@ export class ExecutionAdmissionKernel {
         attached: true,
         now: this.#timestamp(),
       });
+      if (result.kind === "claimed") {
+        // The reservation is committed while no live lease or journal
+        // subscriber has been notified yet. Restart must recover solely from
+        // the durable hold if the process dies here.
+        hitM4DurabilityFailpoint("after_reservation_commit");
+      }
       this.#publishNewJournal(entry.binding);
       if (result.kind === "claimed") {
         this.#pending.delete(entry.key);
@@ -820,11 +915,7 @@ export class ExecutionAdmissionKernel {
       }
     }
     if (earliestAvailableAt !== undefined) {
-      scheduleAt(
-        earliestAvailableAt,
-        this.#now,
-        () => this.#scheduleDrain(),
-      );
+      scheduleAt(earliestAvailableAt, this.#now, () => this.#scheduleDrain());
     }
     if (madeProgress && this.#pending.size > 0) this.#scheduleDrain();
   }
@@ -932,10 +1023,7 @@ export class ExecutionAdmissionKernel {
     if (active === undefined) return;
     active.binding.repository.cancelStep(active.key, { reason });
     this.#publishNewJournal(active.binding);
-    this.#abortActive(
-      active,
-      new AdmissionDeniedError(reason, "cancelled"),
-    );
+    this.#abortActive(active, new AdmissionDeniedError(reason, "cancelled"));
   }
 
   #abortActive(active: ActiveCapacity, reason: unknown): void {
@@ -951,7 +1039,10 @@ export class ExecutionAdmissionKernel {
     if (active.deadlineTimer !== undefined) {
       active.deadlineTimer.cancel();
     }
-    if (active.sourceSignal !== undefined && active.onSourceAbort !== undefined) {
+    if (
+      active.sourceSignal !== undefined &&
+      active.onSourceAbort !== undefined
+    ) {
       active.sourceSignal.removeEventListener("abort", active.onSourceAbort);
     }
     this.#active.delete(active.reservationId);
@@ -968,10 +1059,10 @@ export class ExecutionAdmissionKernel {
       for (const record of records) {
         const existing = this.#pending.get(record.key);
         if (existing !== undefined) {
-          if (existing.binding.paths.stateDbPath !== binding.paths.stateDbPath) {
-            throw new AdmissionDeniedError(
-              "admission_step_workspace_conflict",
-            );
+          if (
+            existing.binding.paths.stateDbPath !== binding.paths.stateDbPath
+          ) {
+            throw new AdmissionDeniedError("admission_step_workspace_conflict");
           }
           continue;
         }
@@ -998,10 +1089,8 @@ export class ExecutionAdmissionKernel {
     };
     const deadline = record.request.deadlineAt;
     if (deadline !== undefined) {
-      pending.deadlineTimer = scheduleAt(
-        Date.parse(deadline),
-        this.#now,
-        () => this.#cancelPendingRun(pending, "deadline_expired"),
+      pending.deadlineTimer = scheduleAt(Date.parse(deadline), this.#now, () =>
+        this.#cancelPendingRun(pending, "deadline_expired"),
       );
     }
     return pending;
@@ -1028,10 +1117,7 @@ export class ExecutionAdmissionKernel {
     });
   }
 
-  #cancelPendingRun(
-    pending: PendingAdmission,
-    reason: string,
-  ): void {
+  #cancelPendingRun(pending: PendingAdmission, reason: string): void {
     if (this.#pending.get(pending.key) !== pending) return;
     this.cancelRun(pending.record.request.step.runId, reason);
   }
@@ -1040,10 +1126,7 @@ export class ExecutionAdmissionKernel {
     if (this.#pending.get(pending.key) !== pending) return;
     pending.binding.repository.cancelStep(pending.key, { reason });
     this.#publishNewJournal(pending.binding);
-    this.#settlePending(
-      pending,
-      new AdmissionDeniedError(reason, "cancelled"),
-    );
+    this.#settlePending(pending, new AdmissionDeniedError(reason, "cancelled"));
     this.#pending.delete(pending.key);
     this.#scheduleDrain();
   }
@@ -1110,6 +1193,17 @@ export class ExecutionAdmissionKernel {
       });
       if (events.length === 0) return;
       for (const event of events) {
+        // Admission SQLite has already committed at this point. Canonical
+        // journal projection is nevertheless a physical-work boundary: a
+        // critical listener must fsync the event before acquire/dispatch may
+        // continue. Keep the cursor on this event when that append fails so a
+        // later call can retry the idempotent projection.
+        hitM4DurabilityFailpoint(
+          "after_admission_sqlite_commit_before_canonical_append",
+        );
+        for (const listener of this.#criticalListeners.get(event.runId) ?? []) {
+          listener(event);
+        }
         binding.lastJournalSequence = Math.max(
           binding.lastJournalSequence,
           event.sequence,
@@ -1176,6 +1270,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
     this.kernel.cancelRun(this.scope.runId, reason);
   }
 
+  cancelAdmissions(reason: string): ExecutionAdmissionCancellationSummary {
+    return this.kernel.cancelAdmissions(this.scope.runId, reason);
+  }
+
   void(reservationId: string, reason: string): void {
     this.kernel.void(reservationId, reason);
   }
@@ -1198,6 +1296,19 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void {
     return this.kernel.subscribe(this.scope.runId, listener);
+  }
+
+  subscribeCritical(
+    listener: (event: AdmissionJournalEvent) => void,
+  ): () => void {
+    return this.kernel.subscribeCritical(this.scope.runId, listener);
+  }
+
+  replayJournal(options?: {
+    readonly afterSequence?: number;
+    readonly limit?: number;
+  }): readonly AdmissionJournalEvent[] {
+    return this.kernel.replayClientJournal(this.binding, options);
   }
 }
 
@@ -1263,10 +1374,7 @@ function rootBudgetState(
 ): ClientBudgetState {
   const scopes: AdmissionBudgetScope[] = [];
   const runAllocationKey = allocationKey(scope.runId);
-  const runMaxCostUsd = minimumDefined(
-    scope.maxCostUsd,
-    policy?.runMaxCostUsd,
-  );
+  const runMaxCostUsd = minimumDefined(scope.maxCostUsd, policy?.runMaxCostUsd);
   const runMaxTokens = minimumDefined(scope.maxTokens, policy?.runMaxTokens);
   scopes.push({
     key: runAllocationKey,

@@ -201,6 +201,38 @@ describe("cancelAgentRunTree", () => {
     expect(missing.missing).toBe(true);
   });
 
+  it("repairs descendants when canonical recovery cancelled the root before the DB cascade", () => {
+    const edges = new ThreadSpawnEdgeRepository(driver);
+    run("canonical_cancelled_root", "running");
+    run("surviving_child", "running");
+    edge(edges, "surviving_child", "canonical_cancelled_root", "/root");
+    updateAgentRunStatus(driver, {
+      id: "canonical_cancelled_root",
+      status: "cancelled",
+      lastActiveAt: T1,
+    });
+
+    const repaired = cancelAgentRunTree(driver, {
+      runId: "canonical_cancelled_root",
+      reason: "operator_retry",
+      cancelledAt: T1,
+    });
+
+    expect(repaired.alreadyTerminal).toBe(true);
+    expect(repaired.cancelledRunIds).toEqual(["surviving_child"]);
+    expect(statusOf("surviving_child")).toBe("cancelled");
+    expect(edgeStatusOf("surviving_child")).toBe("closed");
+    const metadata = driver
+      .prepareState<[string], { metadata_json: string | null }>(
+        "SELECT metadata_json FROM agent_runs WHERE id = ?",
+      )
+      .get("canonical_cancelled_root")?.metadata_json;
+    expect(JSON.parse(metadata ?? "{}")).toMatchObject({
+      cascadeComplete: true,
+      cancelReason: "operator_retry",
+    });
+  });
+
   it("survives an edge cycle without hanging", () => {
     const edges = new ThreadSpawnEdgeRepository(driver);
     run("a", "running");
