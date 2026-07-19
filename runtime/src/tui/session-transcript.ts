@@ -420,22 +420,36 @@ function plainGlobProjection(result: string): {
   return { paths, truncated };
 }
 
-export function makeUserMessage(content: unknown): any {
+/**
+ * Message makers mint a fresh `randomUUID()` by default, which is correct for
+ * one-shot callers (permission previews, tests). The transcript projection
+ * (`adaptTranscriptEvents`) instead passes a deterministic uuid derived from
+ * the source event key + a per-event block index (`${eventKey}:${blockIndex}`)
+ * so re-projecting the same events on every streaming delta re-mints identical
+ * uuids for already-projected messages. Without that, every delta changed
+ * every React key in the transcript, remounting all rows and invalidating the
+ * virtual list's height cache (M-TUI-1). The optional `uuid` param keeps
+ * external callers unchanged.
+ */
+export function makeUserMessage(content: unknown, uuid: string = randomUUID()): any {
   return {
     type: "user",
     message: {
       role: "user",
       content: textFromContent(content) || "(empty)",
     },
-    uuid: randomUUID(),
+    uuid,
     timestamp: timestamp(),
   };
 }
 
-export function makeAssistantTextMessage(content: string): any {
+export function makeAssistantTextMessage(
+  content: string,
+  uuid: string = randomUUID(),
+): any {
   return {
     type: "assistant",
-    uuid: randomUUID(),
+    uuid,
     timestamp: timestamp(),
     message: {
       id: randomUUID(),
@@ -461,10 +475,11 @@ export function makeAssistantTextMessage(content: string): any {
 export function makeAssistantThinkingMessage(
   thinking: string,
   redacted: boolean = false,
+  uuid: string = randomUUID(),
 ): any {
   return {
     type: "assistant",
-    uuid: randomUUID(),
+    uuid,
     timestamp: timestamp(),
     message: {
       id: randomUUID(),
@@ -493,9 +508,11 @@ export function makeToolUseMessage(
   toolUseID: string,
   name: string,
   input: unknown,
+  uuid: string = randomUUID(),
 ): any {
   return {
     ...makeAssistantTextMessage(""),
+    uuid,
     message: {
       ...makeAssistantTextMessage("").message,
       content: [{ type: "tool_use", id: toolUseID, name, input }],
@@ -507,6 +524,7 @@ export function makeToolResultMessage(
   toolUseID: string,
   content: unknown,
   isError = false,
+  uuid: string = randomUUID(),
 ): any {
   const resultContent = clampResultContent(
     isStructuredContentBlocks(content) ? content : stringResult(content),
@@ -529,7 +547,7 @@ export function makeToolResultMessage(
     // out every tool result before it can render under its call row. The
     // in-process path (session/turn-compat.ts) builds the equivalent message
     // without isMeta, so results render there; match that here.
-    uuid: randomUUID(),
+    uuid,
     timestamp: timestamp(),
     toolUseResult: typeof resultContent === "string"
       ? resultContent
@@ -540,6 +558,7 @@ export function makeToolResultMessage(
 export function makeSystemMessage(
   content: string,
   level: "info" | "warning" | "error" = "info",
+  uuid: string = randomUUID(),
 ): any {
   return {
     type: "system",
@@ -547,7 +566,7 @@ export function makeSystemMessage(
     content,
     isMeta: false,
     timestamp: timestamp(),
-    uuid: randomUUID(),
+    uuid,
     level,
   };
 }
@@ -558,11 +577,13 @@ export function makeCollabAgentMessage(
   title: string,
   details: readonly string[] = [],
   state: CollabAgentMessageState = "info",
+  uuid: string = randomUUID(),
 ): any {
   return {
     ...makeSystemMessage(
       [title, ...details.map((detail) => `  ${detail}`)].join("\n"),
       state === "error" ? "error" : "info",
+      uuid,
     ),
     subtype: "collab_agent",
     title,
@@ -584,16 +605,19 @@ interface ProtocolTranscriptMessageOptions {
   readonly facts: readonly { readonly label: string; readonly value: string }[];
 }
 
-function makeProtocolEventMessage({
-  kind,
-  title,
-  content,
-  details,
-  badgeVariant,
-  facts,
-}: ProtocolTranscriptMessageOptions): any {
+function makeProtocolEventMessage(
+  {
+    kind,
+    title,
+    content,
+    details,
+    badgeVariant,
+    facts,
+  }: ProtocolTranscriptMessageOptions,
+  uuid: string = randomUUID(),
+): any {
   return {
-    ...makeSystemMessage(content, badgeVariant === "error" ? "error" : "info"),
+    ...makeSystemMessage(content, badgeVariant === "error" ? "error" : "info", uuid),
     subtype: "protocol_event",
     protocolKind: kind,
     title,
@@ -737,10 +761,11 @@ function pushToolUse(
   callId: string,
   toolName: string,
   input: unknown,
+  nextUuid: () => string,
 ): void {
   openTools.add(callId);
   toolNames.add(toolName);
-  out.push(makeToolUseMessage(callId, toolName, input));
+  out.push(makeToolUseMessage(callId, toolName, input, nextUuid()));
 }
 
 function pushToolResult(
@@ -749,13 +774,14 @@ function pushToolResult(
   settledToolCallIds: Set<string>,
   callId: string,
   result: unknown,
+  nextUuid: () => string,
   isError = false,
   rawResult: unknown = result,
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
     if (isPermissionDeniedToolResult(rawResult) || isPermissionDeniedToolResult(result)) {
-      out.push(makeSystemMessage(PERMISSION_DENIED_TOOL_RESULT_MESSAGE, "warning"));
+      out.push(makeSystemMessage(PERMISSION_DENIED_TOOL_RESULT_MESSAGE, "warning", nextUuid()));
       return;
     }
     if (!isError && isLineNumberedFileReadResult(rawResult)) {
@@ -772,6 +798,7 @@ function pushToolResult(
             ? "A tool failed and its result arrived before its start event; recovered."
             : "A tool result arrived before its start event and was recovered.",
           isError ? "error" : "warning",
+          nextUuid(),
         ),
       );
       return;
@@ -783,13 +810,14 @@ function pushToolResult(
       makeSystemMessage(
         `A tool result arrived out of order and was recovered: ${stringResult(rawResult)}`,
         isError ? "error" : "warning",
+        nextUuid(),
       ),
     );
     return;
   }
   openTools.delete(callId);
   settledToolCallIds.add(callId);
-  out.push(makeToolResultMessage(callId, result, isError));
+  out.push(makeToolResultMessage(callId, result, isError, nextUuid()));
 }
 
 function streamedToolInput(entry: StreamingToolUse): unknown {
@@ -1679,7 +1707,10 @@ export function adaptTranscriptEvents(
 ): AdaptedTranscript {
   const orderedEvents = orderSequencedEvents(events);
   const settledCollabSpawnCallIds = collectSettledCollabSpawnCallIds(orderedEvents);
-  const out: any[] = startupMessages.map((message) => makeUserMessage(message.content));
+  const out: any[] = startupMessages.map((message, index) =>
+    // Startup messages have no source event; key them by position so their
+    // uuids are also stable across re-projections.
+    makeUserMessage(message.content, `startup:${index}`));
   const seen = new Set<string>();
   const openTools = new Set<string>();
   const toolNames = new Set<string>();
@@ -1706,16 +1737,16 @@ export function adaptTranscriptEvents(
   let lastAssistantText = "";
   let isStreaming = false;
 
-  const persistAssistantText = (content: string): void => {
+  const persistAssistantText = (content: string, nextUuid: () => string): void => {
     if (content.trim().length === 0 || content === lastAssistantText) {
       return;
     }
-    out.push(makeAssistantTextMessage(content));
+    out.push(makeAssistantTextMessage(content, nextUuid()));
     lastAssistantText = content;
   };
 
-  const flushStreamingText = (): void => {
-    persistAssistantText(streamingText);
+  const flushStreamingText = (nextUuid: () => string): void => {
+    persistAssistantText(streamingText, nextUuid);
     streamingText = "";
   };
 
@@ -1724,6 +1755,16 @@ export function adaptTranscriptEvents(
     if (seen.has(event.key)) continue;
     seen.add(event.key);
     const payload = payloadRecord(event.payload);
+    // Stable row identity (M-TUI-1): each message projected from this event
+    // gets a uuid of `${event.key}:${blockIndex}` from a per-event counter, so
+    // re-projecting the same event list (every streaming delta) yields the
+    // same uuids for already-projected messages. The counter is shared across
+    // every message type exactly so one event fanning out to several messages
+    // (assistant text + thinking + tool rows) can never hand the same uuid to
+    // two rows. The projection is deterministic given the same ordered events,
+    // so block indices line up across re-runs.
+    let blockIndex = 0;
+    const nextUuid = (): string => `${event.key}:${blockIndex++}`;
 
     switch (event.type) {
       case "history_cleared":
@@ -1796,7 +1837,7 @@ export function adaptTranscriptEvents(
             : typeof payload.content === "string"
               ? payload.content
               : streamingText;
-        persistAssistantText(content);
+        persistAssistantText(content, nextUuid);
         streamingText = "";
         streamingToolUses.length = 0;
         pendingToolInputDeltas.clear();
@@ -1818,7 +1859,7 @@ export function adaptTranscriptEvents(
         // assistant message so the user retains the context they
         // were watching get generated. Skip when nothing is buffered
         // to avoid emitting empty assistant rows.
-        persistAssistantText(streamingText);
+        persistAssistantText(streamingText, nextUuid);
         // Same preservation rule for partially-streamed thinking text.
         // Without this, an Esc during the thinking phase silently dropped
         // the visible chain-of-thought the user was reading.
@@ -1829,7 +1870,7 @@ export function adaptTranscriptEvents(
           streamingThinking.thinking !== lastThinkingText
         ) {
           out.push(
-            makeAssistantThinkingMessage(streamingThinking.thinking, false),
+            makeAssistantThinkingMessage(streamingThinking.thinking, false, nextUuid()),
           );
           lastThinkingText = streamingThinking.thinking;
         }
@@ -1849,18 +1890,18 @@ export function adaptTranscriptEvents(
         // for this turn.
         streamingToolUses.length = 0;
         pendingToolInputDeltas.clear();
-        out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning"));
+        out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
       case "user_message":
         // A submitted user message is a hard visible turn boundary. Some
         // daemon streams can miss or de-dupe lifecycle events between prompts,
         // so close any live assistant text here before accumulating the next
         // response.
-        flushStreamingText();
+        flushStreamingText(nextUuid);
         if (typeof payload.queuedCommandUuid === "string") {
           durableQueuedPromptUuids.add(payload.queuedCommandUuid);
         }
-        out.push(makeUserMessage(payload.displayText ?? payload.message));
+        out.push(makeUserMessage(payload.displayText ?? payload.message, nextUuid()));
         break;
       case "queued_command":
         if (
@@ -1880,13 +1921,13 @@ export function adaptTranscriptEvents(
               : typeof payload.content === "string"
                 ? payload.content
                 : "";
-          flushStreamingText();
-          out.push(makeUserMessage(displayText));
+          flushStreamingText(nextUuid);
+          out.push(makeUserMessage(displayText, nextUuid()));
         }
         break;
       case "request_user_input":
       case "mcp_elicitation_request":
-        out.push(makeSystemMessage(formatElicitationSummary(event.type, payload), "info"));
+        out.push(makeSystemMessage(formatElicitationSummary(event.type, payload), "info", nextUuid()));
         break;
       case "assistant_text":
         if (typeof payload.content === "string") {
@@ -1953,12 +1994,12 @@ export function adaptTranscriptEvents(
         const redacted = payload.redacted === true;
         if (text.length === 0 && !redacted) break;
         if (text === lastThinkingText) break;
-        out.push(makeAssistantThinkingMessage(text, redacted));
+        out.push(makeAssistantThinkingMessage(text, redacted, nextUuid()));
         lastThinkingText = text;
         break;
       }
       case "realtime_started":
-        out.push(makeSystemMessage("Realtime voice started", "info"));
+        out.push(makeSystemMessage("Realtime voice started", "info", nextUuid()));
         break;
       case "realtime_transcript_delta":
         if (
@@ -1971,9 +2012,9 @@ export function adaptTranscriptEvents(
       case "realtime_transcript_done":
         if (typeof payload.text === "string") {
           if (isUserRealtimeRole(payload.role)) {
-            out.push(makeUserMessage(payload.text));
+            out.push(makeUserMessage(payload.text, nextUuid()));
           } else if (payload.text !== lastAssistantText) {
-            out.push(makeAssistantTextMessage(payload.text));
+            out.push(makeAssistantTextMessage(payload.text, nextUuid()));
             lastAssistantText = payload.text;
           }
           realtimeStreamingText = "";
@@ -1984,6 +2025,7 @@ export function adaptTranscriptEvents(
           makeSystemMessage(
             `Realtime item: ${formatRealtimeItemSummary(payload.item as never)}`,
             "info",
+            nextUuid(),
           ),
         );
         break;
@@ -1994,12 +2036,13 @@ export function adaptTranscriptEvents(
               ? payload.message
               : "Realtime error",
             "error",
+            nextUuid(),
           ),
         );
         realtimeStreamingText = "";
         break;
       case "realtime_closed":
-        out.push(makeSystemMessage(formatRealtimeClosed(payload), "info"));
+        out.push(makeSystemMessage(formatRealtimeClosed(payload), "info", nextUuid()));
         realtimeStreamingText = "";
         break;
       case "agent_message":
@@ -2011,10 +2054,11 @@ export function adaptTranscriptEvents(
                 subagent.title,
                 subagent.details,
                 subagent.state,
+                nextUuid(),
               ),
             );
           } else {
-            out.push(makeAssistantTextMessage(payload.message));
+            out.push(makeAssistantTextMessage(payload.message, nextUuid()));
             lastAssistantText = payload.message;
           }
         }
@@ -2038,6 +2082,7 @@ export function adaptTranscriptEvents(
             toolCall.id ?? randomUUID(),
             toolCall.name ?? "Tool",
             safeJson(toolCall.arguments),
+            nextUuid,
           );
         }
         break;
@@ -2054,6 +2099,7 @@ export function adaptTranscriptEvents(
             settledToolCallIds,
             toolCall.id ?? randomUUID(),
             "result" in raw ? raw.result : "",
+            nextUuid,
             false,
           );
         }
@@ -2087,7 +2133,7 @@ export function adaptTranscriptEvents(
           suppressedToolResults.add(callId);
           break;
         }
-        pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload));
+        pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload), nextUuid);
         runningToolNames.set(callId, toolName);
         break;
       }
@@ -2208,6 +2254,7 @@ export function adaptTranscriptEvents(
               callId,
               streamedToolUse.contentBlock.name,
               streamedToolInput(streamedToolUse),
+              nextUuid,
             );
             runningToolNames.set(callId, streamedToolUse.contentBlock.name);
           }
@@ -2220,12 +2267,22 @@ export function adaptTranscriptEvents(
               ? "MCP"
               : "tool");
         const result = formatStructuredToolResult(toolName, event.type, payload);
+        // The EnterPlanMode tool result carries the full plan-mode
+        // instructions for the MODEL ("In plan mode, you should: … DO NOT
+        // write or edit any files except the plan file"). Rendering that
+        // agent-internal guidance as a chat message reads like a leaked
+        // system prompt — show the state change instead. The model still
+        // receives the full text on its own result channel; this only
+        // changes what the transcript displays.
+        const displayResult =
+          toolName === "EnterPlanMode" ? "Entered plan mode" : result;
         pushToolResult(
           out,
           openTools,
           settledToolCallIds,
           callId,
-          result,
+          displayResult,
+          nextUuid,
           isError,
           payload.result,
         );
@@ -2245,19 +2302,19 @@ export function adaptTranscriptEvents(
         break;
       }
       case "context_compacted":
-        out.push(makeSystemMessage("Context compacted", "info"));
+        out.push(makeSystemMessage("Context compacted", "info", nextUuid()));
         break;
       case "token_count":
-        out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info"));
+        out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info", nextUuid()));
         break;
       case "protocol_claim":
       case "protocol_settle":
       case "protocol_slash":
       case "protocol_stake": {
-        flushStreamingText();
+        flushStreamingText(nextUuid);
         const message = formatProtocolEvent(event.type, payload);
         if (message !== null) {
-          out.push(makeProtocolEventMessage(message));
+          out.push(makeProtocolEventMessage(message, nextUuid()));
         }
         break;
       }
@@ -2280,16 +2337,16 @@ export function adaptTranscriptEvents(
             ? ((payload as { cause: string }).cause)
             : undefined;
         if (!cause || !USER_VISIBLE_WARNING_CAUSES.has(cause)) break;
-        out.push(makeSystemMessage(stringResult(payload.message), "warning"));
+        out.push(makeSystemMessage(stringResult(payload.message), "warning", nextUuid()));
         break;
       }
       case "background_agent_status":
         if (!shouldRenderBackgroundAgentStatus(payload)) break;
-        out.push(makeSystemMessage(formatBackgroundAgentStatus(payload), "info"));
+        out.push(makeSystemMessage(formatBackgroundAgentStatus(payload), "info", nextUuid()));
         break;
       case "error":
       case "stream_error":
-        out.push(makeSystemMessage(stringResult(payload.message), "error"));
+        out.push(makeSystemMessage(stringResult(payload.message), "error", nextUuid()));
         // Terminal for the turn. An error-terminated daemon turn never
         // arrives as `turn_complete`: run-turn's turn_complete(stopReason:
         // "error") is remapped to run_error → agent_status:error → this
@@ -2298,7 +2355,7 @@ export function adaptTranscriptEvents(
         // (bug-audit-2026-07-11.md #13) — noteDaemonActivity already treats
         // `error` as turn-ending; this mirrors it in the reducer. Preserve
         // any partial text like `turn_aborted` does.
-        persistAssistantText(streamingText);
+        persistAssistantText(streamingText, nextUuid);
         streamingText = "";
         streamingThinking = null;
         streamingToolUses.length = 0;
@@ -2320,7 +2377,7 @@ export function adaptTranscriptEvents(
         if (kind === "text" || kind === "compact") {
           const text = candidate.text;
           if (typeof text === "string") {
-            out.push(makeSystemMessage(text, "info"));
+            out.push(makeSystemMessage(text, "info", nextUuid()));
           }
           break;
         }
@@ -2335,6 +2392,7 @@ export function adaptTranscriptEvents(
             makeSystemMessage(
               `Error: ${text.length > 0 ? text : "slash command failed"}`,
               "error",
+              nextUuid(),
             ),
           );
           break;
@@ -2347,7 +2405,7 @@ export function adaptTranscriptEvents(
         }
         // Unrecognized kind — fall back to the original behaviour so we
         // still surface SOMETHING rather than swallowing it silently.
-        out.push(makeSystemMessage(stringResult(candidate), "info"));
+        out.push(makeSystemMessage(stringResult(candidate), "info", nextUuid()));
         break;
       }
       case "collab_agent_spawn_begin": {
@@ -2361,7 +2419,7 @@ export function adaptTranscriptEvents(
           spawnTaskDetail(payload),
           spawnRequestDetail(payload),
         ].filter((detail): detail is string => detail !== null);
-        out.push(makeCollabAgentMessage("Spawning agent", details, "running"));
+        out.push(makeCollabAgentMessage("Spawning agent", details, "running", nextUuid()));
         break;
       }
       case "collab_agent_spawn_end": {
@@ -2389,6 +2447,7 @@ export function adaptTranscriptEvents(
             label === "agent" ? "Agent spawn failed" : `Spawned ${label}`,
             details,
             collabStatusState(status),
+            nextUuid(),
           ),
         );
         break;
@@ -2405,6 +2464,7 @@ export function adaptTranscriptEvents(
             `Sending input to ${label}`,
             detail ? [detail] : [],
             "running",
+            nextUuid(),
           ),
         );
         break;
@@ -2430,6 +2490,7 @@ export function adaptTranscriptEvents(
             `Sent input to ${label}`,
             details,
             collabStatusState(status),
+            nextUuid(),
           ),
         );
         break;
@@ -2454,7 +2515,7 @@ export function adaptTranscriptEvents(
             : labels.length > 1
               ? `Waiting for ${labels.length} agents`
               : "Waiting for agents";
-        out.push(makeCollabAgentMessage(title, labels.length > 1 ? labels : [], "running"));
+        out.push(makeCollabAgentMessage(title, labels.length > 1 ? labels : [], "running", nextUuid()));
         break;
       }
       case "collab_waiting_end": {
@@ -2498,6 +2559,7 @@ export function adaptTranscriptEvents(
               ? details
               : [timedOut ? "Agents may still be running" : "No agents completed yet"],
             finalState,
+            nextUuid(),
           ),
         );
         break;
@@ -2517,6 +2579,7 @@ export function adaptTranscriptEvents(
             `Closing ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
             [],
             "running",
+            nextUuid(),
           ),
         );
         break;
@@ -2536,6 +2599,7 @@ export function adaptTranscriptEvents(
             `Closed ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
             [`previous status: ${collabStatusSummary(payload.status)}`],
             collabStatusState(payload.status) === "error" ? "error" : "success",
+            nextUuid(),
           ),
         );
         break;
@@ -2555,6 +2619,7 @@ export function adaptTranscriptEvents(
             `Resuming ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
             [],
             "running",
+            nextUuid(),
           ),
         );
         break;
@@ -2574,18 +2639,19 @@ export function adaptTranscriptEvents(
             `Resumed ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
             [`status: ${collabStatusSummary(payload.status)}`],
             collabStatusState(payload.status),
+            nextUuid(),
           ),
         );
         break;
       }
       case "plan_started":
-        out.push(makeSystemMessage(`Plan started: ${stringResult(payload.title)}`, "info"));
+        out.push(makeSystemMessage(`Plan started: ${stringResult(payload.title)}`, "info", nextUuid()));
         break;
       case "plan_item_completed":
-        out.push(makeAssistantTextMessage(stringResult(payload.finalText)));
+        out.push(makeAssistantTextMessage(stringResult(payload.finalText), nextUuid()));
         break;
       case "deprecation_notice":
-        out.push(makeSystemMessage(stringResult(payload.reason), "warning"));
+        out.push(makeSystemMessage(stringResult(payload.reason), "warning", nextUuid()));
         break;
       default:
         break;

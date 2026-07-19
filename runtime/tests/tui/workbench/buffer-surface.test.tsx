@@ -1427,15 +1427,28 @@ describe("BufferSurface", () => {
       const instance = instances.get(stdout as any as NodeJS.WriteStream) as any;
       if (!instance?.rootNode) throw new Error("Ink instance not found");
       instance.setAltScreenActive(true);
-      const clickBox = findClickableBox(instance.rootNode);
+      // The BUFFER content box is the largest clickable box that is not the
+      // composer: project-tree rows are clickable too now (explorer mouse
+      // support), so document order no longer identifies the buffer pane.
+      const outsideBox = findClickableBoxes(instance.rootNode).find(
+        (box) => box._eventHandlers?.onClick === outsideClick,
+      );
+      if (!outsideBox) throw new Error("composer click box not found");
+      const outsideRect = nodeCache.get(outsideBox);
+      if (!outsideRect) throw new Error("composer click box has no layout");
+      const clickBox = findClickableBoxes(instance.rootNode)
+        .filter((box) => box !== outsideBox)
+        .reduce((best, box) => {
+          const bestRect = best === null ? null : nodeCache.get(best);
+          const boxRect = nodeCache.get(box);
+          if (bestRect === null) return box;
+          if (boxRect === null) return best;
+          return boxRect.width * boxRect.height > bestRect.width * bestRect.height ? box : best;
+        }, null as DOMElement | null);
       if (!clickBox) throw new Error("BUFFER click box not found");
       const rect = nodeCache.get(clickBox);
       if (!rect) throw new Error("BUFFER click box has no layout");
 
-      const outsideBox = findClickableBoxes(instance.rootNode).find((box) => box !== clickBox);
-      if (!outsideBox) throw new Error("outside click box not found");
-      const outsideRect = nodeCache.get(outsideBox);
-      if (!outsideRect) throw new Error("outside click box has no layout");
       expect(instance.dispatchClick(outsideRect.x, outsideRect.y)).toBe(true);
       expect(provider.click).not.toHaveBeenCalled();
       expect(outsideClick).toHaveBeenCalledTimes(1);

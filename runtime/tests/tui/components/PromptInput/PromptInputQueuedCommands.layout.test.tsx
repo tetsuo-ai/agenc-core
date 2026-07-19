@@ -26,16 +26,16 @@ vi.mock('../../../../src/tui/state/AppState.js', () => ({
 const WRAPPING_BODY =
   'aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp qqqq'
 
-// Pull out the body lines under a "▮ YOU queued" header and return their
+// Pull out the body lines under a "│ queued" header and return their
 // leading-space counts (the indent of each rendered continuation line).
 function bodyLeadWidths(output: string): number[] {
   const lines = output.split('\n')
-  const headerIndex = lines.findIndex((line) => line.includes('YOU queued'))
+  const headerIndex = lines.findIndex((line) => line.includes('│ queued'))
   if (headerIndex === -1) return []
   const body: number[] = []
   for (const line of lines.slice(headerIndex + 1)) {
     if (line.trim().length === 0) break
-    if (line.includes('YOU queued')) break
+    if (line.includes('│ queued')) break
     body.push(line.length - line.trimStart().length)
   }
   return body
@@ -73,9 +73,9 @@ describe('PromptInputQueuedCommands layout', () => {
     const output = await renderToString(<PromptInputQueuedCommands />, 60)
     const lines = output.split('\n')
 
-    // Collect the row index of each item's "YOU queued" header.
+    // Collect the row index of each item's "│ queued" header.
     const headerRows = lines
-      .map((line, index) => (line.includes('YOU queued') ? index : -1))
+      .map((line, index) => (line.includes('│ queued') ? index : -1))
       .filter((index) => index !== -1)
 
     expect(headerRows).toHaveLength(3)
@@ -96,6 +96,6 @@ describe('PromptInputQueuedCommands layout', () => {
     // banner (with its own marginBottom) sits above it — there is no double gap
     // before the first item.
     const firstHeader = headerRows[0]!
-    expect(lines[firstHeader]).toContain('YOU queued')
+    expect(lines[firstHeader]).toContain('│ queued')
   })
 })

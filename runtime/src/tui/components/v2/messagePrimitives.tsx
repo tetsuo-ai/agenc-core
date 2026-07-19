@@ -354,17 +354,21 @@ export function ThinkingMessage({
   if (!thinking || hideInTranscript) return null
 
   const glyphs = selectAgenCTuiGlyphs()
-  const label = thinkingLabel(glyphs.thinkingPrefix)
   const shouldShowFullThinking = isTranscriptMode || verbose
   if (!shouldShowFullThinking) {
+    // Collapsed streaming hint: the activity spinner below already says
+    // "thinking", so the row is just the expand affordance — no "Thinking"
+    // word, no glyph (UX request).
     return (
       <Box marginTop={addMargin ? 1 : 0}>
         <ThemedText color="subtle" italic>
-          {label} <CtrlOToExpand />
+          <CtrlOToExpand />
         </ThemedText>
       </Box>
     )
   }
+
+  const label = thinkingLabel(glyphs.thinkingPrefix)
 
   return (
     <Box flexDirection="column" gap={1} marginTop={addMargin ? 1 : 0} width="100%">

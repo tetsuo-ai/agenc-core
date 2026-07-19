@@ -26,6 +26,7 @@ vi.mock("../../../src/utils/readFileInRange.js", () => ({
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: () => {},
   useKeybinding: () => {},
   useKeybindings: (handlers: Record<string, () => void>) => {
     previewHarness.handlers = handlers;

@@ -1803,7 +1803,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "tool-use",
         hasActiveTools: true,
-        showLeaderTokenStats: false,
         overrideMessage: "Running tools",
       }),
     );
@@ -1919,7 +1918,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "responding",
         hasActiveTools: false,
-        showLeaderTokenStats: false,
       }),
     );
     expect(providerProbe.messageProps.at(-1)).toEqual(
@@ -1974,7 +1972,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "thinking",
         hasActiveTools: false,
-        showLeaderTokenStats: false,
       }),
     );
   });
@@ -2032,7 +2029,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         mode: "tool-input",
         hasActiveTools: true,
-        showLeaderTokenStats: false,
         overrideMessage: null,
       }),
     );

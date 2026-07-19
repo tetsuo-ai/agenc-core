@@ -660,6 +660,14 @@ function executableFile(
 export function resolveDefaultLinuxSandboxExecutable(
   moduleUrl = import.meta.url,
 ): string {
+  // Dev checkouts live inside the writable workspace, which trips the
+  // "helper must be outside the workspace" trust invariant enforced by
+  // resolveTrustedLinuxSandboxExecutable. AGENC_LINUX_SANDBOX_EXE points at a
+  // helper installed outside the workspace; packaged installs never need it.
+  const override = process.env.AGENC_LINUX_SANDBOX_EXE;
+  if (override !== undefined && override.trim() !== "") {
+    return override;
+  }
   const runtimeRoot = resolveRuntimePackageRootFromUrl(moduleUrl);
   return runtimeRoot === null
     ? fileURLToPath(new URL("../../bin/agenc-linux-sandbox", moduleUrl))

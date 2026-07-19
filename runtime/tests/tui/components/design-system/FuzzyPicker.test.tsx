@@ -503,4 +503,51 @@ describe("FuzzyPicker", () => {
     await harness.send("\x1b[A");
     await waitForLatestFocus(focusCalls, "bravo");
   });
+
+  test("clips the bottom preview to its row budget and hides it when no rows are left", async () => {
+    const renderPreview = vi.fn((item: PickerItem) => (
+      <Box flexDirection="column">
+        <Text>Preview panel:{item.preview}</Text>
+        <Text>extra line 1</Text>
+        <Text>extra line 2</Text>
+        <Text>extra line 3</Text>
+      </Box>
+    ));
+
+    // rows=13, visibleCount=2, no matchLabel → budget = 13 - 10 - 2 = 1 row.
+    const harness = await createPickerHarness(
+      { visibleCount: 2, renderPreview },
+      { rows: 13 },
+    );
+
+    await waitForCondition(
+      () => harness.text().includes("Preview panel:Alpha preview"),
+      "Budgeted preview did not render",
+    );
+    const previewBoxes = harness.boxes(
+      box =>
+        box.style.overflowY === "hidden" &&
+        collectText(box).includes("Preview panel:"),
+    );
+    expect(previewBoxes).toHaveLength(1);
+    expect(previewBoxes[0]?.style.maxHeight).toBe(1);
+    expect(previewBoxes[0]?.yogaNode?.getComputedHeight()).toBeLessThanOrEqual(1);
+    expect(harness.text()).toContain("Type to search");
+
+    // rows=12 → budget = 0: the preview is hidden outright so the result list
+    // and the search box keep their rows.
+    const hiddenHarness = await createPickerHarness(
+      { visibleCount: 2, renderPreview },
+      { rows: 12 },
+    );
+    await waitForCondition(
+      () => hiddenHarness.text().includes("Alpha result"),
+      "List did not render with hidden preview",
+    );
+    expect(hiddenHarness.text()).not.toContain("Preview panel:");
+    expect(hiddenHarness.text()).toContain("Type to search");
+    expect(
+      hiddenHarness.boxes(box => collectText(box).includes("Preview panel:")),
+    ).toHaveLength(0);
+  });
 });

@@ -71,6 +71,15 @@ export function computeFuzzyPickerVisibleCount(requestedVisible: number, rows: n
   const availableRows = Math.floor(rows || 0) - CHROME_ROWS - (hasMatchLabel ? 1 : 0);
   return Math.max(MIN_VISIBLE, Math.min(safeRequested, availableRows));
 }
+// Rows left for a bottom preview once the fixed chrome (CHROME_ROWS, hints
+// included), the capped result list, and the optional match label are paid
+// for. 0 means "hide the preview": an unbounded preview overflows the modal
+// slot (overflowY hidden there clips from the bottom), pushing the SearchBox
+// and hints out of view on small terminals.
+export function computeFuzzyPickerPreviewBudget(rows: number, visibleCount: number, hasMatchLabel = false): number {
+  const availableRows = Math.floor(rows || 0) - CHROME_ROWS - (hasMatchLabel ? 1 : 0);
+  return Math.max(0, availableRows - Math.max(0, Math.floor(visibleCount || 0)));
+}
 export function getFuzzyPickerDefaultPlaceholder(env: {
   readonly AGENC_TUI_GLYPHS?: string;
 } = process.env): string {
@@ -115,6 +124,10 @@ export function FuzzyPicker<T>({
   // overflows, each re-render (arrow key, ctrl+p) mis-positions the cursor-up
   // by the overflow amount and a previously-drawn line flashes blank.
   const visibleCount = computeFuzzyPickerVisibleCount(requestedVisible, rows, Boolean(matchLabel));
+  // Bottom previews get a row budget; 0 hides the preview so the SearchBox
+  // stays visible. 'right' previews are already bounded by the list row's
+  // fixed height (overflowY hidden below clips any excess).
+  const previewBudget = computeFuzzyPickerPreviewBudget(rows, visibleCount, Boolean(matchLabel));
   const effectivePlaceholder = placeholder ?? getFuzzyPickerDefaultPlaceholder();
   const navigationShortcut = getFuzzyPickerNavigationShortcut();
 
@@ -190,7 +203,7 @@ export function FuzzyPicker<T>({
   const emptyText = typeof emptyMessage === 'function' ? emptyMessage(query) : emptyMessage;
   const searchBox = <SearchBox query={query} cursorOffset={cursorOffset} placeholder={effectivePlaceholder} isFocused isTerminalFocused={isTerminalFocused} />;
   const listBlock = <List visible={visible} windowStart={windowStart} visibleCount={visibleCount} total={items.length} focusedIndex={focusedIndex} direction={direction} getKey={getKey} renderItem={renderItem} emptyText={emptyText} />;
-  const preview = renderPreview && focused ? <Box flexDirection="column" flexGrow={1}>
+  const preview = renderPreview && focused && (previewPosition === 'right' || previewBudget > 0) ? <Box flexDirection="column" flexGrow={1} {...(previewPosition === 'bottom' ? { maxHeight: previewBudget } : null)} overflowY="hidden">
         {renderPreview(focused)}
       </Box> : null;
 

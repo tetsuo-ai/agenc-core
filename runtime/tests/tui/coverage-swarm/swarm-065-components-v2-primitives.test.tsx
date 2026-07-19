@@ -159,6 +159,7 @@ describe('v2 primitives coverage swarm row 065', () => {
           ]}
           note="safe local command"
           confirmLabel="approve"
+          requestId="call_swarm065_low"
         />
         <ApprovalCard
           risk="high"
@@ -170,6 +171,7 @@ describe('v2 primitives coverage swarm row 065', () => {
           ]}
           confirmLabel="type yes"
           requireTypedConfirmation={true}
+          requestId="call_swarm065_high"
         />
       </Box>,
       { columns: 132, rows: 40 },

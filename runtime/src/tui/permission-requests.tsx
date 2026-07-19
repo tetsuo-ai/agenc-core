@@ -10,6 +10,7 @@ import {
 } from "../permissions/review-decision.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
+  parseAskUserQuestionInput,
   recordAskUserQuestionPlanInterviewAction,
   recordAskUserQuestionUpdatedInput,
   type AskUserQuestionPlanInterviewAction,
@@ -26,6 +27,7 @@ import { ApprovalCard, type ApprovalDiffPreview } from "./components/v2/primitiv
 import { buildEditDiffPreview } from "./edit-diff-preview.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import { PlanApprovalOverlay } from "./components/PlanApprovalOverlay.js";
+import { AskUserQuestionOverlay } from "./components/AskUserQuestionOverlay.js";
 import { setPlanApprovalChoice } from "./plan-approval-choice.js";
 import {
   classifyApprovalRisk,
@@ -305,8 +307,38 @@ export function AgenCPermissionOverlay({
     ) as ProjectedToolUseConfirm | null;
   }, [request, tools, isExitPlanMode]);
 
+  // AskUserQuestion gets its interactive picker instead of the generic card:
+  // the generic card dumps the questions as raw JSON and approves without
+  // recording any answers, so the tool then fails with "User did not provide
+  // answers." Parse failures fall through to the generic card unchanged.
+  const askUserQuestionInput = useMemo(() => {
+    if (
+      request === undefined ||
+      request.ctx.toolName !== ASK_USER_QUESTION_TOOL_NAME
+    ) {
+      return null;
+    }
+    const parsed = parseAskUserQuestionInput(request.input);
+    return parsed.ok ? parsed.input : null;
+  }, [request]);
+
   if (request !== undefined && isExitPlanMode) {
     return <PlanApprovalContainer key={request.id} request={request} />;
+  }
+
+  if (
+    request !== undefined &&
+    askUserQuestionInput !== null &&
+    toolUseConfirm !== null
+  ) {
+    return (
+      <AskUserQuestionOverlay
+        key={request.id}
+        input={askUserQuestionInput}
+        onSubmit={(updatedInput) => toolUseConfirm.onAllow(updatedInput, [])}
+        onSkip={() => toolUseConfirm.onReject()}
+      />
+    );
   }
 
   if (request === undefined || toolUseConfirm === null) {
@@ -562,10 +594,11 @@ function AgenCApprovalOverlay({
         ]}
         note={toolUseConfirm.description}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
+        requestId={request.id}
         confirmLabel={
           destructive
             ? `type '${requiredWord}' to approve`
-            : "enter approve · 2 session · 3 deny"
+            : "1/enter approve · 2 session · 3 deny"
         }
         requireTypedConfirmation={destructive}
         typedConfirmationValue={typed}

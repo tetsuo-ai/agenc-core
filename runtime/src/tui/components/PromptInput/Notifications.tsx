@@ -44,7 +44,12 @@ type Props = {
   isAutoUpdating: boolean;
   debug: boolean;
   verbose: boolean;
-  messages: Message[];
+  // The transcript arrives as a stable accessor + the id of the last assistant
+  // message (the recompute trigger for the token count below), never as an
+  // array prop: a fresh array per streaming flush would recompute the token
+  // count at token rate.
+  getMessages: () => Message[];
+  lastAssistantMessageId: string | null;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   onChangeIsUpdating: (isUpdating: boolean) => void;
   ideSelection: IDESelection | undefined;
@@ -61,7 +66,8 @@ export function Notifications(t0: Props) {
     debug,
     isAutoUpdating,
     verbose,
-    messages,
+    getMessages,
+    lastAssistantMessageId,
     onAutoUpdaterResult,
     onChangeIsUpdating,
     ideSelection,
@@ -73,10 +79,10 @@ export function Notifications(t0: Props) {
   const isInputWrapped = t1 === undefined ? false : t1;
   const isNarrow = t2 === undefined ? false : t2;
   let t3;
-  if ($[0] !== messages) {
-    const messagesForTokenCount = getMessagesAfterCompactBoundary(messages);
+  if ($[0] !== lastAssistantMessageId) {
+    const messagesForTokenCount = getMessagesAfterCompactBoundary(getMessages());
     t3 = tokenCountFromLastAPIResponse(messagesForTokenCount);
-    $[0] = messages;
+    $[0] = lastAssistantMessageId;
     $[1] = t3;
   } else {
     t3 = $[1];

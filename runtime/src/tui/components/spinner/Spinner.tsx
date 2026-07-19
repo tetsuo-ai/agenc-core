@@ -98,15 +98,15 @@ function SpinnerWithVerbInner({
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
 
-  // The v2 visual contract keeps this row off the animation clock. It
-  // re-renders from streaming/tool/task state changes rather than a timer.
+  // The v2 visual contract keeps this row off the animation clock.
+  // SpinnerAnimationRow owns a 1s wall-clock tick for the elapsed timer and
+  // stall note; everything else re-renders from streaming/tool/task state.
 
   const tasks = useAppState((s: any) => s.tasks);
   const viewingAgentTaskId = useAppState((s_0: any) => s_0.viewingAgentTaskId);
   const expandedView = useAppState((s_1: any) => s_1.expandedView);
   const showExpandedTodos = expandedView === 'tasks';
-  const showSpinnerTree = expandedView === 'teammates';
-  const selectedIPAgentIndex = useAppState((s_2: any) => s_2.selectedIPAgentIndex);
+  const showSpinnerTree = expandedView === 'teammates';  const selectedIPAgentIndex = useAppState((s_2: any) => s_2.selectedIPAgentIndex);
   const viewSelectionMode = useAppState((s_3: any) => s_3.viewSelectionMode);
   // Get foregrounded teammate (if viewing a teammate's transcript)
   const foregroundedTeammate = viewingAgentTaskId ? getViewedTeammateTask({
@@ -117,6 +117,13 @@ function SpinnerWithVerbInner({
     columns
   } = useTerminalSize();
   const tasksV2 = useTasksV2();
+  // Auto-show the todo board while the agent has open tasks (UX request, like
+  // other harnesses): the list appears on its own as the agent splits a big
+  // task and works through it — no ctrl+t needed. It hides itself again a few
+  // seconds after everything completes (the store hides idle lists), while
+  // ctrl+t remains the explicit toggle for inspecting completed-only lists.
+  const hasOpenTodoTasks =
+    tasksV2 !== undefined && tasksV2.some(task => task.status !== 'completed');
 
   // Track thinking status: 'thinking' | number (duration in ms) | null
   // Shows each state for minimum 2s to avoid UI jank
@@ -277,7 +284,7 @@ function SpinnerWithVerbInner({
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} showLeaderTokenStats={showLeaderTokenStats} />
       {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
-      {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : showExpandedTodos && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
+      {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
           </MessageResponse>

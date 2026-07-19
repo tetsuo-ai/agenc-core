@@ -44,6 +44,18 @@ import {
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
 import { plainTextErrorToolResult as errorResult } from "../results.js";
+import {
+  ensureTasksDir,
+  getTaskListId,
+  getTaskPath,
+  listTasks,
+  notifyTasksUpdated,
+  sanitizePathComponent,
+  updateTask,
+  type Task,
+} from "../../utils/tasks.js";
+import { jsonStringify } from "../../utils/slowOperations.js";
+import { writeFile } from "node:fs/promises";
 
 type TodoStatus = "pending" | "in_progress" | "completed";
 
@@ -166,6 +178,49 @@ function parseTodoList(value: unknown): readonly TodoItem[] | { readonly error: 
     todos.push({ content, status, activeForm });
   }
   return todos;
+}
+
+/**
+ * Bridge from the plan surface to the file-backed task board that the TUI's
+ * TaskListV2 renders (useTasksV2). Todo items carry no id, so tasks are keyed
+ * by a stable content slug: re-issues of the same item update the same task,
+ * and items dropped from the model's rewritten list are closed out instead of
+ * left dangling. Chained with sequential blocks so the board keeps the
+ * model's intended order.
+ */
+async function persistTodosToTaskBoard(todos: readonly TodoItem[]): Promise<void> {
+  try {
+    const taskListId = getTaskListId();
+    await ensureTasksDir(taskListId);
+    const seen = new Set<string>();
+    let previousId: string | null = null;
+    for (const todo of todos) {
+      const id = `tw-${sanitizePathComponent(todo.content).slice(0, 48).toLowerCase()}`;
+      seen.add(id);
+      const task: Task = {
+        id,
+        subject: todo.content,
+        description: todo.content,
+        activeForm: todo.activeForm,
+        status: todo.status,
+        blocks: [],
+        blockedBy: previousId === null ? [] : [previousId],
+        metadata: { source: "TodoWrite" },
+      };
+      await writeFile(getTaskPath(taskListId, id), jsonStringify(task, null, 2));
+      previousId = id;
+    }
+    const existing = await listTasks(taskListId);
+    for (const old of existing) {
+      if (old.id.startsWith("tw-") && !seen.has(old.id) && old.status !== "completed") {
+        await updateTask(taskListId, old.id, { status: "completed" });
+      }
+    }
+    notifyTasksUpdated();
+  } catch {
+    // Best-effort bridge: plan events already landed; a board write failure
+    // must not fail the TodoWrite call.
+  }
 }
 
 function inputPlan(args: Record<string, unknown>): string | undefined {
@@ -299,6 +354,12 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         updatedAt: new Date().toISOString(),
       };
       options.workflowController?.emitPlanUpdated?.(state);
+      // Bridge to the file-backed task board: the TUI's TaskListV2 reads
+      // THAT store (useTasksV2), not the plan events — without this, a
+      // TodoWrite only showed up as plan events and the live todo list in
+      // the chat view stayed empty. Best-effort: the plan events already
+      // landed, so board failures must not fail the tool call.
+      await persistTodosToTaskBoard(nextTodos);
       const verificationNudgeNeeded = allDone &&
         todos.length >= 3 &&
         !todos.some((todo) => /verif/i.test(todo.content));

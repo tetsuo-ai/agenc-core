@@ -309,10 +309,22 @@ export function usePasteHandler({
     // When dragging multiple images, they may come as newline-separated or
     // space-separated paths. Split on spaces preceding absolute paths:
     // - Unix: ` /` - Windows: ` C:\` etc.
-    const hasImageFilePath = input
-      .split(/ (?=\/|[A-Za-z]:\\)/)
-      .flatMap(part => part.split('\n'))
-      .some(line => isImageFilePath(line.trim()))
+    // The split/scan runs on every keystroke, so gate it to inputs that can
+    // plausibly carry a path: pastes (bracketed or oversized chunks), paste
+    // continuations, and multi-char bursts — the parser coalesces a burst of
+    // printable bytes (e.g. a dragged-and-dropped file path) into one key,
+    // while a regular keystroke is always a single char and skips the scan.
+    const mayContainFilePath =
+      isFromPaste ||
+      input.length > PASTE_THRESHOLD ||
+      pastePendingRef.current ||
+      input.length > 1
+    const hasImageFilePath =
+      mayContainFilePath &&
+      input
+        .split(/ (?=\/|[A-Za-z]:\\)/)
+        .flatMap(part => part.split('\n'))
+        .some(line => isImageFilePath(line.trim()))
 
     // Handle empty paste (clipboard image on macOS)
     // When the user pastes an image with Cmd+V, the terminal sends an empty

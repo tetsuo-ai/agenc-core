@@ -139,7 +139,12 @@ export function parseAskUserQuestionInput(
       }
       const label = nonEmptyString(optionRecord.label);
       const preview = nonEmptyString(optionRecord.preview);
-      const description = nonEmptyString(optionRecord.description);
+      // Models are split on which field carries the option detail: Claude
+      // sends `description`, Grok consistently sends `preview` (and keeps
+      // sending it even after a validation error says otherwise — observed
+      // 4 consecutive failures in the wild). Accept either: with neither,
+      // the option is unexplainable and still rejected.
+      const description = nonEmptyString(optionRecord.description) ?? preview;
       if (label === null) {
         return {
           ok: false,
@@ -149,7 +154,7 @@ export function parseAskUserQuestionInput(
       if (description === null) {
         return {
           ok: false,
-          error: `questions[${questionIndex}].options[${optionIndex}].description is required`,
+          error: `questions[${questionIndex}].options[${optionIndex}] needs a description (or preview)`,
         };
       }
       if (seenLabels.has(label)) {
@@ -204,6 +209,31 @@ export function recordAskUserQuestionUpdatedInput(
   if (!parsed.ok) return false;
   recordAskUserQuestionResponse(callId, parsed.input);
   return true;
+}
+
+/**
+ * Retrieve (and remove) the answers recorded for a call — used by the daemon
+ * bridge to ship the user's answers with the `tool.approve` RPC so the
+ * daemon-side tool execution finds them in ITS answeredInputs map. Mirrors
+ * takePlanApprovalChoice for ExitPlanMode.
+ */
+export function takeAskUserQuestionUpdatedInput(
+  callId: string,
+): AskUserQuestionInput | null {
+  if (callId.trim().length === 0) return null;
+  const answered = answeredInputs.get(callId);
+  if (answered === undefined) return null;
+  answeredInputs.delete(callId);
+  return answered;
+}
+
+/**
+ * Drop a recorded response without consuming it — used when the tool call it
+ * was recorded for will never execute (e.g. the approval RPC raced an
+ * already-resolved request), so the entry cannot leak in the map.
+ */
+export function dropAskUserQuestionResponse(callId: string): void {
+  answeredInputs.delete(callId);
 }
 
 export function recordAskUserQuestionPlanInterviewAction(
@@ -304,7 +334,12 @@ const inputSchema = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["label", "description"],
+              // Only label is hard-required here: `description` OR `preview`
+              // carries the detail (the parser accepts either — Grok sends
+              // preview, other models description). Requiring description in
+              // the wire schema made provider-side validation reject calls
+              // the parser would have accepted.
+              required: ["label"],
               properties: {
                 label: { type: "string" },
                 description: { type: "string" },

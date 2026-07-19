@@ -9,6 +9,7 @@ import { useWorkbenchState } from "./state.js";
 export function WorkbenchStatusBar({
   activityMode = null,
   columns,
+  contextPctLabel = null,
 }: {
   /** Current streaming phase, or null when idle. Drives the working indicator. */
   readonly activityMode?: SpinnerMode | null;
@@ -19,6 +20,12 @@ export function WorkbenchStatusBar({
    * strip is hidden.
    */
   readonly columns?: number;
+  /**
+   * Real context-window usage label (e.g. "ctx 42%"); null when no assistant
+   * usage data exists yet. Rendered ahead of the model/mode/cwd strip, which
+   * keeps its own width budget (the label's width is reserved here).
+   */
+  readonly contextPctLabel?: string | null;
 } = {}): React.ReactElement {
   const workbench = useWorkbenchState();
   // Show the active file path when one is open (preview/buffer); otherwise show
@@ -31,14 +38,18 @@ export function WorkbenchStatusBar({
   // plus a small gutter, so the context strip only claims what is actually left
   // over and never collides with the title or overflows the row.
   const leftLabelWidth = "AgenC Workbench | ".length + active.length;
+  // The ctx label plus its separator gutter is reserved up front so the strip
+  // budget below never has to know whether the label is present.
+  const contextPctWidth = contextPctLabel === null ? 0 : contextPctLabel.length + 3;
   const stripAvailable =
-    typeof columns === "number" ? columns - leftLabelWidth - 1 : 0;
+    typeof columns === "number" ? columns - leftLabelWidth - contextPctWidth - 1 : 0;
   return (
     <Box height={1} width="100%" flexDirection="row">
       <Text color="text2" wrap="truncate-end">AgenC Workbench</Text>
       <Text dimColor wrap="truncate-end"> | {active}</Text>
       <WorkbenchActivityIndicator mode={activityMode} />
       <Box flexGrow={1} />
+      {contextPctLabel !== null ? <Text dimColor wrap="truncate-end">{contextPctLabel} · </Text> : null}
       {stripAvailable > 0 ? <WorkbenchContextStrip available={stripAvailable} /> : null}
     </Box>
   );

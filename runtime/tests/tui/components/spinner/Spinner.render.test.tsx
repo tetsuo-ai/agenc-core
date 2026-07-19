@@ -320,9 +320,10 @@ describe("Spinner render paths", () => {
     );
 
     try {
-      expect(rendered.output()).toContain("Animation:Coding");
-      expect(rendered.output()).toContain("Target: 2.0k used (1.0k min");
-      expect(rendered.output()).toContain("Next: Next task");
+      // Auto-show (UX request): open tasks surface the todo board on their
+      // own, taking priority over the budget/next-task line.
+      expect(rendered.output()).toContain("TaskList:Active task,Next task");
+      expect(rendered.output()).not.toContain("Next: Next task");
     } finally {
       await rendered.dispose();
     }

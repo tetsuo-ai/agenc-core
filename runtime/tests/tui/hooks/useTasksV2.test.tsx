@@ -329,7 +329,14 @@ describe('useTasksV2', () => {
     expect(fixture.watch).toHaveBeenCalledWith('/tasks/list-a', expect.any(Function))
     expect(fixture.listTasks).toHaveBeenCalledWith('list-a')
     expect(latestTasks(mounted.record)).toBeUndefined()
-    expect(activeTimers()).toHaveLength(0)
+    // The fallback poll stays armed even on an empty list: in daemon mode the
+    // board is written cross-process, so polling is the only discovery path
+    // when fs.watch is unavailable (here: because setup threw).
+    expect(activeTimers(5000)).toHaveLength(1)
+
+    await fireNextTimer(5000) // poll tick → debounce
+    await fireNextTimer(50) // debounce → refetch
+    expect(fixture.listTasks).toHaveBeenCalledTimes(2)
   })
 
   test('logs initial task read failures and retries on later task updates', async () => {
@@ -494,7 +501,10 @@ describe('useTasksV2', () => {
     await flushPromises()
 
     expect(latestTasks(mounted.record)?.map(t => t.id)).toEqual(['1'])
-    expect(activeTimers(5000)).toHaveLength(1)
+    // Two 5000ms timers: the completed-task hide timer AND the fallback poll
+    // (the poll stays armed so cross-process board writes are discovered).
+    // fireNextTimer picks the hide timer first (scheduled before the poll).
+    expect(activeTimers(5000)).toHaveLength(2)
 
     await fireNextTimer(5000)
 

@@ -871,16 +871,19 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     autoUpdaterResult: null,
     commands: [],
     debug: false,
+    getMessages: () => [],
     getToolUseContext: () => ({}),
+    hasMessages: false,
     hasSuppressedDialogs: false,
     helpOpen: false,
     ideSelection: undefined,
     input: '',
     isLoading: false,
     isLocalJSXCommandActive: false,
+    isMidConversation: false,
     isSearchingHistory: false,
+    lastAssistantMessageId: null,
     mcpClients: [],
-    messages: [],
     mode: 'prompt',
     onAutoUpdaterResult: vi.fn(),
     onExit: vi.fn(),
@@ -1133,7 +1136,9 @@ describe('PromptInput render surface', () => {
     const onShowMessageSelector = vi.fn()
     const rendered = await renderPromptInput({
       input: 'abc',
-      messages: [{ type: 'assistant' }],
+      getMessages: () => [{ type: 'assistant' }],
+      hasMessages: true,
+      isMidConversation: true,
       mode: 'bash',
       onInputChange,
       onModeChange,
@@ -2539,7 +2544,7 @@ describe('PromptInput render surface', () => {
     const pastedContents = createPastedContentsState()
     const rendered = await renderPromptInput({
       input: '',
-      messages: [
+      getMessages: () => [
         {
           imagePasteIds: [3],
           message: {
@@ -2553,6 +2558,8 @@ describe('PromptInput render surface', () => {
           type: 'user',
         },
       ],
+      hasMessages: true,
+      isMidConversation: true,
       onInputChange,
       pastedContents: pastedContents.current,
       setPastedContents: pastedContents.setPastedContents,
@@ -2586,7 +2593,7 @@ describe('PromptInput render surface', () => {
     const pastedContents = createPastedContentsState()
     const rendered = await renderPromptInput({
       input: '',
-      messages: [
+      getMessages: () => [
         {
           message: {
             content: 'old string ref [Image #9]',
@@ -2594,6 +2601,8 @@ describe('PromptInput render surface', () => {
           type: 'user',
         },
       ],
+      hasMessages: true,
+      isMidConversation: true,
       onInputChange,
       pastedContents: pastedContents.current,
       setPastedContents: pastedContents.setPastedContents,

@@ -287,8 +287,8 @@ function execCommand(
     readonly argv0: string;
   },
 ): never {
-  const [program, ...args] = command;
-  if (program === undefined) {
+  const [rawProgram, ...args] = command;
+  if (rawProgram === undefined) {
     throw new Error("Linux sandbox command is missing");
   }
   const execve = (process as NodeJS.Process & {
@@ -301,9 +301,38 @@ function execCommand(
   if (typeof execve !== "function") {
     throw new Error("Linux sandbox execve is unavailable on this Node runtime");
   }
+  // execve does NOT search PATH — a bare program name (e.g. `rg` from the
+  // system-ripgrep resolution) would die here with ENOENT even when the
+  // binary is perfectly mounted inside the namespace. Resolve bare names
+  // against the command's own PATH (the daemon's sanitized env, which keeps
+  // PATH by design) before exec'ing.
+  const program = resolveProgramOnPath(rawProgram, options.env);
   process.chdir(options.cwd);
   execve(program, [options.argv0, ...args], stringOnlyEnv(options.env));
   throw new Error("Linux sandbox execve returned unexpectedly");
+}
+
+function resolveProgramOnPath(
+  program: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (program.includes("/")) return program;
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? process.env.PATH ?? "";
+  for (const dir of pathValue.split(":")) {
+    if (dir.length === 0) continue;
+    const candidate = path.join(dir, program);
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile()) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // keep searching the remaining PATH entries
+    }
+  }
+  // Not found anywhere: hand the original name back so execve's ENOENT
+  // reports the program the caller actually asked for.
+  return program;
 }
 
 async function runCommandWithInnerSeccomp(

@@ -46,7 +46,7 @@ export const HELP_WORKFLOW_GROUPS: readonly HelpWorkflowGroup[] = [
   },
   {
     title: "Utility",
-    commands: ["help"],
+    commands: ["help", "hello"],
   },
 ];
 

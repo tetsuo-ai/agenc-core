@@ -11,6 +11,7 @@ const projectExplorerHarness = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: () => {},
   useKeybinding: () => {},
   useKeybindings: (
     handlers: Record<string, () => void>,

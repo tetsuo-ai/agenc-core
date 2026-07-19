@@ -1,3 +1,4 @@
+import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { c as _c } from "react-compiler-runtime";
@@ -17,7 +18,7 @@ import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
-import { getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
+import { applyWorkbenchCommand, getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
 import { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
@@ -43,6 +44,10 @@ import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAp
 import { Box, Text, useApp, useTerminalFocus, useTerminalTitle } from "../ink.js";
 import { setPendingResumeSessionId } from "../pending-resume.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
+import { getSdkBetas } from "../../bootstrap/state.js";
+import { calculateContextPercentages, getContextWindowForModel } from "../../utils/context.js";
+import { getRuntimeMainLoopModel, type ModelName } from "../../utils/model/model.js";
+import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from "../../utils/tokens.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { McpElicitationRequestEvent, McpElicitationResponse, McpPrimitiveSchemaDefinition, McpRequestId, RequestUserInputEvent, RequestUserInputResponse } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
@@ -95,6 +100,7 @@ import {
   completionPipelineOwnsPrompt,
   formatCompletionPipelineRows,
   readCompletionPipelineState,
+  resolveCompletionPipelineEventLogPath,
   type CompletionPipelineState,
 } from "../completion-pipeline.js";
 export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
@@ -1173,7 +1179,13 @@ function useSyncedPermissionContext(
       }));
       await registry.update?.(next);
     };
-    if (daemonSetMode === null || next.mode === registry.current().mode) {
+    // Always push the mode to the daemon, even when the client-side registry
+    // already shows it: the daemon may have RESPAWNED since (fresh registry at
+    // "default"), and the old `next.mode === registry.current().mode` skip
+    // then left the footer showing YOLO while the daemon kept asking for
+    // approvals. The RPC is idempotent (the daemon answers applied:false when
+    // the mode is unchanged), so the extra call costs nothing.
+    if (daemonSetMode === null) {
       void applyLocal().catch(_temp3);
       return;
     }
@@ -1394,6 +1406,17 @@ function compactHookLabel(hookType: unknown): string {
 }
 const TITLE_ANIMATION_FRAME_COUNT = 2;
 const TITLE_ANIMATION_INTERVAL_MS = 960;
+// A turn that produces zero transcript activity for this long is dead (the
+// error path that emits no terminal event), not merely slow — see the
+// daemon-silence watchdog below. Thinking streams deltas continuously, so a
+// legitimately slow turn never goes a full window without activity.
+const DAEMON_STALL_WATCHDOG_MS = 60_000;
+// A submitted prompt that gets NO daemon acknowledgment within this window
+// (no turn_started, no streaming, no message growth — the 403 flavor where
+// the request dies before any event is broadcast) never started. A cold
+// daemon bootstrap can take ~15s to ack, hence 20s. See the submit-ack
+// watchdog next to the pendingSubmission cleanup effects.
+const SUBMIT_ACK_WATCHDOG_MS = 20_000;
 
 export function animatedTerminalTitlePrefix(
   isAnimating: boolean,
@@ -1480,6 +1503,19 @@ type AgenCTuiShellProps = AgenCTuiProps & {
   readonly roleWorkspaceCwd: string;
 };
 
+// Compact signature of everything the shell renders from the pipeline state.
+// The poll/watch refresh compares it before setState so a no-change read
+// keeps the previous object identity and skips a full shell re-render.
+function completionPipelineStateSignature(state: CompletionPipelineState): string {
+  return JSON.stringify([
+    state.pipelineId,
+    state.ownsPrompt,
+    state.activeGate?.gateId ?? null,
+    state.terminal,
+    state.gates.map(gate => [gate.gateId, gate.status, gate.sequence, gate.message ?? null, gate.detail ?? null]),
+  ]);
+}
+
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const {
     exit
@@ -1503,22 +1539,47 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   }, [reverify]);
   const [completionPipelineState, setCompletionPipelineState] =
     useState<CompletionPipelineState>(() => readCompletionPipelineState());
-  useEffect(() => {
-    const refresh = () => setCompletionPipelineState(readCompletionPipelineState());
-    refresh();
-    const interval = setInterval(refresh, 1000);
-    return () => clearInterval(interval);
-  }, []);
-  const completionPipelineRows = formatCompletionPipelineRows(completionPipelineState);
   const completionPipelineActive = completionPipelineOwnsPrompt(completionPipelineState);
+  useEffect(() => {
+    // Only publish when the rendered surface actually changed — a freshly
+    // parsed object per poll would re-render the whole shell even when
+    // nothing moved (same compare-before-setState pattern as
+    // useSessionMcpSurface above).
+    const refresh = () => setCompletionPipelineState(previous => {
+      const next = readCompletionPipelineState();
+      return completionPipelineStateSignature(previous) === completionPipelineStateSignature(next) ? previous : next;
+    });
+    refresh();
+    // fs.watch is the cheap change source; the 1s poll is the fallback when
+    // the log file can't be watched (e.g. it doesn't exist yet — watching a
+    // missing path throws). While the pipeline owns the prompt, gates flip
+    // quickly, so keep the poll running on top of the watcher to stay
+    // responsive even if watch events get dropped.
+    let watcher: FSWatcher | null = null;
+    try {
+      watcher = watch(resolveCompletionPipelineEventLogPath(), { persistent: false }, () => refresh());
+      // A watch error (e.g. the file is deleted mid-run) must not surface as
+      // an uncaught 'error' event; the poll/state gates above keep the UI
+      // consistent without it.
+      watcher.on("error", () => {});
+    } catch {
+      watcher = null;
+    }
+    const interval = watcher !== null && !completionPipelineActive ? null : setInterval(refresh, 1000);
+    return () => {
+      watcher?.close();
+      if (interval !== null) clearInterval(interval);
+    };
+  }, [completionPipelineActive]);
+  const completionPipelineRows = formatCompletionPipelineRows(completionPipelineState);
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
   const workbenchEnabled = fullscreen && isWorkbenchEnabled();
   const workbenchState = useAppState(getWorkbenchStateFromAppState);
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
-  // 50ms animation tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow
-  // owns the per-frame clock and reads these refs directly.
+  // 1s tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow owns that
+  // tick and reads these refs directly.
   const loadingStartTimeRef = useRef<number>(0);
   const totalPausedMsRef = useRef<number>(0);
   const pauseStartTimeRef = useRef<number | null>(null);
@@ -1645,6 +1706,41 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   useEffect(() => {
     transcriptMessagesRef.current = transcript.messages;
   }, [transcript.messages]);
+  // PromptInput must NOT receive the messages array itself: App hands a fresh
+  // array on every streaming flush, which would defeat the composer's
+  // React.memo and re-render it at token rate. Instead it gets a stable
+  // accessor (read inside handlers, never during render) plus primitive flags
+  // that only change when a message completes.
+  const getTranscriptMessages = useCallback(
+    () => transcriptMessagesRef.current as any[],
+    [],
+  );
+  const hasTranscriptMessages = transcript.messages.length > 0;
+  const lastAssistantMessageId = useMemo(() => {
+    for (let i = transcript.messages.length - 1; i >= 0; i -= 1) {
+      const msg = transcript.messages[i] as { type?: string; uuid?: string } | undefined;
+      if (msg?.type === "assistant") return msg.uuid ?? null;
+    }
+    return null;
+  }, [transcript.messages]);
+  // Real context-window usage for the workbench status strip. Recomputed only
+  // when a new assistant message lands (its usage block carries the token
+  // counts) or the model/permission mode changes — never per streaming delta.
+  // Derivation mirrors StatusLine so both surfaces show the same number.
+  const mainLoopModelSetting = useAppState(state => state.mainLoopModel);
+  const contextPctLabel = useMemo(() => {
+    const messages = transcriptMessagesRef.current as any[];
+    const usage = getCurrentUsage(messages);
+    if (!usage) return null;
+    const runtimeModel = getRuntimeMainLoopModel({
+      permissionMode: toolPermissionContext.mode,
+      mainLoopModel: mainLoopModelSetting as ModelName,
+      exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
+    });
+    const windowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+    const { used } = calculateContextPercentages(usage, windowSize);
+    return used === null ? null : `ctx ${used}%`;
+  }, [lastAssistantMessageId, mainLoopModelSetting, toolPermissionContext.mode]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback((next: string) => {
@@ -1747,6 +1843,88 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const effectiveInputBusy = isLoading || hasActiveLocalAgents || completionPipelineActive;
   const effectiveInputBusyRef = useRef(effectiveInputBusy);
   effectiveInputBusyRef.current = effectiveInputBusy;
+  // The message.stream RPC can outlive the turn itself (an error-terminated
+  // daemon turn does not always settle the stream call). pendingSubmission /
+  // activeModelSubmissionCount otherwise latch true and the "Working…"
+  // spinner runs forever with ESC cancelling nothing (the turn is already
+  // gone daemon-side). The transcript's own terminal signals (turn_complete /
+  // turn_aborted / error — all set isStreaming=false and clear the daemon
+  // activeTurn snapshot) are the honest end-of-turn marker. Latch on "a turn
+  // actually streamed" so the cleanup never fires in the pre-turn_started
+  // gap of a healthy submit (where the pending spinner is legitimate).
+  const streamedThisTurnRef = useRef(false);
+  if (transcript.isStreaming) streamedThisTurnRef.current = true;
+  useEffect(() => {
+    if (transcript.isStreaming || hasActiveSessionTurn) return;
+    if (!streamedThisTurnRef.current) return;
+    streamedThisTurnRef.current = false;
+    if (!pendingSubmission && activeModelSubmissionCount === 0) return;
+    setPendingSubmission(false);
+    setActiveModelSubmissionCount(0);
+  }, [transcript.isStreaming, hasActiveSessionTurn, pendingSubmission, activeModelSubmissionCount]);
+  // Daemon-silence watchdog: the SECOND stuck-spinner failure mode — a turn
+  // that dies emitting NO terminal event (no turn_complete, no error) leaves
+  // zero transcript activity, so neither the reducer nor the latch above can
+  // ever fire and "Working…" spins forever while ESC cancels a turn that's
+  // already gone. While a turn is supposedly active, any transcript activity
+  // (messages, streaming text/thinking, tool progress) resets the clock; a
+  // full silent window means the turn is dead — cancel best-effort, mark it
+  // interrupted locally so the transcript closes, and warn the user.
+  const lastDaemonActivityRef = useRef(Date.now());
+  useEffect(() => {
+    lastDaemonActivityRef.current = Date.now();
+  }, [transcript.messages, transcript.streamingText, transcript.streamingThinking, transcript.inProgressToolUseIDs]);
+  useEffect(() => {
+    if (!isLoading) return;
+    const interval = setInterval(() => {
+      // A turn parked on a permission request or elicitation prompt emits
+      // nothing — by design, not by death. Reset the clock there instead of
+      // firing, or the watchdog aborts a turn that is legitimately waiting
+      // for the user (observed: watchdog cancelled a pending TodoWrite
+      // approval at the 60s mark). Same rule while a tool call is in flight
+      // (e.g. wait_agent blocking on subagents) or background agents are
+      // running: the main transcript goes quiet while the agents work, but
+      // the turn is alive — only TRUE silence (nothing pending, nothing
+      // running) means dead.
+      if (
+        permissionRequests.length > 0 ||
+        elicitation.prompt !== null ||
+        transcript.inProgressToolUseIDs.size > 0 ||
+        hasActiveLocalAgents
+      ) {
+        lastDaemonActivityRef.current = Date.now();
+        return;
+      }
+      const silentMs = Date.now() - lastDaemonActivityRef.current;
+      if (silentMs < DAEMON_STALL_WATCHDOG_MS) {
+        return;
+      }
+      requestTuiSessionTurnCancel(props.session);
+      lastDaemonActivityRef.current = Date.now();
+      props.session.emit?.({
+        id: `daemon-stall-watchdog-${Date.now()}`,
+        msg: {
+          type: "turn_aborted",
+          payload: { reason: "daemon_stall_watchdog" },
+        },
+      });
+      // The turn_aborted emit only touches transcript state. If the spinner
+      // is held by the local latches (pendingSubmission / hung
+      // activeModelSubmissionCount — the no-events 403 flavor or a
+      // message.stream RPC that never settles), isLoading would stay true
+      // and this watchdog would re-fire every window forever. Reset the
+      // latches too: giving up must mean giving up on EVERY busy source.
+      setPendingSubmission(false);
+      setActiveModelSubmissionCount(0);
+      addNotification({
+        key: "daemon-stall-watchdog",
+        text: `No daemon activity for ${Math.round(silentMs / 1000)}s — the turn was marked interrupted. Resubmit, or run /login again if this was an auth failure.`,
+        priority: "immediate",
+        timeoutMs: 8000,
+      });
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [isLoading, props.session, addNotification, permissionRequests.length, elicitation.prompt, transcript.inProgressToolUseIDs, hasActiveLocalAgents]);
   const queuedCommands = useCommandQueue();
   const queueDrainActiveRef = useRef(false);
   const [, setQueueDrainTick] = useState(0);
@@ -1888,6 +2066,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
     const hasAttachments = Object.keys(activePastedContents).length > 0;
     if (text_0.length === 0 && !hasAttachments) return;
+    // A submitted prompt means "back to the conversation": if a center
+    // surface (preview/buffer/diff/etc.) is open, close it so the chat owns
+    // the center pane again. A dirty BUFFER blocks the switch through the
+    // normal approval overlay instead of being silently abandoned. The
+    // right-hand review rail (ctrl+r) intentionally stays open — reviewing
+    // while chatting is its whole point.
+    if (workbenchEnabled && workbenchState.activeSurfaceMode !== "transcript") {
+      setAppState(prev => applyWorkbenchCommand(prev, { type: "closeSurface" }));
+    }
     const parsedSlashCommand =
       text_0.startsWith("/") && text_0.length > 1
         ? parseSlashCommand(text_0)
@@ -2025,29 +2212,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         return;
       }
       try {
-        // Echo the slash-command input to the transcript so the user
-        // sees what they typed. Without this the dispatcher
-        // intercepts `/foo` silently and only the result overlay
-        // appears, leaving no audit trail of what the user invoked.
-        // We emit a user_message event directly (instead of routing
-        // through props.session.submit) because submit forwards to
-        // the model — which we explicitly do not want for a slash
-        // command.
-        try {
-          const internalId = typeof props.session.nextInternalSubId === "function" ? props.session.nextInternalSubId() : `slash-echo-${Date.now()}`;
-          props.session.emit?.({
-            id: internalId,
-            msg: {
-              type: "user_message",
-              payload: {
-                displayText: text_0,
-                message: text_0
-              }
-            }
-          });
-        } catch {
-          // best-effort echo; don't block dispatch on telemetry
-        }
+        // Slash commands are NOT echoed to the transcript (UX request): the
+        // command is chrome, not conversation — the result overlay speaks for
+        // itself, and a `/foo` user row in the chat is noise.
         // Build a renderResult helper used by both structured and
         // built-in dispatch paths. Returns true if the result was a
         // "prompt" that needs to be forwarded to the model so the
@@ -2237,7 +2404,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // waiting for a turn that will never start.
       setPendingSubmission(false);
     }
-  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession]);
+  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession, workbenchEnabled, workbenchState.activeSurfaceMode, setAppState]);
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
   // (turn_started) because the daemon sometimes skips that event and
@@ -2264,6 +2431,45 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setPendingSubmission(false);
     }
   }, [transcript.isStreaming, transcript.streamingText, assistantMessageCount]);
+  // Submit-ack watchdog: the complementary failure — a turn whose events
+  // NEVER reach the client (the 403 flavor where the request dies before any
+  // turn_started is broadcast, a wedged daemon, or a dropped event
+  // subscription). Every other spinner-clearing path keys on daemon signals;
+  // with zero signals, pendingSubmission would latch true forever, Esc could
+  // not clear it (the transcript never saw a turn to abort), and prompts
+  // queued behind a phantom busy state. A cold daemon bootstrap can take
+  // ~15s to acknowledge, so the window is 20s — past that, the turn never
+  // started: clear the flag and tell the user instead of spinning forever.
+  const pendingSubmissionSinceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingSubmission && pendingSubmissionSinceRef.current === null) {
+      pendingSubmissionSinceRef.current = Date.now();
+    }
+    if (!pendingSubmission) pendingSubmissionSinceRef.current = null;
+  }, [pendingSubmission]);
+  useEffect(() => {
+    if (!pendingSubmission) return;
+    const interval = setInterval(() => {
+      const since = pendingSubmissionSinceRef.current;
+      if (since === null || Date.now() - since < SUBMIT_ACK_WATCHDOG_MS) return;
+      pendingSubmissionSinceRef.current = null;
+      setPendingSubmission(false);
+      // Also drop the model-submission count: a submit whose message.stream
+      // RPC never settles (known on error-terminated turns) holds the count
+      // at 1 forever, keeping isLoading true even after pendingSubmission
+      // clears — the daemon-silence watchdog would then fire "Turn aborted"
+      // every 60s while every new prompt queues behind the phantom busy
+      // state. A give-up path must reset every flag that composes isLoading.
+      setActiveModelSubmissionCount(0);
+      addNotification({
+        key: "submit-ack-watchdog",
+        text: "No response from the daemon — the turn never started. Resubmit, or run /login again if this was an auth failure.",
+        priority: "immediate",
+        timeoutMs: 8000,
+      });
+    }, 1_000);
+    return () => clearInterval(interval);
+  }, [pendingSubmission, addNotification]);
   useInitialSubmit(props.session, submit, props.initialPrompt, props.initialUserMessages);
   // O-1 (onboarding-plan-2026-07): guaranteed first magic. When the first-run
   // wizard completes IN THIS SESSION and the user brought no prompt of their
@@ -2347,6 +2553,29 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       turnAbortController.abort("interrupted");
     }
     requestTuiSessionTurnCancel(props.session);
+    // Close the turn LOCALLY, right now: the daemon may have no live turn to
+    // cancel (the 403 error path already finished it without emitting any
+    // terminal event to this client, so isStreaming would otherwise latch
+    // true forever) or the cancel RPC may hang on an unresponsive daemon. ESC
+    // is the user's "stop" — the UI must honor it immediately. The daemon's
+    // own turn_aborted (healthy interrupt path) is deduped by the reducer
+    // (empty streaming buffer at that point → no duplicate message).
+    props.session.emit?.({
+      id: `local-esc-abort-${Date.now()}`,
+      msg: {
+        type: "turn_aborted",
+        payload: { reason: "interrupted" },
+      },
+    });
+    // ESC also clears the local pending latches directly: the no-events 403
+    // flavor never sets isStreaming, so the reducer's turn_aborted handling
+    // above changes nothing and pendingSubmission would otherwise hold the
+    // spinner until the submit-ack watchdog fires. On a healthy streaming
+    // turn both are already cleared (first activity clears them), so this is
+    // a no-op there.
+    pendingSubmissionSinceRef.current = null;
+    setPendingSubmission(false);
+    setActiveModelSubmissionCount(0);
   }, [turnAbortController, props.session]);
   const handleAgentsKilled = useCallback((agents: readonly KilledAgentSummary[]) => {
     const text = formatAgentsKilledNotification(agents);
@@ -2637,7 +2866,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           ? "responding"
           : "requesting";
   const cancelStreamMode = visibleCancelStreamMode(showSpinner, streamMode);
-  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} showLeaderTokenStats={false} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
+  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
@@ -2647,7 +2876,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       {toolJSX !== null ? <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
         </Box> : null}
-      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
+      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
         if (isExitSlashCommand(value_0)) {
           setInput("");
           helpers.clearBuffer();
@@ -2702,6 +2931,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // queued behind it so Enter/Escape never have two modal owners.
   const overlayContent = permissionRequests.length > 0 ? <>
       {workbenchEnabled ? <ApprovalSurfaceBridge request={permissionRequests[0]} /> : null}
+      {permissionRequests.length > 1 ? <Text color="warning" wrap="truncate">{`+${permissionRequests.length - 1} more pending approval${permissionRequests.length - 1 === 1 ? "" : "s"}`}</Text> : null}
       <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} />
     </> : elicitation.prompt !== null ? <ElicitationOverlay prompt={elicitation.prompt} /> : null;
 
@@ -2714,7 +2944,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     completionPipelineOwnsPrompt: completionPipelineActive,
     toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true
   });
-  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
+  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
     if (isLocalJSXCommandActive) {
       return;
     }
@@ -2756,7 +2986,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} canCancelActiveTurn={isLoading} />
-      {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} atWelcome={transcript.messages.length === 0 && !transcript.streamingText} activityMode={showSpinner ? streamMode : null} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
+      {workbenchEnabled ? <WorkbenchLayout transcript={scrollableContent} composer={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} pendingApproval={permissionRequests[0] ?? null} scrollRef={scrollRef} atWelcome={transcript.messages.length === 0 && !transcript.streamingText} activityMode={showSpinner ? streamMode : null} contextPctLabel={contextPctLabel} /> : <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />}
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onPreviewRewind={handlePreviewRewind} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}

@@ -354,7 +354,9 @@ describe("PromptInputFooterLeftSide rendering", () => {
       />,
     );
     expect(output).toContain("TEAM selected:true");
-    expect(output).toContain("esc to interrupt");
+    // The footer must NOT repeat "esc to interrupt" — the spinner byline owns
+    // that affordance (SpinnerAnimationRow). Revert-sensitive.
+    expect(output).not.toContain("esc to interrupt");
     expect(output).toContain("ctrl+t to show tasks");
 
     footerMock.appState.tasks = {

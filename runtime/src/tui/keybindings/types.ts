@@ -144,6 +144,7 @@ export const KEYBINDING_ACTION_NAMES = [
   'workbench:closeSurface',
   'workbench:openDiff',
   'workbench:openSearch',
+  'workbench:toggleFileRail',
   'explorer:up',
   'explorer:down',
   'explorer:pageUp',

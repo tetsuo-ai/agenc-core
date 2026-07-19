@@ -69,3 +69,22 @@ test('gpt-5.3-providercode-spark stays without effort controls', async () => {
   expect(modelSupportsEffort('gpt-5.3-providercode-spark')).toBe(false)
   expect(getAvailableEffortLevels('gpt-5.3-providercode-spark')).toEqual([])
 })
+
+test('grok reasoning models expose effort selection from the model catalog', async () => {
+  const { modelSupportsEffort, getAvailableEffortLevels } =
+    await importFreshEffortModule({
+      provider: 'agenc',
+    })
+
+  expect(modelSupportsEffort('grok-4.5')).toBe(true)
+  expect(modelSupportsEffort('grok-4.3')).toBe(true)
+  expect(getAvailableEffortLevels('grok-4.5')).toContain('high')
+})
+
+test('grok models without catalog reasoning levels do not expose effort', async () => {
+  const { modelSupportsEffort } = await importFreshEffortModule({
+    provider: 'agenc',
+  })
+
+  expect(modelSupportsEffort('grok-composer-2.5-fast')).toBe(false)
+})

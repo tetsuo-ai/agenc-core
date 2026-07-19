@@ -91,6 +91,11 @@ import {
   recordExitPlanModeApproval,
   type ExitPlanModeApproval,
 } from "../planning/exit-plan-approval.js";
+import {
+  dropAskUserQuestionResponse,
+  parseAskUserQuestionInput,
+  recordAskUserQuestionResponse,
+} from "../tools/ask-user-question/tool.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   ThreadNotFoundError,
@@ -1171,6 +1176,22 @@ export class AgenCDaemonAgentManager {
       const approval = toExitPlanModeApproval(params.exitPlan);
       recordExitPlanModeApproval(params.requestId, approval);
     }
+    // Same side-channel for AskUserQuestion: the TUI's picker records the
+    // user's answers client-side and ships the merged input with
+    // `tool.approve`; the daemon-side tool execution consumes it from THIS
+    // process's answeredInputs map via consumeAnsweredInput(__callId) —
+    // without recording here, the tool runs with "User did not provide
+    // answers." even though the user answered.
+    if (params.askUserQuestionInput !== undefined) {
+      const parsed = parseAskUserQuestionInput(params.askUserQuestionInput);
+      if (!parsed.ok) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "INVALID_ARGUMENT",
+          `tool.approve param 'askUserQuestionInput' is invalid: ${parsed.error}`,
+        );
+      }
+      recordAskUserQuestionResponse(params.requestId, parsed.input);
+    }
     // `tool.approve` is a preemptive daemon RPC. Apply the real session mode
     // inside this same request before releasing the currently-blocked tool so
     // a second tool in the same model turn cannot race ahead and prompt again.
@@ -1210,6 +1231,9 @@ export class AgenCDaemonAgentManager {
       // delete is the only production removal path).
       if (params.exitPlan !== undefined) {
         consumeExitPlanModeApproval({ __callId: params.requestId });
+      }
+      if (params.askUserQuestionInput !== undefined) {
+        dropAskUserQuestionResponse(params.requestId);
       }
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",

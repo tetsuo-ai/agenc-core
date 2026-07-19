@@ -13,6 +13,7 @@ import { createSignal } from './signal.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import { getTeamName } from './teammate.js'
 import { getTeammateContext } from './teammateContext.js'
+import { peekAmbientRuntimeSession } from '../session/current-session.js'
 
 // Listeners for task list updates (used for immediate UI refresh in same process)
 const tasksUpdated = createSignal()
@@ -194,7 +195,11 @@ export async function resetTaskList(taskListId: string): Promise<void> {
  * 2. In-process teammate: leader's team name (so teammates share the leader's task list)
  * 3. AGENC_TEAM_NAME - set when running as a process-based teammate
  * 4. Leader team name - set when the leader creates a team via TeamCreate
- * 5. Session ID - fallback for standalone sessions
+ * 5. Ambient runtime session's conversationId — inside a turn this is the
+ *    conversation the board belongs to (daemon mode: the daemon's random
+ *    per-process session UUID would never match the TUI client's, so the
+ *    conversation id is the shared key)
+ * 6. Session ID - fallback for standalone sessions
  */
 export function getTaskListId(): string {
   if (process.env.AGENC_TASK_LIST_ID) {
@@ -205,6 +210,10 @@ export function getTaskListId(): string {
   const teammateCtx = getTeammateContext()
   if (teammateCtx) {
     return teammateCtx.teamName
+  }
+  const ambientConversationId = peekAmbientRuntimeSession()?.conversationId
+  if (ambientConversationId) {
+    return ambientConversationId
   }
   return getTeamName() || leaderTeamName || getSessionId()
 }

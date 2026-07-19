@@ -38,7 +38,12 @@ export function classifyApprovalRisk(input: {
   if (commandLooksDestructive(input.command)) {
     return "destructive";
   }
-  if (/\b(delete|destroy|wipe|format|mainnet|settle|stake|transfer|slash|escrow)\b/u.test(haystack)) {
+  // "slash" is deliberately NOT a destructive keyword: it collides with the
+  // everyday "slash command" (the `/` command surface), so a TodoWrite about
+  // the slash-command registry was misclassified as a destructive Solana
+  // slash and forced a typed confirmation. Real slashing still escalates via
+  // settle/stake/escrow context and the command heuristics.
+  if (/\b(delete|destroy|wipe|format|mainnet|settle|stake|transfer|escrow)\b/u.test(haystack)) {
     return "destructive";
   }
   if (/\b(write|edit|patch|chmod|chown|mv|deploy|install|network|curl|wget)\b/u.test(haystack)) {

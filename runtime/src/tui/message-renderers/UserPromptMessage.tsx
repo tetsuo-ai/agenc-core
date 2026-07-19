@@ -86,14 +86,6 @@ export function UserPromptMessage({
   const displayText = useMemo(() => {
     return truncateUserPromptDisplayText(text);
   }, [text]);
-  // The transcript label line is a chat header, not a log line: render a short
-  // local time ("1:37 AM" / "Sunday, 4:15 PM") via the shared messaging-app
-  // formatter instead of leaking the raw ISO-8601 machine timestamp. The brief
-  // path already does this inside HighlightedThinkingText.
-  const displayTime = useMemo(
-    () => (timestamp ? formatBriefTimestamp(timestamp) : undefined),
-    [timestamp],
-  );
   const isSelected = useContext(MessageActionsSelectedContext);
   if (!text) {
     logError(new Error('No content found in user prompt message'));
@@ -106,6 +98,6 @@ export function UserPromptMessage({
   // a ragged right edge. Pinning the width makes every wrapped row pad/clip to
   // the same right edge and the highlight forms a clean rectangle.
   return <Box flexDirection="column" width="100%" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
-      {useBriefLayout ? <HighlightedThinkingText text={displayText} useBriefLayout timestamp={timestamp} /> : <Msg role="user" label="you" time={displayTime}><HighlightedThinkingText text={displayText} showPointer={false} /></Msg>}
+      {useBriefLayout ? <HighlightedThinkingText text={displayText} useBriefLayout timestamp={timestamp} /> : <Msg role="user"><HighlightedThinkingText text={displayText} showPointer={false} /></Msg>}
     </Box>;
 }

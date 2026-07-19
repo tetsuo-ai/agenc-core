@@ -1,5 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext';
@@ -8,7 +9,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text, useTerminalFocus } from '../ink.js';
 import type { Message } from '../../types/message';
 import { openBrowser, openPath } from '../../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
@@ -547,28 +548,76 @@ function trimMiddle(value: string, maxWidth: number): string {
   return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
 }
 
+const execFileAsync = promisify(execFile);
+
+/** Slow poll cadence for the git chrome probe — covers branch switches made
+ *  while the terminal keeps focus (the focus-in re-probe covers the rest). */
+const GIT_CHROME_REFRESH_MS = 30_000;
+
 let cachedGitChromeLabel: string | null = null;
 
-function getGitChromeLabel(): string {
-  if (cachedGitChromeLabel !== null) return cachedGitChromeLabel;
+async function probeGitChromeLabel(): Promise<string | null> {
   try {
-    const branch = execFileSync('git', ['branch', '--show-current'], {
+    const branch = (await execFileAsync('git', ['branch', '--show-current'], {
       cwd: process.cwd(),
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 1000,
-    }).trim() || 'detached';
-    const shortSha = execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], {
+    })).stdout.trim() || 'detached';
+    const shortSha = (await execFileAsync('git', ['rev-parse', '--short=7', 'HEAD'], {
       cwd: process.cwd(),
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 1000,
-    }).trim();
-    cachedGitChromeLabel = `${branch} · ${shortSha}`;
+    })).stdout.trim();
+    return `${branch} · ${shortSha}`;
   } catch {
-    cachedGitChromeLabel = 'no git';
+    return 'no git';
   }
-  return cachedGitChromeLabel;
+}
+
+/** Git label for the bottom chrome. The probe runs async (two short `git`
+ *  subprocesses) so it never blocks the first paint; it re-runs on terminal
+ *  focus changes and on a slow interval so a mid-session branch switch
+ *  surfaces. Until the first probe resolves, the git segment stays hidden —
+ *  better a missing segment than a fabricated one. */
+function useGitChromeLabel(): string | null {
+  const terminalFocused = useTerminalFocus();
+  const [label, setLabel] = useState<string | null>(() => cachedGitChromeLabel);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      void probeGitChromeLabel().then(next => {
+        if (cancelled || next === null) return;
+        cachedGitChromeLabel = next;
+        setLabel(prev => (prev === next ? prev : next));
+      }, () => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, GIT_CHROME_REFRESH_MS);
+    interval.unref?.();
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [terminalFocused]);
+  return label;
+}
+
+/** Slow tick that keeps the session spend label fresh: getTotalCost() is a
+ *  plain non-reactive getter over the cost sidecar, so the chrome polls it on
+ *  a slow cadence instead of re-rendering per API response. */
+const SPEND_REFRESH_MS = 5_000;
+
+function useSessionSpendLabel(): string {
+  const [spend, setSpend] = useState(() => formatUsdCost(getTotalCost()));
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const next = formatUsdCost(getTotalCost());
+      setSpend(prev => (prev === next ? prev : next));
+    }, SPEND_REFRESH_MS);
+    interval.unref?.();
+    return () => clearInterval(interval);
+  }, []);
+  return spend;
 }
 
 function DesignBottomLeftLabel({
@@ -576,24 +625,20 @@ function DesignBottomLeftLabel({
   mode,
   modelLabel,
 }: {
-  readonly gitLabel: string;
+  readonly gitLabel: string | null;
   readonly mode: PermissionMode;
   readonly modelLabel: string;
 }): React.ReactNode {
   const modeLabel = permissionModeFooterChrome(mode).label;
-  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel} · {modelLabel} · {gitLabel}</ThemedText>;
+  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel} · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>;
 }
 
 function DesignBottomRightLabel({
-  contextPct,
   spend,
-  stake,
 }: {
-  readonly contextPct: string;
   readonly spend: string;
-  readonly stake: string;
 }): React.ReactNode {
-  return <><ThemedText color="text2" wrap="truncate-end">ctx {contextPct}</ThemedText><ThemedText color="muted3"> · </ThemedText><ThemedText color="text2" wrap="truncate-end">spend {spend}</ThemedText><ThemedText color="muted3"> · ◆ {stake}</ThemedText></>;
+  return <ThemedText color="text2" wrap="truncate-end">spend {spend}</ThemedText>;
 }
 
 function DesignPlanModeBanner(): React.ReactNode {
@@ -626,16 +671,16 @@ export function formatDesignBottomChromeLabels(
   columns: number,
   modelLabel: string,
   mode: PermissionMode,
-  gitLabel = getGitChromeLabel(),
-  contextPct = '0%',
-  spend = formatUsdCost(getTotalCost()),
-  stake = '12.4K',
+  gitLabel: string | null,
+  spend: string,
 ): { readonly left: string; readonly right: string } {
   const modeLabel = permissionModeFooterChrome(mode).label;
-  const trimmedGitLabel = trimMiddle(gitLabel, columns >= 100 ? 32 : 18);
+  const trimmedGitLabel = gitLabel === null
+    ? null
+    : trimMiddle(gitLabel, columns >= 100 ? 32 : 18);
   return {
-    left: `● ${modeLabel} · ${modelLabel} · ${trimmedGitLabel}`,
-    right: `ctx ${contextPct} · spend ${spend} · ◆ ${stake}`,
+    left: `● ${modeLabel} · ${modelLabel}${trimmedGitLabel === null ? '' : ` · ${trimmedGitLabel}`}`,
+    right: `spend ${spend}`,
   };
 }
 
@@ -643,15 +688,21 @@ function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
   const model = useAppStateMaybeOutsideOfProvider(state => state.mainLoopModel) ?? 'agenc';
   const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
   const modelLabel = modelDisplayString(model);
-  const contextPct = '0%';
-  const spend = formatUsdCost(getTotalCost());
-  const stake = '12.4K';
-  const { right } = formatDesignBottomChromeLabels(columns, modelLabel, mode, getGitChromeLabel(), contextPct, spend, stake);
-  const gitLabel = trimMiddle(getGitChromeLabel(), columns >= 100 ? 32 : 18);
+  // Only segments with a real data source may render here. There is no live
+  // context-% or stake feed at this point in the tree (the transcript's
+  // per-message usage never reaches the layout), so those segments stay
+  // hidden rather than showing fabricated values.
+  const spend = useSessionSpendLabel();
+  const gitLabel = useGitChromeLabel();
+  const { right } = formatDesignBottomChromeLabels(columns, modelLabel, mode, gitLabel, spend);
+  const trimmedGitLabel = gitLabel === null ? null : trimMiddle(gitLabel, columns >= 100 ? 32 : 18);
   return <V2StatusBar variant={mode === 'plan' ? 'plan' : mode === 'bypassPermissions' ? 'error' : mode === 'auto' ? 'success' : mode === 'acceptEdits' ? 'accent' : 'neutral'} left={[
-      <DesignBottomLeftLabel key="left" gitLabel={gitLabel} mode={mode} modelLabel={modelLabel} />,
+      <DesignBottomLeftLabel key="left" gitLabel={trimmedGitLabel} mode={mode} modelLabel={modelLabel} />,
     ]} right={[
-      columns >= 54 ? <DesignBottomRightLabel key="right" contextPct={contextPct} spend={spend} stake={stake} /> : <StatusSegment key="right-compact" label="" value={right} color="muted3" />,
+      // The honest right cluster is a single short segment (real spend), so
+      // the <54-col compact branch can reuse the same string — it is already
+      // compact now that the fabricated ctx/stake segments are gone.
+      columns >= 54 ? <DesignBottomRightLabel key="right" spend={spend} /> : <StatusSegment key="right-compact" label="" value={right} color="muted3" />,
     ]} />;
 }
 

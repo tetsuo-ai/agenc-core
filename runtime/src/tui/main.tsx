@@ -15,6 +15,7 @@ import type {
 import type { Event } from "../session/event-log.js";
 import { FpsTracker } from "../utils/fpsTracker.js";
 import { recordTuiBackpressure } from "./backpressure.js";
+import { setIsInteractive } from "../bootstrap/state.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
@@ -191,6 +192,11 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   let instance: Awaited<ReturnType<typeof renderInk>>;
   const fpsTracker = new FpsTracker();
   try {
+    // Mark the session interactive for every feature gated on it
+    // (isTodoV2Enabled → the todo board): without this, bootstrap state
+    // keeps its `isInteractive: false` default forever and the TodoV2 task
+    // list silently never renders in the real TUI.
+    setIsInteractive(stdin.isTTY === true);
     instance = await renderInk(
       <AgenCTuiApp
         session={options.session}

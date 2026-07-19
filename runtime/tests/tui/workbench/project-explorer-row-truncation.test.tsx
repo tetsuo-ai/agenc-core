@@ -41,6 +41,7 @@ vi.mock("../../../src/tui/hooks/useTerminalSize.js", () => ({
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: () => {},
   useKeybinding: () => {},
   useKeybindings: () => {},
 }));

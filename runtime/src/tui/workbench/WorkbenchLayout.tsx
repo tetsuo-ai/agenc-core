@@ -3,6 +3,15 @@ import React, { useMemo, type RefObject } from "react";
 import { Box, NoSelect, Text } from "../ink.js";
 import { ModalContext } from "../context/modalContext.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
+import { useAppState, useAppStateMaybeOutsideOfProvider } from "../state/AppState.js";
+import type { AppState } from "../state/AppStateStore.js";
+import {
+  getDefaultMainLoopModelSetting,
+  parseUserSpecifiedModel,
+  renderModelName,
+} from "../../utils/model/model.js";
+import { permissionModeShortTitle } from "../../permissions/mode-display.js";
+import type { PermissionMode } from "../../permissions/types.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
@@ -11,6 +20,8 @@ import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/Pro
 import type { PendingRequest } from "../permission-requests.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
+import { PreviewSurface } from "./surfaces/PreviewSurface.js";
+import { isDangerousPermissionMode } from "./WorkbenchContextStrip.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
 import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
@@ -39,7 +50,59 @@ type Props = {
    * always-visible "working" indicator in the status bar.
    */
   readonly activityMode?: SpinnerMode | null;
+  /**
+   * Real context-window usage label (e.g. "ctx 42%") computed by the caller
+   * from the last assistant usage block; null when no usage data exists yet.
+   * Rendered in the status bar next to the model/mode/cwd strip.
+   */
+  readonly contextPctLabel?: string | null;
 };
+
+function selectComposerMode(state: AppState): PermissionMode {
+  return state.toolPermissionContext.mode;
+}
+
+function selectComposerModel(state: AppState): string {
+  return (
+    state.mainLoopModelForSession ??
+    state.mainLoopModel ??
+    getDefaultMainLoopModelSetting()
+  );
+}
+
+/**
+ * Always-visible composer context row: `mode · model · ctx%` directly above
+ * the composer box — where the eyes already are while typing. The top status
+ * bar carries the same facts, but the composer is the point of input: the
+ * permission mode is safety-relevant (dangerous modes in warning color, plan
+ * mode in teal) and the ctx label is the real context-window usage computed
+ * by the caller (null until the first assistant usage block lands — never a
+ * fabricated number).
+ */
+function ComposerContextRow({
+  contextPctLabel,
+}: {
+  readonly contextPctLabel: string | null;
+}): React.ReactElement {
+  const mode =
+    useAppStateMaybeOutsideOfProvider(selectComposerMode) ?? "default";
+  const modelSetting =
+    useAppStateMaybeOutsideOfProvider(selectComposerModel) ??
+    getDefaultMainLoopModelSetting();
+  const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
+  const modeLabel = permissionModeShortTitle(mode).toLowerCase();
+  const dangerous = isDangerousPermissionMode(mode);
+  return (
+    <Box flexDirection="row" paddingX={1} height={1} overflowY="hidden">
+      <Text color={mode === "plan" ? "planMode" : dangerous ? "warning" : "inactive"}>
+        {modeLabel}
+      </Text>
+      <Text color="inactive" wrap="truncate-end">
+        {` · ${modelLabel}${contextPctLabel !== null ? ` · ${contextPctLabel}` : ""}`}
+      </Text>
+    </Box>
+  );
+}
 
 export function WorkbenchLayout({
   transcript,
@@ -51,6 +114,7 @@ export function WorkbenchLayout({
   scrollRef,
   atWelcome,
   activityMode = null,
+  contextPctLabel = null,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -61,15 +125,37 @@ export function WorkbenchLayout({
   const explorerWidth = layoutSize === "wide" ? 30 : 26;
   const agentsWidth = 30;
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
-  const showAgents = workbench.agentsVisible && layoutSize === "wide";
+  // The Agents rail auto-hides only while the REVIEW rail is open and there
+  // are no agent tasks to show: an empty "No background agents" column next
+  // to a file under review is dead space the file can use. Without a review
+  // rail open, the Agents rail keeps its always-on contract in wide layouts.
+  const hasAgentTasks = useAppState((s) =>
+    Object.values(s.tasks ?? {}).some((task: any) => task.type !== "local_bash"),
+  );
+  const showAgents = workbench.agentsVisible && layoutSize === "wide" &&
+    (hasAgentTasks || workbench.fileRailPath === null);
+  // The review rail (ctrl+r) lives only at wide widths — below that the chat
+  // would be squeezed to nothing, and the preview surface is the better fit.
+  const showRail = workbench.fileRailPath !== null && layoutSize === "wide";
+  // Review rail width: share the space fairly with the chat instead of a
+  // fixed narrow strip. 45% of the terminal, clamped below by the original
+  // 44-col rail and above so the chat always keeps a workable ~46 columns
+  // (and the rail never gets absurd on ultrawide).
+  const railWidth = showRail
+    ? Math.min(
+        88,
+        Math.max(44, Math.floor(columns * 0.45)),
+        columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - 46,
+      )
+    : 44;
   const surfaceWidth = Math.max(
     1,
-    columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0),
+    columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - (showRail ? railWidth : 0),
   );
   const surfaceContentWidth = Math.max(1, surfaceWidth - 2);
   const visiblePanes = useMemo(
-    () => visiblePaneList(showExplorer, showAgents),
-    [showExplorer, showAgents],
+    () => visiblePaneList(showExplorer, showAgents, showRail),
+    [showExplorer, showAgents, showRail],
   );
 
   useRegisterKeybindingContext("Workbench", !editorOwnsKeys);
@@ -84,13 +170,32 @@ export function WorkbenchLayout({
       "workbench:focusNext": () => dispatch({ type: "focusNext", visiblePanes }),
       "workbench:openDiff": () => dispatch({ type: "openDiff", focus: true }),
       "workbench:openSearch": () => dispatch({ type: "openSearch" }),
+      // ctrl+r — move the open file into the right-hand review rail (or close
+      // it): the chat keeps the center pane so the user can chat, code, and
+      // review the file at the same time.
+      "workbench:toggleFileRail": () => {
+        if (workbench.fileRailPath !== null) {
+          dispatch({ type: "toggleFileRail" });
+          return;
+        }
+        const path = workbench.activeFilePath;
+        if (path === null) return;
+        dispatch({ type: "toggleFileRail", path });
+        if (workbench.activeSurfaceMode === "buffer" || workbench.activeSurfaceMode === "preview") {
+          dispatch({ type: "closeSurface" });
+        }
+        // closeSurface moves focus to the transcript surface; the user just
+        // asked to keep CHATTING beside the rail, so hand the keyboard back
+        // to the composer or they can't type.
+        dispatch({ type: "focus", pane: "composer" });
+      },
     },
     { context: "Workbench", isActive: !editorOwnsKeys },
   );
 
   return (
     <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
-      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={columns} /> : null}
+      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={columns} contextPctLabel={contextPctLabel} /> : null}
       {/* On the cold-start welcome the surface row sizes to its content so the
           composer sits directly under the welcome panel instead of pinned to
           the bottom of a tall terminal with a dead gulf between them; the
@@ -105,6 +210,11 @@ export function WorkbenchLayout({
         <ContentWidthProvider width={surfaceContentWidth}>
           <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
         </ContentWidthProvider>
+        {showRail ? (
+          <NoSelect flexShrink={0} width={railWidth} height="100%">
+            <PreviewSurface focused={focusedPane === "rail"} pathOverride={workbench.fileRailPath} />
+          </NoSelect>
+        ) : null}
         {showAgents ? (
           <NoSelect flexShrink={0} width={agentsWidth} height="100%">
             <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} />
@@ -117,6 +227,7 @@ export function WorkbenchLayout({
         </Box>
       ) : null}
       <Box flexDirection="column" flexShrink={0} borderTop borderColor={focusedPane === "composer" ? "suggestion" : "gray"}>
+        <ComposerContextRow contextPctLabel={contextPctLabel} />
         <PromptSuggestionsOverlay />
         <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
           {composer}
@@ -167,10 +278,11 @@ export function layoutSizeForColumns(columns: number): WorkbenchLayoutSize {
   return "narrow";
 }
 
-function visiblePaneList(showExplorer: boolean, showAgents: boolean): readonly WorkbenchPane[] {
+function visiblePaneList(showExplorer: boolean, showAgents: boolean, showRail: boolean): readonly WorkbenchPane[] {
   return [
     ...(showExplorer ? ["explorer" as const] : []),
     "surface" as const,
+    ...(showRail ? ["rail" as const] : []),
     ...(showAgents ? ["agents" as const] : []),
     "composer" as const,
   ];

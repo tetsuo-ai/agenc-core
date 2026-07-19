@@ -17,6 +17,7 @@ import {
 
 const MINIMAL_TUI_NAMES = [
   "help",
+  "hello",
   "status",
   "login",
   "logout",
@@ -60,6 +61,7 @@ const MINIMAL_TUI_NAMES = [
 
 const DAEMON_TUI_NAMES = [
   "help",
+  "hello",
   "status",
   "login",
   "logout",
@@ -222,6 +224,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
 
     expect(remoteNames).toEqual([
       "help",
+      "hello",
       "status",
       "model",
       "provider",

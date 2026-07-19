@@ -16,6 +16,16 @@ import { WelcomeColdPanel } from '../../../../src/tui/components/v2/primitives.j
 
 const CARD_BORDER = /^[┌└][─]+[┐┘]$/u
 
+// Explicit fixture sessions for the two-card tests: production no longer
+// fabricates default recent sessions (honest-chrome rule), so the "recent"
+// card renders only when real session data is passed — tests that exercise
+// the summary+recent shared-width contract must supply it themselves.
+const RECENT_SESSIONS = [
+  { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
+  { keyName: '2', title: 'runtime coverage', detail: '1h ago · dev · dirty' },
+  { keyName: '3', title: 'agent catalog', detail: '3h ago · main · clean' },
+] as const
+
 function cardWidths(output: string): readonly number[] {
   return output
     .split(/\r?\n/u)
@@ -28,7 +38,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
   it('renders both cards at the SAME width', async () => {
     const output = await renderToString(
       <ContentWidthProvider width={92}>
-        <WelcomeColdPanel />
+        <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
       </ContentWidthProvider>,
       { columns: 120, rows: 40 },
     )
@@ -42,7 +52,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
   it('grows the cards with the pane up to the tasteful cap on a wide pane', async () => {
     const output = await renderToString(
       <ContentWidthProvider width={92}>
-        <WelcomeColdPanel />
+        <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
       </ContentWidthProvider>,
       { columns: 120, rows: 40 },
     )
@@ -58,7 +68,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
   it('uses the available pane width when it is below the cap', async () => {
     const output = await renderToString(
       <ContentWidthProvider width={50}>
-        <WelcomeColdPanel />
+        <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
       </ContentWidthProvider>,
       { columns: 80, rows: 40 },
     )
@@ -75,7 +85,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
     const paneWidth = 40
     const output = await renderToString(
       <ContentWidthProvider width={paneWidth}>
-        <WelcomeColdPanel />
+        <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
       </ContentWidthProvider>,
       { columns: 80, rows: 40 },
     )
@@ -88,7 +98,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
   })
 
   it('falls back to a capped width when no content-width provider is present', async () => {
-    const output = await renderToString(<WelcomeColdPanel />, {
+    const output = await renderToString(<WelcomeColdPanel recentSessions={RECENT_SESSIONS} />, {
       columns: 120,
       rows: 40,
     })
@@ -116,7 +126,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
 
   it('styles the summary-card labels in the readable label tone, not the dim border tone', async () => {
     const out = await renderToAnsiString(
-      <WelcomeColdPanel model="qwen3.6-27b-fp8" />,
+      <WelcomeColdPanel model="qwen3.6-27b-fp8" lastSession="2h ago" />,
       { columns: 80, rows: 40, color: true },
     )
 

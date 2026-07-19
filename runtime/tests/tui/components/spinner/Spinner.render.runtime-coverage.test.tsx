@@ -387,8 +387,9 @@ describe("Spinner rendering", () => {
     expect(output).toContain("Editing");
     expect(output).toContain("tokens:2500");
     expect(output).toContain("suffix:tail");
-    expect(output).toContain("Target: 5.0k / 10.0k (50%)");
-    expect(output).toContain("Next: write tests");
+    // Auto-show: open tasks surface the todo board and win over budget/next.
+    expect(output).toContain("TASKS:4");
+    expect(output).not.toContain("Next: write tests");
     expect(output).not.toContain("Tip: keep coverage moving");
   });
 

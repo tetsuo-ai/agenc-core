@@ -205,7 +205,7 @@ describe("PlanApprovalOverlay (contract #6)", () => {
         render(root);
         await sleep();
         // A lone ESC byte is buffered as an incomplete escape sequence and only
-        // flushed after the parser's NORMAL_TIMEOUT (50ms). Wait past it.
+        // flushed after the parser's NORMAL_TIMEOUT (25ms). Wait past it.
         stdin.write("\x1B");
         await sleep(120);
         expect(keeps).toEqual([1, 1]);

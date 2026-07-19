@@ -301,6 +301,7 @@ async function buildMistypedPathHint(
 const BRIDGE_SAFE: ReadonlySet<string> = new Set([
   "status",
   "help",
+  "hello",
   "model",
   "provider",
   "clear",
@@ -314,8 +315,9 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
  */
 // Kept alongside BRIDGE_SAFE to document the contract. Do not export as
 // a negation — checks MUST go through `isBridgeSafeCommand`.
-// (status / help / model / provider / clear / diff) are safe; everything
-// else in the minimal surface requires user confirmation at the bridge.
+// (status / help / hello / model / provider / clear / diff) are safe;
+// everything else in the minimal surface requires user confirmation at
+// the bridge.
 
 export function isBridgeSafeCommand(name: string): boolean {
   return BRIDGE_SAFE.has(name);

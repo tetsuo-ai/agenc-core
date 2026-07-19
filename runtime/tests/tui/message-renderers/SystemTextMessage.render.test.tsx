@@ -382,3 +382,54 @@ describe('SystemTextMessage rendering', () => {
     ).resolves.toBe('\n')
   })
 })
+
+describe('error clamping in the live view', () => {
+  const longError = [
+    'model not found: grok-4.5-fast',
+    'the provider rejected the model id',
+    'run /model to pick another one, or check your plan',
+    'extra diagnostic line that is noise for the user',
+  ].join('\n')
+
+  test('clamps multi-line errors to the first two lines plus an expand hint', async () => {
+    const output = await renderSystemMessage(
+      { subtype: 'informational', level: 'error', content: longError },
+      { verbose: false },
+    )
+
+    expect(output).toContain('model not found: grok-4.5-fast')
+    expect(output).toContain('the provider rejected the model id')
+    expect(output).not.toContain('run /model to pick another one')
+    expect(output).not.toContain('extra diagnostic line')
+    expect(output).toContain('ctrl+o')
+  })
+
+  test('clamps very long single-line errors with an ellipsis', async () => {
+    const output = await renderSystemMessage(
+      { subtype: 'informational', level: 'error', content: `x${'y'.repeat(500)}` },
+      { verbose: false },
+    )
+
+    expect(output).toContain('…')
+    expect(output.length).toBeLessThan(500)
+  })
+
+  test('verbose mode keeps the full error text', async () => {
+    const output = await renderSystemMessage(
+      { subtype: 'informational', level: 'error', content: longError },
+      { verbose: true },
+    )
+
+    expect(output).toContain('run /model to pick another one')
+    expect(output).toContain('extra diagnostic line')
+  })
+
+  test('warnings are not clamped', async () => {
+    const output = await renderSystemMessage(
+      { subtype: 'informational', level: 'warning', content: longError },
+      { verbose: false },
+    )
+
+    expect(output).toContain('extra diagnostic line')
+  })
+})

@@ -235,6 +235,7 @@ describe("isBridgeSafeCommand", () => {
     for (const name of [
       "status",
       "help",
+      "hello",
       "model",
       "provider",
       "clear",

@@ -28,6 +28,7 @@ export function getDefaultWorkbenchState(): WorkbenchState {
     composerAttachmentIds: [],
     attachments: [],
     pendingBlockedOverlay: null,
+    fileRailPath: null,
   };
 }
 
@@ -165,12 +166,20 @@ export function workbenchReducer(
         ...state,
         pendingBlockedOverlay: null,
       };
+    case "toggleFileRail":
+      // Toggling the rail never changes the center surface or steals focus:
+      // the transcript/chat stays put, the rail opens beside it.
+      if (command.path === undefined) {
+        return { ...state, fileRailPath: null };
+      }
+      return { ...state, fileRailPath: command.path };
   }
 }
 
 export function visibleWorkbenchPane(state: WorkbenchState): WorkbenchPane {
   if (state.focusedPane === "explorer" && !state.explorerVisible) return "surface";
   if (state.focusedPane === "agents" && !state.agentsVisible) return "surface";
+  if (state.focusedPane === "rail" && state.fileRailPath === null) return "surface";
   return state.focusedPane;
 }
 

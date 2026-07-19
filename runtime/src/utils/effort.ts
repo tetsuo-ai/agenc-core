@@ -9,6 +9,7 @@ import {
 } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { supportsProviderCodeReasoningEffort } from '../services/api/providerConfig.js'
+import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
@@ -40,6 +41,16 @@ export function modelSupportsEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
+  }
+  // Grok reasoning models: the model catalog is the source of truth — grok
+  // 4.3/4.5 declare supportedReasoningLevels (low/medium/high) accepted via
+  // the xAI reasoning_effort parameter. Entries without levels (e.g.
+  // grok-composer) correctly return false.
+  if (m.startsWith('grok-')) {
+    const grokEntry = resolveRegisteredModelCatalogEntry({ provider: 'grok', model })
+    if (grokEntry !== undefined) {
+      return grokEntry.supportedReasoningLevels.length > 0
+    }
   }
   if (modelUsesOpenAIEffort(model) && supportsProviderCodeReasoningEffort(model)) {
     return true

@@ -667,6 +667,9 @@ describe("AgenC TUI daemon session adapter", () => {
       {
         method: "session.cancelTurn",
         params: { sessionId: "session_1", reason: "interrupted" },
+        // The cancel RPC carries a 5s timeout signal so a wedged daemon can
+        // never swallow an ESC silently.
+        signal: expect.any(AbortSignal),
       },
     ]);
   });
@@ -683,7 +686,11 @@ describe("AgenC TUI daemon session adapter", () => {
     await session.cancelActiveTurn?.();
 
     expect(client.requests).toEqual([
-      { method: "session.cancelTurn", params: { sessionId: "session_1" } },
+      {
+        method: "session.cancelTurn",
+        params: { sessionId: "session_1" },
+        signal: expect.any(AbortSignal),
+      },
     ]);
   });
 

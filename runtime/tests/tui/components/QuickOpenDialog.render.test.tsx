@@ -405,7 +405,7 @@ describe('QuickOpenDialog render and interactions', () => {
       expect(harness.readFileInRange).toHaveBeenCalledWith(
         '/workspace/project/src/alpha.ts',
         0,
-        20,
+        12,
         undefined,
         expect.any(AbortSignal),
       )

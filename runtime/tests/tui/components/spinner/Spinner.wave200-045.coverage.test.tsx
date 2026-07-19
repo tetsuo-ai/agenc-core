@@ -315,7 +315,9 @@ describe('Spinner wave 200 coverage', () => {
       expect(output).toContain('|processing|thinking=2525|')
       expect(output).toContain('teammateTokens=777')
       expect(compactOutput).toContain('hasRunningTeammates=true')
-      expect(output).toContain('Target: 2.5k / 4.0k (63%)')
+      // Auto-show: the open task surfaces the todo board, winning over the
+      // budget text line that used to render in its place.
+      expect(output).toContain('TaskList:Active task')
       expect(harness.activity.endCLIActivity).toHaveBeenCalledWith('spinner-thinking')
       expect(harness.activity.startCLIActivity).toHaveBeenCalledWith('spinner-processing')
     } finally {

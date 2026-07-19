@@ -78,6 +78,11 @@ screens, and hooks imported by live runtime paths.
 through `ContextUsageModal` when the TUI bridge is available; headless
 dispatch keeps the text fallback.
 
+`/hello` (registered in `commands/hello.ts`) is an immediate utility slash
+command that appends a framed greeting card to the transcript with the current
+model and workspace. It is available on the default and daemon-TUI registries
+and is treated as remote/bridge-safe.
+
 `BackgroundTasksPanel` (`components/tasks/BackgroundTasksPanel.tsx`) stays
 bound to app-state `tasks`; only its visual layer uses the v2 panel chrome.
 Stop actions still route through the existing task helpers and optional

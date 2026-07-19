@@ -2271,7 +2271,7 @@ function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   const validated = validateObjectShape(params, {
     methodName: "tool.approve",
     stringFields: ["sessionId", "requestId", "scope"],
-    objectFields: ["exitPlan"],
+    objectFields: ["exitPlan", "askUserQuestionInput"],
     valueFields: ["allowAllToolsForSession"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");

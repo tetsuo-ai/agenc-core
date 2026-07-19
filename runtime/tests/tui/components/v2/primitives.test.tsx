@@ -95,7 +95,17 @@ describe('v2 primitives', () => {
   })
 
   it('renders the AURA cold-start welcome without chain hero state', async () => {
-    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
+    const output = await renderToString(
+      <WelcomeColdPanel
+        lastSession="12m ago · clean handoff"
+        recentSessions={[
+          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
+          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
+          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
+        ]}
+      />,
+      { columns: 120, rows: 24 },
+    )
 
     expect(output).toContain('agenc.')
     expect(output).toContain('a netrunner with hands on every file')
@@ -111,8 +121,32 @@ describe('v2 primitives', () => {
     expect(output).not.toContain('/claim')
   })
 
-  it('tells a new user how to start and that recent sessions resume', async () => {
+  it('fabricates no session data when the caller has none', async () => {
+    // The production caller (Messages.tsx) only passes `model` — with no real
+    // recent-session feed the card and the last-session row must not render.
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
+
+    expect(output).toContain('agenc.')
+    expect(output).toContain('workspace')
+    expect(output).toContain('model')
+    expect(output).not.toContain('last session')
+    expect(output).not.toContain('recent')
+    expect(output).not.toContain('to resume')
+    expect(output).not.toContain('swap-program')
+    expect(output).not.toContain('12m ago')
+  })
+
+  it('tells a new user how to start and that recent sessions resume', async () => {
+    const output = await renderToString(
+      <WelcomeColdPanel
+        recentSessions={[
+          { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
+          { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
+          { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
+        ]}
+      />,
+      { columns: 120, rows: 24 },
+    )
 
     // First-action guidance so the cold-start screen says HOW to begin.
     expect(output).toContain('type a task and press')
@@ -141,7 +175,7 @@ describe('v2 primitives', () => {
       { columns: 120, rows: 24 },
     )
 
-    expect(output).toContain('no resumable sessions')
+    expect(output).not.toContain('recent')
     expect(output).not.toContain('to resume')
     // Guidance still helps a brand-new user with no history.
     expect(output).toContain('type a task and press')
@@ -254,8 +288,8 @@ describe('Tool call header paren spacing', () => {
   })
 })
 
-describe('Msg role-marker glyph spacing', () => {
-  it('renders a SINGLE space between the marker glyph and the role label (no layout seam)', async () => {
+describe('Msg role gutter', () => {
+  it('renders a full-height left gutter (no single-row ▮ marker)', async () => {
     const output = await renderToString(
       <Msg role="agenc" label="agenc">
         <Text>body</Text>
@@ -263,14 +297,15 @@ describe('Msg role-marker glyph spacing', () => {
       { columns: 100, rows: 12 },
     )
 
-    // The marker glyph is followed by exactly one space, then the label —
-    // a double space read as an empty layout gap (#16). Revert-sensitive:
-    // restoring gap={2} re-introduces the '▮  AGENC' double space.
-    expect(output).toContain('▮ AGENC')
-    expect(output).not.toContain('▮  AGENC')
+    // The role identity is a left border spanning the WHOLE message (header
+    // AND body rows), blockquote-style, with exactly one padding space before
+    // the label. Revert-sensitive: restoring the ▮ marker fails all three.
+    expect(output).toContain('│ AGENC')
+    expect(output).toContain('│ body')
+    expect(output).not.toContain('▮')
   })
 
-  it('keeps the single-space marker for the system role (∙)', async () => {
+  it('renders the system role with the same gutter treatment', async () => {
     const output = await renderToString(
       <Msg role="system" label="system">
         <Text>body</Text>
@@ -278,7 +313,7 @@ describe('Msg role-marker glyph spacing', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('∙ SYSTEM')
-    expect(output).not.toContain('∙  SYSTEM')
+    expect(output).toContain('│ SYSTEM')
+    expect(output).not.toContain('∙ SYSTEM')
   })
 })

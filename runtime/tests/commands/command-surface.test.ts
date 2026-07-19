@@ -27,6 +27,7 @@ import type { SlashCommandContext } from "./types.js";
 
 const MINIMAL_NAMES = [
   "help",
+  "hello",
   "status",
   "login",
   "logout",
@@ -159,6 +160,7 @@ describe("AgenC command surface compatibility", () => {
 
     expect(filterCommandsForRemoteMode(commands).map((command) => command.name)).toEqual([
       "help",
+      "hello",
       "status",
       "model",
       "provider",
@@ -166,6 +168,7 @@ describe("AgenC command surface compatibility", () => {
       "exit",
     ]);
     expect(REMOTE_SAFE_COMMANDS.has(byName.get("help")!)).toBe(true);
+    expect(REMOTE_SAFE_COMMANDS.has(byName.get("hello")!)).toBe(true);
     expect(REMOTE_SAFE_COMMANDS.has(byName.get("permissions")!)).toBe(false);
     expect(BRIDGE_SAFE_COMMANDS.has(byName.get("diff")!)).toBe(true);
     expect(isBridgeSafeCommand(byName.get("diff")!)).toBe(true);

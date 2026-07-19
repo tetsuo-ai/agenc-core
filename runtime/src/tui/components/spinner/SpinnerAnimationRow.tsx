@@ -14,7 +14,11 @@ import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
 const SEP_WIDTH = stringWidth(' · ');
 const THINKING_BARE_WIDTH = stringWidth('thinking');
-const SHOW_TOKENS_AFTER_MS = 30_000;
+// Show the elapsed timer + token counter almost immediately (Claude Code
+// parity): 30s felt like the indicator was frozen/slow on every normal turn.
+// The tok/s rate keeps its own ≥20-token/≥5s floor, so early reads show the
+// timer and raw token count without a noisy rate.
+const SHOW_TOKENS_AFTER_MS = 3_000;
 // After this long with no new token, surface a heartbeat note so a slow model
 // reads as "alive but slow" instead of "hung". A healthy model streams tokens
 // every fraction of a second, so this only fires on genuinely slow turns.
@@ -23,14 +27,36 @@ const STALL_NOTE_AFTER_MS = 8_000;
 // enough tokens that the figure is meaningful (mirrors the budget-path gate).
 const RATE_MIN_ELAPSED_MS = 5_000;
 const RATE_MIN_TOKENS = 20;
+// Mirrors Claude Code's spinner affordance: shown at the end of the status
+// byline whenever there is any status content to attach it to.
+const ESC_HINT_TEXT = 'esc to interrupt';
+const ESC_HINT_WIDTH = stringWidth(ESC_HINT_TEXT);
+
+/**
+ * 1s wall-clock tick for the row. Before this, the row only re-rendered when
+ * new tokens arrived, so the elapsed timer and the stall note froze during a
+ * long thinking silence. The snapshot is rounded to whole seconds: a raw
+ * Date.now() snapshot changes on every getSnapshot call, which
+ * useSyncExternalStore treats as a store change and would re-render in a
+ * loop. Subscribing mounts one interval per row; it is cleared on unmount, so
+ * nothing ticks while the spinner is gone.
+ */
+function subscribeSecondTick(onChange: () => void): () => void {
+  const interval = setInterval(onChange, 1_000);
+  return () => clearInterval(interval);
+}
+
+function getWholeSecondNow(): number {
+  return Math.floor(Date.now() / 1_000) * 1_000;
+}
 
 /**
  * Tracks token liveness across renders so the row can tell "alive but slow"
  * from "hung". Returns ms since the token counter last moved and a tokens/sec
- * rate once tokens are flowing. Refs (not state) — the row re-renders from its
- * parent's wall-clock tick, so reading on render is enough and avoids extra
- * re-renders. `firstSeenAt` lets us measure rate from when tokens started, not
- * from a pre-stream zero.
+ * rate once tokens are flowing. Refs (not state) — the row re-renders from
+ * its own 1s tick and from streaming state changes, so reading on render is
+ * enough and avoids extra re-renders. `firstSeenAt` lets us measure rate from
+ * when tokens started, not from a pre-stream zero.
  *
  * `turnStartedAt` seeds the no-token clock so a turn that has already been
  * silent for minutes reports its real silence on the very first render (e.g.
@@ -84,7 +110,9 @@ function formatRate(ratePerSec: number): string {
 
 export type SpinnerAnimationRowProps = {
   // Kept in the public prop shape while the surrounding spinner code is
-  // migrated. The v2 visual contract renders this row without a frame clock.
+  // migrated. The v2 visual contract keeps this row off the frame clock; a
+  // 1s wall-clock tick (see subscribeSecondTick) keeps the elapsed timer and
+  // stall note advancing through token silences.
   mode: SpinnerMode;
   reducedMotion: boolean;
   hasActiveTools: boolean;
@@ -132,11 +160,21 @@ export function SpinnerAnimationRow({
   effortSuffix,
   showLeaderTokenStats = true,
 }: SpinnerAnimationRowProps): React.ReactNode {
-  const now = Date.now();
-  const elapsedTimeMs =
+  // Whole-second wall clock with a live tick, so the elapsed timer and the
+  // stall note keep advancing while the spinner is up even if no token
+  // arrives. Clamped below: the floor-to-second snapshot can sit up to 1s
+  // behind loadingStartTimeRef's exact millisecond timestamp.
+  const now = React.useSyncExternalStore(
+    subscribeSecondTick,
+    getWholeSecondNow,
+    getWholeSecondNow,
+  );
+  const elapsedTimeMs = Math.max(
+    0,
     pauseStartTimeRef.current !== null
       ? pauseStartTimeRef.current - loadingStartTimeRef.current - totalPausedMsRef.current
-      : now - loadingStartTimeRef.current - totalPausedMsRef.current;
+      : now - loadingStartTimeRef.current - totalPausedMsRef.current,
+  );
 
   const visibleMessage = truncateSpinnerText(message, computeSpinnerMessageMaxWidth(columns));
   const leaderTokens = showLeaderTokenStats ? Math.round(responseLengthRef.current / 4) : 0;
@@ -236,6 +274,16 @@ export function SpinnerAnimationRow({
       <Text dimColor key="thinking">{thinkingOnly ? `(${thinkingText})` : thinkingText}</Text>,
     ] : []),
   ];
+  // Claude Code parity: the leader's byline ends with the interrupt
+  // affordance whenever there is status content (and it fits). The
+  // thinking-only compact form keeps its bare "(thinking)" instead.
+  if (
+    !thinkingOnly &&
+    parts.length > 0 &&
+    availableSpace > usedAfterRate + ESC_HINT_WIDTH + SEP_WIDTH
+  ) {
+    parts.push(<Text dimColor key="esc">{ESC_HINT_TEXT}</Text>);
+  }
 
   const status =
     foregroundedTeammate && !foregroundedTeammate.isIdle ? (

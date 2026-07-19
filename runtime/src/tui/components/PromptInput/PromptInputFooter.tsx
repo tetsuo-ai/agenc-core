@@ -17,7 +17,7 @@ import type { PromptInputMode, VimMode } from '../../../types/textInputTypes.js'
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
-import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
+import { StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem, type SuggestionType } from './PromptInputFooterSuggestions.js';
@@ -53,7 +53,11 @@ type Props = {
   agencHome?: string;
   isPasting?: boolean;
   isInputWrapped?: boolean;
-  messages: Message[];
+  // Live transcript accessor (stable identity) + the re-render trigger for
+  // the status line / token warning. Same contract as StatusLine's
+  // messagesRef + lastAssistantMessageId pair.
+  getMessages: () => Message[];
+  lastAssistantMessageId: string | null;
   isSearching: boolean;
   historyQuery: string;
   setHistoryQuery: (query: string) => void;
@@ -87,7 +91,8 @@ function PromptInputFooter({
   agencHome,
   isPasting = false,
   isInputWrapped = false,
-  messages,
+  getMessages,
+  lastAssistantMessageId,
   isSearching,
   historyQuery,
   setHistoryQuery,
@@ -99,9 +104,8 @@ function PromptInputFooter({
     columns,
     rows
   } = useTerminalSize();
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
-  const lastAssistantMessageId = useMemo(() => getLastAssistantMessageId(messages), [messages]);
+  const messagesRef = useRef<Message[]>(getMessages());
+  messagesRef.current = getMessages();
   const isNarrow = columns < 80;
   // In fullscreen the bottom slot is flexShrink:0, so every row here is a row
   // stolen from the ScrollBox. Drop the optional StatusLine first. Non-fullscreen
@@ -146,7 +150,7 @@ function PromptInputFooter({
           <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
         </Box>
         <Box flexShrink={1} gap={1}>
-          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
+          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
         </Box>
       </Box>
     </>;

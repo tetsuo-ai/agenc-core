@@ -174,21 +174,20 @@ describe("AgentsRail", () => {
       width: 90,
     })).output;
 
-    expect(output).toContain("active");
-    expect(output).toContain("- agent-blank");
+    expect(output).toContain("─ Agent Swarm ─");
+    // Numbered swarm rows with per-agent status glyphs and stats (Kimi-style
+    // fan-out view for 2+ agents).
+    expect(output).toContain("001");
+    expect(output).toContain("002");
     expect(output).toContain("unknown");
-    expect(output).toContain("! agent");
-    expect(output).toContain("- pending agent");
+    expect(output).toContain("✗");
+    expect(output).toContain("✓");
+    expect(output).toContain("pending agent");
     expect(output).toContain("edit");
-    expect(output).toContain("tools 2 tokens 120");
-    expect(output).toContain("diffs 3");
-    expect(output).toContain("approval");
-    expect(output).toContain("x stop");
-    expect(output).toContain("background");
-    expect(output).toContain("! failed agent");
-    expect(output).toContain("diffs 1");
-    expect(output).toContain("ok completed agent");
-    expect(output).toContain("x killed agent");
+    expect(output).toContain("2 tools · 120 tok");
+    expect(output).toContain("failed agent");
+    expect(output).toContain("completed agent");
+    expect(output).toContain("killed agent");
     expect(output).not.toContain("hidden shell");
   });
 

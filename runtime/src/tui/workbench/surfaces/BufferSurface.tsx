@@ -25,6 +25,7 @@ import { BufferLine, NeovimGridView } from "../buffer/render.js";
 import { useBufferStore } from "../buffer/useBufferStore.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+import { wheelInputIsInsideNode as wheelInputIsInsideNodeImpl } from "./wheelInput.js";
 import type { WorkbenchCommand } from "../types.js";
 
 const EMPTY_HIGHLIGHTS: ReadonlyMap<number, string> = new Map();
@@ -219,31 +220,9 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
 }
 
 export function wheelInputIsInsideNode(event: InputEvent, node: DOMElement | null): boolean {
-  if (!event.key.wheelUp && !event.key.wheelDown) return true;
-  const point = wheelPointFromInputEvent(event);
-  if (!point) return false;
-  if (!node) return false;
-  const rect = nodeCache.get(node);
-  if (!rect) return false;
-  return point.column >= rect.x &&
-    point.column < rect.x + rect.width &&
-    point.row >= rect.y &&
-    point.row < rect.y + rect.height;
-}
-
-function wheelPointFromInputEvent(event: InputEvent): { readonly column: number; readonly row: number } | null {
-  const raw = event.keypress.raw ?? event.keypress.sequence ?? "";
-  const sgr = /\x1B\[<\d+;(\d+);(\d+)[Mm]/.exec(raw);
-  if (sgr) {
-    return { column: Number(sgr[1]) - 1, row: Number(sgr[2]) - 1 };
-  }
-  if (raw.length === 6 && raw.startsWith("\x1B[M")) {
-    return {
-      column: raw.charCodeAt(4) - 33,
-      row: raw.charCodeAt(5) - 33,
-    };
-  }
-  return null;
+  // Implementation moved to ./wheelInput.js (kept as a re-export so existing
+  // imports from this module keep working).
+  return wheelInputIsInsideNodeImpl(event, node);
 }
 
 type BufferSurfaceStore = Pick<ReturnType<typeof getWorkbenchBufferProviderController>,
@@ -282,6 +261,17 @@ export function createBufferSurfaceKeyHandlers({
       dispatch({ type: "focus", pane: "agents" });
     },
     "workbench:focusComposer": () => {
+      dispatch({ type: "focus", pane: "composer" });
+    },
+    // ctrl+r from inside the buffer editor (inline fallback or neovim): move
+    // the file to the right-hand review rail and hand the chat back to the
+    // user. The dirty-buffer guard (approval overlay) still protects unsaved
+    // edits via applyWorkbenchCommand, exactly like any other surface switch.
+    "workbench:toggleFileRail": () => {
+      const path = snapshot.filePath;
+      if (path === null) return;
+      dispatch({ type: "toggleFileRail", path });
+      dispatch({ type: "closeSurface" });
       dispatch({ type: "focus", pane: "composer" });
     },
     "buffer:revert": () => {

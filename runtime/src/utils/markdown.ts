@@ -102,13 +102,15 @@ export function formatToken(
           .join(''),
       )
     case 'heading':
+      // Style-only headings: the terminal shows emphasis, not raw markdown
+      // markers — no literal '#' prefix on any depth (UX request).
       switch (token.depth) {
         case 1: // h1
           return (
             chalk.bold.italic.underline(
-              `# ${(token.tokens ?? [])
+              (token.tokens ?? [])
                 .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join('')}`,
+                .join(''),
             ) +
             EOL +
             EOL
@@ -116,9 +118,9 @@ export function formatToken(
         case 2: // h2
           return (
             chalk.bold(
-              `## ${(token.tokens ?? [])
+              (token.tokens ?? [])
                 .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join('')}`,
+                .join(''),
             ) +
             EOL +
             EOL
@@ -126,9 +128,9 @@ export function formatToken(
         default: // h3+
           return (
             chalk.bold(
-              `${'#'.repeat(token.depth)} ${(token.tokens ?? [])
+              (token.tokens ?? [])
                 .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join('')}`,
+                .join(''),
             ) +
             EOL +
             EOL

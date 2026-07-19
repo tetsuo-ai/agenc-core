@@ -351,6 +351,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'ctrl+w w': 'workbench:focusNext',
       'ctrl+w d': 'workbench:openDiff',
       'ctrl+w f': 'workbench:openSearch',
+      'ctrl+r': 'workbench:toggleFileRail',
     },
   },
   {
@@ -419,6 +420,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'ctrl+g': 'buffer:externalEditor',
       'ctrl+k h': 'buffer:hover',
       'ctrl+k d': 'buffer:definition',
+      'ctrl+r': 'workbench:toggleFileRail',
       up: 'buffer:up',
       down: 'buffer:down',
       left: 'buffer:left',

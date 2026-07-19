@@ -1,6 +1,6 @@
 export const WORKBENCH_ENV_VAR = "AGENC_TUI_WORKBENCH";
 
-export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer";
+export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer" | "rail";
 
 export type ActiveSurfaceMode =
   | "transcript"
@@ -50,6 +50,13 @@ export type WorkbenchState = {
   readonly composerAttachmentIds: readonly string[];
   readonly attachments: readonly WorkbenchAttachment[];
   readonly pendingBlockedOverlay: WorkbenchBlockedOverlay;
+  /**
+   * File shown in the right-hand review rail (ctrl+r): the chat stays in the
+   * center pane while the user scrolls/reviews the file beside it. Null when
+   * the rail is closed. Independent from the center surface, so toggling the
+   * rail never navigates away from the transcript.
+   */
+  readonly fileRailPath: string | null;
 };
 
 export type WorkbenchCommand =
@@ -81,7 +88,13 @@ export type WorkbenchCommand =
   | { readonly type: "removeAttachment"; readonly id: string }
   | { readonly type: "clearAttachments" }
   | { readonly type: "blockForApproval"; readonly requestId: string; readonly attemptedAction: string }
-  | { readonly type: "clearBlockedOverlay" };
+  | { readonly type: "clearBlockedOverlay" }
+  /**
+   * Toggle the right-hand review rail (ctrl+r). `path` opens the rail with
+   * that file; omitted `path` closes it. Opening never moves focus away from
+   * the composer's current context by itself — the chat stays in the center.
+   */
+  | { readonly type: "toggleFileRail"; readonly path?: string };
 
 export type WorkbenchLayoutSize = "wide" | "medium" | "narrow";
 

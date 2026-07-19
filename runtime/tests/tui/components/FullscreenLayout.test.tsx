@@ -162,17 +162,26 @@ describe("FullscreenLayout modal viewport", () => {
 
   test("formats bottom chrome with user-facing mode labels", () => {
     expect(
-      formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions", "main · abc1234", "42%", "$0.04", "12.4K"),
+      formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions", "main · abc1234", "$0.04"),
     ).toEqual({
       left: "● YOLO · grok-4-fast · main · abc1234",
-      right: "ctx 42% · spend $0.04 · ◆ 12.4K",
+      right: "spend $0.04",
     });
 
     expect(
-      formatDesignBottomChromeLabels(60, "grok-4-fast", "acceptEdits", "main · abc1234", "0%", "$0.00", "12.4K"),
+      formatDesignBottomChromeLabels(60, "grok-4-fast", "acceptEdits", "main · abc1234", "$0.00"),
     ).toEqual({
       left: "● accept edits on · grok-4-fast · main · abc1234",
-      right: "ctx 0% · spend $0.00 · ◆ 12.4K",
+      right: "spend $0.00",
+    });
+  });
+
+  test("omits the git segment of the bottom chrome until the probe resolves", () => {
+    expect(
+      formatDesignBottomChromeLabels(100, "grok-4-fast", "default", null, "$0.00"),
+    ).toEqual({
+      left: "● default on · grok-4-fast",
+      right: "spend $0.00",
     });
   });
 
@@ -202,9 +211,12 @@ describe("FullscreenLayout modal viewport", () => {
     expect(output).toContain("agenc · orchestrator");
     expect(output).toContain("mode · default");
     expect(output).toContain("● default on");
-    expect(output).toContain("ctx 0%");
     expect(output).toContain("spend $0.00");
-    expect(output).toContain("◆ 12.4K");
+    // No fabricated chrome: no real ctx%/stake feed exists at this point in
+    // the tree, so those segments must stay hidden rather than show fake data.
+    expect(output).not.toContain("ctx 0%");
+    expect(output).not.toContain("12.4K");
+    expect(output).not.toContain("◆");
     expect(output).toMatch(/[░▒▓]/u);
     expect(output).not.toContain("undefined");
     expect(output).not.toContain("NaN");

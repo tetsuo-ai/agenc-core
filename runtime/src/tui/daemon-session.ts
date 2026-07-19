@@ -41,6 +41,11 @@ import type {
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
+import { notifyTasksUpdated } from "../utils/tasks.js";
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  takeAskUserQuestionUpdatedInput,
+} from "../tools/ask-user-question/tool.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -348,6 +353,22 @@ export function createDaemonTuiSession<
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
   const conversationId = options.conversationId ?? sessionId;
+  // Share the task board with the daemon turn: TodoWrite persists the board
+  // under the conversation id (getTaskListId prefers the ambient session's
+  // conversationId), so the TUI's store must resolve to the SAME id — the
+  // per-process random session UUIDs on each side would never match and the
+  // todo list would silently never appear in daemon mode.
+  if (process.env.AGENC_TASK_LIST_ID !== conversationId) {
+    process.env.AGENC_TASK_LIST_ID = conversationId;
+    // The TasksV2Store resolves the board dir on its first fetch — which runs
+    // at App mount, BEFORE this async attach sets the env var — and then
+    // stops polling on an empty list, so it would never discover the real
+    // board. Nudge it: the subscriber callback triggers a re-fetch that picks
+    // up the corrected id and points the fs watcher at the real directory.
+    // Harmless when the store has not subscribed yet (its first fetch then
+    // already resolves the right id).
+    notifyTasksUpdated();
+  }
   const realtimeThreadId = options.realtimeThreadId ?? conversationId;
   const queuedInputs: MessageContentBlock[] = [];
   const eventSubscribers = new Set<(event: unknown) => void>();
@@ -533,13 +554,31 @@ export function createDaemonTuiSession<
       // user pressed ESC — they want the turn to stop, but a thrown
       // error here doesn't help them. Swallow and let the next health
       // check / event surface the disconnection separately.
+      // Timeout: a WEDGED daemon (idle deadlock) never answers the RPC at
+      // all — without a deadline the ESC press vanishes silently and the
+      // UI keeps showing "Working…" forever. Give up after 5s and tell the
+      // user the interrupt could not be delivered.
       try {
         await client.request("session.cancelTurn", {
           sessionId,
           ...(reason !== undefined ? { reason } : {}),
-        });
-      } catch {
-        // best-effort
+        }, { signal: AbortSignal.timeout(5_000) });
+      } catch (error) {
+        const timedOut =
+          error instanceof Error &&
+          (error.name === "TimeoutError" || error.name === "AbortError");
+        if (timedOut) {
+          broadcastDaemonEvent({
+            id: `agenc-daemon-cancel-unacked-${Date.now()}`,
+            type: "warning",
+            payload: {
+              cause: "daemon_delivery_failed",
+              action: "session.cancelTurn",
+              message:
+                "interrupt not acknowledged by the daemon (it may be unresponsive) — try ESC again, or restart the daemon",
+            },
+          });
+        }
       }
     },
     partialCompactFromMessage: async (params) =>
@@ -887,11 +926,23 @@ async function maybeBridgeDaemonApproval(
         (toolName === EXIT_PLAN_MODE_TOOL_NAME
           ? ({ action: "revise" } as const)
           : undefined);
+      // AskUserQuestion answers ride the same approval: the picker recorded
+      // the merged input client-side via recordAskUserQuestionUpdatedInput —
+      // ship it so the daemon-side tool execution finds the answers in its
+      // own answeredInputs map instead of reporting "User did not provide
+      // answers." after a visibly successful approval.
+      const askUserQuestionInput =
+        toolName === ASK_USER_QUESTION_TOOL_NAME
+          ? takeAskUserQuestionUpdatedInput(payload.callId)
+          : null;
       await client.request("tool.approve", {
         sessionId,
         requestId: payload.callId,
         scope: decision.kind === "approved_for_session" ? "session" : "once",
         ...(choice ? { exitPlan: choice } : {}),
+        ...(askUserQuestionInput !== null
+          ? { askUserQuestionInput: askUserQuestionInput as unknown as JsonObject }
+          : {}),
       });
       return;
     }

@@ -639,3 +639,34 @@ describe("workbenchReducer", () => {
     expect(cleared.pendingBlockedOverlay).toBeNull();
   });
 });
+
+describe("toggleFileRail (ctrl+r review rail)", () => {
+  it("opens the rail without touching the center surface or focus", () => {
+    const state = workbenchReducer(undefined, {
+      type: "toggleFileRail",
+      path: "src/index.ts",
+    });
+    expect(state.fileRailPath).toBe("src/index.ts");
+    expect(state.activeSurfaceMode).toBe("transcript");
+    expect(state.focusedPane).toBe("composer");
+  });
+
+  it("closes the rail when no path is given", () => {
+    const open = workbenchReducer(undefined, {
+      type: "toggleFileRail",
+      path: "src/index.ts",
+    });
+    const closed = workbenchReducer(open, { type: "toggleFileRail" });
+    expect(closed.fileRailPath).toBeNull();
+  });
+
+  it("falls back to the surface pane when the focused rail closes", () => {
+    const open = workbenchReducer(
+      { ...getDefaultWorkbenchState(), focusedPane: "rail" },
+      { type: "toggleFileRail", path: "src/index.ts" },
+    );
+    expect(visibleWorkbenchPane(open)).toBe("rail");
+    const closed = workbenchReducer(open, { type: "toggleFileRail" });
+    expect(visibleWorkbenchPane(closed)).toBe("surface");
+  });
+});

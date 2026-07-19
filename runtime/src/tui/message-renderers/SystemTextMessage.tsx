@@ -152,9 +152,22 @@ export function SystemTextMessage({
         ? "warning"
         : undefined;
   const t3 = message.level === "info";
+  // Verbose error dumps (provider/LLM failures with long remediation bodies)
+  // are noise in the live chat: clamp them to the headline in non-verbose,
+  // non-transcript mode — the full text is one ctrl+o away.
+  const contentLines = content.trim().split("\n");
+  const shouldClampError =
+    message.level === "error" && !verbose && !isTranscriptMode &&
+    (contentLines.length > 2 || content.trim().length > 300);
+  const renderedContent = shouldClampError
+    ? contentLines.length > 2
+      ? `${contentLines[0]}\n${contentLines[1]}`
+      : `${content.trim().slice(0, 300)}…`
+    : content;
   return (
     <Box flexDirection="row" width="100%">
-      <SystemTextMessageInner content={content} addMargin={addMargin} dot={t1} color={t2} dimColor={t3} />
+      <SystemTextMessageInner content={renderedContent} addMargin={addMargin} dot={t1} color={t2} dimColor={t3} />
+      {shouldClampError ? <CtrlOToExpand /> : null}
     </Box>
   );
 }

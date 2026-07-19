@@ -376,7 +376,15 @@ type Props = {
   agents: AgentDefinition[];
   isLoading: boolean;
   verbose: boolean;
-  messages: Message[];
+  // The transcript is NOT passed by value: App hands a fresh messages array
+  // on every streaming flush, which defeats this component's React.memo and
+  // re-renders the whole composer at token rate. Instead it passes a stable
+  // accessor (read inside handlers/memos, never during render) plus derived
+  // flags that only change when a message completes.
+  getMessages: () => Message[];
+  hasMessages: boolean;
+  isMidConversation: boolean;
+  lastAssistantMessageId: string | null;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   autoUpdaterResult: AutoUpdaterResult | null;
   input: string;
@@ -520,7 +528,10 @@ function PromptInput({
   agents,
   isLoading,
   verbose,
-  messages,
+  getMessages,
+  hasMessages,
+  isMidConversation,
+  lastAssistantMessageId,
   onAutoUpdaterResult,
   autoUpdaterResult,
   input,
@@ -697,12 +708,12 @@ function PromptInput({
   // so guard with a lazy-init pattern to run it exactly once.
   const nextPasteIdRef = useRef(-1);
   if (nextPasteIdRef.current === -1) {
-    nextPasteIdRef.current = getNextPasteIdAfter(messages, pastedContents, input);
+    nextPasteIdRef.current = getNextPasteIdAfter(getMessages(), pastedContents, input);
   }
   function allocatePasteId(): number {
     const nextPasteId = Math.max(
       nextPasteIdRef.current,
-      getNextPasteIdAfter(messages, pastedContentsRef.current, lastInternalInputRef.current),
+      getNextPasteIdAfter(getMessages(), pastedContentsRef.current, lastInternalInputRef.current),
     );
     nextPasteIdRef.current = nextPasteId + 1;
     return nextPasteId;
@@ -1459,7 +1470,7 @@ function PromptInput({
       if (trimmedBash === '') {
         return;
       }
-      const ctx = getToolUseContext(messages, [], new AbortController(), mainLoopModel) as PromptInputContext & {
+      const ctx = getToolUseContext(getMessages(), [], new AbortController(), mainLoopModel) as PromptInputContext & {
         session?: { emit?: (event: unknown) => void; nextInternalSubId?: () => string };
         setToolJSX?: (jsx: unknown) => void;
       };
@@ -1531,7 +1542,7 @@ function PromptInput({
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
     }
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset, setPastedContentsAndRef]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, getMessages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset, setPastedContentsAndRef]);
   const {
     suggestions,
     selectedSuggestion,
@@ -2448,7 +2459,7 @@ function PromptInput({
         void popAllCommandsFromQueue();
         return;
       }
-      if (messages.length > 0 && currentInput === '' && !isLoading) {
+      if (hasMessages && currentInput === '' && !isLoading) {
         doublePressEscFromEmpty();
       }
     }
@@ -2610,17 +2621,17 @@ function PromptInput({
   const thinkingToggleElement = useMemo(() => {
     if (!showThinkingToggle) return null;
     return <Box flexDirection="column" marginTop={1}>
-        <ThinkingToggle currentValue={thinkingEnabled ?? true} onSelect={handleThinkingSelect} onCancel={handleThinkingCancel} isMidConversation={messages.some(m => m.type === 'assistant')} />
+        <ThinkingToggle currentValue={thinkingEnabled ?? true} onSelect={handleThinkingSelect} onCancel={handleThinkingCancel} isMidConversation={isMidConversation} />
       </Box>;
-  }, [showThinkingToggle, thinkingEnabled, handleThinkingSelect, handleThinkingCancel, messages.length]);
+  }, [showThinkingToggle, thinkingEnabled, handleThinkingSelect, handleThinkingCancel, isMidConversation]);
   const modeSwitcherElement = useMemo(() => {
     if (!showModeSwitcher) return null;
     return <ModeSwitcher currentMode={effectiveToolPermissionContext.mode} bypassAvailable={effectiveToolPermissionContext.isBypassPermissionsModeAvailable} autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable} />;
   }, [showModeSwitcher, effectiveToolPermissionContext]);
   const backgroundTasksDialogElement = useMemo(() => {
     if (!showBashesDialog) return null;
-    return <BackgroundTasksPanel onDone={() => setShowBashesDialog(false)} toolUseContext={getToolUseContext(messages, [], new AbortController(), mainLoopModel)} initialDetailTaskId={typeof showBashesDialog === 'string' ? showBashesDialog : undefined} />;
-  }, [showBashesDialog, setShowBashesDialog, getToolUseContext, messages, mainLoopModel]);
+    return <BackgroundTasksPanel onDone={() => setShowBashesDialog(false)} toolUseContext={getToolUseContext(getMessages(), [], new AbortController(), mainLoopModel)} initialDetailTaskId={typeof showBashesDialog === 'string' ? showBashesDialog : undefined} />;
+  }, [showBashesDialog, setShowBashesDialog, getToolUseContext, getMessages, mainLoopModel]);
 
   // Portal dialog to DialogOverlay in fullscreen so it escapes the bottom
   // slot's overflowY:hidden clip (same pattern as SuggestionsOverlay).
@@ -2787,7 +2798,7 @@ function PromptInput({
           slash command picker / @-mention list) needs the same row,
           which the suggestions branch in PromptInputFooter handles
           via its own early return. */}
-      <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
+      <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner
@@ -2807,7 +2818,7 @@ function PromptInput({
     // initial-check effect from re-firing on every slash-completion
     // toggle (PR#22413).
     <Box position="absolute" marginTop={briefOwnsGap ? -2 : -1} height={suggestions.length === 0 && !showAutoModeOptIn ? 1 : 0} width="100%" paddingLeft={2} paddingRight={1} flexDirection="column" justifyContent="flex-end" overflow="hidden">
-          <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} />
+          <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} />
         </Box> : null}
     </Box>;
 }

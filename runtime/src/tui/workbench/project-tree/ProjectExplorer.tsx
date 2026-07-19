@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { Box, Text } from "../../ink.js";
+import type { DOMElement } from "../../ink/dom.js";
 import { stringWidth } from "../../ink/stringWidth.js";
-import { useKeybindings } from "../../keybindings/useKeybinding.js";
+import { useInputCapture, useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState } from "../../state/AppState.js";
 import TextInput from "../../components/TextInput.js";
@@ -14,6 +15,7 @@ import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
 import { composerAttachmentsForState } from "../reducer.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { wheelInputIsInsideNode } from "../surfaces/wheelInput.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
 import { useProjectTree } from "./useProjectTree.js";
@@ -185,6 +187,38 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const viewport = projectTreeViewport(snapshot.rows, maxTreeRows);
   const visibleRows = viewport.rows
     .map((row) => row.selected ? { ...row, focused } : row);
+  // Mouse: click a row to select it AND take keyboard focus (a click on the
+  // tree means the next arrow keys are meant for the tree). Directory clicks
+  // also toggle expansion; file clicks open the buffer surface without moving
+  // focus away from the explorer.
+  const handleRowClick = useCallback((row: ProjectTreeRow): void => {
+    if (row.kind !== "root" && row.kind !== "loading" && row.kind !== "empty" && row.kind !== "error") {
+      dispatch({ type: "focus", pane: "explorer" });
+    }
+    if (row.kind === "directory") {
+      store.toggle(row.path);
+      return;
+    }
+    if (row.kind === "file" && row.path) {
+      store.reveal(row.path);
+      dispatch(openBufferCommand(row.path, undefined, false));
+    }
+  }, [dispatch, store]);
+  // Mouse wheel scrolls the tree (moves the cursor, the viewport window
+  // follows it), scoped to the explorer pane's rect.
+  const paneRef = useRef<DOMElement | null>(null);
+  useInputCapture(
+    useCallback(
+      (input, key, event) => {
+        if (!key.wheelUp && !key.wheelDown) return false;
+        if (!wheelInputIsInsideNode(event, paneRef.current)) return false;
+        store.move(key.wheelUp ? -3 : 3);
+        return true;
+      },
+      [store],
+    ),
+    { context: "Explorer", isActive: true },
+  );
   // Drive the WORKSPACE count from the project's real file total (carried on the
   // snapshot, collapse-independent) rather than the currently-visible rows — a
   // collapsed directory hides its children from the rows, which would undercount
@@ -200,7 +234,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const glyphs = selectAgenCTuiGlyphs();
 
   return (
-    <Box flexDirection="column" width={width} height="100%" borderRight borderColor={focused ? "suggestion" : "gray"} paddingX={1}>
+    <Box ref={paneRef} flexDirection="column" width={width} height="100%" borderRight borderColor={focused ? "suggestion" : "gray"} paddingX={1}>
       <Box height={1} flexShrink={0}>
         {renderedHeaderLabelWidth > 0 ? (
           <Box width={renderedHeaderLabelWidth} flexShrink={0}>
@@ -239,7 +273,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
             <Text color="inactive" wrap="truncate-end">{glyphs.arrowUp} {viewport.above} above</Text>
           </Box>
         ) : null}
-        {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 3)} />)}
+        {visibleRows.map((row) => <ProjectExplorerRow key={row.id} row={row} width={Math.max(8, width - 3)} onRowClick={handleRowClick} />)}
         {viewport.below > 0 ? (
           <Box height={1} flexShrink={0}>
             <Text color="inactive" wrap="truncate-end">{glyphs.arrowDown} {viewport.below} below</Text>
@@ -349,21 +383,27 @@ export function projectTreeViewport(
 export function ProjectExplorerRow({
   row,
   width,
+  onRowClick,
 }: {
   readonly row: ProjectTreeRow;
   readonly width: number;
+  /** Mouse click on the row (selection, directory toggle, file preview). */
+  readonly onRowClick?: (row: ProjectTreeRow) => void;
 }): React.ReactElement {
   const glyphs = selectAgenCTuiGlyphs();
   const branch = indentPrefix(row);
   const marker = markerForRow(row, glyphs);
   const badges = rowBadges(row, glyphs);
   const prefix = `${branch}${marker} `;
+  // Directories carry a trailing slash so they scan differently from files at
+  // a glance, without spending a color on the distinction.
+  const rawLabel = row.kind === "directory" ? `${row.label}/` : row.label;
   const labelWidth = Math.max(1, width - stringWidth(prefix) - stringWidth(badges) - 1);
-  const label = trim(row.label, labelWidth);
+  const label = trim(rawLabel, labelWidth);
   const gap = Math.max(0, width - stringWidth(prefix) - stringWidth(label) - stringWidth(badges));
   const color = colorForRow(row);
   return (
-    <Box height={1} flexShrink={0}>
+    <Box height={1} flexShrink={0} onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}>
       <Text color={color} inverse={row.focused} wrap="truncate-end">
         {prefix}{label}{" ".repeat(gap)}{badges}
       </Text>
@@ -372,12 +412,19 @@ export function ProjectExplorerRow({
 }
 
 function indentPrefix(row: ProjectTreeRow): string {
+  // Flat indentation, deliberately WITHOUT connector rails (`│ `, `├─ `): the
+  // viewport renders a scrolled window of the tree, and a rail implies a
+  // visible parent that may be offscreen — the render contract in
+  // tests/tui/workbench/render.test.tsx guards this.
   return "  ".repeat(Math.max(0, row.depth));
 }
 
 function markerForRow(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenCTuiGlyphs>): string {
-  if (row.kind === "root") return row.expanded ? glyphs.arrowDown : glyphs.arrowRight;
-  if (row.kind === "directory") return row.expanded ? glyphs.arrowDown : glyphs.arrowRight;
+  // Folders get a real folder icon (open when expanded) instead of the bare
+  // arrow — editor-style affordance (UX request). The root (workspace) is
+  // always expanded.
+  if (row.kind === "root") return glyphs.folderOpen;
+  if (row.kind === "directory") return row.expanded ? glyphs.folderOpen : glyphs.folderClosed;
   if (row.kind === "loading") return glyphs.ellipsis;
   // An empty workspace is a normal cold-start state, so its marker is a neutral
   // space — the "!" below is reserved for genuine error rows.
@@ -433,9 +480,49 @@ function colorForRow(row: ProjectTreeRow): string | undefined {
     case "ignored":
       return "gray";
     default:
-      return row.kind === "file" ? undefined : "text2";
+      // Dotfiles are housekeeping noise in most workspaces — keep them visible
+      // but visually quiet (a git state, when present, still wins above).
+      if (row.kind === "file") {
+        if (row.label.startsWith(".")) return "gray";
+        return fileTypeColor(row.label);
+      }
+      return "text2";
   }
 }
+
+/**
+ * Editor-style file-type colors by extension (UX request): code in the
+ * suggestion blue, docs green, config/data yellow, media in the brand tone.
+ * Unknown extensions keep the default terminal color. Keyed by lowercase
+ * extension without the dot; filenames without one return undefined.
+ */
+function fileTypeColor(label: string): string | undefined {
+  const dot = label.lastIndexOf(".");
+  if (dot <= 0) return undefined;
+  const ext = label.slice(dot + 1).toLowerCase();
+  if (CODE_EXTENSIONS.has(ext)) return "suggestion";
+  if (DOC_EXTENSIONS.has(ext)) return "success";
+  if (CONFIG_EXTENSIONS.has(ext)) return "warning";
+  if (MEDIA_EXTENSIONS.has(ext)) return "agenc";
+  return undefined;
+}
+
+const CODE_EXTENSIONS: ReadonlySet<string> = new Set([
+  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+  "rs", "py", "go", "rb", "java", "kt", "c", "h", "cc", "cpp", "hpp",
+  "cs", "swift", "sol", "sh", "bash", "zsh", "fish", "sql", "lua", "zig",
+]);
+const DOC_EXTENSIONS: ReadonlySet<string> = new Set([
+  "md", "mdx", "txt", "rst", "adoc", "org",
+]);
+const CONFIG_EXTENSIONS: ReadonlySet<string> = new Set([
+  "json", "jsonc", "json5", "yaml", "yml", "toml", "xml", "ini", "env",
+  "lock", "cfg", "conf", "properties",
+]);
+const MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "ico",
+  "mp4", "webm", "mov", "mp3", "wav", "ogg", "pdf",
+]);
 
 function trim(value: string, width: number): string {
   if (stringWidth(value) <= width) return value;

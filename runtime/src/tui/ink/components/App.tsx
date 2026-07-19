@@ -127,7 +127,11 @@ export default class App extends PureComponent<Props, State> {
   // where startup input appears frozen when data mode is the default.
   stdinMode: 'readable' | 'data' = process.env.AGENC_USE_DATA_STDIN === '1' || process.env.AGENC_USE_READABLE_STDIN === '0' ? 'data' : 'readable';
   // Timeout durations for incomplete sequences (ms)
-  readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
+  // 25ms keeps lone-ESC→feedback snappy (ESC + 16ms render throttle ≈ 41ms).
+  // Split escape/meta sequences are still safe: when the continuation bytes
+  // are already buffered, flushIncomplete's readableLength check re-arms
+  // instead of flushing, so only genuinely-lone ESCs pay the timeout.
+  readonly NORMAL_TIMEOUT = 25; // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
 
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
@@ -327,9 +331,9 @@ export default class App extends PureComponent<Props, State> {
     // Fullscreen: if stdin has data waiting, it's almost certainly the
     // continuation of the buffered sequence (e.g. `[<64;74;16M` after a
     // lone ESC). Node's event loop runs the timers phase before the poll
-    // phase, so when a heavy render blocks the loop past 50ms, this timer
-    // fires before the queued readable event even though the bytes are
-    // already buffered. Re-arm instead of flushing: handleReadable will
+    // phase, so when a heavy render blocks the loop past the flush timeout,
+    // this timer fires before the queued readable event even though the
+    // bytes are already buffered. Re-arm instead of flushing: handleReadable will
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {

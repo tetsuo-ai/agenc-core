@@ -74,8 +74,34 @@ describe("AskUserQuestion tool", () => {
       }),
     ).toEqual({
       ok: false,
-      error: "questions[0].options[1].description is required",
+      error: "questions[0].options[1] needs a description (or preview)",
     });
+  });
+
+  test("accepts preview-only options (Grok-style payloads)", () => {
+    // Grok consistently sends `preview` instead of `description` and does not
+    // recover from the validation error — the parser maps preview →
+    // description so those calls succeed.
+    const parsed = parseAskUserQuestionInput({
+      questions: [
+        {
+          header: "Scope",
+          question: "Which approach?",
+          options: [
+            { label: "A", preview: "the first approach" },
+            { label: "B", preview: "the second approach" },
+          ],
+        },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.input.questions[0]?.options[0]?.description).toBe(
+      "the first approach",
+    );
+    expect(parsed.input.questions[0]?.options[0]?.preview).toBe(
+      "the first approach",
+    );
   });
 
   test("requires TUI-recorded answers before returning model-facing result", async () => {

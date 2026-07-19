@@ -734,12 +734,6 @@ type WelcomeRecentSession = {
   readonly detail: string
 }
 
-const defaultRecentSessions = [
-  { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
-  { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
-  { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
-] as const satisfies readonly WelcomeRecentSession[]
-
 function defaultWorkspaceLabel(): string {
   const cwd = process.cwd()
   const home = process.env.HOME
@@ -749,8 +743,8 @@ function defaultWorkspaceLabel(): string {
 // Welcome summary/recent cards used to be fixed shrink-to-content boxes, so the
 // two cards rendered at mismatched widths and left a jarring empty band on the
 // right of a wide transcript pane. They now share one width that grows with the
-// available pane up to a tasteful cap. MIN keeps the widest default recent row
-// (`[1] swap-program · 12m ago · main · clean`, plus border + padding) from
+// available pane up to a tasteful cap. MIN keeps a typical recent row
+// (`[1] my-project · 12m ago · main · clean`, plus border + padding) from
 // truncating; MAX stops them from stretching absurdly wide on a 200-col
 // terminal.
 const WELCOME_CARD_MIN_WIDTH = 46
@@ -848,8 +842,8 @@ function WelcomeMetaRow({
 export function WelcomeColdPanel({
   workspace = defaultWorkspaceLabel(),
   model = 'default model',
-  lastSession = '12m ago · clean handoff',
-  recentSessions = defaultRecentSessions,
+  lastSession,
+  recentSessions = [],
 }: {
   readonly workspace?: string
   readonly model?: string
@@ -879,21 +873,37 @@ export function WelcomeColdPanel({
       >
         <WelcomeMetaRow label="workspace" value={workspace} />
         <WelcomeMetaRow label="model" value={model} />
-        <WelcomeMetaRow label="last session" value={lastSession} />
+        {lastSession !== undefined ? (
+          <WelcomeMetaRow label="last session" value={lastSession} />
+        ) : null}
       </ThemedBox>
 
+      {/* Real, static keyboard tips — the hint line below teaches the input
+          basics (type/↓, /, @); these teach the four bindings a first-time
+          user needs next. Unbordered on purpose: the summary/recent cards own
+          the bordered rhythm of this panel (and their shared-width contract). */}
+      <Box flexDirection="column">
+        <ThemedText color="muted3">tips</ThemedText>
+        <ThemedText color="inactive">{'  /help lists every command'}</ThemedText>
+        <ThemedText color="inactive">{'  shift+tab cycles permission mode'}</ThemedText>
+        <ThemedText color="inactive">{'  ctrl+o expands the full transcript'}</ThemedText>
+        <ThemedText color="inactive">{'  esc interrupts the agent'}</ThemedText>
+      </Box>
+
+      {/* The recent card renders only with real session data — a fabricated
+          resume list (or a "press 1-3" affordance over fake sessions) is
+          worse than no card at all. */}
+      {visibleSessions.length > 0 ? (
       <Box flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap">
           <ThemedText color="muted3">recent</ThemedText>
-          {visibleSessions.length > 0 ? (
-            <ThemedText color="inactive">
-              {`  ·  press ${
-                visibleSessions.length > 1
-                  ? `1-${visibleSessions.length}`
-                  : '1'
-              } to resume`}
-            </ThemedText>
-          ) : null}
+          <ThemedText color="inactive">
+            {`  ·  press ${
+              visibleSessions.length > 1
+                ? `1-${visibleSessions.length}`
+                : '1'
+            } to resume`}
+          </ThemedText>
         </Box>
         <ThemedBox
           flexDirection="column"
@@ -903,11 +913,11 @@ export function WelcomeColdPanel({
           // it carries the one accent border on this screen — the info card
           // above stays lineSoft. Two identically-dim boxes gave the eye
           // nowhere to land.
-          borderColor={visibleSessions.length > 0 ? 'agenc' : 'lineSoft'}
+          borderColor="agenc"
           paddingX={1}
           paddingY={1}
         >
-          {visibleSessions.length > 0 ? visibleSessions.map(session => (
+          {visibleSessions.map(session => (
             // No `flexWrap="wrap"`: a long title/detail must truncate in place
             // rather than wrap the `· detail` segment onto its own flex line
             // under the `[n]` key (the same grid-breaking pattern as
@@ -930,11 +940,10 @@ export function WelcomeColdPanel({
                 <ThemedText color="muted3" wrap="truncate-end"> · {session.detail}</ThemedText>
               </Box>
             </Box>
-          )) : (
-            <ThemedText color="muted3">no resumable sessions</ThemedText>
-          )}
+          ))}
         </ThemedBox>
       </Box>
+      ) : null}
 
       <WelcomeHintLine />
     </Box>
@@ -1001,7 +1010,10 @@ export function Msg({
   children,
 }: {
   readonly role: 'user' | 'agenc' | 'worker' | 'system'
-  readonly label: string
+  // Optional: user prompts pass no label — a "YOU" header over your own
+  // messages is noise (the colored marker already identifies the role). When
+  // absent, the header row renders only if a time/queued marker needs it.
+  readonly label?: string
   readonly time?: string
   readonly children: ReactNode
 }): React.ReactNode {
@@ -1030,26 +1042,40 @@ export function Msg({
   // text measures against the right width.
   const contentWidth = insetContentWidth(inheritedWidth, 2 + queuedPaddingWidth)
   return (
-    // A single space after the marker glyph (gap={1}); a double gap read as a
-    // layout seam between the marker and the role label.
-    <Box flexDirection="row" gap={1}>
-      <ThemedText color={colors[role]}>{role === 'system' ? '∙' : '▮'}</ThemedText>
-      <Box flexDirection="column" flexGrow={1}>
+    // Gutter identity: a role-colored left border runs the FULL height of the
+    // message (header + body), replacing the old single-row ▮ marker — the
+    // colored line now spans the complete message, blockquote-style. The
+    // border (1 cell) + paddingLeft (1 cell) preserves the same 2-cell
+    // content inset the marker + gap used, so body widths are unchanged.
+    <ThemedBox
+      borderStyle="single"
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
+      borderLeft
+      borderLeftColor={colors[role]}
+      paddingLeft={1}
+      flexDirection="column"
+      flexGrow={1}
+    >
+      {label !== undefined || time !== undefined || isQueued ? (
         <Box flexDirection="row" gap={1}>
+          {label !== undefined ? (
           <ThemedText color={colors[role]} bold>
             {label.toUpperCase()}
           </ThemedText>
+          ) : null}
           {time ? (
             <ThemedText color="inactive">{time}</ThemedText>
           ) : isQueued ? (
             <ThemedText color="inactive">queued</ThemedText>
           ) : null}
         </Box>
-        <ContentWidthProvider width={contentWidth}>
-          <Content color="text2">{children}</Content>
-        </ContentWidthProvider>
-      </Box>
-    </Box>
+      ) : null}
+      <ContentWidthProvider width={contentWidth}>
+        <Content color="text2">{children}</Content>
+      </ContentWidthProvider>
+    </ThemedBox>
   )
 }
 
@@ -1463,6 +1489,7 @@ export function ApprovalCard({
   note,
   confirmLabel,
   diffPreview,
+  requestId,
   requireTypedConfirmation = false,
   typedConfirmationValue = '',
   typedConfirmationTarget = 'yes',
@@ -1484,6 +1511,9 @@ export function ApprovalCard({
   readonly note?: string
   readonly confirmLabel: string
   readonly diffPreview?: ApprovalDiffPreview
+  /** Real permission-request id for the footer status slot. Optional: without
+   *  one the slot stays empty rather than showing a decorative fake hex. */
+  readonly requestId?: string
   readonly requireTypedConfirmation?: boolean
   readonly typedConfirmationValue?: string
   readonly typedConfirmationTarget?: string
@@ -1550,18 +1580,19 @@ export function ApprovalCard({
           ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
           : 'esc to close'
       }
-      status={`req ${risk === 'high' ? '0x9c14' : '0x47a3'}`}
+      status={requestId === undefined ? undefined : `req ${requestId}`}
       accentColor={variantColor[variant]}
       bodyBackgroundColor={risk === 'high' ? 'errorWash' : 'successWash'}
       bodyPaddingY={0}
       maxHeight={popupMaxHeight}
       minHeight={Math.min(9, popupMaxHeight)}
-      footer={[
-        {
-          keyName: requireTypedConfirmation ? 'type' : 'e',
-          label: requireTypedConfirmation ? 'confirmation required' : 'edit command',
-        },
-      ]}
+      footer={
+        // Only real affordances go here — there is no `e` handler, so the old
+        // `e edit command` hint sent users to a dead key.
+        requireTypedConfirmation
+          ? [{ keyName: 'type', label: 'confirmation required' }]
+          : []
+      }
     >
       <Box flexDirection="column" paddingX={1} flexShrink={0}>
         <ThemedText color="text2" wrap="truncate-end">

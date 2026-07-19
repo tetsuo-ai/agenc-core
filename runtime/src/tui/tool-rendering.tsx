@@ -938,6 +938,18 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
     const todos = todoSummaryForInput(record);
     if (todos !== null) return todos;
   }
+  if (name === "ExitPlanMode") {
+    // The plan markdown belongs to the approval overlay (or, after approval,
+    // to the result). Dumping the raw {planFilePath, plan} args into the
+    // transcript row renders the whole plan as unreadable JSON noise.
+    return "plan presented for review";
+  }
+  if (name === "AskUserQuestion") {
+    // Same rule: the interactive picker owns the questions; the args row
+    // must not dump the raw questions JSON.
+    const count = Array.isArray(record.questions) ? record.questions.length : 0;
+    return count > 0 ? `${count} question${count === 1 ? "" : "s"} for the user` : "questions for the user";
+  }
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     const size = contentLengthSummary(value);

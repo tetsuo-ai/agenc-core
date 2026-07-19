@@ -175,20 +175,21 @@ class TasksV2Store {
 
     this.#notify()
 
-    // Schedule fallback poll only when there are incomplete tasks that
-    // need monitoring. When all tasks are completed (or there are none),
-    // the fs.watch watcher and onTasksUpdated callback are sufficient to
-    // detect new activity — no need to keep polling and re-rendering.
+    // Schedule the fallback poll unconditionally while started. In daemon
+    // mode the board is written by ANOTHER process: the first TodoWrite
+    // creates the tasks dir itself, so the fs.watch above was never
+    // established (watch on a missing dir throws) and onTasksUpdated only
+    // covers in-process writes — polling when "empty" is the ONLY way the
+    // store ever discovers the board. getSnapshot keeps the same array
+    // reference between no-change fetches, so subscribers do not re-render.
     if (this.#pollTimer) {
       clearTimeout(this.#pollTimer)
       this.#pollTimer = null
     }
-    if (hasIncomplete) {
-      this.#pollTimer = setTimeout(() => {
-        this.#debouncedFetch(generation)
-      }, FALLBACK_POLL_MS)
-      this.#pollTimer.unref()
-    }
+    this.#pollTimer = setTimeout(() => {
+      this.#debouncedFetch(generation)
+    }, FALLBACK_POLL_MS)
+    this.#pollTimer.unref()
   }
 
   #onHideTimerFired(scheduledForTaskListId: string, generation: number): void {

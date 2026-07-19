@@ -401,7 +401,8 @@ describe("PromptInputFooterLeftSide render paths", () => {
       expect(output).toContain("Tasks:true:false:false:none");
       expect(output).toContain("Teams:true:false");
       expect(output).not.toContain("PR:42");
-      expect(output).toContain("esc interrupt");
+      // The footer must NOT repeat the spinner byline's "esc to interrupt".
+      expect(output).not.toContain("esc interrupt");
     } finally {
       await rendered.dispose();
     }

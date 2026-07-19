@@ -468,14 +468,25 @@ export function hasFullDiskReadAccess(policy: FileSystemSandboxPolicy): boolean 
 }
 
 export function includePlatformDefaults(policy: FileSystemSandboxPolicy): boolean {
-  return !hasFullDiskReadAccess(policy) &&
-    policy.kind === "restricted" &&
-    policy.entries.some(
-      (entry) =>
-        entry.path.kind === "special" &&
-        entry.path.value.kind === "minimal" &&
-        canReadAccess(entry.access),
-    );
+  if (hasFullDiskReadAccess(policy) || policy.kind !== "restricted") {
+    return false;
+  }
+  // The serialized field MUST be honored here, not just the `minimal`
+  // special-path entry: adaptLiveFileSystemPolicy sets the field (via
+  // restrictedFileSystemPolicy's option) and the daemon ships the policy
+  // JSON to the linux launcher, where entries are all that survives — if
+  // only the entry were checked, platform defaults (/bin /usr /lib…) would
+  // never mount and every dynamically-linked payload would die with
+  // execve ENOENT inside the namespace (observed: Glob via bundled rg).
+  if (policy.includePlatformDefaults === true) {
+    return true;
+  }
+  return policy.entries.some(
+    (entry) =>
+      entry.path.kind === "special" &&
+      entry.path.value.kind === "minimal" &&
+      canReadAccess(entry.access),
+  );
 }
 
 function defaultReadOnlySubpathsForWritableRoot(root: string): string[] {

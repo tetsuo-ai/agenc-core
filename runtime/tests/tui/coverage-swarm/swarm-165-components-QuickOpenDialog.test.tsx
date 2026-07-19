@@ -215,7 +215,7 @@ describe("QuickOpenDialog coverage swarm row 165", () => {
         undefined as unknown as number,
       ),
     ).toMatchObject({
-      effectivePreviewLines: 20,
+      effectivePreviewLines: 0,
       maxPathWidth: 1,
       previewOnRight: false,
       previewWidth: 1,
@@ -223,7 +223,7 @@ describe("QuickOpenDialog coverage swarm row 165", () => {
     });
 
     expect(computeQuickOpenLayout(119, 14)).toMatchObject({
-      effectivePreviewLines: 20,
+      effectivePreviewLines: 3,
       previewOnRight: false,
       visibleResults: 1,
     });

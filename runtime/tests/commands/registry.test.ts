@@ -9,6 +9,7 @@ import type { SlashCommand, SlashCommandResult } from "./types.js";
 
 const MINIMAL_REGISTRY_NAMES = [
   "help",
+  "hello",
   "status",
   "login",
   "logout",
@@ -52,6 +53,7 @@ const MINIMAL_REGISTRY_NAMES = [
 
 const DAEMON_TUI_REGISTRY_NAMES = [
   "help",
+  "hello",
   "status",
   "login",
   "logout",

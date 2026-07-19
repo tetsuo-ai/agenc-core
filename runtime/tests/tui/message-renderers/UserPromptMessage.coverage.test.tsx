@@ -23,9 +23,10 @@ describe('UserPromptMessage coverage', () => {
       { columns: 6_000, rows: 24 },
     )
 
-    expect(output).toContain('YOU')
-    // Header shows a short local time, never the raw ISO machine timestamp.
-    expect(output).toMatch(/\d{1,2}:\d{2}/)
+    // No role-label or timestamp header (both removed per UX request): the
+    // message renders bare under the role gutter.
+    expect(output).not.toContain('YOU')
+    expect(output).not.toMatch(/\d{1,2}:\d{2}/)
     expect(output).not.toContain('2026-06-24T12:34:00.000Z')
     expect(output).toContain('HEAD_START')
     expect(output).toContain('TAIL_END')
@@ -33,10 +34,10 @@ describe('UserPromptMessage coverage', () => {
     expect(output).not.toContain('MIDDLE_SENTINEL')
   })
 
-  // Regression: the standard transcript YOU header used to leak the raw
-  // ISO-8601 machine timestamp (e.g. "2026-06-24T01:37:00.437Z"). It must
-  // now render a short local time via formatBriefTimestamp.
-  test('renders a short local time in the YOU header, never a raw ISO timestamp', async () => {
+  // The standard transcript user row used to carry a timestamp header. Per UX
+  // request the header is gone entirely: the message speaks for itself, with
+  // only the role gutter for identity. The brief layout keeps its timestamp.
+  test('renders no timestamp header over a user prompt', async () => {
     const output = await renderToString(
       <UserPromptMessage
         addMargin={false}
@@ -46,14 +47,12 @@ describe('UserPromptMessage coverage', () => {
       { columns: 100, rows: 12 },
     )
 
-    expect(output).toContain('YOU')
+    expect(output).not.toContain('YOU')
     expect(output).toContain('hello there')
-    // No raw ISO machine timestamp in the header.
+    // No header of any kind above the message: no raw ISO, no clock time.
     expect(output).not.toContain('2026-06-24T01:37:00.437Z')
     expect(output).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/)
-    expect(output).not.toContain('Z')
-    // A short clock time is present (e.g. "1:37 AM" or "01:37").
-    expect(output).toMatch(/\d{1,2}:\d{2}/)
+    expect(output).not.toMatch(/\d{1,2}:\d{2}/)
   })
 
   // Regression for the queued-input preview bug: queued previews used to all
@@ -82,7 +81,7 @@ describe('UserPromptMessage coverage', () => {
     const second = await renderQueued('second pending prompt')
 
     for (const output of [first, second]) {
-      expect(output).toContain('YOU')
+      expect(output).not.toContain('YOU')
       expect(output).toContain('queued')
       // No machine timestamp of any kind.
       expect(output).not.toMatch(/\d{4}-\d{2}-\d{2}T/)

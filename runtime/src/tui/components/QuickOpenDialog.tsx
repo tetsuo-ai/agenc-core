@@ -15,7 +15,7 @@ import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
 import { highlightMatch } from '../../utils/highlightMatch';
 import { logError } from '../../utils/log';
 import { readFileInRange } from '../../utils/readFileInRange';
-import { FuzzyPicker } from './design-system/FuzzyPicker';
+import { FuzzyPicker, computeFuzzyPickerPreviewBudget, computeFuzzyPickerVisibleCount } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
   onDone: () => void;
@@ -29,7 +29,9 @@ export function computeQuickOpenLayout(columns: number, rows: number) {
   const safeRows = Math.max(1, Math.floor(rows || 0));
   const previewOnRight = safeColumns >= 120;
   const visibleResults = Math.min(VISIBLE_RESULTS, Math.max(1, safeRows - 14));
-  const effectivePreviewLines = previewOnRight ? Math.max(1, visibleResults - 1) : PREVIEW_LINES;
+  // Bottom preview: never read more lines than the picker's preview budget —
+  // 0 means the picker hides the preview, so skip the file read entirely.
+  const effectivePreviewLines = previewOnRight ? Math.max(1, visibleResults - 1) : Math.min(PREVIEW_LINES, computeFuzzyPickerPreviewBudget(safeRows, computeFuzzyPickerVisibleCount(visibleResults, safeRows)));
   const maxPathWidth = previewOnRight ? Math.max(1, Math.floor(Math.max(1, safeColumns - 10) * 0.4)) : Math.max(1, safeColumns - 8);
   const previewWidth = previewOnRight ? Math.max(1, safeColumns - maxPathWidth - 14) : Math.max(1, safeColumns - 6);
   return {
@@ -123,7 +125,7 @@ export function QuickOpenDialog(t0) {
   let t6;
   if ($[4] !== effectivePreviewLines || $[5] !== focusedPath) {
     t5 = () => {
-      if (!focusedPath) {
+      if (!focusedPath || effectivePreviewLines <= 0) {
         setPreview(null);
         return;
       }

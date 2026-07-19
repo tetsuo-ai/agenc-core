@@ -34,6 +34,8 @@ export interface AgenCTuiGlyphs {
   readonly treeSelectedBranch: string;
   readonly treeSelectedLast: string;
   readonly treeSelectedRoot: string;
+  readonly folderClosed: string;
+  readonly folderOpen: string;
   readonly voiceCursorBars: string;
 }
 
@@ -69,6 +71,8 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   treeSelectedBranch: "|>",
   treeSelectedLast: "`>",
   treeSelectedRoot: ".>",
+  folderClosed: "[+]",
+  folderOpen: "[-]",
   voiceCursorBars: " .:-=+*#@",
 };
 
@@ -104,6 +108,8 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   treeSelectedBranch: "╞═",
   treeSelectedLast: "╘═",
   treeSelectedRoot: "╒═",
+  folderClosed: "📁",
+  folderOpen: "📂",
   voiceCursorBars: " ▁▂▃▄▅▆▇█",
 };
 

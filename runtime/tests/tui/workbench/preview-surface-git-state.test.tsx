@@ -36,6 +36,7 @@ vi.mock("../../../src/tui/workbench/project-tree/gitStatus.js", () => ({
 }));
 
 vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useInputCapture: () => {},
   useKeybinding: () => {},
   useKeybindings: () => {},
 }));

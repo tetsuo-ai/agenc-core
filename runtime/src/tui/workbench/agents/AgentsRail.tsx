@@ -4,6 +4,9 @@ import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState, useSetAppState } from "../../state/AppState.js";
+import { selectAgenCTuiGlyphs } from "../../glyphs.js";
+import { isTerminalTaskStatus } from "../../../tasks/types.js";
+import { formatNumber } from "../../../utils/format.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { formatTaskElapsed } from "./activity.js";
@@ -54,8 +57,74 @@ export function AgentsRail({
         <Text wrap="truncate-end">remote tasks: {remoteCount}</Text>
       ) : null}
       {taskList.length === 0 && remoteCount === 0 ? <Text dimColor>No background agents</Text> : null}
-      <AgentRailSection label="active" tasks={activeTasks} selectedId={selectedId} />
-      <AgentRailSection label="background" tasks={backgroundTasks} selectedId={selectedId} />
+      {taskList.length >= 2 ? (
+        <SwarmPanel tasks={taskList} selectedId={selectedId} />
+      ) : (
+        <>
+          <AgentRailSection label="active" tasks={activeTasks} selectedId={selectedId} />
+          <AgentRailSection label="background" tasks={backgroundTasks} selectedId={selectedId} />
+        </>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * Swarm-style fan-out view (like other harnesses' agent panels): numbered
+ * agents with a live status glyph (animated frame while running, ✓/✗ when
+ * terminal), each agent's own tool/token/elapsed stats, and a totals row once
+ * the swarm settles. Shown instead of the plain sections when 2+ agents are
+ * on the board — a single agent keeps the classic rows.
+ */
+function SwarmPanel({
+  tasks,
+  selectedId,
+}: {
+  readonly tasks: readonly any[];
+  readonly selectedId: string | null;
+}): React.ReactElement {
+  const glyphs = selectAgenCTuiGlyphs();
+  // Frames advance on task-progress re-renders (tokens tick constantly while
+  // agents run), so indexing by wall-clock is enough — no dedicated clock.
+  const frame = glyphs.spinnerFrames[Math.floor(Date.now() / 150) % glyphs.spinnerFrames.length];
+  const totalTools = tasks.reduce((sum, task) => sum + (task.progress?.toolUseCount ?? 0), 0);
+  const totalTokens = tasks.reduce((sum, task) => sum + (task.progress?.tokenCount ?? 0), 0);
+  const allTerminal = tasks.every((task) => isTerminalTaskStatus(task.status));
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text dimColor wrap="truncate-end">─ Agent Swarm ─</Text>
+      {tasks.map((task: any, index: number) => {
+        const terminal = isTerminalTaskStatus(task.status);
+        const failed = task.status === "failed" || task.status === "killed";
+        const glyph = terminal
+          ? (failed ? glyphs.statusError : glyphs.statusSuccess)
+          : frame;
+        const color = terminal ? (failed ? "error" : "success") : statusColor(task.status);
+        const progress = task.progress ?? {};
+        const activity =
+          nonBlankString(progress.lastActivity?.activityDescription) ??
+          nonBlankString(progress.lastActivity?.toolName) ??
+          nonBlankString(task.status) ??
+          "unknown";
+        const selected = selectedId === task.id;
+        return (
+          <Box key={task.id} flexDirection="column" marginTop={index === 0 ? 0 : 0}>
+            <Text wrap="truncate-end">
+              <Text dimColor>{String(index + 1).padStart(3, "0")} </Text>
+              <Text color={color}>{glyph} </Text>
+              <Text color={selected ? "suggestion" : undefined}>{agentRowLabel(task)}</Text>
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {"    "}{progress.toolUseCount ?? 0} tools · {formatNumber(progress.tokenCount ?? 0)} tok · {formatTaskElapsed(task)} · {activity}
+            </Text>
+          </Box>
+        );
+      })}
+      {allTerminal && tasks.length > 1 ? (
+        <Text dimColor wrap="truncate-end">
+          {" "}{tasks.length} agents finished · {totalTools} tools · {formatNumber(totalTokens)} tok
+        </Text>
+      ) : null}
     </Box>
   );
 }
