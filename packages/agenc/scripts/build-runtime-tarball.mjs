@@ -1007,8 +1007,8 @@ function darwinNativeCompatibility(nodeModules, releaseLimits) {
   return { minimumMacosVersion };
 }
 
-function smokeInstalledNativeModules(installRoot, env) {
-  const script = String.raw`
+export function installedNativeModuleSmokeProgram() {
+  return String.raw`
     const { createRequire } = require("node:module");
     const { join } = require("node:path");
     const requireFromArtifact = createRequire(join(process.cwd(), "smoke.cjs"));
@@ -1024,13 +1024,43 @@ function smokeInstalledNativeModules(installRoot, env) {
       env: { PATH: process.env.PATH || "" },
     });
     let output = "";
-    const timeout = setTimeout(() => { child.kill(); process.exit(21); }, 10000);
-    child.onData((chunk) => { output += chunk; });
-    child.onExit(() => {
+    let exitEvent;
+    const fail = () => {
+      process.stderr.write("node-pty smoke failed: " + JSON.stringify({
+        exitCode: exitEvent?.exitCode,
+        signal: exitEvent?.signal,
+        output,
+      }) + "\n");
+      process.exit(22);
+    };
+    const finish = () => {
+      if (exitEvent === undefined || !output.includes("pty-ok")) return;
       clearTimeout(timeout);
-      if (!output.includes("pty-ok")) process.exit(22);
+      if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+    };
+    const timeout = setTimeout(() => {
+      if (exitEvent === undefined) {
+        child.kill();
+        process.exit(21);
+      }
+      fail();
+    }, 10000);
+    child.onData((chunk) => {
+      output += chunk;
+      finish();
+    });
+    child.onExit((event) => {
+      exitEvent = event;
+      if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
+      // Windows ConPTY can report process exit before its final output event.
+      // The existing hard timeout bounds the drain and fails closed.
+      finish();
     });
   `;
+}
+
+function smokeInstalledNativeModules(installRoot, env) {
+  const script = installedNativeModuleSmokeProgram();
   run(process.execPath, ["-e", script], { cwd: installRoot, env });
 }
 

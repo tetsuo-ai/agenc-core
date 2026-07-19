@@ -13,6 +13,7 @@ import {
   assertHostedRunnerContract,
   assertRootLockSnapshot,
   canonicalizeRpmContentInventory,
+  installedNativeModuleSmokeProgram,
   maximumGlibcVersion,
   maximumMacosDeploymentVersion,
   maximumRequiredSymbolVersion,
@@ -457,6 +458,89 @@ test("native packaging applies explicit Linux, Darwin, and Windows output contra
       assert.equal(existsSync(join(modules, "node-pty", "node-addon-api")), false);
       assert.equal(existsSync(join(modules, "node-pty", "prebuilds")), false);
     }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("native smoke drains PTY output that arrives after the exit event", () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-native-smoke-test-"));
+  try {
+    const sqliteRoot = join(work, "node_modules", "better-sqlite3");
+    const ptyRoot = join(work, "node_modules", "node-pty");
+    mkdirSync(sqliteRoot, { recursive: true });
+    mkdirSync(ptyRoot, { recursive: true });
+    writeFileSync(
+      join(sqliteRoot, "index.js"),
+      `module.exports = class Database {
+        prepare() { return { get() { return { value: 42 }; } }; }
+        close() {}
+      };\n`,
+    );
+    writeFileSync(
+      join(ptyRoot, "index.js"),
+      `module.exports.spawn = () => {
+        let onData;
+        let onExit;
+        const child = {
+          kill() {},
+          onData(listener) { onData = listener; },
+          onExit(listener) { onExit = listener; },
+        };
+        queueMicrotask(() => {
+          onExit({
+            exitCode: process.env.AGENC_PTY_SMOKE_EXIT_CODE === "9" ? 9 : 0,
+            signal: process.env.AGENC_PTY_SMOKE_SIGNAL === "9" ? 9 : undefined,
+          });
+          queueMicrotask(() => onData("pty-ok"));
+        });
+        return child;
+      };\n`,
+    );
+    assert.doesNotThrow(() => execFileSync(
+      process.execPath,
+      ["-e", installedNativeModuleSmokeProgram()],
+      {
+        cwd: work,
+        env: { ...process.env },
+        stdio: "pipe",
+        timeout: 5_000,
+      },
+    ));
+    assert.throws(
+      () => execFileSync(
+        process.execPath,
+        ["-e", installedNativeModuleSmokeProgram()],
+        {
+          cwd: work,
+          env: { ...process.env, AGENC_PTY_SMOKE_EXIT_CODE: "9" },
+          stdio: "pipe",
+          timeout: 5_000,
+        },
+      ),
+      (error) => {
+        assert.equal(error.status, 22);
+        assert.match(error.stderr.toString(), /"exitCode":9/);
+        return true;
+      },
+    );
+    assert.throws(
+      () => execFileSync(
+        process.execPath,
+        ["-e", installedNativeModuleSmokeProgram()],
+        {
+          cwd: work,
+          env: { ...process.env, AGENC_PTY_SMOKE_SIGNAL: "9" },
+          stdio: "pipe",
+          timeout: 5_000,
+        },
+      ),
+      (error) => {
+        assert.equal(error.status, 22);
+        assert.match(error.stderr.toString(), /"signal":9/);
+        return true;
+      },
+    );
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

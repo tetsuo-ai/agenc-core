@@ -285,11 +285,35 @@ function smokeExtractedRuntime({ artifact, root, env }) {
       env: { PATH: process.env.PATH || "" },
     });
     let output = "";
-    const timeout = setTimeout(() => { child.kill(); process.exit(21); }, 10000);
-    child.onData((chunk) => { output += chunk; });
-    child.onExit(() => {
+    let exitEvent;
+    const fail = () => {
+      process.stderr.write("node-pty smoke failed: " + JSON.stringify({
+        exitCode: exitEvent?.exitCode,
+        signal: exitEvent?.signal,
+        output,
+      }) + "\n");
+      process.exit(22);
+    };
+    const finish = () => {
+      if (exitEvent === undefined || !output.includes("pty-ok")) return;
       clearTimeout(timeout);
-      if (!output.includes("pty-ok")) process.exit(22);
+      if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+    };
+    const timeout = setTimeout(() => {
+      if (exitEvent === undefined) {
+        child.kill();
+        process.exit(21);
+      }
+      fail();
+    }, 10000);
+    child.onData((chunk) => {
+      output += chunk;
+      finish();
+    });
+    child.onExit((event) => {
+      exitEvent = event;
+      if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
+      finish();
     });
   `;
   run(process.execPath, ["-e", script], { cwd: extracted, env });
@@ -1027,11 +1051,35 @@ async function dockerSmoke({ sources, metadata, work }) {
          cols: 80, rows: 24, cwd: "/data", env: { PATH: process.env.PATH || "" },
        });
        let output = "";
-       const timeout = setTimeout(() => { child.kill(); process.exit(21); }, 10000);
-       child.onData((chunk) => { output += chunk; });
-       child.onExit(() => {
+       let exitEvent;
+       const fail = () => {
+         process.stderr.write("node-pty smoke failed: " + JSON.stringify({
+           exitCode: exitEvent?.exitCode,
+           signal: exitEvent?.signal,
+           output,
+         }) + "\n");
+         process.exit(22);
+       };
+       const finish = () => {
+         if (exitEvent === undefined || !output.includes("pty-ok")) return;
          clearTimeout(timeout);
-         if (!output.includes("pty-ok")) process.exit(22);
+         if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+       };
+       const timeout = setTimeout(() => {
+         if (exitEvent === undefined) {
+           child.kill();
+           process.exit(21);
+         }
+         fail();
+       }, 10000);
+       child.onData((chunk) => {
+         output += chunk;
+         finish();
+       });
+       child.onExit((event) => {
+         exitEvent = event;
+         if (event.exitCode !== 0 || (event.signal ?? 0) !== 0) fail();
+         finish();
        });`,
        "hardened container runtime smoke",
       ),
