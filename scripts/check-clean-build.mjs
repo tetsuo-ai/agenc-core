@@ -1043,19 +1043,19 @@ async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
       tag,
       "-e",
       checkedJavaScriptProgram(
-       `const { readFileSync, statSync } = require("node:fs");
+       String.raw`const { readFileSync, statSync } = require("node:fs");
        const { createRequire } = require("node:module");
        if (process.getuid?.() !== 10001 || process.getgid?.() !== 10001) throw new Error("container is not the dedicated non-root identity");
        const runtimeRoot = statSync("/opt/agenc");
        if (runtimeRoot.uid !== 0 || runtimeRoot.gid !== 0 || (runtimeRoot.mode & 0o022) !== 0) throw new Error("runtime tree is not root-owned and immutable");
        const peerAddon = statSync("/usr/lib/agenc/agenc-peer-credentials.node");
        if (peerAddon.uid !== 0 || peerAddon.gid !== 0 || (peerAddon.mode & 0o777) !== 0o555) throw new Error("peer credential addon is not root-owned and immutable");
-       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\\n") throw new Error("peer credential system requirement marker is missing");
+       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\n") throw new Error("peer credential system requirement marker is missing");
        if (typeof require("/usr/lib/agenc/agenc-peer-credentials.node")?.getPeerUid !== "function") throw new Error("peer credential native smoke failed");
        for (const compiler of ["/usr/bin/cc", "/usr/bin/c++", "/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/clang", "/usr/bin/make", "/usr/local/bin/cc"]) {
          try { statSync(compiler); throw new Error("runtime compiler unexpectedly present: " + compiler); } catch (error) { if (error?.code !== "ENOENT") throw error; }
        }
-       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\\n"));
+       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\n"));
        for (const forbidden of ["gcc", "g++", "make", "libc6-dev", "linux-libc-dev"]) {
          if ([...inventory].some((entry) => entry.startsWith(forbidden + "=") || entry.startsWith(forbidden + ":"))) throw new Error("runtime build package unexpectedly present: " + forbidden);
        }

@@ -742,7 +742,15 @@ describe("reproducible install and release contract", () => {
     );
     expect(cleanBuild).toContain("checkedJavaScriptProgram(");
     expect(cleanBuild).toContain('"hardened container runtime smoke"');
-    expect(cleanBuild).toContain('!== "required\\\\n"');
+    const hardenedSmoke = cleanBuild.match(
+      /checkedJavaScriptProgram\(\s*String\.raw`([\s\S]*?)`,\s*"hardened container runtime smoke"/,
+    );
+    expect(hardenedSmoke).not.toBeNull();
+    const hardenedSmokeSource = hardenedSmoke?.[1] ?? "";
+    expect(() => new Function(hardenedSmokeSource)).not.toThrow();
+    expect(hardenedSmokeSource).toContain('.split("\\n")');
+    expect(hardenedSmokeSource).not.toContain('.split("\\\\n")');
+    expect(cleanBuild).toContain('!== "required\\n"');
     expect(cleanBuild).toContain('"--cap-drop"');
     expect(cleanBuild.match(/checkoutIndex\(dockerSources\[/g)).toHaveLength(2);
 
