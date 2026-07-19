@@ -122,6 +122,38 @@ function captureCombined(cmd, args, opts = {}) {
   return output || undefined;
 }
 
+function resolveNpmCliPath(artifactProfile) {
+  const configured = process.env.AGENC_NPM_CLI_PATH?.trim();
+  const lifecycle = process.env.npm_execpath?.trim();
+  const candidate = configured || lifecycle;
+  if (
+    candidate &&
+    isAbsolute(candidate) &&
+    existsSync(candidate) &&
+    statSync(candidate).isFile()
+  ) {
+    return candidate;
+  }
+  if (artifactProfile === "release") {
+    throw new Error("release builds require an absolute verified AGENC_NPM_CLI_PATH");
+  }
+  return undefined;
+}
+
+function runNpm(npmCliPath, args, opts = {}) {
+  if (npmCliPath) {
+    return run(process.execPath, [npmCliPath, ...args], { ...opts, shell: false });
+  }
+  return run("npm", args, opts);
+}
+
+function captureNpm(npmCliPath, args, opts = {}) {
+  if (npmCliPath) {
+    return capture(process.execPath, [npmCliPath, ...args], { ...opts, shell: false });
+  }
+  return capture("npm", args, opts);
+}
+
 function firstLine(value) {
   return value?.split(/\r?\n/, 1)[0];
 }
@@ -1068,11 +1100,16 @@ async function main() {
     throw new Error("root package-lock.json must be v3 and contain the runtime workspace");
   }
   assertRootLockSnapshot(rootPackage, lockfile);
+  const artifactProfile = process.env.AGENC_ARTIFACT_PROFILE?.trim() || "release";
+  if (!/^(release|clean-local|container-local)$/.test(artifactProfile)) {
+    throw new Error(`unsupported AGENC_ARTIFACT_PROFILE: ${artifactProfile}`);
+  }
+  const npmCliPath = resolveNpmCliPath(artifactProfile);
   const expectedNpmVersion = pinnedNpmVersion(rootPackage);
   if (expectedNpmVersion !== releaseToolchain.npmVersion) {
     throw new Error("root packageManager and release-toolchain npm versions differ");
   }
-  const npmVersion = capture("npm", ["--version"], { cwd: repoRoot });
+  const npmVersion = captureNpm(npmCliPath, ["--version"], { cwd: repoRoot });
   if (npmVersion !== expectedNpmVersion) {
     throw new Error(
       `release build requires npm ${expectedNpmVersion}; found ${npmVersion}`,
@@ -1100,10 +1137,6 @@ async function main() {
     throw new Error("current Node native ABI does not match release-toolchain.json");
   }
   const source = sourceMetadata();
-  const artifactProfile = process.env.AGENC_ARTIFACT_PROFILE?.trim() || "release";
-  if (!/^(release|clean-local|container-local)$/.test(artifactProfile)) {
-    throw new Error(`unsupported AGENC_ARTIFACT_PROFILE: ${artifactProfile}`);
-  }
   const nodeHeadersRoot = process.env.npm_config_nodedir?.trim();
   if (!nodeHeadersRoot || !isAbsolute(nodeHeadersRoot)) {
     throw new Error("native runtime builds require an absolute npm_config_nodedir");
@@ -1150,7 +1183,13 @@ async function main() {
   }
   if (process.platform === "darwin") {
     releaseEnv.MACOSX_DEPLOYMENT_TARGET = releaseToolchain.macos.minimumVersion;
-    releaseEnv.LDFLAGS = [releaseEnv.LDFLAGS, "-Wl,-no_uuid"].filter(Boolean).join(" ");
+    releaseEnv.LDFLAGS = [
+      releaseEnv.LDFLAGS,
+      "-Wl,-no_uuid",
+      // Rewrite linker-generated N_OSO debug-map entries relative to a stable
+      // root so native addons do not retain the per-build staging directory.
+      "-Wl,-oso_prefix,.",
+    ].filter(Boolean).join(" ");
   }
   if (process.platform === "win32") {
     releaseEnv.CL = [releaseEnv.CL, "/Brepro"].filter(Boolean).join(" ");
@@ -1171,11 +1210,11 @@ async function main() {
   try {
     // 1. Build the runtime (produces dist/).
     console.error(`[build] runtime ${version} (${slug})`);
-    run("npm", ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
+    runNpm(npmCliPath, ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
 
     // 2. Pack the runtime package into a tgz (honors runtime's `files`).
-    const packed = capture(
-      "npm",
+    const packed = captureNpm(
+      npmCliPath,
       ["pack", "--silent", "--ignore-scripts", "--pack-destination", stage],
       { cwd: runtimeDir, env: releaseEnv },
     )
@@ -1217,8 +1256,8 @@ async function main() {
       strict: true,
       strip: 1,
     });
-    run(
-      "npm",
+    runNpm(
+      npmCliPath,
       [
         "ci",
         "--omit=dev",

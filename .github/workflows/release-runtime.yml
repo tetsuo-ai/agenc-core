@@ -236,6 +236,7 @@ jobs:
           test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
           test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "AGENC_NPM_CLI_PATH=$node_root/lib/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -254,8 +255,12 @@ jobs:
           test "$(python3.12 -c 'import platform; print(platform.python_version())')" = "3.12.13"
           test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
           test "$(node --version)" = "v$NODE_VERSION"
-          test "$(npm --version)" = "$NPM_VERSION"
+          test "$(node "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
+          # actions/checkout registers this bind-mounted path only in its
+          # temporary HOME; register the exact path for subsequent container
+          # steps so Git's ownership check remains enabled everywhere else.
+          git config --global --add safe.directory "$source_root"
           owned_root="$RUNNER_TEMP/agenc-owned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
           first_source="$owned_root/source-first"
           second_source="$owned_root/source-second"
@@ -282,9 +287,11 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            node "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+              --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              node "$AGENC_NPM_CLI_PATH" --prefix "$build_source" \
+                --workspace=@tetsuo-ai/agenc run build:runtime-tarball
           done
           node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
@@ -569,6 +576,7 @@ jobs:
           test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
           test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
+          echo "AGENC_NPM_CLI_PATH=$node_root/lib/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -627,7 +635,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
           if ((& (Join-Path $nodeRoot 'node.exe') --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
           if ((& (Join-Path $nodeRoot 'npm.cmd') --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
+          $npmCliPath = Join-Path $nodeRoot 'node_modules\npm\bin\npm-cli.js'
+          if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'pinned npm CLI is missing' }
           $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "AGENC_NPM_CLI_PATH=$npmCliPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "npm_config_nodedir=$headersRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_DISTRIBUTION_SHA256=$($distribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_HEADERS_SHA256=$($toolchain.nodeHeaders.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -640,7 +651,7 @@ jobs:
           set -euo pipefail
           umask 022
           test "$(node --version)" = "v$NODE_VERSION"
-          test "$(npm --version)" = "$NPM_VERSION"
+          test "$(node "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
           runner_temp="$RUNNER_TEMP"
           if command -v cygpath >/dev/null 2>&1; then
@@ -672,9 +683,11 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            npm ci --prefix "$build_source" --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            node "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+              --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              npm --prefix "$build_source" --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              node "$AGENC_NPM_CLI_PATH" --prefix "$build_source" \
+                --workspace=@tetsuo-ai/agenc run build:runtime-tarball
           done
           node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \

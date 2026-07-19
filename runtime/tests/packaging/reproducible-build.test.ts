@@ -110,7 +110,8 @@ describe("reproducible install and release contract", () => {
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
     );
-    expect(workflow).toMatch(/npm ci --prefix .* --no-audit --no-fund/);
+    expect(workflow.match(/node "\$AGENC_NPM_CLI_PATH" ci --prefix/g)).toHaveLength(2);
+    expect(workflow.match(/node "\$AGENC_NPM_CLI_PATH" --prefix/g)).toHaveLength(2);
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
     expect(workflow).toContain('NODE_VERSION: "25.9.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
@@ -128,6 +129,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("AGENC_NODE_DISTRIBUTION_SHA256=");
     expect(workflow).toContain("AGENC_NODE_HEADERS_SHA256=");
     expect(workflow).toContain("AGENC_NPM_DISTRIBUTION_SHA256=");
+    expect(workflow).toContain("AGENC_NPM_CLI_PATH=");
     expect(workflow).toContain("npm_config_nodedir=");
     expect(workflow).toContain("nodeDistributions");
     expect(workflow).toContain("nodeHeaders");
@@ -150,6 +152,15 @@ describe("reproducible install and release contract", () => {
     expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
     expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
       linuxInstall.indexOf('"$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js"'),
+    );
+    const linuxBuild = workflow.slice(
+      workflow.indexOf("Build from two isolated worktrees and compare bytes"),
+      workflow.indexOf("Select the canonical runtime subject and bundle path"),
+    );
+    expect(linuxBuild).toContain('git config --global --add safe.directory "$source_root"');
+    expect(linuxBuild).not.toContain("safe.directory '*'");
+    expect(linuxBuild.indexOf("safe.directory")).toBeLessThan(
+      linuxBuild.indexOf("git worktree add"),
     );
     const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
     const macosValidation = nativeJob.slice(
@@ -182,10 +193,10 @@ describe("reproducible install and release contract", () => {
       "Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes",
     );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
-      nativeJob.indexOf("npm ci --prefix"),
+      nativeJob.indexOf('node "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
     expect(nativeJob.indexOf("Validate and activate the reviewed Windows runner")).toBeLessThan(
-      nativeJob.indexOf("npm ci --prefix"),
+      nativeJob.indexOf('node "$AGENC_NPM_CLI_PATH" ci --prefix'),
     );
     expect(workflow.match(/artifact-metadata: write/g)).toHaveLength(2);
     expect(workflow).toMatch(/^permissions:\n  contents: read\n\nenv:/m);
@@ -215,6 +226,11 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(builder).toContain('"MACOSX_DEPLOYMENT_TARGET", "SDKROOT"');
+    expect(builder).toContain('"-Wl,-no_uuid"');
+    expect(builder).toContain('"-Wl,-oso_prefix,."');
+    expect(builder).toContain("release builds require an absolute verified AGENC_NPM_CLI_PATH");
+    expect(builder).toContain("runNpm(npmCliPath");
+    expect(builder).toContain("captureNpm(npmCliPath");
     expect(builder).toContain('"ci"');
     expect(builder).toContain('"--workspace=@tetsuo-ai/runtime"');
     expect(builder).toContain("writeCanonicalArchive");
