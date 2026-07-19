@@ -397,6 +397,20 @@ function nativeFixture(root, platform) {
   writeFileSync(join(sqliteBuild, "Release", "obj.target", "sqlite.o"), "object");
   mkdirSync(join(ptyBuild, "Release"), { recursive: true });
   writeFileSync(join(ptyBuild, "Release", "pty.node"), "pty");
+  const generatedNodeAddonApi = join(
+    modules,
+    "node-pty",
+    "node-addon-api",
+    "Release",
+    "obj",
+    "node_addon_api_except",
+    "node_add.tlog",
+  );
+  mkdirSync(generatedNodeAddonApi, { recursive: true });
+  writeFileSync(
+    join(generatedNodeAddonApi, "node_addon_api_except.lastbuildstate"),
+    "C:\\Users\\builder\\AppData\\Local\\Temp\\agenc-runtime-build-random",
+  );
   if (platform === "win32") {
     for (const name of [
       "conpty.node",
@@ -440,6 +454,7 @@ test("native packaging applies explicit Linux, Darwin, and Windows output contra
       assert.equal(existsSync(join(sqliteBuild, "config.gypi")), false);
       assert.equal(existsSync(join(sqliteBuild, "Release", "obj.target")), false);
       assert.equal(existsSync(join(ptyBuild, "Makefile")), false);
+      assert.equal(existsSync(join(modules, "node-pty", "node-addon-api")), false);
       assert.equal(existsSync(join(modules, "node-pty", "prebuilds")), false);
     }
   } finally {

@@ -808,6 +808,10 @@ export function pruneNativeBuildIntermediates(
     // pty.node alone (see node-pty's binding.gyp OS guards).
     retainRuntimeBuildFiles(nodePty, ["Release/pty.node"]);
   }
+  // node-gyp generates platform-specific Makefiles or MSBuild obj/tlog state
+  // here while resolving node-addon-api targets. No file in this directory is
+  // needed after the loadable node-pty binaries have been retained.
+  rmSync(join(nodePty, "node-addon-api"), { recursive: true, force: true });
   // Source builds must never retain vendored prebuilds for another ABI or OS.
   rmSync(join(nodePty, "prebuilds"), { recursive: true, force: true });
 }
