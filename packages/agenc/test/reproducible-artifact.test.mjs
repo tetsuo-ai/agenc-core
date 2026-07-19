@@ -522,6 +522,9 @@ test("native smoke inherits required process state and drains output after exit"
           });
           queueMicrotask(() => onData("pty-ok"));
         });
+        // Model a native ConPTY/libuv handle that can remain referenced after
+        // both success events. The standalone smoke must still terminate.
+        setInterval(() => {}, 60_000);
         return child;
       };\n`,
     );

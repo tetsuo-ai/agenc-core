@@ -318,6 +318,7 @@ function smokeExtractedRuntime({ artifact, root, env }) {
       if (exitEvent === undefined || !output.includes("pty-ok")) return;
       clearTimeout(timeout);
       if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+      process.exit(0);
     };
     const timeout = setTimeout(() => {
       if (exitEvent === undefined) {
@@ -1084,6 +1085,7 @@ async function dockerSmoke({ sources, metadata, work }) {
          if (exitEvent === undefined || !output.includes("pty-ok")) return;
          clearTimeout(timeout);
          if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+         process.exit(0);
        };
        const timeout = setTimeout(() => {
          if (exitEvent === undefined) {

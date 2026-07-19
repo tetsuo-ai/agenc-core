@@ -1060,6 +1060,10 @@ export function installedNativeModuleSmokeProgram(platform = process.platform) {
       if (exitEvent === undefined || !output.includes("pty-ok")) return;
       clearTimeout(timeout);
       if (exitEvent.exitCode !== 0 || (exitEvent.signal ?? 0) !== 0) fail();
+      // This script is a standalone smoke process. On Windows, ConPTY may
+      // retain a native/libuv handle after delivering both exit and output;
+      // finish explicitly once every success invariant has been observed.
+      process.exit(0);
     };
     const timeout = setTimeout(() => {
       if (exitEvent === undefined) {
