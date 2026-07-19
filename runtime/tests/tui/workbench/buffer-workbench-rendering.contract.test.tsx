@@ -373,6 +373,7 @@ describe("BUFFER workbench rendering", () => {
     expect(descriptor?.footerHints).toContain("shift+tab composer");
     expect(descriptor?.footerHints).toContain("ctrl+x h explorer");
     expect(descriptor?.footerHints).toContain("ctrl+x ctrl+e external");
+    expect(descriptor?.footerHints).toContain("ctrl+r rail");
     expect(descriptor?.footerHints).toContain("ctrl+x q close");
   });
 });

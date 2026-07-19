@@ -45,14 +45,17 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     mode: "preview",
     title: (state) => state.activeFilePath ?? "PREVIEW",
     keybindings: ["j", "k", "e", "@", "q"],
-    footerHints: "Preview: j/k scroll  e edit  @ attach  q close",
+    footerHints: "Preview: j/k scroll  e edit  ctrl+r rail  @ attach  q close",
     renderBody: ({ focused }) => <PreviewSurface focused={focused} />,
   },
   {
     mode: "buffer",
     title: (state) => state.activeFilePath ?? "BUFFER",
     keybindings: ["shift+tab", "ctrl+x h", "ctrl+x j", "ctrl+x ctrl+e", "ctrl+x q"],
-    footerHints: "Buffer: embedded nvim  shift+tab composer  ctrl+x h explorer  ctrl+x ctrl+e external  ctrl+x q close",
+    // ctrl+r is the global rail toggle (works from any surface) — without it
+    // in the footer, fallback-buffer users have no visible way to discover
+    // the right-hand review rail.
+    footerHints: "Buffer: embedded nvim  shift+tab composer  ctrl+x h explorer  ctrl+x ctrl+e external  ctrl+r rail  ctrl+x q close",
     renderBody: ({ focused }) => <BufferSurface focused={focused} />,
   },
   {
