@@ -284,8 +284,13 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain("`/d1trimfile:${buildRoot}\\\\`");
     expect(builder).toContain('WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>"');
     expect(builder).toContain('"CL", "LINK", "_LINK_"');
-    expect(builder).toContain("releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, stage)");
-    expect(builder).toContain("windowsReproducibleNativeFlagProvenance(releaseEnv, stage)");
+    expect(builder).toContain("? canonicalWindowsNativeBuildRoot(stage)");
+    expect(builder).toContain(
+      "releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, nativeBuildRoot)",
+    );
+    expect(builder).toContain(
+      "windowsReproducibleNativeFlagProvenance(releaseEnv, nativeBuildRoot)",
+    );
     expect(builder).not.toContain("Object.assign(releaseEnv, withWindowsReproducibleNativeFlags");
     expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
     expect(builder).toContain("release-toolchain.json has no valid Windows common.gypi contract");

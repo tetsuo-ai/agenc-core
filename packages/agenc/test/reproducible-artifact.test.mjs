@@ -12,6 +12,7 @@ import {
   assertNoLocalPathLeaks,
   assertHostedRunnerContract,
   assertRootLockSnapshot,
+  canonicalWindowsNativeBuildRoot,
   canonicalizeRpmContentInventory,
   installedNativeModuleSmokeProgram,
   maximumGlibcVersion,
@@ -326,6 +327,30 @@ test("Windows release flags trim random native roots and override project debug 
   assert.throws(
     () => withWindowsReproducibleNativeFlags({}, "relative-build-root"),
     /must be absolute/,
+  );
+});
+
+test("Windows release flags canonicalize 8.3 staging aliases before path trimming", () => {
+  const alias =
+    "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\agenc-runtime-build-Ab12cd";
+  const canonical =
+    "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agenc-runtime-build-Ab12cd";
+  const observed = [];
+  const root = canonicalWindowsNativeBuildRoot(alias, (value) => {
+    observed.push(value);
+    return `\\\\?\\${canonical}`;
+  });
+  assert.deepEqual(observed, [alias]);
+  assert.equal(root, canonical);
+  assert.equal(
+    withWindowsReproducibleNativeFlags({}, root).CL,
+    `/Brepro /d1trimfile:${canonical}\\`,
+  );
+  assert.throws(
+    () => canonicalWindowsNativeBuildRoot(alias, () => {
+      throw new Error("missing stage");
+    }),
+    /could not be canonicalized/,
   );
 });
 

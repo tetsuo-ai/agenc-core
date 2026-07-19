@@ -204,6 +204,31 @@ function windowsNativeBuildRoot(value) {
   return root;
 }
 
+function withoutWindowsNamespacePrefix(value) {
+  if (value.startsWith("\\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;
+  if (value.startsWith("\\\\?\\")) return value.slice(4);
+  return value;
+}
+
+export function canonicalWindowsNativeBuildRoot(
+  value,
+  resolver = realpathSync.native,
+) {
+  const root = windowsNativeBuildRoot(value);
+  if (typeof resolver !== "function") {
+    throw new TypeError("Windows native build root resolver must be a function");
+  }
+  let canonical;
+  try {
+    canonical = resolver(root);
+  } catch (error) {
+    throw new Error("Windows native build root could not be canonicalized", {
+      cause: error,
+    });
+  }
+  return windowsNativeBuildRoot(withoutWindowsNamespacePrefix(canonical));
+}
+
 export function withWindowsReproducibleNativeFlags(environment, nativeBuildRoot) {
   const result = { ...environment };
   const append = (canonicalName, flags) => {
@@ -1427,14 +1452,20 @@ async function main() {
 
   const stage = mkdtempSync(join(tmpdir(), "agenc-runtime-build-"));
   try {
+    // GitHub's Windows TEMP can use an 8.3 alias (RUNNER~1), while MSVC
+    // expands __FILE__ through the canonical long path. /d1trimfile only
+    // applies when its prefix matches that compiler identity exactly.
+    const nativeBuildRoot = process.platform === "win32"
+      ? canonicalWindowsNativeBuildRoot(stage)
+      : stage;
     if (process.platform === "win32") {
-      releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, stage);
+      releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, nativeBuildRoot);
     }
     const nativeToolchain = nativeToolchainMetadata(
       releaseToolchain,
       artifactProfile,
       process.platform === "win32"
-        ? windowsReproducibleNativeFlagProvenance(releaseEnv, stage)
+        ? windowsReproducibleNativeFlagProvenance(releaseEnv, nativeBuildRoot)
         : releaseEnv,
     );
 
