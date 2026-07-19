@@ -206,7 +206,10 @@ export function validateLauncherManifest({
       ["nodeApiVersion", LEGACY_BRIDGE_CONTRACT.nodeApiVersion],
     ]) {
       if (manifest.build?.[field] !== expected) {
-        fail(`v0.6.2 compatibility bridge requires build.${field} ${expected}`);
+        fail(
+          `v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} compatibility bridge requires ` +
+            `build.${field} ${expected}`,
+        );
       }
     }
   }

@@ -61,7 +61,7 @@ function sha256(bytes) {
 
 test("release attestation gate exactly matches the official client policy", () => {
   const commit = "a".repeat(40);
-  const sourceRef = "refs/tags/agenc-v0.6.2";
+  const sourceRef = `refs/tags/${LEGACY_BRIDGE_CONTRACT.releaseTag}`;
   assert.deepEqual(RELEASE_ATTESTATION_POLICY, {
     repository: "tetsuo-ai/agenc-core",
     signerWorkflow: "tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml",
@@ -347,7 +347,7 @@ function bridgeV2Fixture() {
   };
 }
 
-test("v0.6.2 legacy projection is deterministic, minimal, and Node 25 exact", () => {
+test("v0.7.0 legacy projection is deterministic, minimal, and Node 25 exact", () => {
   const first = projectLegacyManifest(bridgeV2Fixture());
   const reordered = bridgeV2Fixture();
   reordered.artifacts.reverse();
@@ -388,7 +388,7 @@ test("v0.6.2 legacy projection is deterministic, minimal, and Node 25 exact", ()
 
 test("legacy bridge projection rejects drift and duplicate platform entries", () => {
   const cases = [
-    ["version", (manifest) => { manifest.runtimeVersion = "0.6.3"; }, /runtimeVersion 0\.6\.2/],
+    ["version", (manifest) => { manifest.runtimeVersion = "0.6.2"; }, /runtimeVersion 0\.7\.0/],
     ["Node", (manifest) => { manifest.build.nodeVersion = "v24.18.0"; }, /nodeVersion v25\.9\.0/],
     ["ABI", (manifest) => { manifest.artifacts[0].nodeModuleAbi = "137"; }, /source artifact is invalid/],
     ["URL", (manifest) => { manifest.artifacts[0].url = "https://example.invalid/runtime.tar.gz"; }, /source artifact is invalid/],
@@ -403,7 +403,7 @@ test("legacy bridge projection rejects drift and duplicate platform entries", ()
   }
 });
 
-test("future releases can only reuse exact pinned canonical v0.6.2 legacy bytes", () => {
+test("future releases can only reuse exact pinned canonical v0.7.0 legacy bytes", () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-frozen-legacy-"));
   try {
     const path = join(work, "agenc-runtime-manifest.json");

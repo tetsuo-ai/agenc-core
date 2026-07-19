@@ -193,7 +193,7 @@ describe("reproducible install and release contract", () => {
       "darwin-arm64": {
         runnerLabel: "macos-15",
         imageOS: "macos15",
-        imageVersion: "20260706.0213.1",
+        imageVersion: "20260715.0234.1",
         runnerArch: "ARM64",
         xcodeVersion: "16.4",
         xcodeBuild: "16F6",
@@ -202,16 +202,16 @@ describe("reproducible install and release contract", () => {
       },
       "darwin-x64": {
         runnerLabel: "macos-15-intel",
-        imageVersion: "20260629.0276.1",
+        imageVersion: "20260715.0340.1",
         runnerArch: "X64",
       },
       "win-x64": {
         runnerLabel: "windows-2025",
-        imageOS: "win25",
-        imageVersion: "20260628.181.1",
+        imageOS: "win25-vs2026",
+        imageVersion: "20260714.173.1",
         runnerArch: "X64",
-        visualStudioVersion: "17.14.37411.7",
-        msvcToolsVersion: "14.44.35211",
+        visualStudioVersion: "18.7.11925.98",
+        msvcToolsVersion: "14.51.36231",
         windowsSdkVersion: "10.0.26100.0",
       },
     });
@@ -221,8 +221,8 @@ describe("reproducible install and release contract", () => {
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "19188b90457ed82a19099d05015df66773c81e1cb93612e21db4b5e5a931b905",
-        arm64: "304f9e337e2f2515bd9550b4ac6a75de88c240da45fdb9e51a16441171421172",
+        x64: "567dfb68497d822260d8d5fd7c56da9b3fdfede77b2a12fe1d63730772b396d8",
+        arm64: "94bc59ce600773d42f1a70a7e3a6c1a33027ab1747719a3c27039503ba8f23cc",
       },
     });
   });
