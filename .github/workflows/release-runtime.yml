@@ -653,6 +653,11 @@ jobs:
           if ($actualNpmVersion -cne $env:NPM_VERSION) {
             throw "npm version mismatch at ${npmCliPath}: '$actualNpmVersion' != '$env:NPM_VERSION'"
           }
+          $headerProof = & $nodeExecutablePath packages/agenc/scripts/prepare-windows-node-headers.mjs --root $headersRoot | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'failed to prepare deterministic Windows Node headers' }
+          if ($headerProof.sha256 -cne $toolchain.nodeHeaders.windowsCommonGypi.releaseSha256) {
+            throw 'sanitized Node common.gypi digest mismatch'
+          }
           $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "AGENC_NODE_EXECUTABLE_PATH=$nodeExecutablePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_CLI_PATH=$npmCliPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -661,6 +666,7 @@ jobs:
           "AGENC_NODE_HEADERS_SHA256=$($toolchain.nodeHeaders.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_IMPORT_LIBRARY_SHA256=$($importLibrary.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_IMPORT_LIBRARY_BYTES=$($importLibrary.bytes)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build from two isolated worktrees and compare bytes
         shell: bash
@@ -706,10 +712,26 @@ jobs:
               "$AGENC_NODE_EXECUTABLE_PATH" \
                 "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"
           done
-          "$AGENC_NODE_EXECUTABLE_PATH" \
+          if ! "$AGENC_NODE_EXECUTABLE_PATH" \
             "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
-            --output "$source_root/packages/agenc/release-artifacts"
+            --output "$source_root/packages/agenc/release-artifacts"; then
+            diagnostics="$runner_temp/agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.slug }}"
+            rm -rf "$diagnostics"
+            mkdir -p "$diagnostics/first" "$diagnostics/second"
+            cp "$first"/* "$diagnostics/first/"
+            cp "$second"/* "$diagnostics/second/"
+            exit 1
+          fi
+      - name: Upload failed reproducibility inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repro-diagnostics-${{ matrix.slug }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agenc-repro-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slug }}/
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 1
       - name: Select the canonical runtime subject and bundle path
         id: runtime-artifact
         shell: bash

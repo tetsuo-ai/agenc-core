@@ -77,7 +77,14 @@
   },
   "nodeHeaders": {
     "file": "node-v25.9.0-headers.tar.gz",
-    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a"
+    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a",
+    "windowsCommonGypi": {
+      "schemaVersion": 1,
+      "path": "include/node/common.gypi",
+      "sourceSha256": "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
+      "releaseSha256": "45fcbaa2a39b350b81b38bc8d073e357f88269af463ffde1a5a71d70d3370212",
+      "transformation": "debug-information-format-none"
+    }
   },
   "nodeImportLibraries": {
     "win-x64": {

@@ -24,6 +24,7 @@ import {
   windowsReproducibleNativeFlagProvenance,
   writeCanonicalArchive,
 } from "../scripts/build-runtime-tarball.mjs";
+import { prepareWindowsCommonGypiBytes } from "../scripts/prepare-windows-node-headers.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
 
 function fixture(root, reverse) {
@@ -305,6 +306,51 @@ test("Windows release flags trim random native roots and override project debug 
   assert.throws(
     () => withWindowsReproducibleNativeFlags({}, "relative-build-root"),
     /must be absolute/,
+  );
+});
+
+test("Windows release headers disable pinned /Z7 exactly once and remain idempotent", () => {
+  const pinnedLine =
+    "        'DebugInformationFormat': 1,          # /Z7 embed info in .obj files\n";
+  const releaseLine =
+    "        'DebugInformationFormat': 0,          # disabled for reproducible release objects\n";
+  const source = Buffer.from(`before\n${pinnedLine}after\n`);
+  const expected = Buffer.from(`before\n${releaseLine}after\n`);
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const contract = {
+    sourceSha256: digest(source),
+    releaseSha256: digest(expected),
+  };
+
+  const prepared = prepareWindowsCommonGypiBytes(source, contract);
+  assert.equal(prepared.changed, true);
+  assert.deepEqual(prepared.bytes, expected);
+  assert.equal(prepared.sourceSha256, contract.sourceSha256);
+  assert.equal(prepared.releaseSha256, contract.releaseSha256);
+
+  const repeated = prepareWindowsCommonGypiBytes(prepared.bytes, contract);
+  assert.equal(repeated.changed, false);
+  assert.deepEqual(repeated.bytes, expected);
+  assert.equal(repeated.releaseSha256, contract.releaseSha256);
+
+  const duplicate = Buffer.from(`${pinnedLine}${pinnedLine}`);
+  assert.throws(
+    () => prepareWindowsCommonGypiBytes(duplicate, {
+      sourceSha256: digest(duplicate),
+      releaseSha256: contract.releaseSha256,
+    }),
+    /exactly one pinned \/Z7 setting/,
+  );
+  assert.throws(
+    () => prepareWindowsCommonGypiBytes(Buffer.from("detached\n"), contract),
+    /source digest mismatch/,
+  );
+  assert.throws(
+    () => prepareWindowsCommonGypiBytes(source, {
+      ...contract,
+      releaseSha256: "0".repeat(64),
+    }),
+    /sanitized Node common\.gypi digest mismatch/,
   );
 });
 

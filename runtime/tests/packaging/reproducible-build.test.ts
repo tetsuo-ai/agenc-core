@@ -156,6 +156,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("AGENC_BUILDER_ID=");
     expect(workflow).toContain("AGENC_NODE_DISTRIBUTION_SHA256=");
     expect(workflow).toContain("AGENC_NODE_HEADERS_SHA256=");
+    expect(workflow).toContain("AGENC_NODE_COMMON_GYPI_SHA256=");
     expect(workflow).toContain("AGENC_NPM_DISTRIBUTION_SHA256=");
     expect(workflow).toContain("AGENC_NODE_EXECUTABLE_PATH=");
     expect(workflow).toContain("AGENC_NPM_CLI_PATH=");
@@ -223,7 +224,19 @@ describe("reproducible install and release contract", () => {
       "Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes",
     );
     expect(windowsInstall).toContain(
+      "packages/agenc/scripts/prepare-windows-node-headers.mjs --root $headersRoot",
+    );
+    expect(windowsInstall).toContain(
+      "$headerProof.sha256 -cne $toolchain.nodeHeaders.windowsCommonGypi.releaseSha256",
+    );
+    expect(windowsInstall).toContain(
+      '"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"',
+    );
+    expect(windowsInstall).toContain(
       "& $nodeExecutablePath $npmCliPath install --global $npmArchive --prefix $nodeRoot",
+    );
+    expect(windowsInstall.indexOf("prepare-windows-node-headers.mjs")).toBeLessThan(
+      windowsInstall.indexOf('"AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)"'),
     );
     expect(nativeJob.indexOf("Validate the reviewed macOS runner")).toBeLessThan(
       nativeJob.indexOf('"$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix'),
@@ -244,6 +257,10 @@ describe("reproducible install and release contract", () => {
     expect(workflow).not.toContain("actions/setup-node");
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(4);
     expect(workflow.match(/git -C .* worktree remove --force/g)).toHaveLength(4);
+    expect(workflow).toContain("Upload failed reproducibility inputs");
+    expect(workflow).toContain("if-no-files-found: ignore");
+    expect(workflow).toContain("retention-days: 1");
+    expect(workflow).toContain("agenc-repro-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}");
     expect(workflow).toContain('npm-cache-$build');
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
@@ -271,6 +288,11 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain("windowsReproducibleNativeFlagProvenance(releaseEnv, stage)");
     expect(builder).not.toContain("Object.assign(releaseEnv, withWindowsReproducibleNativeFlags");
     expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
+    expect(builder).toContain("release-toolchain.json has no valid Windows common.gypi contract");
+    expect(builder).toContain("AGENC_NODE_COMMON_GYPI_SHA256");
+    expect(builder).toContain("metadata.nodeCommonGypiSourceSha256");
+    expect(builder).toContain("metadata.nodeCommonGypiReleaseSha256");
+    expect(builder).toContain("metadata.nodeCommonGypiTransformation");
     expect(builder).toContain("runNpm(buildExecutables");
     expect(builder).toContain("captureNpm(buildExecutables");
     expect(builder).toContain("release build process is not running under the verified Node executable");
@@ -287,6 +309,15 @@ describe("reproducible install and release contract", () => {
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
+      nodeHeaders: {
+        windowsCommonGypi: {
+          schemaVersion: number;
+          path: string;
+          sourceSha256: string;
+          releaseSha256: string;
+          transformation: string;
+        };
+      };
       nodeImportLibraries: Record<
         string,
         { file: string; url: string; sha256: string; bytes: number }
@@ -334,6 +365,13 @@ describe("reproducible install and release contract", () => {
       url: "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
       sha256: "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
       bytes: 2_995_712,
+    });
+    expect(nativeContract.nodeHeaders.windowsCommonGypi).toEqual({
+      schemaVersion: 1,
+      path: "include/node/common.gypi",
+      sourceSha256: "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
+      releaseSha256: "45fcbaa2a39b350b81b38bc8d073e357f88269af463ffde1a5a71d70d3370212",
+      transformation: "debug-information-format-none",
     });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
       schemaVersion: 1,

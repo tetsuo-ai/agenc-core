@@ -459,6 +459,7 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     metadata.nodeHeadersFile = expectedHeaders.file;
     metadata.nodeHeadersSha256 = headersSha256;
     if (process.platform === "win32") {
+      const commonGypiContract = expectedHeaders.windowsCommonGypi;
       if (
         typeof expectedImportLibrary?.file !== "string" ||
         typeof expectedImportLibrary?.url !== "string" ||
@@ -467,6 +468,15 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
         expectedImportLibrary.bytes <= 0
       ) {
         throw new Error(`release-toolchain.json has no valid Node import library for ${slug}`);
+      }
+      if (
+        commonGypiContract?.schemaVersion !== 1 ||
+        commonGypiContract.path !== "include/node/common.gypi" ||
+        commonGypiContract.transformation !== "debug-information-format-none" ||
+        !/^[0-9a-f]{64}$/.test(commonGypiContract.sourceSha256 ?? "") ||
+        !/^[0-9a-f]{64}$/.test(commonGypiContract.releaseSha256 ?? "")
+      ) {
+        throw new Error("release-toolchain.json has no valid Windows common.gypi contract");
       }
       const importLibrarySha256 =
         buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_SHA256?.trim();
@@ -486,6 +496,26 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
       metadata.nodeImportLibraryFile = expectedImportLibrary.file;
       metadata.nodeImportLibrarySha256 = importLibrarySha256;
       metadata.nodeImportLibraryBytes = importLibraryBytes;
+      const commonGypiPath = join(
+        buildEnvironment.npm_config_nodedir,
+        ...commonGypiContract.path.split("/"),
+      );
+      if (!existsSync(commonGypiPath) || !statSync(commonGypiPath).isFile()) {
+        throw new Error(`sanitized Node common.gypi is missing: ${commonGypiPath}`);
+      }
+      const commonGypiSha256 = sha256Bytes(readFileSync(commonGypiPath));
+      const reportedCommonGypiSha256 =
+        buildEnvironment.AGENC_NODE_COMMON_GYPI_SHA256?.trim();
+      if (
+        commonGypiSha256 !== commonGypiContract.releaseSha256 ||
+        reportedCommonGypiSha256 !== commonGypiSha256
+      ) {
+        throw new Error("sanitized Node common.gypi does not match release-toolchain.json");
+      }
+      metadata.nodeCommonGypiFile = commonGypiContract.path;
+      metadata.nodeCommonGypiSourceSha256 = commonGypiContract.sourceSha256;
+      metadata.nodeCommonGypiReleaseSha256 = commonGypiSha256;
+      metadata.nodeCommonGypiTransformation = commonGypiContract.transformation;
     }
     metadata.npmDistributionFile = expectedNpm.file;
     metadata.npmDistributionSha256 = npmDistributionSha256;

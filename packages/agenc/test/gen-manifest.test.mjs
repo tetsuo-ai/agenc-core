@@ -249,6 +249,13 @@ function addArtifact(directory, platform, arch, body) {
             nodeImportLibraryFile: releaseToolchain.nodeImportLibraries[key].file,
             nodeImportLibrarySha256: releaseToolchain.nodeImportLibraries[key].sha256,
             nodeImportLibraryBytes: releaseToolchain.nodeImportLibraries[key].bytes,
+            nodeCommonGypiFile: releaseToolchain.nodeHeaders.windowsCommonGypi.path,
+            nodeCommonGypiSourceSha256:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.sourceSha256,
+            nodeCommonGypiReleaseSha256:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.releaseSha256,
+            nodeCommonGypiTransformation:
+              releaseToolchain.nodeHeaders.windowsCommonGypi.transformation,
             visualStudioVersion: hostedRunner.visualStudioVersion,
             visualStudioInstallPath: hostedRunner.visualStudioInstallPath,
             msvcToolsVersion: hostedRunner.msvcToolsVersion,
@@ -929,6 +936,20 @@ test("full release manifest covers the exact five-platform matrix and enforces t
     const windowsArtifact = detachedImportLibraryManifest.artifacts.find(
       (artifact) => artifact.platform === "win" && artifact.arch === "x64",
     );
+    assert.deepEqual(
+      {
+        file: windowsArtifact.nativeToolchain.nodeCommonGypiFile,
+        sourceSha256: windowsArtifact.nativeToolchain.nodeCommonGypiSourceSha256,
+        releaseSha256: windowsArtifact.nativeToolchain.nodeCommonGypiReleaseSha256,
+        transformation: windowsArtifact.nativeToolchain.nodeCommonGypiTransformation,
+      },
+      {
+        file: releaseToolchain.nodeHeaders.windowsCommonGypi.path,
+        sourceSha256: releaseToolchain.nodeHeaders.windowsCommonGypi.sourceSha256,
+        releaseSha256: releaseToolchain.nodeHeaders.windowsCommonGypi.releaseSha256,
+        transformation: releaseToolchain.nodeHeaders.windowsCommonGypi.transformation,
+      },
+    );
     windowsArtifact.nativeToolchain.nodeImportLibraryBytes += 1;
     writeFileSync(
       outputPath,
@@ -937,6 +958,22 @@ test("full release manifest covers the exact five-platform matrix and enforces t
     assert.throws(
       () => validateLauncherManifest({ manifestPath: outputPath }),
       /Node import library evidence does not match/,
+    );
+    writeFileSync(outputPath, validManifestText);
+
+    const detachedCommonGypiManifest = JSON.parse(validManifestText);
+    const detachedCommonGypiArtifact = detachedCommonGypiManifest.artifacts.find(
+      (artifact) => artifact.platform === "win" && artifact.arch === "x64",
+    );
+    detachedCommonGypiArtifact.nativeToolchain.nodeCommonGypiReleaseSha256 =
+      "0".repeat(64);
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(detachedCommonGypiManifest, null, 2)}\n`,
+    );
+    assert.throws(
+      () => validateLauncherManifest({ manifestPath: outputPath }),
+      /sanitized Node common\.gypi evidence does not match/,
     );
     writeFileSync(outputPath, validManifestText);
 
@@ -1106,6 +1143,18 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "node-import-library-bytes", (meta) => {
       meta.nativeToolchain.nodeImportLibraryBytes += 1;
     }, /Node import library evidence/],
+    ["win", "x64", "common-gypi-file", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiFile = "include/node/detached.gypi";
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-source", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiSourceSha256 = "0".repeat(64);
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-release", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiReleaseSha256 = "0".repeat(64);
+    }, /sanitized Node common\.gypi evidence/],
+    ["win", "x64", "common-gypi-transformation", (meta) => {
+      meta.nativeToolchain.nodeCommonGypiTransformation = "detached-transformation";
+    }, /sanitized Node common\.gypi evidence/],
   ];
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-native-toolchain-binding-"));
   try {

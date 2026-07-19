@@ -568,6 +568,22 @@ function requireNativeToolchain(value, key, artifactProfile, platform) {
       for (const field of ["msvcCompilerSha256", "msvcLinkerSha256"]) {
         requireString(value[field], `${key} ${field}`, /^[0-9a-f]{64}$/);
       }
+      requireString(
+        value.nodeCommonGypiFile,
+        `${key} sanitized Node common.gypi path`,
+        /^[A-Za-z0-9._/-]{1,255}$/,
+      );
+      for (const field of [
+        "nodeCommonGypiSourceSha256",
+        "nodeCommonGypiReleaseSha256",
+      ]) {
+        requireString(value[field], `${key} ${field}`, /^[0-9a-f]{64}$/);
+      }
+      requireString(
+        value.nodeCommonGypiTransformation,
+        `${key} Node common.gypi transformation`,
+        /^[a-z0-9-]{1,128}$/,
+      );
     }
   }
   return JSON.parse(JSON.stringify(value));
@@ -887,6 +903,7 @@ export async function generateManifest({
       }
       if (platform === "win") {
         const expectedImportLibrary = expectedBuild.nodeImportLibraries?.[key];
+        const expectedCommonGypi = expectedBuild.nodeHeaders?.windowsCommonGypi;
         if (
           nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
           nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256 ||
@@ -894,6 +911,17 @@ export async function generateManifest({
         ) {
           throw new Error(
             `${key} Node import library evidence does not match release-toolchain.json`,
+          );
+        }
+        if (
+          nativeToolchain.nodeCommonGypiFile !== expectedCommonGypi?.path ||
+          nativeToolchain.nodeCommonGypiSourceSha256 !== expectedCommonGypi?.sourceSha256 ||
+          nativeToolchain.nodeCommonGypiReleaseSha256 !==
+            expectedCommonGypi?.releaseSha256 ||
+          nativeToolchain.nodeCommonGypiTransformation !== expectedCommonGypi?.transformation
+        ) {
+          throw new Error(
+            `${key} sanitized Node common.gypi evidence does not match release-toolchain.json`,
           );
         }
       }
