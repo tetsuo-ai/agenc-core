@@ -21,6 +21,7 @@ import {
   resolveBuildExecutables,
   withPinnedExecutablePath,
   withWindowsReproducibleNativeFlags,
+  windowsReproducibleNativeFlagProvenance,
   writeCanonicalArchive,
 } from "../scripts/build-runtime-tarball.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
@@ -273,17 +274,21 @@ test("release build executables stay pinned across lifecycle and PATH drift", ()
   }
 });
 
-test("Windows release flags override project debug links after the command line", () => {
+test("Windows release flags trim random native roots and override project debug links", () => {
+  const nativeBuildRoot = "D:\\a\\_temp\\agenc-runtime-build-random";
   const environment = withWindowsReproducibleNativeFlags({
     Cl: "/DKEEP_COMPILER",
     LINK: "/KEEP_PREPENDED",
     _link_: "/KEEP_APPENDED",
     UNRELATED: "yes",
-  });
+  }, nativeBuildRoot);
   assert.equal(environment.Cl, undefined);
   assert.equal(environment._link_, undefined);
   assert.equal(environment.UNRELATED, "yes");
-  assert.equal(environment.CL, "/DKEEP_COMPILER /Brepro");
+  assert.equal(
+    environment.CL,
+    `/DKEEP_COMPILER /Brepro /d1trimfile:${nativeBuildRoot}\\`,
+  );
   assert.equal(
     environment.LINK,
     "/KEEP_PREPENDED /Brepro /PDBALTPATH:%_PDB%",
@@ -291,6 +296,15 @@ test("Windows release flags override project debug links after the command line"
   assert.equal(
     environment._LINK_,
     "/KEEP_APPENDED /DEBUG:NONE /INCREMENTAL:NO /Brepro",
+  );
+  const provenance = windowsReproducibleNativeFlagProvenance(environment, nativeBuildRoot);
+  assert.equal(
+    provenance.CL,
+    "/DKEEP_COMPILER /Brepro /d1trimfile:<release-stage>\\",
+  );
+  assert.throws(
+    () => withWindowsReproducibleNativeFlags({}, "relative-build-root"),
+    /must be absolute/,
   );
 });
 

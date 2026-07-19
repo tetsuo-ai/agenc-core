@@ -188,7 +188,23 @@ export function withPinnedExecutablePath(environment, nodeExecutablePath, platfo
   return result;
 }
 
-export function withWindowsReproducibleNativeFlags(environment) {
+const WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE = "<release-stage>";
+
+function windowsNativeBuildRoot(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Windows reproducible native builds require an absolute build root");
+  }
+  if (!win32Path.isAbsolute(value.trim())) {
+    throw new Error("Windows reproducible native build root must be absolute");
+  }
+  const root = win32Path.resolve(value).replace(/[\\/]+$/u, "");
+  if (/\s/u.test(root)) {
+    throw new Error("Windows reproducible native build root cannot contain whitespace");
+  }
+  return root;
+}
+
+export function withWindowsReproducibleNativeFlags(environment, nativeBuildRoot) {
   const result = { ...environment };
   const append = (canonicalName, flags) => {
     const inherited = [];
@@ -199,13 +215,29 @@ export function withWindowsReproducibleNativeFlags(environment) {
     }
     result[canonicalName] = [...inherited, ...flags].join(" ");
   };
-  append("CL", ["/Brepro"]);
+  const buildRoot = windowsNativeBuildRoot(nativeBuildRoot);
+  // MSVC derives anonymous-namespace identities from the physical source
+  // path. Every release build intentionally uses a fresh staging directory,
+  // so trim that prefix before /Brepro hashes the native objects.
+  append("CL", ["/Brepro", `/d1trimfile:${buildRoot}\\`]);
   append("LINK", ["/Brepro", "/PDBALTPATH:%_PDB%"]);
   // Node's pinned common.gypi emits /Z7 objects and places /DEBUG on every
   // native link. LINK is prepended before project options, so use _LINK_ to
   // append the final override. Release artifacts discard PDBs; suppressing
   // them also removes their build-specific CodeView identity from each PE.
   append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"]);
+  return result;
+}
+
+export function windowsReproducibleNativeFlagProvenance(environment, nativeBuildRoot) {
+  const result = { ...environment };
+  const buildRoot = windowsNativeBuildRoot(nativeBuildRoot);
+  if (typeof result.CL === "string") {
+    result.CL = result.CL.replace(
+      `/d1trimfile:${buildRoot}\\`,
+      `/d1trimfile:${WINDOWS_NATIVE_BUILD_ROOT_PROVENANCE}\\`,
+    );
+  }
   return result;
 }
 
@@ -1323,15 +1355,6 @@ async function main() {
       "-Wl,-S",
     ].filter(Boolean).join(" ");
   }
-  if (process.platform === "win32") {
-    releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv);
-  }
-  const nativeToolchain = nativeToolchainMetadata(
-    releaseToolchain,
-    artifactProfile,
-    releaseEnv,
-  );
-
   const outDir = resolve(
     process.env.AGENC_RELEASE_OUT_DIR ?? join(launcherDir, "release-artifacts"),
   );
@@ -1339,6 +1362,17 @@ async function main() {
 
   const stage = mkdtempSync(join(tmpdir(), "agenc-runtime-build-"));
   try {
+    if (process.platform === "win32") {
+      releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv, stage);
+    }
+    const nativeToolchain = nativeToolchainMetadata(
+      releaseToolchain,
+      artifactProfile,
+      process.platform === "win32"
+        ? windowsReproducibleNativeFlagProvenance(releaseEnv, stage)
+        : releaseEnv,
+    );
+
     // 1. Build the runtime (produces dist/).
     console.error(`[build] runtime ${version} (${slug})`);
     runNpm(buildExecutables, ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
