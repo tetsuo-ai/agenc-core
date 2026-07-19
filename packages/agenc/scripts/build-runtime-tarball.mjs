@@ -1243,7 +1243,13 @@ async function main() {
   }
   if (process.platform === "win32") {
     releaseEnv.CL = [releaseEnv.CL, "/Brepro"].filter(Boolean).join(" ");
-    releaseEnv.LINK = [releaseEnv.LINK, "/Brepro"].filter(Boolean).join(" ");
+    releaseEnv.LINK = [
+      releaseEnv.LINK,
+      "/Brepro",
+      // Keep the CodeView reference useful without embedding the randomized
+      // staging directory. MSVC expands %_PDB% to the PDB filename only.
+      "/PDBALTPATH:%_PDB%",
+    ].filter(Boolean).join(" ");
   }
   const nativeToolchain = nativeToolchainMetadata(
     releaseToolchain,

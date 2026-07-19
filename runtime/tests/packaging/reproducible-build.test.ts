@@ -262,6 +262,7 @@ describe("reproducible install and release contract", () => {
     expect(builder).toContain('"-Wl,-S"');
     expect(builder).not.toContain('"-Wl,-no_uuid"');
     expect(builder).not.toContain('"-Wl,-oso_prefix,."');
+    expect(builder).toContain('"/PDBALTPATH:%_PDB%"');
     expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
     expect(builder).toContain("runNpm(buildExecutables");
     expect(builder).toContain("captureNpm(buildExecutables");
