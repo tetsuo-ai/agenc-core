@@ -334,6 +334,15 @@ export function validateLauncherManifest({
       ) {
         fail(`${key} Node distribution/header evidence does not match release-toolchain.json`);
       }
+      if (artifact.platform === "win") {
+        const expectedImportLibrary = releaseToolchain.nodeImportLibraries?.[key];
+        if (
+          artifact.nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
+          artifact.nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256
+        ) {
+          fail(`${key} Node import library evidence does not match release-toolchain.json`);
+        }
+      }
       if (
         artifact.platform !== "linux" &&
         (typeof artifact.nativeToolchain.runnerImage !== "string" ||

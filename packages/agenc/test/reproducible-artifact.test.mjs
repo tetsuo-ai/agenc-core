@@ -106,18 +106,32 @@ test("local-path scan ignores generic roots but rejects a unique build path", ()
   try {
     writeFileSync(
       join(work, "legitimate.d.ts"),
-      "export type AssumeRootCommand = '/root' | '/src' | 'C:\\\\src';\n",
+      "export type AssumeRootCommand = '/root' | '/src' | '/Users/runner' | " +
+        "'/home/builder' | 'C:\\\\src' | 'C:\\\\Users\\\\runneradmin';\n",
     );
     assert.doesNotThrow(() =>
-      assertNoLocalPathLeaks(work, ["/root", "/src", "C:\\src"]),
+      assertNoLocalPathLeaks(work, [
+        "/root",
+        "/src",
+        "/Users/runner",
+        "/home/builder",
+        "C:\\src",
+        "C:\\Users\\runneradmin",
+      ]),
     );
 
-    const sentinel = "/tmp/agenc-build-sentinel/worktree";
-    writeFileSync(join(work, "leaked.txt"), `source=${sentinel}/runtime\n`);
-    assert.throws(
-      () => assertNoLocalPathLeaks(work, [sentinel]),
-      /embeds a developer-local path/,
-    );
+    for (const sentinel of [
+      "/tmp/agenc-build-sentinel/worktree",
+      "/Users/runner/work/agenc-core",
+      "/home/builder/work/agenc-core",
+      "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agenc-build",
+    ]) {
+      writeFileSync(join(work, "leaked.txt"), `source=${sentinel}/runtime\n`);
+      assert.throws(
+        () => assertNoLocalPathLeaks(work, [sentinel]),
+        /embeds a developer-local path/,
+      );
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

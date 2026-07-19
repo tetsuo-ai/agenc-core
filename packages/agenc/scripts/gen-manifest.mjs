@@ -460,6 +460,7 @@ function expectedBuildContract() {
     npmVersion: npmMatch[1],
     nodeDistributions: releaseToolchain.nodeDistributions,
     nodeHeaders: releaseToolchain.nodeHeaders,
+    nodeImportLibraries: releaseToolchain.nodeImportLibraries,
     npmDistribution: releaseToolchain.npmDistribution,
     linux: releaseToolchain.linux,
     macos: releaseToolchain.macos,
@@ -543,6 +544,16 @@ function requireNativeToolchain(value, key, artifactProfile, platform) {
       requireString(value.sdk, `${key} SDK version`, /^[0-9]+(?:\.[0-9]+){1,3}$/);
     }
     if (platform === "win") {
+      requireString(
+        value.nodeImportLibraryFile,
+        `${key} Node import library file`,
+        /^[A-Za-z0-9._-]{1,255}$/,
+      );
+      requireString(
+        value.nodeImportLibrarySha256,
+        `${key} Node import library sha256`,
+        /^[0-9a-f]{64}$/,
+      );
       for (const field of [
         "visualStudioVersion", "visualStudioInstallPath", "msvcToolsVersion",
         "windowsSdkVersion", "compilerDetails",
@@ -868,6 +879,17 @@ export async function generateManifest({
         nativeToolchain.npmDistributionSha256 !== expectedBuild.npmDistribution?.sha256
       ) {
         throw new Error(`${key} npm distribution evidence does not match release-toolchain.json`);
+      }
+      if (platform === "win") {
+        const expectedImportLibrary = expectedBuild.nodeImportLibraries?.[key];
+        if (
+          nativeToolchain.nodeImportLibraryFile !== expectedImportLibrary?.file ||
+          nativeToolchain.nodeImportLibrarySha256 !== expectedImportLibrary?.sha256
+        ) {
+          throw new Error(
+            `${key} Node import library evidence does not match release-toolchain.json`,
+          );
+        }
       }
       if (platform === "darwin" || platform === "win") {
         requireHostedRunnerToolchain(nativeToolchain, key, expectedBuild);

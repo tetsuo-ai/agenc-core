@@ -246,6 +246,8 @@ function addArtifact(directory, platform, arch, body) {
         : {}),
       ...(platform === "win"
         ? {
+            nodeImportLibraryFile: releaseToolchain.nodeImportLibraries[key].file,
+            nodeImportLibrarySha256: releaseToolchain.nodeImportLibraries[key].sha256,
             visualStudioVersion: hostedRunner.visualStudioVersion,
             visualStudioInstallPath: hostedRunner.visualStudioInstallPath,
             msvcToolsVersion: hostedRunner.msvcToolsVersion,
@@ -1079,6 +1081,9 @@ test("manifest generation rejects detached macOS and Windows toolchain evidence"
     ["win", "x64", "compiler-details", (meta) => { meta.nativeToolchain.compilerDetails = ""; }, /compilerDetails/],
     ["win", "x64", "compiler-hash", (meta) => { meta.nativeToolchain.msvcCompilerSha256 = "0"; }, /msvcCompilerSha256/],
     ["win", "x64", "linker-hash", (meta) => { meta.nativeToolchain.msvcLinkerSha256 = "0"; }, /msvcLinkerSha256/],
+    ["win", "x64", "node-import-library", (meta) => {
+      meta.nativeToolchain.nodeImportLibrarySha256 = "0".repeat(64);
+    }, /Node import library evidence/],
   ];
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-native-toolchain-binding-"));
   try {

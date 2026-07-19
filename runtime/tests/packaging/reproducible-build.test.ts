@@ -132,6 +132,8 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("nodeDistributions");
     expect(workflow).toContain("nodeHeaders");
     expect(workflow).toContain("Get-FileHash -Algorithm SHA256");
+    expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_SHA256=");
+    expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
     expect(workflow).toContain("Validate the reviewed macOS runner and native toolchain");
     expect(workflow).toContain("Validate and activate the reviewed Windows runner and native toolchain");
     expect(workflow).toContain("hostedRunners");
@@ -208,6 +210,7 @@ describe("reproducible install and release contract", () => {
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
+      nodeImportLibraries: Record<string, { file: string; url: string; sha256: string }>;
       linux: {
         builderPackages: Record<string, string>;
         rpmContentInventory: {
@@ -246,14 +249,19 @@ describe("reproducible install and release contract", () => {
     expect(nativeContract.linux.builderPackages.libatomic).toBe(
       "libatomic-8.5.0-28.el8_10",
     );
+    expect(nativeContract.nodeImportLibraries["win-x64"]).toEqual({
+      file: "node.lib",
+      url: "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
+      sha256: "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
+    });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
       schemaVersion: 1,
       format:
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "567dfb68497d822260d8d5fd7c56da9b3fdfede77b2a12fe1d63730772b396d8",
-        arm64: "94bc59ce600773d42f1a70a7e3a6c1a33027ab1747719a3c27039503ba8f23cc",
+        x64: "b218a774252c748c748d0e18837b7ca655c8e657bc20b1213a9f8cbb177b58bb",
+        arm64: "cd2f3fb1aa51e2142ca74e202d9403b2861d47fc82cb036150ecb92ee62306d2",
       },
     });
   });

@@ -291,6 +291,7 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
   const slug = `${os}-${process.arch}`;
   const expectedDistribution = releaseToolchain.nodeDistributions?.[slug];
   const expectedHeaders = releaseToolchain.nodeHeaders;
+  const expectedImportLibrary = releaseToolchain.nodeImportLibraries?.[slug];
   const expectedNpm = releaseToolchain.npmDistribution;
   if (artifactProfile === "release") {
     if (
@@ -322,6 +323,24 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     metadata.nodeDistributionSha256 = distributionSha256;
     metadata.nodeHeadersFile = expectedHeaders.file;
     metadata.nodeHeadersSha256 = headersSha256;
+    if (process.platform === "win32") {
+      if (
+        typeof expectedImportLibrary?.file !== "string" ||
+        typeof expectedImportLibrary?.url !== "string" ||
+        !/^[0-9a-f]{64}$/.test(expectedImportLibrary.sha256 ?? "")
+      ) {
+        throw new Error(`release-toolchain.json has no valid Node import library for ${slug}`);
+      }
+      const importLibrarySha256 =
+        buildEnvironment.AGENC_NODE_IMPORT_LIBRARY_SHA256?.trim();
+      if (importLibrarySha256 !== expectedImportLibrary.sha256) {
+        throw new Error(
+          `release Node import library digest does not match release-toolchain.json for ${slug}`,
+        );
+      }
+      metadata.nodeImportLibraryFile = expectedImportLibrary.file;
+      metadata.nodeImportLibrarySha256 = importLibrarySha256;
+    }
     metadata.npmDistributionFile = expectedNpm.file;
     metadata.npmDistributionSha256 = npmDistributionSha256;
   }
@@ -921,6 +940,12 @@ function smokeInstalledNativeModules(installRoot, env) {
 function isDeveloperSpecificPath(value) {
   if (typeof value !== "string" || value.length < 4) return false;
   const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+  // A runner/user home root is not unique enough to attribute to this build.
+  // Prebuilt dependencies may legitimately retain their upstream builder's
+  // generic home while deeper repo, stage, and cache paths remain strong
+  // local-leak sentinels.
+  if (/^\/(?:Users|home)\/[^/]+$/.test(normalized)) return false;
+  if (/^[A-Za-z]:\/Users\/[^/]+$/i.test(normalized)) return false;
   if (/^[A-Za-z]:\//.test(normalized)) {
     return normalized.slice(3).split("/").filter(Boolean).length >= 2;
   }
