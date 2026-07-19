@@ -565,6 +565,33 @@ describe("workbench render contract", () => {
     expect(hintLine).not.toContain("ctrl+w k surface");
   });
 
+  it("advertises ctrl+r rail in the composer footer while a file surface is open", async () => {
+    // The rail toggle is global, but buffer/preview hints only render when
+    // those panes are focused. With a file open and the composer focused
+    // (the moment the user wants to rail the file), the toggle must still be
+    // discoverable — the composer footer gains "ctrl+r rail" then.
+    const state = {
+      ...getDefaultAppState(),
+      workbench: {
+        ...getDefaultAppState().workbench,
+        focusedPane: "composer" as const,
+        activeSurfaceMode: "buffer" as const,
+      },
+    };
+    const output = await renderToString(
+      <AppStateProvider initialState={state}>
+        <WorkbenchFooter />
+      </AppStateProvider>,
+      120,
+    );
+
+    const hintLine = output
+      .split(/\r?\n/u)
+      .find((line) => line.includes("Composer: write prompt"));
+    expect(hintLine).toBeDefined();
+    expect(hintLine).toContain("ctrl+r rail");
+  });
+
   it("indents the surface-hint footer line to match the composer footer", async () => {
     // The composer's own "? for shortcuts" hint is rendered inside a
     // paddingX={2} box (PromptInputFooter). The workbench surface-hint line

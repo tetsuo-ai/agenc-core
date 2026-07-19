@@ -54,8 +54,9 @@ export const WORKBENCH_SURFACES: readonly WorkbenchSurfaceDescriptor[] = [
     keybindings: ["shift+tab", "ctrl+x h", "ctrl+x j", "ctrl+x ctrl+e", "ctrl+x q"],
     // ctrl+r is the global rail toggle (works from any surface) — without it
     // in the footer, fallback-buffer users have no visible way to discover
-    // the right-hand review rail.
-    footerHints: "Buffer: embedded nvim  shift+tab composer  ctrl+x h explorer  ctrl+x ctrl+e external  ctrl+r rail  ctrl+x q close",
+    // the right-hand review rail. Placed early so terminal-width truncation
+    // (fitFooterHints drops trailing segments) cannot hide it.
+    footerHints: "Buffer: embedded nvim  shift+tab composer  ctrl+r rail  ctrl+x h explorer  ctrl+x ctrl+e external  ctrl+x q close",
     renderBody: ({ focused }) => <BufferSurface focused={focused} />,
   },
   {

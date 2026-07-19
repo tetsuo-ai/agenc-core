@@ -26,7 +26,7 @@ export function fitFooterHints(hints: string, available: number): string {
 export function WorkbenchFooter(): React.ReactElement {
   const workbench = useWorkbenchState();
   const { columns } = useTerminalSize();
-  const hints = hintsForPane(visibleWorkbenchPane(workbench), workbench.activeSurfaceMode);
+  const hints = hintsForPane(visibleWorkbenchPane(workbench), workbench.activeSurfaceMode, workbench.fileRailPath !== null);
   const composerAttachments = composerAttachmentsForState(workbench);
   // paddingX={2} on both sides, and leave the attachments suffix whatever
   // room it needs before the hints claim the rest.
@@ -45,9 +45,19 @@ export function WorkbenchFooter(): React.ReactElement {
   );
 }
 
-function hintsForPane(pane: string, surface: string): string {
+function hintsForPane(pane: string, surface: string, railOpen: boolean): string {
   if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter/o edit  a add  r rename  d delete  @ attach";
   if (pane === "agents") return "Agents: enter detail  ctrl+w w next";
-  if (pane === "composer") return "Composer: write prompt  / commands  @ attach file  ctrl+w k focus transcript";
+  if (pane === "composer") {
+    const base = "Composer: write prompt  / commands  @ attach file  ctrl+w k focus transcript";
+    // The rail toggle is global, but the buffer/preview hints only show while
+    // those panes are FOCUSED — with a file open and the user typing in the
+    // composer (the exact moment they want to rail the file), the toggle was
+    // undiscoverable. Advertise it here whenever a file is open or railed.
+    if (railOpen || surface === "buffer" || surface === "preview") {
+      return `${base}  ctrl+r rail`;
+    }
+    return base;
+  }
   return footerHintsForSurface(surface as never);
 }
