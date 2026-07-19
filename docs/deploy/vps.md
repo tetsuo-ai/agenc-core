@@ -1,6 +1,6 @@
 # Running AgenC on a VPS
 
-**AgenC 0.7.0.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
+**AgenC 0.7.1.** A $5-class VPS (Hetzner CX11, DigitalOcean basic, Railway
 container) runs the daemon fine: providers do the heavy lifting; the daemon is
 orchestration. Two supported shapes.
 

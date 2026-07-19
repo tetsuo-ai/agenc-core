@@ -13,6 +13,7 @@ import {
   RUNTIME_MANIFEST_TRUST_MODES,
   validateRuntimeReleaseManifest,
 } from "../lib/runtime-release-contract.mjs";
+import { LEGACY_BRIDGE_CONTRACT } from "../scripts/gen-manifest.mjs";
 
 const repoRoot = new URL("../../../", import.meta.url);
 
@@ -124,6 +125,49 @@ test("consumer GitHub CLI pins exactly mirror the reviewed release toolchain", (
     assert.equal(Object.isFrozen(PINNED_GITHUB_CLI_ARTIFACTS[consumerKey]), true);
   }
   assert.equal(Object.isFrozen(PINNED_GITHUB_CLI_ARTIFACTS), true);
+});
+
+test("installer legacy bridge identity exactly mirrors manifest generation and the release toolchain", () => {
+  const toolchain = JSON.parse(readFileSync(
+    new URL("../../../release-toolchain.json", import.meta.url),
+    "utf8",
+  ));
+  const expected = {
+    runtimeVersion: LEGACY_BRIDGE_CONTRACT.runtimeVersion,
+    releaseRepository: LEGACY_BRIDGE_CONTRACT.releaseRepository,
+    releaseTag: LEGACY_BRIDGE_CONTRACT.releaseTag,
+  };
+  assert.deepEqual({
+    runtimeVersion: toolchain.legacyBridge.runtimeVersion,
+    releaseRepository: toolchain.legacyBridge.releaseRepository,
+    releaseTag: toolchain.legacyBridge.releaseTag,
+  }, expected);
+  assert.deepEqual({
+    nodeMajor: toolchain.nodeMajor,
+    nodeModuleAbi: toolchain.nodeModuleAbi,
+    nodeApiVersion: toolchain.nodeApiVersion,
+  }, {
+    nodeMajor: LEGACY_BRIDGE_CONTRACT.nodeMajor,
+    nodeModuleAbi: LEGACY_BRIDGE_CONTRACT.nodeModuleAbi,
+    nodeApiVersion: LEGACY_BRIDGE_CONTRACT.nodeApiVersion,
+  });
+
+  for (const path of ["scripts/install/install.sh", "scripts/install/install.ps1"]) {
+    const source = readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+    const versions = [...source.matchAll(/0\.\d+\.\d+/g)].map((match) => match[0]);
+    const tags = [...source.matchAll(/agenc-v\d+\.\d+\.\d+/g)].map((match) => match[0]);
+    assert.ok(versions.length > 0, `${path} has no hard-coded legacy bridge version`);
+    assert.ok(tags.length > 0, `${path} has no hard-coded legacy bridge tag`);
+    assert.deepEqual([...new Set(versions)], [expected.runtimeVersion], path);
+    assert.deepEqual([...new Set(tags)], [expected.releaseTag], path);
+    assert.ok(source.includes(
+      `releases/download/${expected.releaseTag}/agenc-runtime-manifest.json`,
+    ), `${path} legacy manifest URL`);
+    const expectedArtifactVersion = path.endsWith(".sh")
+      ? "agenc-runtime-${bridgeVersion}-"
+      : `agenc-runtime-${expected.runtimeVersion}-`;
+    assert.ok(source.includes(expectedArtifactVersion), `${path} legacy artifact URL`);
+  }
 });
 
 test("every runtime attestation consumer is mechanically tied to one policy", () => {

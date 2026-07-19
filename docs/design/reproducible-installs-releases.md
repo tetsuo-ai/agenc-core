@@ -122,7 +122,7 @@ Research was refreshed on 2026-07-14. The load-bearing sources are:
   [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260715.0340),
   [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
 - Node's release archive identifies 25.9.0 as out of maintenance, and the
-  current Homebrew/core Node formula list has no `node@25`. The 0.7.0 release
+  current Homebrew/core Node formula list has no `node@25`. The 0.7.1 release
   therefore treats Node 25.9.0 as an exact compatibility bridge and disables
   Homebrew publication instead of silently selecting another ABI.
   [Node 25.9.0 archive](https://nodejs.org/en/download/archive/v25.9.0),

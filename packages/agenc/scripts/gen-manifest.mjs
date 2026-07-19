@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Assemble the ABI-aware v2 launcher manifest plus the fixed-name v1 bridge
-// consumed by launchers published before v0.7.0. Release mode requires the
+// consumed by launchers published before v0.7.1. Release mode requires the
 // complete supported matrix; --allow-partial exists only for local checks.
 
 import { createHash } from "node:crypto";
@@ -28,9 +28,9 @@ const repoRoot = resolve(launcherDir, "..", "..");
 export const V2_MANIFEST_FILENAME = "agenc-runtime-manifest-v2.json";
 export const LEGACY_MANIFEST_FILENAME = "agenc-runtime-manifest.json";
 export const LEGACY_BRIDGE_CONTRACT = Object.freeze({
-  runtimeVersion: "0.7.0",
+  runtimeVersion: "0.7.1",
   releaseRepository: "tetsuo-ai/agenc-releases",
-  releaseTag: "agenc-v0.7.0",
+  releaseTag: "agenc-v0.7.1",
   nodeVersion: "v25.9.0",
   nodeMajor: 25,
   nodeModuleAbi: "141",

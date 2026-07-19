@@ -7,7 +7,7 @@ fail-closed permissions), state auditability, and engineering rigor (typed
 daemon protocol, eval-regression gate, large test suite). This guide maps the
 surfaces, including what AgenC does not have yet.
 
-**AgenC 0.6.0.** Related: [quickstart](quickstart.md) ·
+**AgenC 0.7.1.** Related: [quickstart](quickstart.md) ·
 [onboarding](onboarding.md) · [gateway](gateway.md) ·
 [OpenClaw migrate](migrate-from-openclaw.md).
 

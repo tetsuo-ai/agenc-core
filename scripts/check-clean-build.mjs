@@ -48,8 +48,9 @@ const PLAN = Object.freeze({
 });
 
 function usage() {
-  return `Usage: node scripts/check-clean-build.mjs [--skip-docker] [--keep-temp] [--plan]\n\n` +
+  return `Usage: node scripts/check-clean-build.mjs [--skip-docker] [--buildkit-network=host] [--keep-temp] [--plan]\n\n` +
     `Default behavior performs two clean, compared builds and two Docker builds.\n` +
+    `--buildkit-network=host retains full Docker acceptance when bridge DNS is unavailable.\n` +
     `--skip-docker is for focused development only and is not M0 acceptance.\n`;
 }
 
@@ -803,7 +804,7 @@ function compareOciLayouts(first, second) {
   );
 }
 
-async function dockerSmoke({ sources, metadata, work }) {
+async function dockerSmoke({ sources, metadata, work, buildkitHostNetwork }) {
   if (!Array.isArray(sources) || sources.length !== 2) {
     throw new Error("Docker reproducibility requires exactly two pristine source trees");
   }
@@ -876,6 +877,9 @@ async function dockerSmoke({ sources, metadata, work }) {
         "docker-container",
         "--driver-opt",
         `image=${dockerToolchain.buildkit.image}`,
+        ...(buildkitHostNetwork
+          ? ["--driver-opt", "network=host"]
+          : []),
       ],
       { env: dockerEnv },
     );
@@ -1039,19 +1043,19 @@ async function dockerSmoke({ sources, metadata, work }) {
       tag,
       "-e",
       checkedJavaScriptProgram(
-       `const { readFileSync, statSync } = require("node:fs");
+       String.raw`const { readFileSync, statSync } = require("node:fs");
        const { createRequire } = require("node:module");
        if (process.getuid?.() !== 10001 || process.getgid?.() !== 10001) throw new Error("container is not the dedicated non-root identity");
        const runtimeRoot = statSync("/opt/agenc");
        if (runtimeRoot.uid !== 0 || runtimeRoot.gid !== 0 || (runtimeRoot.mode & 0o022) !== 0) throw new Error("runtime tree is not root-owned and immutable");
        const peerAddon = statSync("/usr/lib/agenc/agenc-peer-credentials.node");
        if (peerAddon.uid !== 0 || peerAddon.gid !== 0 || (peerAddon.mode & 0o777) !== 0o555) throw new Error("peer credential addon is not root-owned and immutable");
-       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\\n") throw new Error("peer credential system requirement marker is missing");
+       if (readFileSync("/usr/lib/agenc/peer-credentials-required", "utf8") !== "required\n") throw new Error("peer credential system requirement marker is missing");
        if (typeof require("/usr/lib/agenc/agenc-peer-credentials.node")?.getPeerUid !== "function") throw new Error("peer credential native smoke failed");
        for (const compiler of ["/usr/bin/cc", "/usr/bin/c++", "/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/clang", "/usr/bin/make", "/usr/local/bin/cc"]) {
          try { statSync(compiler); throw new Error("runtime compiler unexpectedly present: " + compiler); } catch (error) { if (error?.code !== "ENOENT") throw error; }
        }
-       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\\n"));
+       const inventory = new Set(readFileSync("/usr/share/agenc/debian-packages.txt", "utf8").trim().split("\n"));
        for (const forbidden of ["gcc", "g++", "make", "libc6-dev", "linux-libc-dev"]) {
          if ([...inventory].some((entry) => entry.startsWith(forbidden + "=") || entry.startsWith(forbidden + ":"))) throw new Error("runtime build package unexpectedly present: " + forbidden);
        }
@@ -1286,7 +1290,16 @@ async function dockerSmoke({ sources, metadata, work }) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   for (const arg of args) {
-    if (!["--help", "-h", "--plan", "--skip-docker", "--keep-temp"].includes(arg)) {
+    if (
+      ![
+        "--help",
+        "-h",
+        "--plan",
+        "--skip-docker",
+        "--buildkit-network=host",
+        "--keep-temp",
+      ].includes(arg)
+    ) {
       throw new Error(`unknown argument: ${arg}\n${usage()}`);
     }
   }
@@ -1344,7 +1357,12 @@ async function main() {
       ];
       checkoutIndex(dockerSources[0], 0o022);
       checkoutIndex(dockerSources[1], 0o077);
-      await dockerSmoke({ sources: dockerSources, metadata, work });
+      await dockerSmoke({
+        sources: dockerSources,
+        metadata,
+        work,
+        buildkitHostNetwork: args.has("--buildkit-network=host"),
+      });
     }
     process.stdout.write(
       `clean build reproducible (${first.dependencyTree.length} installed packages, ` +

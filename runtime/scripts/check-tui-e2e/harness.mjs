@@ -399,6 +399,42 @@ function printableChar(ch) {
   return ch >= " " && ch !== "\x7f";
 }
 
+export function hasRenderedAssistantReply(rows) {
+  const headerRe = /([▮│])\s+AGENC\b/;
+  let headerIdx = -1;
+  for (let rowIndex = rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+    if (headerRe.test(rows[rowIndex])) {
+      headerIdx = rowIndex;
+      break;
+    }
+  }
+  if (headerIdx === -1) return false;
+
+  const headerMatch = headerRe.exec(rows[headerIdx]);
+  if (headerMatch === null) return false;
+  const headerCol = headerMatch.index;
+  const marker = headerMatch[1];
+  for (let rowIndex = headerIdx + 1; rowIndex < rows.length; rowIndex += 1) {
+    let body = rows[rowIndex].slice(headerCol);
+    if (marker === "│") {
+      const gutter = /^│\s?/.exec(body);
+      // The current message border spans every row, including blank ones.
+      // The first row without that exact gutter has left this message.
+      if (gutter === null) break;
+      body = body.slice(gutter[0].length);
+    }
+    if (body.trim().length === 0) continue;
+    // Box-drawing chars mean we left the transcript block and hit the
+    // composer/panel chrome without seeing reply text.
+    if (/^\s*[─│┌┐└┘├┤╭╮╰╯]/.test(body)) break;
+    // Real reply content: the first visible character under the AGENC
+    // header column is message text (word char or common markdown / quote /
+    // list openers), not pane chrome glyphs (❯ ↳ ◐ ✳ ·).
+    if (/^\s*["'`*#>\w([{$~-]/.test(body)) return true;
+  }
+  return false;
+}
+
 export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
   const grid = emptyGrid(rows, cols);
   const autoWraps = [];
@@ -954,11 +990,11 @@ export class TuiSession {
   }
 
   /**
-   * Wait for the assistant's reply to render. Since 345e27c66 the TUI renders
-   * every assistant turn (live streaming AND settled) under a `▮ AGENC`
-   * identity header with the reply text indented beneath it — the old bare
-   * "● " streaming marker is gone. After `submit`, this fires once the
-   * header AND at least one line of real reply content under it render.
+   * Wait for the assistant's reply to render. Assistant turns use an AGENC
+   * identity header with the reply text beneath it. The current workbench
+   * renders a full-height `│` gutter on both rows; the earlier layout used a
+   * one-row `▮` marker. After `submit`, this fires once the header AND at
+   * least one line of real reply content under it render.
    *
    * The content check is row/column aware on purpose: the header alone can
    * paint before the first model chunk arrives, and full-width repaints put
@@ -968,34 +1004,14 @@ export class TuiSession {
    */
   async waitForAssistantReply({ timeout = 60_000 } = {}) {
     const start = Date.now();
-    const headerRe = /▮\s+AGENC\b/;
     while (Date.now() - start < timeout) {
       const rows = renderPtyRows(this.buffer.slice(this.watermark), {
         cols: this.cols,
         rows: this.rows,
       });
-      const headerIdx = rows.findIndex((row) => headerRe.test(row));
-      if (headerIdx !== -1) {
-        const headerCol = rows[headerIdx].indexOf("▮");
-        let matched = false;
-        for (let r = headerIdx + 1; r < rows.length; r += 1) {
-          const body = rows[r].slice(headerCol);
-          if (body.trim().length === 0) continue;
-          // Box-drawing chars mean we left the transcript block and hit the
-          // composer/panel chrome without seeing reply text — keep waiting.
-          if (/^\s*[─│┌┐└┘├┤╭╮╰╯]/.test(body)) break;
-          // Real reply content: the first visible character under the AGENC
-          // header column is message text (word char or common markdown /
-          // quote / list openers), not pane chrome glyphs (❯ ↳ ◐ ✳ ·).
-          if (/^\s*["'`*#>\w([{$~-]/.test(body)) {
-            matched = true;
-            break;
-          }
-        }
-        if (matched) {
-          this.watermark = this.buffer.length;
-          return;
-        }
+      if (hasRenderedAssistantReply(rows)) {
+        this.watermark = this.buffer.length;
+        return;
       }
       if (this.exited) {
         throw new Error(

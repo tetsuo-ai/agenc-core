@@ -565,6 +565,13 @@ describe("reproducible install and release contract", () => {
     );
     expect(plan.docker).toContain("two pristine-context");
     expect(plan.docker).toContain("byte-identical recursive OCI layouts");
+    const help = execFileSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts/check-clean-build.mjs"), "--help"],
+      { encoding: "utf8" },
+    );
+    expect(help).toContain("--buildkit-network=host");
+    expect(help).toContain("retains full Docker acceptance");
     const dockerfile = readFileSync(
       join(REPO_ROOT, "packaging/docker/Dockerfile"),
       "utf8",
@@ -735,7 +742,15 @@ describe("reproducible install and release contract", () => {
     );
     expect(cleanBuild).toContain("checkedJavaScriptProgram(");
     expect(cleanBuild).toContain('"hardened container runtime smoke"');
-    expect(cleanBuild).toContain('!== "required\\\\n"');
+    const hardenedSmoke = cleanBuild.match(
+      /checkedJavaScriptProgram\(\s*String\.raw`([\s\S]*?)`,\s*"hardened container runtime smoke"/,
+    );
+    expect(hardenedSmoke).not.toBeNull();
+    const hardenedSmokeSource = hardenedSmoke?.[1] ?? "";
+    expect(() => new Function(hardenedSmokeSource)).not.toThrow();
+    expect(hardenedSmokeSource).toContain('.split("\\n")');
+    expect(hardenedSmokeSource).not.toContain('.split("\\\\n")');
+    expect(cleanBuild).toContain('!== "required\\n"');
     expect(cleanBuild).toContain('"--cap-drop"');
     expect(cleanBuild.match(/checkoutIndex\(dockerSources\[/g)).toHaveLength(2);
 

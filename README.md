@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.7.0-blue)
+![version](https://img.shields.io/badge/version-0.7.1-blue)
 ![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.7.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.7.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.7.1` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.7.1` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -91,7 +91,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current release: 0.7.0.** Runtime and launcher are versioned `0.7.0`; the
+**Current release: 0.7.1.** Runtime and launcher are versioned `0.7.1`; the
 embedding SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository

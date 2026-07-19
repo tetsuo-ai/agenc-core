@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  hasRenderedAssistantReply,
   isolatedHomeEnv,
   resolveHarnessAgencHome,
   tempDaemonEnv,
@@ -11,6 +12,40 @@ import {
 } from "../scripts/check-tui-e2e/harness.mjs";
 
 describe("TUI E2E harness state isolation", () => {
+  it("recognizes the current full-height assistant message gutter", () => {
+    expect(
+      hasRenderedAssistantReply([
+        "                               │ AGENC",
+        "                               │ OK",
+      ]),
+    ).toBe(true);
+  });
+
+  it("requires reply content inside the assistant message boundary", () => {
+    expect(
+      hasRenderedAssistantReply([
+        "                               │ AGENC",
+        "                               │ historical reply",
+        "                               │ AGENC",
+        "                               │",
+        "                               ┌ composer chrome",
+      ]),
+    ).toBe(false);
+    expect(
+      hasRenderedAssistantReply([
+        "                               │ AGENC",
+        "",
+        "                               │ unrelated pane text",
+      ]),
+    ).toBe(false);
+    expect(
+      hasRenderedAssistantReply([
+        "                               ▮ AGENC",
+        "                                 legacy reply",
+      ]),
+    ).toBe(true);
+  });
+
   it("writes trust to AGENC_HOME when it differs from HOME", () => {
     expect(
       resolveHarnessAgencHome({
