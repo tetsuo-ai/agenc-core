@@ -82,8 +82,8 @@
       "schemaVersion": 1,
       "path": "include/node/common.gypi",
       "sourceSha256": "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
-      "releaseSha256": "45fcbaa2a39b350b81b38bc8d073e357f88269af463ffde1a5a71d70d3370212",
-      "transformation": "debug-information-format-none"
+      "releaseSha256": "8a9331b700e6cdd52e611d249a78e02513d70dd45f4be314bf6f1e301d4bbd2d",
+      "transformation": "disable-debug-information-and-full-paths"
     }
   },
   "nodeImportLibraries": {

@@ -347,7 +347,8 @@ export function validateLauncherManifest({
         if (
           expectedCommonGypi?.schemaVersion !== 1 ||
           expectedCommonGypi.path !== "include/node/common.gypi" ||
-          expectedCommonGypi.transformation !== "debug-information-format-none" ||
+          expectedCommonGypi.transformation !==
+            "disable-debug-information-and-full-paths" ||
           !/^[0-9a-f]{64}$/.test(expectedCommonGypi.sourceSha256 ?? "") ||
           !/^[0-9a-f]{64}$/.test(expectedCommonGypi.releaseSha256 ?? "") ||
           artifact.nativeToolchain.nodeCommonGypiFile !== expectedCommonGypi.path ||

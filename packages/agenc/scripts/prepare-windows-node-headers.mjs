@@ -13,8 +13,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SOURCE_LINE = Buffer.from(
   "        'DebugInformationFormat': 1,          # /Z7 embed info in .obj files\n",
 );
-const RELEASE_LINE = Buffer.from(
-  "        'DebugInformationFormat': 0,          # disabled for reproducible release objects\n",
+const RELEASE_LINES = Buffer.from(
+  "        'DebugInformationFormat': 0,          # disabled for reproducible release objects\n" +
+    "        'UseFullPaths': 'false',              # keep __FILE__ independent of staging roots\n",
 );
 
 function sha256(value) {
@@ -37,7 +38,7 @@ export function prepareWindowsCommonGypiBytes(source, contract) {
   }
   const bytes = Buffer.concat([
     source.subarray(0, offset),
-    RELEASE_LINE,
+    RELEASE_LINES,
     source.subarray(offset + SOURCE_LINE.length),
   ]);
   const releaseSha256 = sha256(bytes);
@@ -68,7 +69,7 @@ function main() {
   if (
     contract?.schemaVersion !== 1 ||
     contract.path !== "include/node/common.gypi" ||
-    contract.transformation !== "debug-information-format-none" ||
+    contract.transformation !== "disable-debug-information-and-full-paths" ||
     !/^[0-9a-f]{64}$/.test(contract.sourceSha256 ?? "") ||
     !/^[0-9a-f]{64}$/.test(contract.releaseSha256 ?? "")
   ) {

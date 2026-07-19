@@ -221,10 +221,10 @@ export function withWindowsReproducibleNativeFlags(environment, nativeBuildRoot)
   // so trim that prefix before /Brepro hashes the native objects.
   append("CL", ["/Brepro", `/d1trimfile:${buildRoot}\\`]);
   append("LINK", ["/Brepro", "/PDBALTPATH:%_PDB%"]);
-  // Node's pinned common.gypi emits /Z7 objects and places /DEBUG on every
-  // native link. LINK is prepended before project options, so use _LINK_ to
-  // append the final override. Release artifacts discard PDBs; suppressing
-  // them also removes their build-specific CodeView identity from each PE.
+  // Node's pinned upstream common.gypi normally emits /Z7 objects and places
+  // /DEBUG on every native link. Release header preparation disables /Z7;
+  // LINK is still prepended before project options, so use _LINK_ to append
+  // the final linker override and keep PDB/CodeView state out of shipped PEs.
   append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"]);
   return result;
 }
@@ -472,7 +472,8 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
       if (
         commonGypiContract?.schemaVersion !== 1 ||
         commonGypiContract.path !== "include/node/common.gypi" ||
-        commonGypiContract.transformation !== "debug-information-format-none" ||
+        commonGypiContract.transformation !==
+          "disable-debug-information-and-full-paths" ||
         !/^[0-9a-f]{64}$/.test(commonGypiContract.sourceSha256 ?? "") ||
         !/^[0-9a-f]{64}$/.test(commonGypiContract.releaseSha256 ?? "")
       ) {
@@ -1193,14 +1194,21 @@ function isDeveloperSpecificPath(value) {
 }
 
 export function assertNoLocalPathLeaks(root, localPaths) {
-  const needles = [...new Set(
+  const pathVariants = [...new Set(
     localPaths
       // Top-level roots such as /root, /src, or C:\\src are too generic to
       // identify a developer machine and occur legitimately in dependency
       // source. Build stages use deeper, unique paths; scan only those paths.
       .filter(isDeveloperSpecificPath)
       .flatMap((value) => [value, value.split("\\").join("/"), value.split("/").join("\\")]),
-  )].map((value) => Buffer.from(value));
+  )];
+  const needles = pathVariants.flatMap((display) => [
+    { bytes: Buffer.from(display), display },
+    // MSVC's /FC expansion of __FILE__ is commonly widened by the CRT's
+    // assertion macros. Scan the actual UTF-16LE representation as well as
+    // ordinary UTF-8/ASCII so random native staging roots cannot hide in PEs.
+    { bytes: Buffer.from(display, "utf16le"), display },
+  ]);
   const visit = (directory) => {
     for (const name of readdirSync(directory)) {
       const path = join(directory, name);
@@ -1209,10 +1217,10 @@ export function assertNoLocalPathLeaks(root, localPaths) {
         visit(path);
       } else if (metadata.isFile()) {
         const bytes = readFileSync(path);
-        const leaked = needles.find((needle) => bytes.includes(needle));
+        const leaked = needles.find((needle) => bytes.includes(needle.bytes));
         if (leaked !== undefined) {
           throw new Error(
-            `release artifact embeds a developer-local path in ${path}: ${leaked.toString()}`,
+            `release artifact embeds a developer-local path in ${path}: ${leaked.display}`,
           );
         }
       }

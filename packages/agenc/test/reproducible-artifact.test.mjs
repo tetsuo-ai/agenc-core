@@ -192,6 +192,14 @@ test("local-path scan ignores generic roots but rejects a unique build path", ()
         () => assertNoLocalPathLeaks(work, [sentinel]),
         /embeds a developer-local path/,
       );
+      writeFileSync(
+        join(work, "leaked.txt"),
+        Buffer.from(`source=${sentinel}/runtime\n`, "utf16le"),
+      );
+      assert.throws(
+        () => assertNoLocalPathLeaks(work, [sentinel]),
+        /embeds a developer-local path/,
+      );
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -309,13 +317,14 @@ test("Windows release flags trim random native roots and override project debug 
   );
 });
 
-test("Windows release headers disable pinned /Z7 exactly once and remain idempotent", () => {
+test("Windows release headers disable /Z7 and full paths exactly once", () => {
   const pinnedLine =
     "        'DebugInformationFormat': 1,          # /Z7 embed info in .obj files\n";
-  const releaseLine =
-    "        'DebugInformationFormat': 0,          # disabled for reproducible release objects\n";
+  const releaseLines =
+    "        'DebugInformationFormat': 0,          # disabled for reproducible release objects\n" +
+    "        'UseFullPaths': 'false',              # keep __FILE__ independent of staging roots\n";
   const source = Buffer.from(`before\n${pinnedLine}after\n`);
-  const expected = Buffer.from(`before\n${releaseLine}after\n`);
+  const expected = Buffer.from(`before\n${releaseLines}after\n`);
   const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
   const contract = {
     sourceSha256: digest(source),
