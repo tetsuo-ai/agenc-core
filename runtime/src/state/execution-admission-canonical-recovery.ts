@@ -408,6 +408,7 @@ function validateCanonicalEvents(
   const bySequence = new Map<number, CanonicalEventRecord>();
   let lastSequence = 0;
   for (const record of records) {
+    let effective = record;
     const identities = byEventId.get(record.eventId) ?? [];
     if (
       identities.some(
@@ -416,30 +417,43 @@ function validateCanonicalEvents(
           prior.signature !== record.signature,
       )
     ) {
-      throw new Error(
-        `run ${runId} canonical admission recovery found conflicting event ID ${record.eventId}`,
-      );
-    }
-    identities.push(record);
-    byEventId.set(record.eventId, identities);
-    if (record.sequence !== undefined) {
-      const prior = bySequence.get(record.sequence);
-      if (
-        prior !== undefined &&
-        (prior.eventId !== record.eventId ||
-          prior.signature !== record.signature)
-      ) {
+      if (!record.eventId.startsWith("legacy-unsequenced:")) {
         throw new Error(
-          `run ${runId} canonical admission recovery found sequence ${record.sequence} claimed by both ${prior.eventId} and ${record.eventId}`,
+          `run ${runId} canonical admission recovery found conflicting event ID ${record.eventId}`,
         );
       }
-      bySequence.set(record.sequence, record);
-      lastSequence = Math.max(lastSequence, record.sequence);
+      // Legacy rollouts predate durable event identities — their `id` field
+      // was never unique (synthetic ids like "system" recur across distinct
+      // events). Two DIFFERENT events sharing such an id is the legacy
+      // format, not corruption, so disambiguate instead of aborting the
+      // entire daemon startup. Identical copies (same id + same signature)
+      // still dedupe through the normal path above.
+      effective = {
+        ...record,
+        eventId: `${record.eventId}~conflict-${identities.length}`,
+      };
     }
-    if (record.event.msg.type === "execution_admission") {
-      const admissionId = record.event.msg.payload.eventId;
+    const effectiveIdentities = byEventId.get(effective.eventId) ?? [];
+    effectiveIdentities.push(effective);
+    byEventId.set(effective.eventId, effectiveIdentities);
+    if (effective.sequence !== undefined) {
+      const prior = bySequence.get(effective.sequence);
+      if (
+        prior !== undefined &&
+        (prior.eventId !== effective.eventId ||
+          prior.signature !== effective.signature)
+      ) {
+        throw new Error(
+          `run ${runId} canonical admission recovery found sequence ${effective.sequence} claimed by both ${prior.eventId} and ${effective.eventId}`,
+        );
+      }
+      bySequence.set(effective.sequence, effective);
+      lastSequence = Math.max(lastSequence, effective.sequence);
+    }
+    if (effective.event.msg.type === "execution_admission") {
+      const admissionId = effective.event.msg.payload.eventId;
       const admissionMatches = byAdmissionEventId.get(admissionId) ?? [];
-      admissionMatches.push(record);
+      admissionMatches.push(effective);
       byAdmissionEventId.set(admissionId, admissionMatches);
     }
   }

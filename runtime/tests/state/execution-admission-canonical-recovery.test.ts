@@ -172,6 +172,40 @@ describe("canonical execution-admission recovery", () => {
     ).toThrow(/conflicting canonical evidence/);
   });
 
+  it("tolerates distinct legacy-unsequenced events sharing a synthetic id", () => {
+    // Legacy rollouts predate durable event identities: their `id` is not
+    // unique (synthetic ids like "system" recur). Two DIFFERENT events
+    // sharing it is the legacy format, not corruption — recovery must not
+    // abort daemon startup (observed: daemon died on a pre-0.7.0 session).
+    bindRollout([
+      {
+        id: "system",
+        msg: { type: "warning", payload: { cause: "a", message: "first" } },
+      } as Event,
+      {
+        id: "system",
+        msg: { type: "warning", payload: { cause: "a", message: "first" } },
+      } as Event,
+      {
+        id: "system",
+        msg: { type: "warning", payload: { cause: "b", message: "second" } },
+      } as Event,
+    ]);
+    const queued = admissions.enqueue(request("model-legacy"));
+    expect(queued.record.status).toBe("queued");
+
+    const result = recoverExecutionAdmissionCanonicalJournals(
+      driver,
+      admissions,
+    );
+    expect(result.admissionEventsAppended).toBe(1);
+    // Idempotent on re-run despite the disambiguated ids.
+    expect(
+      recoverExecutionAdmissionCanonicalJournals(driver, admissions)
+        .admissionEventsAppended,
+    ).toBe(0);
+  });
+
   it("refuses to append committed admission evidence after a terminal tail", () => {
     const otherRun = "terminal-admission-recovery-run";
     const directory = join(driver.projectDir, "sessions", otherRun);
