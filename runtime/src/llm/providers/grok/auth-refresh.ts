@@ -35,18 +35,23 @@
 const DEFAULT_MAX_AUTH_REFRESHES = 2;
 
 /**
- * Error shape the retry wrapper recognizes as a 401. Any error the
- * caller can classify as "auth failed, refresh and retry" should
- * satisfy `isUnauthorized(error) === true`.
+ * Error shape the retry wrapper recognizes as an auth failure worth a
+ * refresh+retry. Any error the caller can classify as "auth failed,
+ * refresh and retry" should satisfy `isUnauthorized(error) === true`.
  */
 export interface UnauthorizedError extends Error {
-  readonly status: 401;
+  readonly status: 401 | 403;
 }
 
 export function isUnauthorizedError(error: unknown): error is UnauthorizedError {
   if (!(error instanceof Error)) return false;
   const status = (error as { status?: unknown }).status;
-  return status === 401;
+  // xAI returns 403 (not 401) for an expired OAuth bearer — observed in
+  // production: sessions died silently with zero events because the
+  // refresh hook never fired. Treat 403 the same: refresh once and retry;
+  // a genuine permission/quota 403 simply fails again after the single
+  // retry and bubbles up unchanged.
+  return status === 401 || status === 403;
 }
 
 /**

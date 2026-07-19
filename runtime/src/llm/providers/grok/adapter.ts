@@ -826,7 +826,36 @@ export class GrokProvider implements LLMProvider {
    */
   withAuthRefreshCallbacks(callbacks: AuthRefreshCallbacks): this {
     this.authRefreshCallbacks = callbacks;
+    this.oauthCallbacksInstalled = true;
     return this;
+  }
+
+  /**
+   * Refresh the OAuth bearer before the wire attempt when the stored grant
+   * is inside its expiry window. singleWireAttempt turns cannot rely on the
+   * in-band 401 retry (they are forbidden by the admission lease), so this
+   * is the only recovery point on that path. No-ops in bearer-key mode, and
+   * never throws: a failed pre-flight leaves the current bearer in place so
+   * the wire error reports itself instead of a local refresh crash.
+   */
+  private oauthCallbacksInstalled = false;
+  private async refreshOAuthBearerIfExpiring(): Promise<void> {
+    if (!this.oauthCallbacksInstalled) return;
+    try {
+      const { readXaiOauthCredentials, xaiOauthTokenIsExpiring } =
+        await import("../../../utils/xaiOauthCredentials.js");
+      const blob = readXaiOauthCredentials();
+      if (blob === undefined || blob.quarantinedAt !== undefined) return;
+      if (!xaiOauthTokenIsExpiring(blob)) return;
+      await this.authRefreshCallbacks.refreshBearer({
+        attempt: 0,
+        previousError: Object.assign(new Error("oauth_bearer_expiring"), {
+          status: 401 as const,
+        }),
+      });
+    } catch {
+      // best-effort: the wire attempt surfaces its own auth failure
+    }
   }
 
   /**
@@ -1079,6 +1108,14 @@ export class GrokProvider implements LLMProvider {
         plan.params as Record<string, unknown>,
       );
 
+      // OAuth pre-flight: admitted calls run singleWireAttempt (no in-band
+      // retry by design — a retry needs a new durable reservation), so an
+      // expiring OAuth bearer must be refreshed HERE, before the wire
+      // attempt. Without this, an expired token surfaces as a bare 403
+      // (xAI's expired-token status, not 401) and the turn dies with zero
+      // recovery — observed in production 2026-07-19.
+      await this.refreshOAuthBearerIfExpiring();
+
       // I-14: retry-on-401 wrapper. Bearer-key mode's refresh callback
       // returns `skipped`, so the original 401 bubbles up unchanged.
       // OAuth-capable providers install real refresh callbacks via
@@ -1239,6 +1276,10 @@ export class GrokProvider implements LLMProvider {
       let responseTracePayload: Record<string, unknown> | undefined;
       let streamResponseMeta: ProviderResponseTraceMeta | undefined;
       try {
+      // OAuth pre-flight (same as the chat path): admitted turns stream with
+      // singleWireAttempt, so the in-band 401 retry never runs here — the
+      // expiring bearer must be refreshed before the wire attempt.
+      await this.refreshOAuthBearerIfExpiring();
       const requestAttemptTimeout =
         Number.isFinite(streamDeadlineAt)
           ? {
