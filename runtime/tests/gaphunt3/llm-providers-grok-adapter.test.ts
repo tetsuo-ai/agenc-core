@@ -35,17 +35,20 @@ function makeBlockingStream(
 ): {
   stream: AsyncIterable<Record<string, unknown>>;
   returnCalled: () => boolean;
+  pendingNextStarted: Promise<void>;
   settlePendingNext: () => void;
 } {
   let yieldedFirst = false;
   let returnInvoked = false;
   let settlePendingNext: (() => void) | undefined;
+  const pendingNextStarted = Promise.withResolvers<void>();
   const iterator: AsyncIterator<Record<string, unknown>> = {
     next(): Promise<IteratorResult<Record<string, unknown>>> {
       if (!yieldedFirst) {
         yieldedFirst = true;
         return Promise.resolve({ value: firstEvent, done: false });
       }
+      pendingNextStarted.resolve();
       return new Promise<IteratorResult<Record<string, unknown>>>((resolve) => {
         settlePendingNext = () => resolve({ value: undefined, done: true });
       });
@@ -59,6 +62,7 @@ function makeBlockingStream(
   return {
     stream: { [Symbol.asyncIterator]: () => iterator },
     returnCalled: () => returnInvoked,
+    pendingNextStarted: pendingNextStarted.promise,
     settlePendingNext: () => settlePendingNext?.(),
   };
 }
@@ -93,7 +97,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
 
     // First event carries no content so the catch branch throws (does not
     // return a partial result) and the rejection is observable.
-    const { stream, returnCalled } = makeBlockingStream({
+    const { stream, returnCalled, pendingNextStarted } = makeBlockingStream({
       type: "response.reasoning_summary_text.delta",
       delta: "thinking...",
       summary_index: 0,
@@ -124,7 +128,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
     // Let the stream open and consume the first (content-free) chunk; the loop
     // then parks on the blocking next(). Confirm it is still pending (no timer
     // advanced, no abort yet).
-    await flushMicrotasks();
+    await pendingNextStarted;
     expect(settled).toBe("pending");
 
     // Abort while parked. The abort path must settle the promise without any
@@ -152,7 +156,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
     const closeGate = Promise.withResolvers<
       IteratorResult<Record<string, unknown>>
     >();
-    const { stream, returnCalled } = makeBlockingStream(
+    const { stream, returnCalled, pendingNextStarted } = makeBlockingStream(
       {
         type: "response.reasoning_summary_text.delta",
         delta: "still thinking...",
@@ -178,7 +182,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
           settled = "rejected";
         },
       );
-    await flushMicrotasks();
+    await pendingNextStarted;
     controller.abort();
     await flushMicrotasks();
 
@@ -197,7 +201,12 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
       model: "grok-4.3",
       timeoutMs: 10 * 60_000,
     });
-    const { stream, returnCalled, settlePendingNext } = makeBlockingStream(
+    const {
+      stream,
+      returnCalled,
+      pendingNextStarted,
+      settlePendingNext,
+    } = makeBlockingStream(
       {
         type: "response.reasoning_summary_text.delta",
         delta: "abort-ignoring read",
@@ -224,7 +233,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
           settled = "rejected";
         },
       );
-    await flushMicrotasks();
+    await pendingNextStarted;
     controller.abort();
     await flushMicrotasks();
 
@@ -248,7 +257,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
       timeoutMs: 10 * 60_000,
     });
 
-    const { stream, returnCalled } = makeBlockingStream({
+    const { stream, returnCalled, pendingNextStarted } = makeBlockingStream({
       type: "response.reasoning_summary_text.delta",
       delta: "more thinking...",
       summary_index: 0,
@@ -273,7 +282,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
         },
       );
 
-    await flushMicrotasks();
+    await pendingNextStarted;
     expect(settled).toBe("pending");
     controller.abort();
     await flushMicrotasks();

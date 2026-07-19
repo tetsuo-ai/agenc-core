@@ -272,6 +272,7 @@ describe("AgenCStdioClientTransport", () => {
       );
       const internal = transport as unknown as {
         child: ChildProcess | undefined;
+        handleUnexpectedChildClose: (child: ChildProcess) => void;
       };
       let closeNotifications = 0;
       transport.onclose = () => {
@@ -316,6 +317,13 @@ describe("AgenCStdioClientTransport", () => {
         expect(internal.child).toBeUndefined();
         expect(closeNotifications).toBe(1);
         await waitFor(() => !isPidAlive(pid), `retried MCP process ${pid} exit`);
+
+        // A process-group poll can prove the tree gone before Node delivers
+        // the leader's close event. A late callback for the already-released
+        // child must not start a third cleanup attempt or leak into a later
+        // test/transport boundary.
+        internal.handleUnexpectedChildClose(owner);
+        expect(terminationSeam.calls).toEqual([owner, owner]);
       } finally {
         terminationSeam.failuresRemaining = 0;
         await transport.close().catch(() => {});

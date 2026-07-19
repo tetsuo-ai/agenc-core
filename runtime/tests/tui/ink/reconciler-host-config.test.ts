@@ -13,6 +13,24 @@ type FakeReconciler = {
   discreteUpdates: ReturnType<typeof vi.fn>
 }
 
+const reconcilerMock = vi.hoisted(() => ({
+  hostConfig: undefined as HostConfig | undefined,
+  fakeReconciler: {
+    discreteUpdates: vi.fn(),
+  } as FakeReconciler,
+}))
+
+// resetModules intentionally preserves Vitest's `mock:` module entries. Keep
+// one stable mock function across repeated dynamic imports and move only its
+// capture target; cycling closure-scoped doMock/doUnmock factories can reuse a
+// cached mock whose capture belongs to an earlier import.
+vi.mock('react-reconciler', () => ({
+  default: (config: HostConfig) => {
+    reconcilerMock.hostConfig = config
+    return reconcilerMock.fakeReconciler
+  },
+}))
+
 async function importHostConfig(): Promise<{
   hostConfig: HostConfig
   fakeReconciler: FakeReconciler
@@ -21,18 +39,10 @@ async function importHostConfig(): Promise<{
   focus: typeof import('./focus.ts')
 }> {
   vi.resetModules()
-
-  let hostConfig: HostConfig | undefined
-  const fakeReconciler: FakeReconciler = {
-    discreteUpdates: vi.fn((fn, ...args) => fn(...args)),
-  }
-
-  vi.doMock('react-reconciler', () => ({
-    default: vi.fn((config: HostConfig) => {
-      hostConfig = config
-      return fakeReconciler
-    }),
-  }))
+  reconcilerMock.hostConfig = undefined
+  reconcilerMock.fakeReconciler.discreteUpdates
+    .mockReset()
+    .mockImplementation((fn, ...args) => fn(...args))
 
   const [module, dom, focus] = await Promise.all([
     import('./reconciler.ts'),
@@ -40,17 +50,20 @@ async function importHostConfig(): Promise<{
     import('./focus.ts'),
   ])
 
-  vi.doUnmock('react-reconciler')
-
-  if (!hostConfig) {
+  if (!reconcilerMock.hostConfig) {
     throw new Error('Expected reconciler host config to be captured')
   }
 
-  return { hostConfig, fakeReconciler, module, dom, focus }
+  return {
+    hostConfig: reconcilerMock.hostConfig,
+    fakeReconciler: reconcilerMock.fakeReconciler,
+    module,
+    dom,
+    focus,
+  }
 }
 
 afterEach(() => {
-  vi.doUnmock('react-reconciler')
   vi.restoreAllMocks()
 })
 

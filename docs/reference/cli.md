@@ -11,7 +11,7 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.7.0**. Default session provider **grok**, fresh-config session model
+Version: **0.7.1**. Default session provider **grok**, fresh-config session model
 **grok-4.5** (see [providers.md](providers.md)).
 
 ---

@@ -45,11 +45,11 @@
   },
   "legacyBridge": {
     "schemaVersion": 1,
-    "runtimeVersion": "0.7.0",
+    "runtimeVersion": "0.7.1",
     "releaseRepository": "tetsuo-ai/agenc-releases",
-    "releaseTag": "agenc-v0.7.0",
+    "releaseTag": "agenc-v0.7.1",
     "filename": "agenc-runtime-manifest.json",
-    "status": "pending-v0.7.0-publication",
+    "status": "pending-v0.7.1-publication",
     "sha256": null,
     "bytes": null
   },

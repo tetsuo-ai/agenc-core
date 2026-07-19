@@ -1,6 +1,6 @@
 # Onboarding AgenC (operator guide)
 
-**Current release: 0.6.0.** This is the live product guide for first-run and
+**Current release: 0.7.1.** This is the live product guide for first-run and
 the multi-act setup path. Historical implementation notes live under
 [archive/onboarding-plan-2026-07.md](archive/onboarding-plan-2026-07.md)
 (archived — not product truth).

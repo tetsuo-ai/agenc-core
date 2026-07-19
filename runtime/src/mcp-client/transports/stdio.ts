@@ -390,6 +390,11 @@ export class AgenCStdioClientTransport implements Transport {
   }
 
   private handleUnexpectedChildClose(child: ChildProcess): void {
+    // Process-group polling can prove teardown before Node delivers the
+    // leader's close event. Ignore that late callback once this transport has
+    // released the child; otherwise it starts a duplicate cleanup attempt that
+    // can escape into the next lifecycle boundary.
+    if (this.child !== child) return;
     if (this.shutdownState?.child === child) return;
     void this.terminateChild(child).catch((error: unknown) => {
       this.onerror?.(toError(error));

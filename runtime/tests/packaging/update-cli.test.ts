@@ -918,7 +918,7 @@ describe("agenc update CLI", () => {
     }
   });
 
-  test("rejects a frozen legacy pin before network or filesystem mutation", async () => {
+  test("rejects an unpublished or pre-modern pin before network or filesystem mutation", async () => {
     let fetched = false;
     const code = await runAgenCUpdateCli(
       {
@@ -937,7 +937,8 @@ describe("agenc update CLI", () => {
     );
     expect(code).toBe(1);
     expect(fetched).toBe(false);
-    expect(err.join("\n")).toContain("0.7.0 or newer");
+    expect(err.join("\n")).toContain("0.7.1 or newer");
+    expect(err.join("\n")).toContain("has no published modern v2 update contract");
     expect(existsSync(join(agencHome, "runtime"))).toBe(false);
   });
 
