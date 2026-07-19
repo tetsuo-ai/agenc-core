@@ -201,6 +201,18 @@ test("local-path scan ignores generic roots but rejects a unique build path", ()
         /embeds a developer-local path/,
       );
     }
+
+    const stage = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\agenc-runtime-build-Ab12cd";
+    for (const encoding of ["utf8", "utf16le"]) {
+      writeFileSync(
+        join(work, "leaked.txt"),
+        Buffer.from("source=agenc-runtime-build-Ab12cd/runtime", encoding),
+      );
+      assert.throws(
+        () => assertNoLocalPathLeaks(work, [stage]),
+        /embeds a developer-local path/,
+      );
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

@@ -1178,6 +1178,7 @@ function smokeInstalledNativeModules(installRoot, env) {
 function isDeveloperSpecificPath(value) {
   if (typeof value !== "string" || value.length < 4) return false;
   const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (/^agenc-runtime-build-[A-Za-z0-9_-]{6,}$/.test(normalized)) return true;
   // A runner/user home root is not unique enough to attribute to this build.
   // Prebuilt dependencies may legitimately retain their upstream builder's
   // generic home while deeper repo, stage, and cache paths remain strong
@@ -1194,13 +1195,39 @@ function isDeveloperSpecificPath(value) {
 }
 
 export function assertNoLocalPathLeaks(root, localPaths) {
+  const identities = localPaths.flatMap((value) => {
+    const resolved = [value];
+    if (typeof value !== "string" || !isAbsolute(value) || !existsSync(value)) {
+      return resolved;
+    }
+    for (const resolver of [realpathSync, realpathSync.native]) {
+      try {
+        resolved.push(resolver(value));
+      } catch {
+        // The original identity is still scanned; release inputs are checked
+        // separately before this defense-in-depth path leak pass.
+      }
+    }
+    return resolved;
+  });
   const pathVariants = [...new Set(
-    localPaths
+    identities
       // Top-level roots such as /root, /src, or C:\\src are too generic to
       // identify a developer machine and occur legitimately in dependency
       // source. Build stages use deeper, unique paths; scan only those paths.
       .filter(isDeveloperSpecificPath)
-      .flatMap((value) => [value, value.split("\\").join("/"), value.split("/").join("\\")]),
+      .flatMap((value) => {
+        const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+        const basename = normalized.split("/").pop();
+        return [
+          value,
+          value.split("\\").join("/"),
+          value.split("/").join("\\"),
+          ...(/^agenc-runtime-build-[A-Za-z0-9_-]{6,}$/.test(basename ?? "")
+            ? [basename]
+            : []),
+        ];
+      }),
   )];
   const needles = pathVariants.flatMap((display) => [
     { bytes: Buffer.from(display), display },
