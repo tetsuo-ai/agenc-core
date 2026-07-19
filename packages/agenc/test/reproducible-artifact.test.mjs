@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import test from "node:test";
 import { list as listTar } from "tar";
@@ -17,6 +17,8 @@ import {
   maximumMacosDeploymentVersion,
   maximumRequiredSymbolVersion,
   pruneNativeBuildIntermediates,
+  resolveBuildExecutables,
+  withPinnedExecutablePath,
   writeCanonicalArchive,
 } from "../scripts/build-runtime-tarball.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
@@ -132,6 +134,83 @@ test("local-path scan ignores generic roots but rejects a unique build path", ()
         /embeds a developer-local path/,
       );
     }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("release build executables stay pinned across lifecycle and PATH drift", () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-build-executables-test-"));
+  try {
+    const npmCli = join(work, "npm-cli.js");
+    const detachedNode = join(work, "node");
+    writeFileSync(npmCli, "export {};\n");
+    writeFileSync(detachedNode, "detached\n");
+    const resolved = resolveBuildExecutables({
+      artifactProfile: "release",
+      environment: {
+        AGENC_NODE_EXECUTABLE_PATH: process.execPath,
+        AGENC_NPM_CLI_PATH: npmCli,
+        npm_execpath: detachedNode,
+      },
+      currentNodeExecutable: process.execPath,
+    });
+    assert.equal(resolved.nodeExecutablePath, realpathSync(process.execPath));
+    assert.equal(resolved.npmCliPath, realpathSync(npmCli));
+
+    assert.throws(
+      () => resolveBuildExecutables({
+        artifactProfile: "release",
+        environment: { npm_execpath: npmCli },
+        currentNodeExecutable: process.execPath,
+      }),
+      /require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH/,
+    );
+    assert.throws(
+      () => resolveBuildExecutables({
+        artifactProfile: "release",
+        environment: {
+          AGENC_NODE_EXECUTABLE_PATH: process.execPath,
+          AGENC_NPM_CLI_PATH: "relative/npm-cli.js",
+        },
+        currentNodeExecutable: process.execPath,
+      }),
+      /npm CLI must name an absolute regular file/,
+    );
+    assert.throws(
+      () => resolveBuildExecutables({
+        artifactProfile: "release",
+        environment: {
+          AGENC_NODE_EXECUTABLE_PATH: detachedNode,
+          AGENC_NPM_CLI_PATH: npmCli,
+        },
+        currentNodeExecutable: process.execPath,
+      }),
+      /not running under the verified Node executable/,
+    );
+
+    const normalized = withPinnedExecutablePath(
+      { PATH: "/runner/bin:/usr/bin", Path: "/stale/bin:/usr/bin", KEEP: "yes" },
+      process.execPath,
+      "linux",
+    );
+    assert.equal(normalized.Path, undefined);
+    assert.equal(normalized.KEEP, "yes");
+    assert.equal(normalized.PATH.split(":")[0], dirname(process.execPath));
+    assert.equal(normalized.PATH.split(":").filter((entry) => entry === "/usr/bin").length, 1);
+
+    const windowsNormalized = withPinnedExecutablePath(
+      { Path: "C:\\Runner\\bin;C:\\Windows", PATH: "c:\\runner\\BIN;C:\\Tools" },
+      "D:\\Pinned Node\\node.exe",
+      "win32",
+    );
+    assert.equal(windowsNormalized.Path, undefined);
+    assert.deepEqual(windowsNormalized.PATH.split(";"), [
+      "D:\\Pinned Node",
+      "C:\\Runner\\bin",
+      "C:\\Windows",
+      "C:\\Tools",
+    ]);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

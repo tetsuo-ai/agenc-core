@@ -34,6 +34,7 @@ import {
   openSync,
   readSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -44,7 +45,7 @@ import {
 } from "node:fs";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep, win32 as win32Path } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { create as createTar, extract as extractTar } from "tar";
@@ -58,16 +59,10 @@ const rootPackagePath = join(repoRoot, "package.json");
 const lockfilePath = join(repoRoot, "package-lock.json");
 const releaseToolchainPath = join(repoRoot, "release-toolchain.json");
 
-// On Windows, npm/tar-style launchers are .cmd shims that spawnSync cannot
-// exec directly (ENOENT surfaces as a null status — exactly the CI matrix
-// failure mode). `shell: true` resolves them through cmd.exe; argv here is
-// always static, never user input.
-const IS_WINDOWS = process.platform === "win32";
-
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     stdio: "inherit",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.status !== 0) {
@@ -81,7 +76,7 @@ function run(cmd, args, opts = {}) {
 function capture(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.status !== 0) {
@@ -95,7 +90,7 @@ function capture(cmd, args, opts = {}) {
 function captureOptional(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   return res.status === 0 ? res.stdout.trim() : undefined;
@@ -104,7 +99,7 @@ function captureOptional(cmd, args, opts = {}) {
 function captureCombined(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
-    shell: IS_WINDOWS,
+    shell: false,
     ...opts,
   });
   if (res.error?.code === "ENOENT") return undefined;
@@ -122,36 +117,91 @@ function captureCombined(cmd, args, opts = {}) {
   return output || undefined;
 }
 
-function resolveNpmCliPath(artifactProfile) {
-  const configured = process.env.AGENC_NPM_CLI_PATH?.trim();
-  const lifecycle = process.env.npm_execpath?.trim();
-  const candidate = configured || lifecycle;
+function requireAbsoluteRegularFile(value, label) {
   if (
-    candidate &&
-    isAbsolute(candidate) &&
-    existsSync(candidate) &&
-    statSync(candidate).isFile()
+    typeof value !== "string" ||
+    !isAbsolute(value) ||
+    !existsSync(value) ||
+    !statSync(value).isFile()
   ) {
-    return candidate;
+    throw new Error(`${label} must name an absolute regular file`);
   }
+  return realpathSync(value);
+}
+
+export function resolveBuildExecutables({
+  artifactProfile,
+  environment = process.env,
+  currentNodeExecutable = process.execPath,
+  platform = process.platform,
+}) {
+  const configuredNode = environment.AGENC_NODE_EXECUTABLE_PATH?.trim();
+  const configuredNpm = environment.AGENC_NPM_CLI_PATH?.trim();
+  if (artifactProfile === "release" && (!configuredNode || !configuredNpm)) {
+    throw new Error(
+      "release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH",
+    );
+  }
+  const nodeExecutablePath = requireAbsoluteRegularFile(
+    configuredNode || currentNodeExecutable,
+    "Node executable",
+  );
+  const npmCliPath = requireAbsoluteRegularFile(
+    configuredNpm || environment.npm_execpath?.trim(),
+    "npm CLI",
+  );
   if (artifactProfile === "release") {
-    throw new Error("release builds require an absolute verified AGENC_NPM_CLI_PATH");
+    const currentNodePath = realpathSync(currentNodeExecutable);
+    const normalize = (value) => platform === "win32" ? value.toLowerCase() : value;
+    if (normalize(nodeExecutablePath) !== normalize(currentNodePath)) {
+      throw new Error("release build process is not running under the verified Node executable");
+    }
   }
-  return undefined;
+  return { nodeExecutablePath, npmCliPath };
 }
 
-function runNpm(npmCliPath, args, opts = {}) {
-  if (npmCliPath) {
-    return run(process.execPath, [npmCliPath, ...args], { ...opts, shell: false });
+export function withPinnedExecutablePath(environment, nodeExecutablePath, platform = process.platform) {
+  const result = { ...environment };
+  const pathDelimiter = platform === "win32" ? ";" : ":";
+  const executableDirectory = platform === "win32"
+    ? win32Path.dirname(nodeExecutablePath)
+    : dirname(nodeExecutablePath);
+  const pathValues = [];
+  for (const [name, value] of Object.entries(result)) {
+    if (name.toLowerCase() !== "path") continue;
+    delete result[name];
+    if (typeof value === "string" && value.length > 0) pathValues.push(value);
   }
-  return run("npm", args, opts);
+  const normalize = (value) => platform === "win32" ? value.toLowerCase() : value;
+  const seen = new Set();
+  const entries = [
+    executableDirectory,
+    ...pathValues.flatMap((value) => value.split(pathDelimiter)),
+  ].filter((value) => {
+    if (!value) return false;
+    const key = normalize(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  result.PATH = entries.join(pathDelimiter);
+  return result;
 }
 
-function captureNpm(npmCliPath, args, opts = {}) {
-  if (npmCliPath) {
-    return capture(process.execPath, [npmCliPath, ...args], { ...opts, shell: false });
-  }
-  return capture("npm", args, opts);
+function runNpm(executables, args, opts = {}) {
+  return run(
+    executables.nodeExecutablePath,
+    [executables.npmCliPath, ...args],
+    { ...opts, shell: false },
+  );
+}
+
+function captureNpm(executables, args, opts = {}) {
+  return capture(
+    executables.nodeExecutablePath,
+    [executables.npmCliPath, ...args],
+    { ...opts, shell: false },
+  );
 }
 
 function firstLine(value) {
@@ -1104,12 +1154,12 @@ async function main() {
   if (!/^(release|clean-local|container-local)$/.test(artifactProfile)) {
     throw new Error(`unsupported AGENC_ARTIFACT_PROFILE: ${artifactProfile}`);
   }
-  const npmCliPath = resolveNpmCliPath(artifactProfile);
+  const buildExecutables = resolveBuildExecutables({ artifactProfile });
   const expectedNpmVersion = pinnedNpmVersion(rootPackage);
   if (expectedNpmVersion !== releaseToolchain.npmVersion) {
     throw new Error("root packageManager and release-toolchain npm versions differ");
   }
-  const npmVersion = captureNpm(npmCliPath, ["--version"], { cwd: repoRoot });
+  const npmVersion = captureNpm(buildExecutables, ["--version"], { cwd: repoRoot });
   if (npmVersion !== expectedNpmVersion) {
     throw new Error(
       `release build requires npm ${expectedNpmVersion}; found ${npmVersion}`,
@@ -1163,7 +1213,7 @@ async function main() {
   }
   const version = runtimePkg.version;
   const { os, arch, slug } = platformSlug();
-  const releaseEnv = {
+  const releaseEnv = withPinnedExecutablePath({
     ...process.env,
     AGENC_BUILD_COMMIT: source.sourceCommit,
     AGENC_BUILD_TIME: source.buildTime,
@@ -1175,7 +1225,7 @@ async function main() {
     LC_ALL: "C",
     SOURCE_DATE_EPOCH: String(source.sourceDateEpoch),
     TZ: "UTC",
-  };
+  }, buildExecutables.nodeExecutablePath);
   if (process.platform === "linux") {
     releaseEnv.AGENC_MAX_GLIBC = releaseToolchain.linux.maximumGlibcVersion;
     releaseEnv.AGENC_MAX_GLIBCXX = releaseToolchain.linux.maximumGlibcxxVersion;
@@ -1186,9 +1236,9 @@ async function main() {
     releaseEnv.LDFLAGS = [
       releaseEnv.LDFLAGS,
       "-Wl,-no_uuid",
-      // Rewrite linker-generated N_OSO debug-map entries relative to a stable
-      // root so native addons do not retain the per-build staging directory.
-      "-Wl,-oso_prefix,.",
+      // Remove unusable linker debug-map entries before they can retain the
+      // per-build staging directory. Runtime/global symbols remain intact.
+      "-Wl,-S",
     ].filter(Boolean).join(" ");
   }
   if (process.platform === "win32") {
@@ -1210,11 +1260,11 @@ async function main() {
   try {
     // 1. Build the runtime (produces dist/).
     console.error(`[build] runtime ${version} (${slug})`);
-    runNpm(npmCliPath, ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
+    runNpm(buildExecutables, ["run", "build"], { cwd: runtimeDir, env: releaseEnv });
 
     // 2. Pack the runtime package into a tgz (honors runtime's `files`).
     const packed = captureNpm(
-      npmCliPath,
+      buildExecutables,
       ["pack", "--silent", "--ignore-scripts", "--pack-destination", stage],
       { cwd: runtimeDir, env: releaseEnv },
     )
@@ -1257,7 +1307,7 @@ async function main() {
       strip: 1,
     });
     runNpm(
-      npmCliPath,
+      buildExecutables,
       [
         "ci",
         "--omit=dev",

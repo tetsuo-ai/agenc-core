@@ -233,10 +233,13 @@ jobs:
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
-          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
-          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          node_executable="$node_root/bin/node"
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_executable" --version)" = "v$NODE_VERSION"
+          test "$("$node_executable" "$npm_cli" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
-          echo "AGENC_NPM_CLI_PATH=$node_root/lib/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_EXECUTABLE_PATH=$node_executable" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -254,8 +257,8 @@ jobs:
           ld --version | head -1 | grep -F '2.38'
           test "$(python3.12 -c 'import platform; print(platform.python_version())')" = "3.12.13"
           test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
-          test "$(node --version)" = "v$NODE_VERSION"
-          test "$(node "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" --version)" = "v$NODE_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
           # actions/checkout registers this bind-mounted path only in its
           # temporary HOME; register the exact path for subsequent container
@@ -287,13 +290,14 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            node "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
               --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              node "$AGENC_NPM_CLI_PATH" --prefix "$build_source" \
-                --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              "$AGENC_NODE_EXECUTABLE_PATH" \
+                "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"
           done
-          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
             --output "$source_root/packages/agenc/release-artifacts"
       - name: Select the canonical runtime subject and bundle path
@@ -306,7 +310,7 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
@@ -502,6 +506,7 @@ jobs:
             if ($separator -le 0) { continue }
             $name = $line.Substring(0, $separator)
             if ($required -notcontains $name) { continue }
+            if ($name -ieq 'PATH') { $name = 'PATH' }
             $value = $line.Substring($separator + 1)
             $captured[$name] = $value
             Set-Item -Path "Env:$name" -Value $value
@@ -573,10 +578,13 @@ jobs:
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
-          test "$("$node_root/bin/node" --version)" = "v$NODE_VERSION"
-          test "$("$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" --version)" = "$NPM_VERSION"
+          node_executable="$node_root/bin/node"
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_executable" --version)" = "v$NODE_VERSION"
+          test "$("$node_executable" "$npm_cli" --version)" = "$NPM_VERSION"
           echo "$node_root/bin" >> "$GITHUB_PATH"
-          echo "AGENC_NPM_CLI_PATH=$node_root/lib/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_EXECUTABLE_PATH=$node_executable" >> "$GITHUB_ENV"
+          echo "AGENC_NPM_CLI_PATH=$npm_cli" >> "$GITHUB_ENV"
           echo "npm_config_nodedir=$headers_root" >> "$GITHUB_ENV"
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
@@ -633,11 +641,14 @@ jobs:
           Assert-Bytes $headersNodeImportLibrary $importLibrary.bytes
           & (Join-Path $nodeRoot 'npm.cmd') install --global $npmArchive --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'failed to install pinned npm archive' }
-          if ((& (Join-Path $nodeRoot 'node.exe') --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
-          if ((& (Join-Path $nodeRoot 'npm.cmd') --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
+          $nodeExecutablePath = Join-Path $nodeRoot 'node.exe'
           $npmCliPath = Join-Path $nodeRoot 'node_modules\npm\bin\npm-cli.js'
+          if (-not (Test-Path -LiteralPath $nodeExecutablePath -PathType Leaf)) { throw 'pinned Node executable is missing' }
           if (-not (Test-Path -LiteralPath $npmCliPath -PathType Leaf)) { throw 'pinned npm CLI is missing' }
+          if ((& $nodeExecutablePath --version) -cne "v$env:NODE_VERSION") { throw 'Node version mismatch' }
+          if ((& $nodeExecutablePath $npmCliPath --version) -cne $env:NPM_VERSION) { throw 'npm version mismatch' }
           $nodeRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "AGENC_NODE_EXECUTABLE_PATH=$nodeExecutablePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_CLI_PATH=$npmCliPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "npm_config_nodedir=$headersRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_DISTRIBUTION_SHA256=$($distribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -650,8 +661,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 022
-          test "$(node --version)" = "v$NODE_VERSION"
-          test "$(node "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" --version)" = "v$NODE_VERSION"
+          test "$("$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" --version)" = "$NPM_VERSION"
           source_root="$(pwd -P)"
           runner_temp="$RUNNER_TEMP"
           if command -v cygpath >/dev/null 2>&1; then
@@ -683,13 +694,14 @@ jobs:
             fi
             test "$(git -C "$build_source" rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
-            node "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
               --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
             AGENC_RELEASE_OUT_DIR="$build_output" \
-              node "$AGENC_NPM_CLI_PATH" --prefix "$build_source" \
-                --workspace=@tetsuo-ai/agenc run build:runtime-tarball
+              "$AGENC_NODE_EXECUTABLE_PATH" \
+                "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"
           done
-          node "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
             --output "$source_root/packages/agenc/release-artifacts"
       - name: Select the canonical runtime subject and bundle path
@@ -702,7 +714,7 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$(node -p 'require(\"./runtime/package.json\").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
