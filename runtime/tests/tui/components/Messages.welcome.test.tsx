@@ -51,7 +51,11 @@ describe('Messages welcome state', () => {
     )
     expect(output).not.toContain('default model')
     expect(output).toContain('workspace')
-    expect(output).toContain('recent')
+    // The recent card renders only with real session data (see the
+    // WelcomeColdPanel comment: a fabricated resume list is worse than no
+    // card at all); an empty transcript passes no recentSessions, so the
+    // "recent" section must not appear.
+    expect(output).not.toContain('recent')
     expect(output).not.toContain('18.40')
     expect(output).not.toContain('/claim')
   })

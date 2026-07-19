@@ -37,9 +37,6 @@ import {
 import { renderToString } from '../../../src/utils/staticRender.js'
 import type { ScrollBoxHandle } from '../../../src/tui/ink/components/ScrollBox.js'
 
-const SYNC_START = '\x1B[?2026h'
-const SYNC_END = '\x1B[?2026l'
-
 type TestStdin = PassThrough & {
   isTTY: boolean
   ref: () => void
@@ -81,28 +78,6 @@ async function withFullscreenEnv<T>(fn: () => Promise<T>): Promise<T> {
   } finally {
     restoreEnv('AGENC_NO_FLICKER', previous)
   }
-}
-
-function extractLastFrame(output: string): string {
-  let lastFrame: string | null = null
-  let cursor = 0
-
-  while (cursor < output.length) {
-    const start = output.indexOf(SYNC_START, cursor)
-    if (start === -1) break
-
-    const contentStart = start + SYNC_START.length
-    const end = output.indexOf(SYNC_END, contentStart)
-    if (end === -1) break
-
-    const frame = output.slice(contentStart, end)
-    if (frame.trim().length > 0) {
-      lastFrame = frame
-    }
-    cursor = end + SYNC_END.length
-  }
-
-  return lastFrame ?? output
 }
 
 function createStreams(viewport: Viewport): {
@@ -152,7 +127,12 @@ async function renderLatestFrame(
     try {
       root.render(node)
       await sleep()
-      return stripAnsi(extractLastFrame(getOutput()))
+      // Assert against everything painted, not just the last sync frame:
+      // the bottom chrome's git label probe resolves asynchronously (by
+      // design, so first paint never blocks) and its incremental repaint
+      // then becomes the trailing frame, containing only the git segment
+      // and none of the overlay content painted earlier.
+      return stripAnsi(getOutput())
     } finally {
       root.unmount()
       stdin.end()
@@ -304,7 +284,7 @@ describe('FullscreenLayout coverage swarm 019', () => {
     expect(output).not.toContain('done-task')
   })
 
-  test('renders expanded bottom chrome task counts for active tasks', async () => {
+  test('renders the active task in the top chrome and honest bottom labels', async () => {
     const state = getDefaultAppState()
     const output = await withFullscreenEnv(() =>
       renderToString(
@@ -331,9 +311,17 @@ describe('FullscreenLayout coverage swarm 019', () => {
       ),
     )
 
-    expect(output).toContain('task')
-    expect(output).toContain('2')
+    // Top chrome surfaces the first running/queued task by id; the other
+    // tasks stay out of the chrome (no aggregate count anywhere).
+    expect(output).toContain('running-task')
+    expect(output).not.toContain('queued-task')
+    expect(output).not.toContain('completed-task')
+    // Bottom chrome keeps the real labels (mode, spend) and drops the
+    // fabricated ctx/stake segments the pre-redesign chrome hardcoded —
+    // the old '2' assertion only ever matched the fake `12.4K` stake.
     expect(output).toContain('mode')
+    expect(output).toContain('spend')
+    expect(output).not.toContain('12.4K')
   })
 
   test('portals prompt suggestions above the clipped bottom slot', async () => {

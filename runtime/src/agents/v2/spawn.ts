@@ -337,7 +337,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const spawnAgentSchema = {
     type: "object",
     properties: {
-      message: { type: "string" },
+      message: {
+        type: "string",
+        description:
+          "REQUIRED. The complete task prompt for the spawned agent: the overall goal, the files it owns, local conventions it must follow, and how to verify its work. The agent sees only this message (plus any forked turns) — never assume it has context you did not include. A call without `message` is rejected.",
+      },
       task_name: {
         type: "string",
         description:

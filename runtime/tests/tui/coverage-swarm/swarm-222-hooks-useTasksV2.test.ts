@@ -297,7 +297,9 @@ describe('useTasksV2 coverage swarm row 222', () => {
     const mounted = await mountUseTasksV2()
     await flushPromises()
 
-    expect(activeTimers(5000)).toHaveLength(1)
+    // Two 5000ms timers: the completed-task hide timer AND the fallback poll
+    // (the poll stays armed so cross-process board writes are discovered).
+    expect(activeTimers(5000)).toHaveLength(2)
 
     fixture.state.tasksByList.set('list-a', [task('done-again', 'completed')])
     await emitTasksUpdated()
@@ -305,7 +307,9 @@ describe('useTasksV2 coverage swarm row 222', () => {
     expect(latestTasks(mounted.record)?.map(item => item.id)).toEqual([
       'done-again',
     ])
-    expect(activeTimers(5000)).toHaveLength(1)
+    // Repeated all-completed updates still keep exactly one hide timer plus
+    // the re-armed fallback poll — no duplicate timers or watchers.
+    expect(activeTimers(5000)).toHaveLength(2)
     expect(fixture.watch).toHaveBeenCalledTimes(1)
     expect(fixture.state.watchers[0]?.close).not.toHaveBeenCalled()
   })

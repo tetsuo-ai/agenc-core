@@ -68,12 +68,18 @@ vi.mock("src/utils/readFileInRange.js", () => ({
   readFileInRange: harness.readFileInRange,
 }));
 
-vi.mock("src/tui/components/design-system/FuzzyPicker.js", () => ({
-  FuzzyPicker: (props: CapturedPickerProps) => {
-    harness.pickerProps = props;
-    return null;
-  },
-}));
+vi.mock("src/tui/components/design-system/FuzzyPicker.js", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("src/tui/components/design-system/FuzzyPicker.js")
+  >();
+  return {
+    ...actual,
+    FuzzyPicker: (props: CapturedPickerProps) => {
+      harness.pickerProps = props;
+      return null;
+    },
+  };
+});
 
 import { createRoot } from "src/tui/ink/root.js";
 import { renderToString } from "src/utils/staticRender.js";

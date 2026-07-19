@@ -88,18 +88,17 @@ vi.mock('../../../src/tui/components/v2/primitives.js', async () => {
 
 import { renderToString } from '../../../src/utils/staticRender.js'
 import { MessageActionsSelectedContext } from '../../../src/tui/components/messageActions.js'
-import { formatBriefTimestamp } from '../../../src/utils/formatBriefTimestamp.js'
 import {
   getUserPromptTruncationNotice,
   truncateUserPromptDisplayText,
   UserPromptMessage,
 } from '../../../src/tui/message-renderers/UserPromptMessage.js'
 
-// A real ISO timestamp the standard transcript path must format to a short
-// local time before handing it to <Msg>. Use the shared formatter for the
-// expected value so the assertion stays locale-robust.
+// A real ISO timestamp. The brief path hands it raw to HighlightedThinkingText
+// (which formats internally); the standard transcript path renders no timestamp
+// at all (the gutter redesign dropped the YOU label/timestamps), so the raw ISO
+// must never leak into output.
 const ISO_TS = '2026-06-24T11:45:00.000Z'
-const FORMATTED_TS = formatBriefTimestamp(ISO_TS)
 
 const originalBriefEnv = process.env.AGENC_BRIEF
 
@@ -188,11 +187,11 @@ describe('UserPromptMessage swarm 114 coverage', () => {
       timestamp: ISO_TS,
     })
 
-    // The raw ISO is formatted to a short local time before reaching <Msg>.
-    // Collapse whitespace: the formatted timestamp is longer than a raw ISO and
-    // can push later content onto a wrapped terminal line.
+    // The standard path renders no label/timestamp on <Msg> — the gutter
+    // redesign dropped the YOU header and per-message time. Collapse
+    // whitespace: long content can push later text onto a wrapped terminal line.
     const flat = output.replace(/\s+/g, ' ')
-    expect(flat).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
+    expect(flat).toContain('msg role:user label:undefined time:none')
     expect(output).not.toContain(ISO_TS)
     expect(flat).toContain(
       'highlight brief:undefined pointer:false time:none text:normal',
@@ -219,7 +218,7 @@ describe('UserPromptMessage swarm 114 coverage', () => {
       `highlight brief:true pointer:undefined time:${ISO_TS} text:brief prompt`,
     )
 
-    // Standard transcript path formats before <Msg>.
+    // Standard transcript path: still no label/timestamp on <Msg>.
     expect(
       flatten(
         await renderPrompt({
@@ -228,7 +227,7 @@ describe('UserPromptMessage swarm 114 coverage', () => {
           timestamp: ISO_TS,
         }),
       ),
-    ).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
+    ).toContain('msg role:user label:undefined time:none')
 
     state.viewingAgentTaskId = 'task-114'
 
@@ -236,7 +235,7 @@ describe('UserPromptMessage swarm 114 coverage', () => {
       flatten(
         await renderPrompt({ text: 'viewing task prompt', timestamp: ISO_TS }),
       ),
-    ).toContain(`msg role:user label:you time:${FORMATTED_TS}`)
+    ).toContain('msg role:user label:undefined time:none')
   })
 
   test('allows active Kairos with env opt-in to drive brief layout', async () => {

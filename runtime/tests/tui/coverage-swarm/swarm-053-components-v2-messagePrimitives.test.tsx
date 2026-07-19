@@ -278,7 +278,10 @@ describe('messagePrimitives coverage swarm 053', () => {
       />,
     )
 
-    expect(collapsed).toContain('Thinking')
+    // Collapsed streaming hint is just the expand affordance — the activity
+    // spinner already says "thinking", so the row intentionally omits the
+    // "Thinking" word and glyph (UX request; see ThinkingMessage).
+    expect(collapsed).not.toContain('Thinking')
     expect(collapsed).toContain('ctrl+o')
     expect(collapsed).not.toContain('private chain of thought')
     expect(verbose).toContain('Thinking...')

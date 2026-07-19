@@ -73,6 +73,8 @@ describe("AgenC TUI glyph selection", () => {
       treeSelectedBranch: "|>",
       treeSelectedLast: "`>",
       treeSelectedRoot: ".>",
+      folderClosed: "[+]",
+      folderOpen: "[-]",
       voiceCursorBars: " .:-=+*#@",
     });
   });

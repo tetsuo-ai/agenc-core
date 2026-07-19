@@ -343,7 +343,7 @@ describe("Spinner coverage swarm row 076", () => {
     expect(output).not.toContain("Tip: Use /clear");
   });
 
-  test("falls back to the first pending task when every pending task is blocked", async () => {
+  test("auto-shows the todo board while tasks are open, replacing the next-task hint", async () => {
     harness.featureFlags.add("TOKEN_BUDGET");
     harness.currentTurnTokenBudget = 4_000;
     harness.outputTokens = 3_000;
@@ -379,8 +379,12 @@ describe("Spinner coverage swarm row 076", () => {
     );
 
     expect(output).toContain("ROW|responding|Reviewing plan");
-    expect(output).toContain("Next: first blocked");
-    expect(output).toContain("Target: 3.0k / 4.0k (75%)");
+    // With any task still open, the todo board auto-shows in place of the old
+    // "Next: <task>" hint line (and the budget line, which shares that hint
+    // branch) — the board itself lists the blocked pending tasks.
+    expect(output).toContain("TASKS:Reviewing plan,first blocked,second blocked");
+    expect(output).not.toContain("Next:");
+    expect(output).not.toContain("Target:");
   });
 
   test("prefers plural local agent idle text over background counts", async () => {

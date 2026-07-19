@@ -99,12 +99,12 @@ vi.mock('./Notifications.js', async () => {
     Notifications: (props: {
       readonly isInputWrapped: boolean
       readonly isNarrow: boolean
-      readonly messages: unknown[]
+      readonly getMessages: () => unknown[]
     }) =>
       ReactModule.createElement(
         Text,
         null,
-        `Notifications:${String(props.isNarrow)}:${String(props.isInputWrapped)}:${props.messages.length}`,
+        `Notifications:${String(props.isNarrow)}:${String(props.isInputWrapped)}:${props.getMessages().length}`,
       ),
   }
 })
@@ -193,7 +193,8 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
     isPasting: false,
     isSearching: false,
     maxColumnWidth: 42,
-    messages: [],
+    getMessages: () => [],
+    lastAssistantMessageId: null,
     mode: 'prompt',
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
@@ -231,7 +232,8 @@ describe('PromptInputFooter coverage branch render', () => {
     const fullscreenOutput = await renderToString(
       <PromptInputFooter
         {...props({
-          messages: [{ type: 'assistant', uuid: 'msg-1' } as never],
+          getMessages: () => [{ type: 'assistant', uuid: 'msg-1' } as never],
+          lastAssistantMessageId: 'msg-1',
           suggestions,
           tasksSelected: true,
         })}

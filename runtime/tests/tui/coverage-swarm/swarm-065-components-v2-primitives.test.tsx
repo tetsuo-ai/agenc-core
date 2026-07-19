@@ -194,9 +194,11 @@ describe('v2 primitives coverage swarm row 065', () => {
     expect(output).toContain('stderr detail')
     expect(output).toContain('MIXED PLAN')
     expect(output).toContain('paused placeholder')
-    expect(output).toContain('req 0x47a3')
-    expect(output).toContain('edit command')
-    expect(output).toContain('req 0x9c14')
+    // The footer status slot shows the real requestId (no decorative fake
+    // hex), and the dead `e edit command` hint was removed from the footer.
+    expect(output).toContain('req call_swarm065_low')
+    expect(output).not.toContain('edit command')
+    expect(output).toContain('req call_swarm065_high')
     expect(output).toContain('confirmation required')
   })
 

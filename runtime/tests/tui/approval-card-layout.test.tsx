@@ -112,7 +112,9 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(generous).toContain('[1] approve once')
     expect(generous).toContain('[2] approve for session')
     expect(generous).toContain('[3] deny')
-    expect(generous).toContain('[e] edit command')
+    // The footer holds only real affordances — there is no `e` handler, so the
+    // old `[e] edit command` hint (a dead key) was deliberately removed.
+    expect(generous).not.toContain('[e] edit command')
 
     // The action legend is the primary action and is gated to stay visible
     // even when the slot is too tight to show the secondary facts/note rows.
