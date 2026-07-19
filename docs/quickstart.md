@@ -1,7 +1,7 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**In-tree release target (not yet published): 0.6.2.** The public install
-commands become active after the reviewed immutable release is published.
+**Current release: 0.6.2.** The public installer and npm package resolve to the
+same reviewed immutable runtime release.
 
 Prerequisites: Node.js **>=25.9 <26** (release toolchain: 25.9.0), `tar`, and a way to reach a model — BYOK
 (xAI / OpenAI / Anthropic / OpenRouter / …), a local Ollama or LM Studio

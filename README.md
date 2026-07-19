@@ -3,7 +3,7 @@
 > Daemon-backed coding agent: interactive TUI, headless print mode, background
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
-![status](https://img.shields.io/badge/status-pre--release-orange)
+![status](https://img.shields.io/badge/status-stable-brightgreen)
 ![version](https://img.shields.io/badge/version-0.6.2-blue)
 ![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
@@ -91,8 +91,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**0.6.2 pre-release.** Runtime and launcher are versioned `0.6.2`; the embedding
-SDK package is intentionally `0.2.0`. The public launcher is
+**Current release: 0.6.2.** Runtime and launcher are versioned `0.6.2`; the
+embedding SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**

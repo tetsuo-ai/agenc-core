@@ -76,6 +76,12 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
+## Releases
+
+| Doc | Summary |
+| --- | --- |
+| [releases/0.6.2.md](releases/0.6.2.md) | AgenC 0.6.2 highlights, breaking changes, and update guidance |
+
 ---
 
 ## Archive (historical only)
