@@ -937,7 +937,7 @@ describe("agenc update CLI", () => {
     );
     expect(code).toBe(1);
     expect(fetched).toBe(false);
-    expect(err.join("\n")).toContain("0.6.2 or newer");
+    expect(err.join("\n")).toContain("0.7.0 or newer");
     expect(existsSync(join(agencHome, "runtime"))).toBe(false);
   });
 

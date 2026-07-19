@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Assemble the ABI-aware v2 launcher manifest plus the fixed-name v1 bridge
-// consumed by launchers published before v0.6.2. Release mode requires the
+// consumed by launchers published before v0.7.0. Release mode requires the
 // complete supported matrix; --allow-partial exists only for local checks.
 
 import { createHash } from "node:crypto";
@@ -28,9 +28,9 @@ const repoRoot = resolve(launcherDir, "..", "..");
 export const V2_MANIFEST_FILENAME = "agenc-runtime-manifest-v2.json";
 export const LEGACY_MANIFEST_FILENAME = "agenc-runtime-manifest.json";
 export const LEGACY_BRIDGE_CONTRACT = Object.freeze({
-  runtimeVersion: "0.6.2",
+  runtimeVersion: "0.7.0",
   releaseRepository: "tetsuo-ai/agenc-releases",
-  releaseTag: "agenc-v0.6.2",
+  releaseTag: "agenc-v0.7.0",
   nodeVersion: "v25.9.0",
   nodeMajor: 25,
   nodeModuleAbi: "141",
@@ -186,7 +186,7 @@ export function validateLegacyBridgeManifest(manifest) {
     manifest.releaseRepository !== bridge.releaseRepository ||
     manifest.releaseTag !== bridge.releaseTag
   ) {
-    throw new Error("frozen legacy manifest is not the v0.6.2 bridge");
+    throw new Error(`frozen legacy manifest is not the v${bridge.runtimeVersion} bridge`);
   }
   exactPlatformMatrix(manifest.artifacts, "frozen legacy manifest");
   const orderedPlatforms = manifest.artifacts.map(
@@ -295,7 +295,8 @@ export function reviewedLegacyBridgeIdentity(toolchain) {
     identity.bytes > MAX_RUNTIME_MANIFEST_BYTES
   ) {
     throw new Error(
-      "the v0.6.2 legacy bridge must be pinned in release-toolchain.json after immutable publication",
+      `the v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} legacy bridge must be pinned ` +
+        "in release-toolchain.json after immutable publication",
     );
   }
   return Object.freeze({ sha256: identity.sha256, bytes: identity.bytes });
@@ -1135,7 +1136,10 @@ export async function generateManifest({
         frozenLegacySha256 !== undefined ||
         frozenLegacyBytes !== undefined
       ) {
-        throw new Error("v0.6.2 must generate its legacy bridge from the reviewed v2 manifest");
+        throw new Error(
+          `v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} must generate its legacy bridge ` +
+            "from the reviewed v2 manifest",
+        );
       }
       legacyManifest = projectLegacyManifest(manifest);
       legacyBytes = Buffer.from(canonicalJson(legacyManifest));
@@ -1152,7 +1156,8 @@ export async function generateManifest({
         frozenLegacyBytes === undefined
       ) {
         throw new Error(
-          "post-v0.6.2 releases must supply the exact pinned v0.6.2 legacy manifest bytes",
+          `post-v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} releases must supply the exact ` +
+            `pinned v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} legacy manifest bytes`,
         );
       }
       legacyBytes = frozenLegacyManifestBytes({
