@@ -24,12 +24,34 @@ in-tree README:
 
 Workbench panes (not mounted inside the transcript `ScrollBox`):
 
-- Explorer (interactive)
+- Explorer (interactive): file-type icons/colors; click to open, mouse wheel
+  or arrows to scroll, file preview inside the TUI
 - Center work-surface (switches by active surface)
-- Agents rail (visible at wide widths)
+- Agents rail (visible at wide widths): live swarm panel with per-agent
+  progress, tokens, and duration while background agents run
 - Approvals / tasks
 - BUFFER editor surface (embedded Neovim preferred — see
   [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md))
+
+## Operator surfaces added in 0.7.1
+
+- **`ctrl+r` review rail** — moves the open file to a shiki-highlighted
+  right-hand rail; chat keeps the center so you can review while prompting.
+- **Todo board** — pins itself below the composer while the agent has open
+  tasks and hides after completion. Backed by per-task JSON files shared with
+  the daemon under the conversation id; the TUI learns of daemon writes via
+  `fs.watch` plus an unconditional fallback poll.
+- **Plan approval overlay** — clamped markdown plan (14 lines, `ctrl+o` to
+  expand) with approve / review / keep-planning options always on screen.
+- **`AskUserQuestion` picker** — numbered options, arrows, free-text Other;
+  answers are recorded client-side and shipped with the `tool.approve` RPC
+  (`askUserQuestionInput`) so the daemon-side tool resumes with them.
+- **Turn lifecycle** — `esc` always clears busy latches immediately; a 20s
+  submit-ack watchdog recovers turns the daemon never acknowledged, and a
+  60s daemon-stall watchdog closes turns that go fully silent.
+- **`/effort`** — show or set reasoning effort (`low`/`medium`/`high`) for
+  the current model, validated against the model catalog; `/effort default`
+  restores the model default.
 
 Classic fullscreen owns v2 top chrome and status bar (`BrandCells`,
 `TuiHeader`, `StatusBar`). Plan mode shows a `PlanModeBanner` above scrollback.

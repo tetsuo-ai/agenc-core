@@ -80,6 +80,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.7.1.md](releases/0.7.1.md) | AgenC 0.7.1 (in progress): TUI workbench, turn lifecycle, tooling, sandbox |
 | [releases/0.7.0.md](releases/0.7.0.md) | AgenC 0.7.0 highlights, breaking changes, and update guidance |
 | [releases/0.6.2.md](releases/0.6.2.md) | Superseded 0.6.2 source candidate (no runtime or npm publication) |
 
