@@ -188,6 +188,27 @@ export function withPinnedExecutablePath(environment, nodeExecutablePath, platfo
   return result;
 }
 
+export function withWindowsReproducibleNativeFlags(environment) {
+  const result = { ...environment };
+  const append = (canonicalName, flags) => {
+    const inherited = [];
+    for (const [name, value] of Object.entries(result)) {
+      if (name.toUpperCase() !== canonicalName.toUpperCase()) continue;
+      delete result[name];
+      if (typeof value === "string" && value.trim()) inherited.push(value.trim());
+    }
+    result[canonicalName] = [...inherited, ...flags].join(" ");
+  };
+  append("CL", ["/Brepro"]);
+  append("LINK", ["/Brepro", "/PDBALTPATH:%_PDB%"]);
+  // Node's pinned common.gypi emits /Z7 objects and places /DEBUG on every
+  // native link. LINK is prepended before project options, so use _LINK_ to
+  // append the final override. Release artifacts discard PDBs; suppressing
+  // them also removes their build-specific CodeView identity from each PE.
+  append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"]);
+  return result;
+}
+
 function runNpm(executables, args, opts = {}) {
   return run(
     executables.nodeExecutablePath,
@@ -361,7 +382,7 @@ function nativeToolchainMetadata(releaseToolchain, artifactProfile, buildEnviron
     make: firstLine(captureCombined("make", ["--version"])),
     buildFlags: Object.fromEntries(
       [
-        "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "LINK",
+        "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CL", "LINK", "_LINK_",
         "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "npm_config_build_from_source",
         "npm_config_python",
       ]
@@ -1274,7 +1295,7 @@ async function main() {
   }
   const version = runtimePkg.version;
   const { os, arch, slug } = platformSlug();
-  const releaseEnv = withPinnedExecutablePath({
+  let releaseEnv = withPinnedExecutablePath({
     ...process.env,
     AGENC_BUILD_COMMIT: source.sourceCommit,
     AGENC_BUILD_TIME: source.buildTime,
@@ -1303,14 +1324,7 @@ async function main() {
     ].filter(Boolean).join(" ");
   }
   if (process.platform === "win32") {
-    releaseEnv.CL = [releaseEnv.CL, "/Brepro"].filter(Boolean).join(" ");
-    releaseEnv.LINK = [
-      releaseEnv.LINK,
-      "/Brepro",
-      // Keep the CodeView reference useful without embedding the randomized
-      // staging directory. MSVC expands %_PDB% to the PDB filename only.
-      "/PDBALTPATH:%_PDB%",
-    ].filter(Boolean).join(" ");
+    releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv);
   }
   const nativeToolchain = nativeToolchainMetadata(
     releaseToolchain,

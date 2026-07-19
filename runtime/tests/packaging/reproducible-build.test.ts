@@ -263,6 +263,10 @@ describe("reproducible install and release contract", () => {
     expect(builder).not.toContain('"-Wl,-no_uuid"');
     expect(builder).not.toContain('"-Wl,-oso_prefix,."');
     expect(builder).toContain('"/PDBALTPATH:%_PDB%"');
+    expect(builder).toContain('append("_LINK_", ["/DEBUG:NONE", "/INCREMENTAL:NO", "/Brepro"])');
+    expect(builder).toContain('"CL", "LINK", "_LINK_"');
+    expect(builder).toContain("releaseEnv = withWindowsReproducibleNativeFlags(releaseEnv)");
+    expect(builder).not.toContain("Object.assign(releaseEnv, withWindowsReproducibleNativeFlags");
     expect(builder).toContain("release builds require verified AGENC_NODE_EXECUTABLE_PATH and AGENC_NPM_CLI_PATH");
     expect(builder).toContain("runNpm(buildExecutables");
     expect(builder).toContain("captureNpm(buildExecutables");

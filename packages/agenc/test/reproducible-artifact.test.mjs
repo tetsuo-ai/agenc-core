@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +20,7 @@ import {
   pruneNativeBuildIntermediates,
   resolveBuildExecutables,
   withPinnedExecutablePath,
+  withWindowsReproducibleNativeFlags,
   writeCanonicalArchive,
 } from "../scripts/build-runtime-tarball.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
@@ -99,6 +100,61 @@ test("canonical long-path PAX archives pass the install-side validator", async (
       () => validateRuntimeArchive(unknownPax),
       /unsupported PAX key: xath/,
     );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("reproducibility mismatch identifies the exact archive member", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-repro-diff-test-"));
+  try {
+    const first = join(work, "first");
+    const second = join(work, "second");
+    const output = join(work, "output");
+    const artifact = "agenc-runtime-1.0.0-win-x64-node25-abi141.tar.gz";
+    for (const [root, installName, payload] of [
+      [first, "install-first", "first-native"],
+      [second, "install-second", "other-native"],
+    ]) {
+      mkdirSync(root, { recursive: true });
+      const installRoot = join(work, installName);
+      const nativeRoot = join(
+        installRoot,
+        "node_modules",
+        "native",
+        "build",
+        "Release",
+      );
+      mkdirSync(nativeRoot, { recursive: true });
+      writeFileSync(join(nativeRoot, "addon.node"), payload);
+      const artifactPath = join(root, artifact);
+      await writeCanonicalArchive({ installRoot, artifactPath, epoch: 1_700_000_000 });
+      const bytes = readFileSync(artifactPath);
+      writeFileSync(
+        `${artifactPath}.meta.json`,
+        `${JSON.stringify({
+          artifact,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          bytes: bytes.length,
+          artifactProfile: "release",
+          nativeToolchain: { schemaVersion: 1, builder: "fixture" },
+        }, null, 2)}\n`,
+      );
+    }
+    const verifier = join(
+      import.meta.dirname,
+      "..",
+      "scripts",
+      "verify-reproducible-artifacts.mjs",
+    );
+    const result = spawnSync(process.execPath, [
+      verifier, "--first", first, "--second", second, "--output", output,
+    ], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /archiveEntryDifferences=/);
+    assert.match(result.stderr, /node_modules\/native\/build\/Release\/addon\.node/);
+    assert.match(result.stderr, /contentSha256/);
+    assert.equal(existsSync(output), false);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -215,6 +271,27 @@ test("release build executables stay pinned across lifecycle and PATH drift", ()
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+});
+
+test("Windows release flags override project debug links after the command line", () => {
+  const environment = withWindowsReproducibleNativeFlags({
+    Cl: "/DKEEP_COMPILER",
+    LINK: "/KEEP_PREPENDED",
+    _link_: "/KEEP_APPENDED",
+    UNRELATED: "yes",
+  });
+  assert.equal(environment.Cl, undefined);
+  assert.equal(environment._link_, undefined);
+  assert.equal(environment.UNRELATED, "yes");
+  assert.equal(environment.CL, "/DKEEP_COMPILER /Brepro");
+  assert.equal(
+    environment.LINK,
+    "/KEEP_PREPENDED /Brepro /PDBALTPATH:%_PDB%",
+  );
+  assert.equal(
+    environment._LINK_,
+    "/KEEP_APPENDED /DEBUG:NONE /INCREMENTAL:NO /Brepro",
+  );
 });
 
 test("runtime packaging rejects root manifest dependencies absent from the lock snapshot", () => {
