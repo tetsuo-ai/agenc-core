@@ -66,12 +66,14 @@ jobs:
           test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          # Temporary branch-only hosted-runner diagnostic. This block is
-          # restored to the release-tag binding before review or merge.
-          test "$GITHUB_REF_TYPE" = "branch"
-          test "$GITHUB_REF" = "refs/heads/fix/release-runtime-hosted-builds"
+          test "$GITHUB_REF_TYPE" = "tag"
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          expected_ref="refs/tags/agenc-v${version}"
+          test "$GITHUB_REF" = "$expected_ref"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git merge-base --is-ancestor refs/remotes/origin/main "$GITHUB_SHA"
+          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
   linux-tarball:
     needs: release-source
