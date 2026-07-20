@@ -1,0 +1,531 @@
+/* Kanban — dark theme */
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-elevated: #222633;
+  --border: #2e3345;
+  --border-subtle: #252a3a;
+  --text: #e8eaef;
+  --text-muted: #9aa3b5;
+  --text-faint: #6b7385;
+  --accent: #6c8cff;
+  --accent-hover: #8aa4ff;
+  --accent-muted: rgba(108, 140, 255, 0.15);
+  --danger: #f07178;
+  --danger-hover: #ff8a90;
+  --danger-muted: rgba(240, 113, 120, 0.12);
+  --success: #7fd99a;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --transition: 150ms ease;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(108, 140, 255, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(108, 140, 255, 0.04), transparent);
+}
+
+body.theme-dark {
+  color-scheme: dark;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* —— App shell —— */
+
+#app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 2.5rem;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* —— Header —— */
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem 1.5rem;
+  padding-bottom: 0.25rem;
+}
+
+.app-brand {
+  min-width: 0;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.app-subtitle {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.925rem;
+}
+
+/* —— Header controls —— */
+
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.75rem;
+  flex: 1 1 320px;
+  justify-content: flex-end;
+}
+
+/* —— Add card form —— */
+
+.add-card-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 280px;
+  max-width: 520px;
+  justify-content: flex-end;
+}
+
+.add-card-form input[type="text"],
+.add-card-form select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem;
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+}
+
+.add-card-form input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
+.add-card-form input[type="text"]::placeholder {
+  color: var(--text-faint);
+}
+
+.add-card-form select {
+  flex: 0 0 auto;
+  cursor: pointer;
+  appearance: auto;
+  min-width: 7.5rem;
+}
+
+.add-card-form input[type="text"]:hover,
+.add-card-form select:hover {
+  border-color: #3d4460;
+}
+
+.add-card-form input[type="text"]:focus-visible,
+.add-card-form select:focus-visible,
+.btn:focus-visible,
+.card:focus-visible,
+.card-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+/* —— Buttons —— */
+
+.btn {
+  font: inherit;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition), transform 100ms ease;
+  white-space: nowrap;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0c0e14;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+  padding: 0.35rem 0.5rem;
+}
+
+.btn-ghost:hover {
+  color: var(--text);
+  background: var(--accent-muted);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+  padding: 0.35rem 0.5rem;
+}
+
+.btn-danger:hover {
+  color: var(--danger);
+  background: var(--danger-muted);
+}
+
+/* —— Board —— */
+
+#board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+
+/* —— Columns —— */
+
+.column {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  min-height: 280px;
+  max-height: calc(100vh - 10rem);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  border-top: 3px solid var(--column-accent, var(--border));
+}
+
+.column[data-column-id="todo"] {
+  --column-accent: #6c8cff;
+}
+
+.column[data-column-id="doing"] {
+  --column-accent: #e0b35a;
+}
+
+.column[data-column-id="done"] {
+  --column-accent: var(--success);
+}
+
+.column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-elevated);
+  flex-shrink: 0;
+}
+
+.column-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.column-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  line-height: 1;
+}
+
+/* —— Card list —— */
+
+.card-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-height: 120px;
+  transition: background var(--transition), box-shadow var(--transition);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.card-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.card-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.card-list.drag-over {
+  background: var(--accent-muted);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Empty state: subtle placeholder when list has no cards */
+.card-list:empty::before {
+  content: "Drop cards here";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 4.5rem;
+  margin: 0.15rem;
+  padding: 1.25rem 0.75rem;
+  color: var(--text-faint);
+  font-size: 0.875rem;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  user-select: none;
+}
+
+.card-list.drag-over:empty::before {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: transparent;
+}
+
+/* —— Cards (structure for JS-rendered cards) —— */
+
+.card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.8rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition),
+    background var(--transition),
+    opacity var(--transition),
+    transform var(--transition);
+  touch-action: manipulation;
+}
+
+.card:hover {
+  border-color: #3d4460;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  background: #262b3a;
+}
+
+.card:active {
+  cursor: grabbing;
+}
+
+.card.dragging {
+  opacity: 0.45;
+  transform: scale(0.98);
+}
+
+.card-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.925rem;
+  font-weight: 500;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  opacity: 0.65;
+  transition: opacity var(--transition);
+}
+
+.card:hover .card-actions,
+.card:focus-within .card-actions {
+  opacity: 1;
+}
+
+.card-actions button {
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.35rem 0.45rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.card-actions button:hover {
+  background: var(--accent-muted);
+  color: var(--text);
+}
+
+.card-actions button[data-action="delete"]:hover,
+.card-actions .btn-delete:hover,
+.card-actions .card-delete:hover {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+
+/* Inline edit */
+.card-title-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.925rem;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  outline: none;
+}
+
+#clear-board-btn {
+  flex: 0 0 auto;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+#clear-board-btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-muted);
+}
+
+/* —— Responsive —— */
+
+@media (max-width: 900px) {
+  #board {
+    grid-template-columns: 1fr;
+    gap: 0.85rem;
+  }
+
+  .column {
+    max-height: none;
+    min-height: 160px;
+  }
+
+  .card-list {
+    max-height: 360px;
+  }
+
+  .app-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-controls {
+    flex-direction: column;
+    align-items: stretch;
+    max-width: none;
+  }
+
+  .add-card-form {
+    max-width: none;
+    justify-content: stretch;
+  }
+
+  .add-card-form .btn-primary {
+    flex: 1 1 auto;
+  }
+
+  #clear-board-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  #app {
+    padding: 1rem 0.75rem 2rem;
+  }
+
+  .app-title {
+    font-size: 1.45rem;
+  }
+
+  .add-card-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .add-card-form input[type="text"],
+  .add-card-form select,
+  .add-card-form .btn {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

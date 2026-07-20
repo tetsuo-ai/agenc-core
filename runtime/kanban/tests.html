@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kanban Tests</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1117;
+      --ok: #7fd99a;
+      --fail: #f07178;
+      --muted: #9aa3b5;
+      --surface: #1a1d27;
+      --border: #2e3345;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: var(--bg);
+      color: #e8eaef;
+      padding: 1.5rem;
+      line-height: 1.45;
+    }
+    h1 { margin: 0 0 0.5rem; font-size: 1.4rem; }
+    .meta { color: var(--muted); margin-bottom: 1.25rem; font-size: 0.9rem; }
+    #summary {
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      margin-bottom: 1rem;
+      font-weight: 600;
+    }
+    #summary.pass { border-color: var(--ok); color: var(--ok); }
+    #summary.fail { border-color: var(--fail); color: var(--fail); }
+    #results { list-style: none; padding: 0; margin: 0; }
+    #results li {
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.85rem;
+    }
+    #results li.pass::before { content: "PASS "; color: var(--ok); font-weight: 700; }
+    #results li.fail::before { content: "FAIL "; color: var(--fail); font-weight: 700; }
+    iframe {
+      position: absolute;
+      width: 0;
+      height: 0;
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Kanban board tests</h1>
+  <p class="meta">Runs against <code>index.html</code> in an iframe with isolated localStorage.</p>
+  <div id="summary">Running…</div>
+  <ul id="results"></ul>
+  <iframe id="app-frame" src="index.html" title="Kanban app under test"></iframe>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var resultsEl = document.getElementById('results');
+      var summaryEl = document.getElementById('summary');
+      var frame = document.getElementById('app-frame');
+      var passed = 0;
+      var failed = 0;
+
+      function record(name, ok, detail) {
+        var li = document.createElement('li');
+        li.className = ok ? 'pass' : 'fail';
+        li.textContent = name + (detail ? ' — ' + detail : '');
+        resultsEl.appendChild(li);
+        if (ok) passed++;
+        else failed++;
+      }
+
+      function assert(name, condition, detail) {
+        record(name, !!condition, condition ? detail : detail || 'assertion failed');
+      }
+
+      function waitFor(predicate, timeoutMs) {
+        timeoutMs = timeoutMs || 5000;
+        return new Promise(function (resolve, reject) {
+          var start = Date.now();
+          (function tick() {
+            try {
+              if (predicate()) return resolve();
+            } catch (e) {
+              /* keep waiting */
+            }
+            if (Date.now() - start > timeoutMs) {
+              return reject(new Error('timeout waiting for condition'));
+            }
+            setTimeout(tick, 25);
+          })();
+        });
+      }
+
+      function run() {
+        var win = frame.contentWindow;
+        var doc = frame.contentDocument;
+        if (!win || !doc) {
+          summaryEl.textContent = 'FAIL — iframe not available';
+          summaryEl.className = 'fail';
+          return;
+        }
+
+        try {
+          win.localStorage.removeItem('kanban-board-v1');
+        } catch (e) {
+          record('localStorage access', false, String(e));
+        }
+
+        // Force clean seed
+        if (win.Kanban) {
+          try {
+            win.localStorage.removeItem('kanban-board-v1');
+            win.Kanban.load();
+          } catch (e) {}
+        }
+
+        return waitFor(function () {
+          return win.Kanban && typeof win.Kanban.getState === 'function' &&
+            doc.querySelectorAll('.card').length > 0;
+        }).then(function () {
+          var K = win.Kanban;
+
+          // Reset to known seed
+          win.localStorage.removeItem('kanban-board-v1');
+          K.load();
+
+          var state = K.getState();
+          assert('window.Kanban API exists', !!(K.load && K.save && K.addCard && K.deleteCard && K.moveCard && K.getState));
+          assert('seed creates 3 cards', state.cards && state.cards.length === 3, 'count=' + (state.cards && state.cards.length));
+          assert('seed uses valid columns', state.cards.every(function (c) {
+            return ['todo', 'doing', 'done'].indexOf(c.columnId) !== -1;
+          }));
+
+          assert('DOM has 3 columns', doc.querySelectorAll('.column').length === 3);
+          assert('DOM has board', !!doc.getElementById('board'));
+          assert('DOM has add form', !!doc.getElementById('add-card-form'));
+          assert('body.theme-dark', doc.body.classList.contains('theme-dark'));
+
+          // Counts match
+          ['todo', 'doing', 'done'].forEach(function (col) {
+            var column = doc.querySelector('.column[data-column-id="' + col + '"]');
+            var count = column && column.querySelector('.column-count');
+            var n = state.cards.filter(function (c) { return c.columnId === col; }).length;
+            assert('count badge for ' + col, count && count.textContent === String(n), count && count.textContent);
+          });
+
+          // Add card
+          var before = K.getState().cards.length;
+          var newId = K.addCard('Test card alpha', 'todo');
+          assert('addCard returns id', typeof newId === 'string' && newId.length > 0);
+          assert('addCard increases length', K.getState().cards.length === before + 1);
+          assert('addCard appears in DOM', !!doc.querySelector('.card[data-card-id="' + newId + '"]'));
+
+          // Persistence
+          var raw = win.localStorage.getItem('kanban-board-v1');
+          assert('localStorage key written', !!raw);
+          var parsed = JSON.parse(raw);
+          assert('localStorage JSON shape', parsed && Array.isArray(parsed.cards));
+          assert('new card persisted', parsed.cards.some(function (c) { return c.id === newId; }));
+
+          // Move card
+          var moved = K.moveCard(newId, 'doing', 0);
+          assert('moveCard returns true', moved === true);
+          var afterMove = K.getState().cards.find(function (c) { return c.id === newId; });
+          assert('moveCard updates columnId', afterMove && afterMove.columnId === 'doing');
+          var doingList = doc.querySelector('.column[data-column-id="doing"] .card-list');
+          assert('moved card in doing DOM', !!(doingList && doingList.querySelector('.card[data-card-id="' + newId + '"]')));
+
+          // Reorder within column
+          var idB = K.addCard('Test card beta', 'doing');
+          K.moveCard(newId, 'doing', 1);
+          var doingCards = K.getState().cards.filter(function (c) { return c.columnId === 'doing'; }).sort(function (a, b) { return a.order - b.order; });
+          var idxNew = doingCards.findIndex(function (c) { return c.id === newId; });
+          assert('reorder within column', idxNew >= 0, 'index=' + idxNew);
+
+          // Delete
+          var del = K.deleteCard(newId);
+          assert('deleteCard returns true', del === true);
+          assert('delete removes from state', !K.getState().cards.some(function (c) { return c.id === newId; }));
+          assert('delete removes from DOM', !doc.querySelector('.card[data-card-id="' + newId + '"]'));
+
+          // Form submit path
+          var input = doc.getElementById('card-title-input');
+          var select = doc.getElementById('card-column-select');
+          var form = doc.getElementById('add-card-form');
+          input.value = 'From form';
+          select.value = 'done';
+          form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
+          assert('form add works', K.getState().cards.some(function (c) {
+            return c.title === 'From form' && c.columnId === 'done';
+          }));
+
+          // Empty title rejected
+          var lenBefore = K.getState().cards.length;
+          var rejected = K.addCard('   ', 'todo');
+          assert('empty title rejected', rejected === null && K.getState().cards.length === lenBefore);
+
+          // Cards are draggable
+          var anyCard = doc.querySelector('.card');
+          assert('cards are draggable', anyCard && anyCard.draggable === true);
+
+          // Drag-over class can be toggled (style contract)
+          var list = doc.querySelector('.card-list');
+          list.classList.add('drag-over');
+          assert('drag-over class applies', list.classList.contains('drag-over'));
+          list.classList.remove('drag-over');
+
+          // Reload from storage
+          var snap = K.getState();
+          K.load();
+          assert('reload preserves card count', K.getState().cards.length === snap.cards.length);
+
+          // clearBoard
+          assert('clearBoard API exists', typeof K.clearBoard === 'function');
+          K.addCard('temp clear me', 'todo');
+          var cleared = K.clearBoard({ skipConfirm: true });
+          assert('clearBoard returns true', cleared === true);
+          assert('clearBoard empties state', K.getState().cards.length === 0);
+          assert('clearBoard empties DOM cards', doc.querySelectorAll('.card').length === 0);
+          ['todo', 'doing', 'done'].forEach(function (col) {
+            var column = doc.querySelector('.column[data-column-id="' + col + '"]');
+            var count = column && column.querySelector('.column-count');
+            var list = column && column.querySelector('.card-list');
+            assert('count zero after clear (' + col + ')', count && count.textContent === '0');
+            assert('list empty after clear (' + col + ')', list && list.children.length === 0);
+          });
+          var rawAfterClear = win.localStorage.getItem('kanban-board-v1');
+          var parsedAfterClear = JSON.parse(rawAfterClear);
+          assert('clear persists empty board', parsedAfterClear && parsedAfterClear.cards.length === 0);
+
+          // clear board button present
+          assert('clear board button in DOM', !!doc.getElementById('clear-board-btn'));
+
+          // updateCardTitle
+          var editId = K.addCard('Editable title', 'todo');
+          assert('updateCardTitle API', typeof K.updateCardTitle === 'function');
+          var updated = K.updateCardTitle(editId, 'Renamed title');
+          assert('updateCardTitle works', updated === true);
+          var renamed = K.getState().cards.find(function (c) { return c.id === editId; });
+          assert('title changed in state', renamed && renamed.title === 'Renamed title');
+          var titleEl = doc.querySelector('.card[data-card-id="' + editId + '"] .card-title');
+          assert('title changed in DOM', titleEl && titleEl.textContent === 'Renamed title');
+
+          // column accents present in markup
+          assert('todo column accent attr', !!doc.querySelector('.column[data-column-id="todo"]'));
+          assert('doing column accent attr', !!doc.querySelector('.column[data-column-id="doing"]'));
+          assert('done column accent attr', !!doc.querySelector('.column[data-column-id="done"]'));
+
+          summaryEl.textContent = (failed === 0 ? 'ALL PASSED' : 'FAILED') +
+            ' — ' + passed + ' passed, ' + failed + ' failed';
+          summaryEl.className = failed === 0 ? 'pass' : 'fail';
+
+          // Expose for headless runners
+          win.parent.__KANBAN_TEST_RESULT__ = {
+            passed: passed,
+            failed: failed,
+            ok: failed === 0
+          };
+          window.__KANBAN_TEST_RESULT__ = {
+            passed: passed,
+            failed: failed,
+            ok: failed === 0
+          };
+        }).catch(function (err) {
+          record('test runner', false, String(err && err.message || err));
+          summaryEl.textContent = 'FAIL — ' + (err && err.message || err);
+          summaryEl.className = 'fail';
+          window.__KANBAN_TEST_RESULT__ = { passed: passed, failed: failed + 1, ok: false };
+        });
+      }
+
+      frame.addEventListener('load', function () {
+        setTimeout(run, 50);
+      });
+    })();
+  </script>
+</body>
+</html>

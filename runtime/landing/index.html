@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgenC — Agents that cook</title>
+  <meta name="description" content="AgenC is a lean coding CLI runtime with sandboxed tools, multi-agent orchestration, and a daemon-backed workflow. Intent in. Diff out." />
+  <meta name="theme-color" content="#000000" />
+  <meta property="og:title" content="AgenC — Agents that cook" />
+  <meta property="og:description" content="Sandboxed tools. Multi-agent loops. A coding runtime built to ship." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="logo-mark.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="logo-mark.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="nav-shell">
+      <a class="logo" href="#top" aria-label="AgenC home">
+        <img class="logo-mark" src="logo-mark.svg" width="20" height="20" alt="" />
+        <span class="logo-word">AgenC</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#proof">Why AgenC</a>
+        <a href="#install">Install</a>
+      </nav>
+      <div class="header-actions">
+        <a class="nav-link" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a class="btn btn-sm" href="#install">Get started</a>
+      </div>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy reveal">
+        <p class="eyebrow">Daemon-backed coding runtime</p>
+        <h1>Agents that don’t just chat.<br /><span class="hero-em">They cook.</span></h1>
+        <p class="hero-sub">
+          A lean coding CLI — plan, edit, test, and orchestrate agents in your repo
+          with sandboxed tools and a real terminal workflow.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#install">Install AgenC</a>
+          <a class="btn btn-ghost" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">View on GitHub</a>
+        </div>
+      </div>
+
+      <div class="hero-stage reveal" aria-label="AgenC terminal session preview">
+        <div class="device">
+          <div class="device-bar">
+            <span class="traffic" aria-hidden="true"></span>
+            <span class="device-title">agenc — ~/project</span>
+          </div>
+          <div class="device-screen terminal-body" id="terminal" aria-live="polite">
+            <!-- filled by script.js -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="marquee" aria-label="Capabilities">
+      <div class="marquee-inner reveal">
+        <p>Built for serious coding agents</p>
+        <ul>
+          <li>Sandboxed tools</li>
+          <li>Multi-agent</li>
+          <li>Daemon CLI</li>
+          <li>Gateway channels</li>
+          <li>Plan mode</li>
+          <li>Verification</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="features" class="band band-dark features">
+      <div class="section-head reveal">
+        <p class="eyebrow">Features</p>
+        <h2>Everything you need<br />to run agents on real code.</h2>
+        <p class="section-sub">Not a chatbot wrapper. A full agent stack with the primitives serious builders need.</p>
+      </div>
+
+      <div class="bento">
+        <article class="tile tile-lg reveal">
+          <p class="tile-kicker">Security</p>
+          <h3>Sandboxed execution</h3>
+          <p>Shell and file tools run behind a permission model so agents stay productive without going rogue.</p>
+          <div class="tile-visual tile-visual-sandbox" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+        </article>
+        <article class="tile reveal">
+          <p class="tile-kicker">Scale</p>
+          <h3>Multi-agent orchestration</h3>
+          <p>Spawn specialized agents, fan out research and implementation, then integrate in one session.</p>
+        </article>
+        <article class="tile reveal">
+          <p class="tile-kicker">Channels</p>
+          <h3>Gateway everywhere</h3>
+          <p>Connect Slack, Discord, Telegram, and more so AgenC meets your team where work already happens.</p>
+        </article>
+        <article class="tile reveal">
+          <p class="tile-kicker">Continuity</p>
+          <h3>Memory & planning</h3>
+          <p>Durable memory, plan mode, and task tracking keep long coding sessions coherent across turns.</p>
+        </article>
+        <article class="tile reveal">
+          <p class="tile-kicker">Craft</p>
+          <h3>Terminal-native TUI</h3>
+          <p>Fullscreen workbench, streaming transcript, and prompt chrome that feels like an editor.</p>
+        </article>
+        <article class="tile tile-wide reveal">
+          <p class="tile-kicker">Trust</p>
+          <h3>Adversarial verification</h3>
+          <p>Non-trivial changes get independent checks before you call it done. Trust, but prove it.</p>
+          <div class="tile-visual tile-visual-check" aria-hidden="true">
+            <div class="check-row"><span>✓</span> Tests green</div>
+            <div class="check-row"><span>✓</span> Diff reviewed</div>
+            <div class="check-row"><span>✓</span> Ready to ship</div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="how" class="band band-light how">
+      <div class="section-head center reveal">
+        <p class="eyebrow dark">How it works</p>
+        <h2>Intent in. Diff out.</h2>
+        <p class="section-sub">A tight loop from vague idea to verified change — without the ceremony.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="reveal">
+          <span class="step-num">01</span>
+          <h3>Install the CLI</h3>
+          <p>Get the daemon-backed AgenC launcher on your machine in one command.</p>
+        </li>
+        <li class="reveal">
+          <span class="step-num">02</span>
+          <h3>Open your repo</h3>
+          <p>Start AgenC where the code lives. It maps the tree, tests, and conventions.</p>
+        </li>
+        <li class="reveal">
+          <span class="step-num">03</span>
+          <h3>Plan, edit, verify</h3>
+          <p>Describe the outcome. AgenC plans, patches, runs checks, and keeps you in the loop.</p>
+        </li>
+        <li class="reveal">
+          <span class="step-num">04</span>
+          <h3>Ship</h3>
+          <p>Clean diffs, remembered context, ready for the next loop.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="proof" class="band band-dark proof">
+      <div class="section-head center reveal">
+        <p class="eyebrow">Why teams care</p>
+        <h2>Less theater.<br />More throughput.</h2>
+      </div>
+      <div class="stats">
+        <article class="stat reveal">
+          <strong>Hours → minutes</strong>
+          <p>Scaffold, refactor, and land features without babysitting every step.</p>
+        </article>
+        <article class="stat reveal">
+          <strong>Parallel agents</strong>
+          <p>Research, implement, and verify concurrently when scopes don’t collide.</p>
+        </article>
+        <article class="stat reveal">
+          <strong>Durable memory</strong>
+          <p>Preferences and project truth survive across sessions and contributors.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="install" class="band band-black install">
+      <div class="section-head center reveal">
+        <p class="eyebrow">Install</p>
+        <h2>Get AgenC on your machine.</h2>
+        <p class="section-sub">
+          Use the public launcher. Release artifacts are built from the committed lockfile in
+          <a class="inline-link" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">agenc-core</a>.
+        </p>
+      </div>
+
+      <div class="install-card reveal">
+        <div class="install-header">
+          <span>Quick start</span>
+          <button class="btn btn-secondary copy-btn" type="button" data-copy="npm install -g @tetsuo-ai/agenc">
+            Copy
+          </button>
+        </div>
+        <pre class="install-code" tabindex="0"><code><span class="code-comment"># install the public launcher</span>
+npm install -g @tetsuo-ai/agenc
+
+<span class="code-comment"># run in any repo</span>
+agenc</code></pre>
+        <div class="install-actions">
+          <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Open install docs</a>
+          <a class="btn btn-secondary" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub repository</a>
+        </div>
+        <p class="install-note">Requires Node.js 25.9+ · See docs for platform details</p>
+      </div>
+    </section>
+
+    <section id="cta" class="band band-cta">
+      <div class="cta-inner reveal">
+        <p class="eyebrow">Ready when you are</p>
+        <h2>Time to cook.</h2>
+        <p>Drop AgenC into your workflow and turn the next vague idea into a shipped artifact.</p>
+        <div class="cta-actions">
+          <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Install AgenC</a>
+          <a class="btn btn-ghost-light" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">Star on GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-shell">
+      <div class="footer-brand">
+        <a class="logo logo-footer" href="#top" aria-label="AgenC home">
+          <img class="logo-mark" src="logo-mark.svg" width="22" height="22" alt="" />
+          <span class="logo-word">AgenC</span>
+        </a>
+        <p>Agentic coding CLI. Plan clearly. Ship confidently.</p>
+      </div>
+      <div class="footer-links">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Docs</a>
+      </div>
+      <p class="copyright">© <span id="year">2026</span> AgenC. Open source under the project license.</p>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

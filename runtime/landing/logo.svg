@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 40" role="img" aria-label="AgenC">
+  <defs>
+    <linearGradient id="agenc-grad" x1="4" y1="4" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5ac8fa"/>
+      <stop offset="45%" stop-color="#0077ed"/>
+      <stop offset="100%" stop-color="#bf5af2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mark: rounded square + stylized A / agent node -->
+  <rect x="0" y="4" width="32" height="32" rx="8" fill="url(#agenc-grad)"/>
+  <!-- Abstract A formed by nodes + path (agent / network) -->
+  <path
+    d="M16 11.2 L22.8 25.2 H19.95 L18.55 21.7 H13.45 L12.05 25.2 H9.2 L16 11.2 Z M14.35 19.35 H17.65 L16 15.2 L14.35 19.35 Z"
+    fill="#ffffff"
+  />
+  <!-- Orbit node suggesting multi-agent -->
+  <circle cx="24.2" cy="12.4" r="1.65" fill="#ffffff" opacity="0.95"/>
+  <path
+    d="M20.2 13.6 C21.6 12.2 23 11.8 24.2 12.4"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="1.2"
+    stroke-linecap="round"
+    opacity="0.7"
+  />
+
+  <!-- Wordmark -->
+  <text
+    x="42"
+    y="26.5"
+    fill="currentColor"
+    font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    font-size="18"
+    font-weight="600"
+    letter-spacing="-0.04em"
+  >AgenC</text>
+</svg>

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kanban</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="theme-dark">
+  <div id="app">
+    <header class="app-header">
+      <div class="app-brand">
+        <h1 class="app-title">Kanban</h1>
+        <p class="app-subtitle">Organize tasks across To Do, In Progress, and Done</p>
+      </div>
+      <div class="header-controls">
+        <form id="add-card-form" class="add-card-form" autocomplete="off">
+          <label class="sr-only" for="card-title-input">Card title</label>
+          <input
+            type="text"
+            id="card-title-input"
+            name="title"
+            placeholder="New card title…"
+            required
+            maxlength="200"
+          />
+          <label class="sr-only" for="card-column-select">Column</label>
+          <select id="card-column-select" name="columnId">
+            <option value="todo">To Do</option>
+            <option value="doing">In Progress</option>
+            <option value="done">Done</option>
+          </select>
+          <button type="submit" class="btn btn-primary">Add card</button>
+        </form>
+        <button type="button" id="clear-board-btn" class="btn btn-ghost" title="Clear all cards">
+          Clear board
+        </button>
+      </div>
+    </header>
+
+    <main id="board" aria-label="Kanban board">
+      <section class="column" data-column-id="todo" aria-labelledby="column-title-todo">
+        <div class="column-header">
+          <h2 id="column-title-todo" class="column-title">To Do</h2>
+          <span class="column-count" aria-label="Card count">0</span>
+        </div>
+        <div class="card-list" data-column-id="todo"></div>
+      </section>
+
+      <section class="column" data-column-id="doing" aria-labelledby="column-title-doing">
+        <div class="column-header">
+          <h2 id="column-title-doing" class="column-title">In Progress</h2>
+          <span class="column-count" aria-label="Card count">0</span>
+        </div>
+        <div class="card-list" data-column-id="doing"></div>
+      </section>
+
+      <section class="column" data-column-id="done" aria-labelledby="column-title-done">
+        <div class="column-header">
+          <h2 id="column-title-done" class="column-title">Done</h2>
+          <span class="column-count" aria-label="Card count">0</span>
+        </div>
+        <div class="card-list" data-column-id="done"></div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

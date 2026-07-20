@@ -1,0 +1,5 @@
+/build/
+/space_invaders
+/.deps/
+*.o
+*.deb

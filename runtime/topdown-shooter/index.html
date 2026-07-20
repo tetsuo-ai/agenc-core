@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Neon Grid — Top-Down Shooter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="top-bar">
+      <div class="stat">
+        <span class="label">HP</span>
+        <div class="bar"><div id="hp-fill"></div></div>
+        <span id="hp-text">100</span>
+      </div>
+      <div class="stat center">
+        <span id="wave-text">WAVE 1</span>
+        <span id="score-text">SCORE 0</span>
+      </div>
+      <div class="stat right">
+        <span class="label">AMMO</span>
+        <span id="ammo-text">30 / 90</span>
+        <span id="dash-text" class="dash-ready">DASH</span>
+      </div>
+    </div>
+    <div id="kill-feed"></div>
+    <div id="wave-banner" class="hidden"></div>
+    <div id="damage-vignette"></div>
+    <div id="hit-marker"></div>
+    <div id="buffs"></div>
+  </div>
+
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1>NEON GRID</h1>
+      <p class="tagline">Top-down arena shooter</p>
+      <ul class="controls">
+        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</li>
+        <li><kbd>Mouse</kbd> Aim</li>
+        <li><kbd>Click</kbd> Shoot</li>
+        <li><kbd>R</kbd> Reload</li>
+        <li><kbd>Shift</kbd> Dash</li>
+        <li><kbd>Esc</kbd> Pause</li>
+      </ul>
+      <p id="menu-highscore" class="hint">High score: 0</p>
+      <button id="start-btn" class="btn primary">CLICK TO PLAY</button>
+      <p class="hint">Survive waves. Grab power-ups. Don't get surrounded.</p>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <button id="resume-btn" class="btn primary">RESUME</button>
+      <button id="restart-btn" class="btn">RESTART</button>
+      <button id="menu-btn" class="btn">MENU</button>
+    </div>
+  </div>
+
+  <div id="gameover" class="overlay hidden">
+    <div class="panel">
+      <h2>GRID COLLAPSE</h2>
+      <p id="final-stats"></p>
+      <button id="again-btn" class="btn primary">TRY AGAIN</button>
+      <button id="go-menu-btn" class="btn">MENU</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

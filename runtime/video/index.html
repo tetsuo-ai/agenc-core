@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgenC Video Player</title>
+  <meta name="description" content="A polished HTML5 video player with custom controls." />
+  <meta name="theme-color" content="#000000" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="nav-shell">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-word">AgenC Video</span>
+      </div>
+      <div class="header-actions">
+        <p class="header-hint">Open a local video or drop one on the player</p>
+        <button class="open-file" id="openFile" type="button">Open file</button>
+        <input
+          id="fileInput"
+          class="file-input"
+          type="file"
+          accept="video/*"
+          hidden
+        />
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="player-card" aria-label="Video player">
+      <div class="stage" id="stage">
+        <video
+          id="video"
+          class="video"
+          poster="poster.svg"
+          preload="metadata"
+          playsinline
+          aria-label="Demo video"
+        >
+          <!-- Prefer a local file. Replace or add sources as needed. -->
+          <source src="media/demo.mp4" type="video/mp4" />
+          Your browser does not support HTML5 video.
+        </video>
+
+        <div class="overlay" id="overlay" hidden>
+          <p class="overlay-title">No media loaded</p>
+          <p class="overlay-body">
+            Use <strong>Open file</strong>, drop a video here, or add
+            <code>media/demo.mp4</code>.
+          </p>
+        </div>
+
+        <button class="big-play" id="bigPlay" type="button" aria-label="Play video">
+          <span aria-hidden="true">▶</span>
+        </button>
+
+        <div class="controls" id="controls">
+          <button class="ctrl-btn" id="playPause" type="button" aria-label="Play">
+            <span id="playIcon" aria-hidden="true">▶</span>
+          </button>
+
+          <div class="time" aria-hidden="true">
+            <span id="currentTime">0:00</span>
+            <span class="time-sep">/</span>
+            <span id="duration">0:00</span>
+          </div>
+
+          <label class="seek-wrap" for="seek">
+            <span class="sr-only">Seek</span>
+            <input
+              id="seek"
+              class="seek"
+              type="range"
+              min="0"
+              max="100"
+              value="0"
+              step="0.1"
+              aria-label="Seek"
+            />
+          </label>
+
+          <button class="ctrl-btn" id="mute" type="button" aria-label="Mute">
+            <span id="muteIcon" aria-hidden="true">🔊</span>
+          </button>
+
+          <button class="ctrl-btn" id="fullscreen" type="button" aria-label="Fullscreen">
+            <span aria-hidden="true">⛶</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="meta">
+        <div>
+          <h1 id="title">Demo reel</h1>
+          <p class="status" id="status">Waiting for media…</p>
+        </div>
+        <ul class="keys" aria-label="Keyboard shortcuts">
+          <li><kbd>Space</kbd> play/pause</li>
+          <li><kbd>←</kbd><kbd>→</kbd> seek</li>
+          <li><kbd>M</kbd> mute</li>
+          <li><kbd>F</kbd> fullscreen</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

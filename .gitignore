@@ -169,3 +169,12 @@ TASK-SYSTEM-PLAN.md
 
 # Playwright outputs
 **/test-results/
+
+# Agent-built demo projects: keep sources, drop build artifacts
+runtime/minilm/.venv/
+runtime/minilm/checkpoints/
+runtime/minilm/runs/ckpt/
+runtime/nighlight/nighlight
+runtime/kernel/build/
+space_invaders/.deps/
+__pycache__/
