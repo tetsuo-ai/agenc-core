@@ -1250,10 +1250,15 @@ export class GrokProvider implements LLMProvider {
       this.configuredTimeoutMs,
       options?.timeoutMs,
     );
-    const streamDeadlineAt =
-      typeof streamTimeout.timeoutMs === "number"
-        ? Date.now() + streamTimeout.timeoutMs
-        : Number.POSITIVE_INFINITY;
+    // The resolved timeout is inter-chunk idle time, not a total-stream
+    // deadline. A healthy stream that keeps producing chunks must never be
+    // torn down by elapsed wall-clock time alone: long reasoning turns
+    // routinely stream for longer than any sane per-request timeout, and
+    // aborting them forces a full re-stream that repays the entire cost
+    // (tetsuo 2026-07-20: grok-4.5 turns died at the old 120s total deadline
+    // mid-stream, retried from zero, and looped). Silent-stall protection is
+    // preserved: each chunk wait re-arms the same timeout, so a stream that
+    // stops producing chunks for timeoutMs still aborts.
 
     let consecutiveFallbackFailures = 0;
     while (true) {
@@ -1280,13 +1285,10 @@ export class GrokProvider implements LLMProvider {
       // singleWireAttempt, so the in-band 401 retry never runs here — the
       // expiring bearer must be refreshed before the wire attempt.
       await this.refreshOAuthBearerIfExpiring();
-      const requestAttemptTimeout =
-        Number.isFinite(streamDeadlineAt)
-          ? {
-            ...streamTimeout,
-            timeoutMs: Math.max(1, streamDeadlineAt - Date.now()),
-          }
-          : streamTimeout;
+      // Each wire attempt gets the full resolved timeout for the open phase;
+      // a configured-fallback retry must not inherit a nearly-spent budget
+      // from the previous attempt.
+      const requestAttemptTimeout = streamTimeout;
       emitProviderTraceEvent(options, {
         kind: "request",
         transport: "chat_stream",
@@ -1390,21 +1392,12 @@ export class GrokProvider implements LLMProvider {
         if (options?.signal?.aborted) {
           throw createStreamAbortError(this.name);
         }
-        const remainingStreamMs = Number.isFinite(streamDeadlineAt)
-          ? Math.max(0, streamDeadlineAt - Date.now())
-          : undefined;
-        if (
-          typeof remainingStreamMs === "number" &&
-          remainingStreamMs <= 0
-        ) {
-          throw createStreamTimeoutError(
-            this.name,
-            streamTimeout.timeoutMs ?? options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-          );
-        }
+        // Idle timeout: the full resolved timeout re-arms on every chunk wait.
+        // nextStreamChunkWithTimeout throws the stream-stalled error when no
+        // chunk arrives within the window.
         const iterResult = await nextStreamChunkWithTimeout(
           streamIterator,
-          remainingStreamMs,
+          streamTimeout.timeoutMs,
           this.name,
           options?.signal,
         );

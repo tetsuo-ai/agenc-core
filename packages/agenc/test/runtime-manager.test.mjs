@@ -12,6 +12,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -684,6 +685,62 @@ test("ensureRuntime downloads (file://), verifies sha, extracts, and is idempote
       logs2.some((l) => l.includes("fetching")),
       false,
       "verified install must not re-download",
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("ensureRuntime repairs a pre-hardening group-writable runtime dir instead of failing", {
+  skip: process.platform === "win32",
+}, async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-perm-repair-"));
+  try {
+    const version = "9.9.9";
+    const { artifact, sha256: digest, bytes } = makeSyntheticArtifact(work, version);
+    const home = join(work, "home");
+    // Model an install created by an old launcher under umask 002: the
+    // intermediate runtime dir exists and is group-writable. Before the
+    // repair walk this made every ensureRuntime call fail the
+    // private-directory assertion with "permits untrusted mutation".
+    const runtimeDir = join(home, "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
+    chmodSync(home, 0o700);
+    chmodSync(runtimeDir, 0o770);
+    const manifest = {
+      manifestVersion: 2,
+      runtimeVersion: version,
+      releaseRepository: "local/test",
+      releaseTag: `agenc-v${version}`,
+      artifacts: [
+        {
+          platform: platformSlug().os,
+          arch: platformSlug().arch,
+          runtimeVersion: version,
+          nodeMajor: Number(process.versions.node.split(".")[0]),
+          nodeModuleAbi: process.versions.modules,
+          nodeApiVersion: process.versions.napi,
+          ...compatibilityFields(platformSlug().os),
+          url: pathToFileURL(artifact).href,
+          sha256: digest,
+          bytes,
+          bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+        },
+      ],
+    };
+
+    const bin = await ensureLocalRuntime({
+      env: { AGENC_HOME: home },
+      manifest,
+      log: () => {},
+      runtimeCompatibility: HOST_RUNTIME,
+    });
+    assert.ok(existsSync(bin), "runtime bin should be extracted");
+    const repairedMode = statSync(runtimeDir).mode & 0o777;
+    assert.equal(
+      repairedMode,
+      0o700,
+      `runtime dir should be repaired to 0700, got 0${repairedMode.toString(8)}`,
     );
   } finally {
     rmSync(work, { recursive: true, force: true });
