@@ -288,7 +288,7 @@ function readValidatedEvents(raw: string): {
   readonly lastSequence: number;
 } {
   const events: Event[] = [];
-  const canonicalIds = new Set<string>();
+  const canonicalIds = new Map<string, string[]>();
   let firstSequence: number | undefined;
   let lastSequence = 0;
   for (const line of raw.split("\n")) {
@@ -297,10 +297,26 @@ function readValidatedEvents(raw: string): {
     if (item?.type !== "event_msg") continue;
     const event = item.payload;
     const canonicalId = canonicalReviewEventId(event);
-    if (canonicalIds.has(canonicalId)) {
-      throw new Error(`canonical journal event id ${canonicalId} is duplicated`);
+    const priors = canonicalIds.get(canonicalId) ?? [];
+    const signature = JSON.stringify(event);
+    if (priors.length > 0) {
+      // Legacy rollouts predate durable event identities — synthetic ids like
+      // "system" recur across distinct events, so a repeated legacy id is the
+      // old format, not corruption. Identical copies dedupe; distinct events
+      // sharing the id are disambiguated. Only non-legacy ids throw (real
+      // corruption), matching execution-admission-canonical-recovery.
+      if (priors.includes(signature)) continue;
+      if (!canonicalId.startsWith("legacy-unsequenced:")) {
+        throw new Error(`canonical journal event id ${canonicalId} is duplicated`);
+      }
+      const disambiguated = `${canonicalId}~conflict-${priors.length}`;
+      priors.push(signature);
+      canonicalIds.set(canonicalId, priors);
+      canonicalIds.set(disambiguated, [signature]);
+    } else {
+      priors.push(signature);
+      canonicalIds.set(canonicalId, priors);
     }
-    canonicalIds.add(canonicalId);
     if (event.seq !== undefined) {
       if (
         !Number.isSafeInteger(event.seq) ||
