@@ -445,6 +445,42 @@ test("publish uploads an immutable snapshot with provenance and no repack", asyn
   }
 });
 
+test("publish accepts npm's percent-encoded scoped attestation URL", async () => {
+  const work = await packedFixture();
+  try {
+    const reviewed = readFileSync(work.artifactPath);
+    const registryReceipt = exactRegistryReceipt(reviewed);
+    registryReceipt.attestations.url = registryReceipt.attestations.url.replace(
+      "@tetsuo-ai/agenc",
+      "@tetsuo-ai%2fagenc",
+    );
+    const runNpm = fakeNpm(() => {
+      throw new Error("matching existing versions must not be republished");
+    }, { registryReceipt });
+
+    const published = await publishRelease({
+      tarball: work.artifactPath,
+      receiptPath: work.receiptPath,
+      cwd: work.source,
+      packageRoot: work.source,
+      nodeVersion: releaseToolchain.nodeVersion,
+      git: fakeGit(),
+      runNpm,
+      validateManifest: skipManifestValidation,
+    });
+
+    assert.equal(published.published, false);
+    assert.equal(published.alreadyPublished, true);
+    assert.equal(runNpm.publishInvocations(), 0);
+    assert.equal(
+      published.registryReceipt.attestationUrl,
+      registryReceipt.attestations.url,
+    );
+  } finally {
+    rmSync(work.root, { recursive: true, force: true });
+  }
+});
+
 test("publish fails closed when the registry receipt does not match reviewed bytes", async () => {
   const work = await packedFixture();
   try {

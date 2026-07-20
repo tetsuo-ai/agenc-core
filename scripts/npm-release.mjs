@@ -630,6 +630,20 @@ function canonicalAttestationUrl(identity) {
   return `${PUBLIC_REGISTRY}-/npm/v1/attestations/${identity.name}@${identity.version}`;
 }
 
+function matchesCanonicalAttestationUrl(value, identity) {
+  if (typeof value !== "string") return false;
+  try {
+    const actual = new URL(value);
+    const expected = new URL(canonicalAttestationUrl(identity));
+    return actual.origin === expected.origin &&
+      actual.username === "" && actual.password === "" &&
+      actual.search === "" && actual.hash === "" &&
+      decodeURIComponent(actual.pathname) === expected.pathname;
+  } catch {
+    return false;
+  }
+}
+
 function parseJson(stdout, label) {
   try {
     return JSON.parse(stdout);
@@ -644,7 +658,7 @@ function parseRegistryReceipt(dist, identity, bytes, receipt) {
   if (dist === null || typeof dist !== "object" || Array.isArray(dist) ||
       dist.shasum !== expectedSha1 || dist.integrity !== receipt.integrity ||
       dist.tarball !== expectedTarball ||
-      dist.attestations?.url !== canonicalAttestationUrl(identity) ||
+      !matchesCanonicalAttestationUrl(dist.attestations?.url, identity) ||
       dist.attestations?.provenance?.predicateType !== "https://slsa.dev/provenance/v1") {
     throw new Error(
       "npm registry receipt/provenance does not match the reviewed tarball bytes and identity",
