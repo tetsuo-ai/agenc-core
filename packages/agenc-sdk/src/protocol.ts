@@ -50,6 +50,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.snapshot",
   "session.transcript",
   "session.cancelTurn",
+  "session.resolveToolCall",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -276,6 +277,13 @@ export interface SessionCancelTurnParams extends JsonObject {
   readonly reason?: string;
 }
 
+export interface SessionResolveToolCallParams extends JsonObject {
+  readonly sessionId: string;
+  /** When omitted, every pending unknown-outcome effect in the session is resolved. */
+  readonly toolCallId?: string;
+  readonly reviewer?: string;
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
   readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
@@ -456,6 +464,7 @@ export interface AgencParamsByMethod {
   readonly "session.snapshot": SessionSnapshotParams;
   readonly "session.transcript": SessionTranscriptParams;
   readonly "session.cancelTurn": SessionCancelTurnParams;
+  readonly "session.resolveToolCall": SessionResolveToolCallParams;
   readonly "session.mcp.addServer": SessionMcpAddServerParams;
   readonly "message.send": MessageSendParams;
   readonly "message.stream": MessageStreamParams;
@@ -1060,6 +1069,16 @@ export interface SessionCancelTurnResult extends JsonObject {
   readonly reason?: string;
 }
 
+export interface SessionResolveToolCallResult extends JsonObject {
+  readonly sessionId: string;
+  readonly resolved: readonly {
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly eventId?: string;
+  }[];
+  readonly remaining: number;
+}
+
 export interface SessionMcpAddServerResult extends JsonObject {
   readonly sessionId: string;
   readonly serverName: string;
@@ -1175,6 +1194,7 @@ export interface AgencResultByMethod {
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
+  readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;

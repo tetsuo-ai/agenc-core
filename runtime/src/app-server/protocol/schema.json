@@ -30,6 +30,7 @@
     "session.snapshot",
     "session.transcript",
     "session.cancelTurn",
+    "session.resolveToolCall",
     "session.mcp.addServer",
     "message.send",
     "message.stream",
@@ -114,15 +115,29 @@
           "minLength": 1
         }
       },
-      "required": ["version"]
+      "required": [
+        "version"
+      ]
     },
     "AgentStatus": {
       "type": "string",
-      "enum": ["idle", "running", "stopping", "stopped", "error"]
+      "enum": [
+        "idle",
+        "running",
+        "stopping",
+        "stopped",
+        "error"
+      ]
     },
     "SessionStatus": {
       "type": "string",
-      "enum": ["idle", "running", "waiting", "closed", "error"]
+      "enum": [
+        "idle",
+        "running",
+        "waiting",
+        "closed",
+        "error"
+      ]
     },
     "MessageContent": {
       "oneOf": [
@@ -150,7 +165,10 @@
           "type": "string"
         }
       },
-      "required": ["type", "text"]
+      "required": [
+        "type",
+        "text"
+      ]
     },
     "InitializeParams": {
       "type": "object",
@@ -177,10 +195,14 @@
       },
       "anyOf": [
         {
-          "required": ["protocol"]
+          "required": [
+            "protocol"
+          ]
         },
         {
-          "required": ["protocolVersion"]
+          "required": [
+            "protocolVersion"
+          ]
         }
       ]
     },
@@ -195,7 +217,9 @@
           "type": "string"
         }
       },
-      "required": ["requestId"]
+      "required": [
+        "requestId"
+      ]
     },
     "AgentCreateParams": {
       "type": "object",
@@ -270,7 +294,9 @@
           "minLength": 1
         }
       },
-      "required": ["agentId"]
+      "required": [
+        "agentId"
+      ]
     },
     "AgentStopParams": {
       "type": "object",
@@ -284,7 +310,9 @@
           "type": "string"
         }
       },
-      "required": ["agentId"]
+      "required": [
+        "agentId"
+      ]
     },
     "AgentLogsParams": {
       "type": "object",
@@ -295,7 +323,9 @@
           "minLength": 1
         }
       },
-      "required": ["agentId"]
+      "required": [
+        "agentId"
+      ]
     },
     "RunStatusParams": {
       "type": "object",
@@ -306,7 +336,9 @@
           "minLength": 1
         }
       },
-      "required": ["runId"]
+      "required": [
+        "runId"
+      ]
     },
     "RunResultParams": {
       "type": "object",
@@ -317,7 +349,9 @@
           "minLength": 1
         }
       },
-      "required": ["runId"]
+      "required": [
+        "runId"
+      ]
     },
     "RunReplayParams": {
       "type": "object",
@@ -337,7 +371,9 @@
           "maximum": 200
         }
       },
-      "required": ["runId"]
+      "required": [
+        "runId"
+      ]
     },
     "RunEvidenceParams": {
       "type": "object",
@@ -357,7 +393,9 @@
           "maximum": 200
         }
       },
-      "required": ["runId"]
+      "required": [
+        "runId"
+      ]
     },
     "RunCancelParams": {
       "type": "object",
@@ -371,7 +409,9 @@
           "type": "string"
         }
       },
-      "required": ["runId"]
+      "required": [
+        "runId"
+      ]
     },
     "RunStartVerificationCommand": {
       "type": "object",
@@ -386,7 +426,10 @@
           "minLength": 1
         }
       },
-      "required": ["label", "script"]
+      "required": [
+        "label",
+        "script"
+      ]
     },
     "RunStartParams": {
       "type": "object",
@@ -421,7 +464,12 @@
         },
         "permissionMode": {
           "type": "string",
-          "enum": ["default", "plan", "acceptEdits", "bypassPermissions"]
+          "enum": [
+            "default",
+            "plan",
+            "acceptEdits",
+            "bypassPermissions"
+          ]
         },
         "unattendedAllow": {
           "type": "array",
@@ -446,7 +494,9 @@
           "minimum": 1
         }
       },
-      "required": ["goal"]
+      "required": [
+        "goal"
+      ]
     },
     "SessionCreateParams": {
       "type": "object",
@@ -497,7 +547,9 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionDetachParams": {
       "type": "object",
@@ -516,13 +568,19 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId"],
+      "required": [
+        "sessionId"
+      ],
       "anyOf": [
         {
-          "required": ["attachmentId"]
+          "required": [
+            "attachmentId"
+          ]
         },
         {
-          "required": ["clientId"]
+          "required": [
+            "clientId"
+          ]
         }
       ]
     },
@@ -538,7 +596,9 @@
           "type": "string"
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionClearParams": {
       "type": "object",
@@ -549,7 +609,9 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionSnapshotParams": {
       "type": "object",
@@ -560,7 +622,9 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionTranscriptParams": {
       "type": "object",
@@ -571,7 +635,9 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionCancelTurnParams": {
       "type": "object",
@@ -585,7 +651,30 @@
           "type": "string"
         }
       },
-      "required": ["sessionId"]
+      "required": [
+        "sessionId"
+      ]
+    },
+    "SessionResolveToolCallParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolCallId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
     },
     "SessionMcpServerConfig": {
       "type": "object",
@@ -597,7 +686,13 @@
         },
         "transport": {
           "type": "string",
-          "enum": ["stdio", "sse", "http", "websocket", "ws"]
+          "enum": [
+            "stdio",
+            "sse",
+            "http",
+            "websocket",
+            "ws"
+          ]
         },
         "command": {
           "type": "string"
@@ -618,7 +713,9 @@
           "type": "boolean"
         }
       },
-      "required": ["name"]
+      "required": [
+        "name"
+      ]
     },
     "SessionMcpAddServerParams": {
       "type": "object",
@@ -632,7 +729,10 @@
           "$ref": "#/definitions/SessionMcpServerConfig"
         }
       },
-      "required": ["sessionId", "config"]
+      "required": [
+        "sessionId",
+        "config"
+      ]
     },
     "MessageSendParams": {
       "type": "object",
@@ -653,7 +753,10 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["sessionId", "content"]
+      "required": [
+        "sessionId",
+        "content"
+      ]
     },
     "MessageStreamParams": {
       "type": "object",
@@ -678,19 +781,31 @@
           "minLength": 1
         }
       },
-      "required": ["sessionId", "content"]
+      "required": [
+        "sessionId",
+        "content"
+      ]
     },
     "ThreadRealtimeVersion": {
       "type": "string",
-      "enum": ["v1", "v2"]
+      "enum": [
+        "v1",
+        "v2"
+      ]
     },
     "ThreadRealtimeSessionMode": {
       "type": "string",
-      "enum": ["conversational", "transcription"]
+      "enum": [
+        "conversational",
+        "transcription"
+      ]
     },
     "ThreadRealtimeOutputModality": {
       "type": "string",
-      "enum": ["audio", "text"]
+      "enum": [
+        "audio",
+        "text"
+      ]
     },
     "ThreadRealtimeVoice": {
       "type": "string",
@@ -724,7 +839,9 @@
           "const": "websocket"
         }
       },
-      "required": ["type"]
+      "required": [
+        "type"
+      ]
     },
     "ThreadRealtimeWebrtcTransport": {
       "type": "object",
@@ -738,7 +855,10 @@
           "minLength": 1
         }
       },
-      "required": ["type", "sdp"]
+      "required": [
+        "type",
+        "sdp"
+      ]
     },
     "ThreadRealtimeStartTransport": {
       "oneOf": [
@@ -803,7 +923,10 @@
           ]
         }
       },
-      "required": ["threadId", "outputModality"]
+      "required": [
+        "threadId",
+        "outputModality"
+      ]
     },
     "ThreadRealtimeAudioChunk": {
       "type": "object",
@@ -822,15 +945,25 @@
           "minimum": 1
         },
         "samplesPerChannel": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "itemId": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         }
       },
-      "required": ["data", "sampleRate", "numChannels"]
+      "required": [
+        "data",
+        "sampleRate",
+        "numChannels"
+      ]
     },
     "ThreadRealtimeAppendAudioParams": {
       "type": "object",
@@ -844,7 +977,10 @@
           "$ref": "#/definitions/ThreadRealtimeAudioChunk"
         }
       },
-      "required": ["threadId", "audio"]
+      "required": [
+        "threadId",
+        "audio"
+      ]
     },
     "ThreadRealtimeAppendTextParams": {
       "type": "object",
@@ -859,7 +995,10 @@
           "minLength": 1
         }
       },
-      "required": ["threadId", "text"]
+      "required": [
+        "threadId",
+        "text"
+      ]
     },
     "ThreadRealtimeStopParams": {
       "type": "object",
@@ -870,7 +1009,9 @@
           "minLength": 1
         }
       },
-      "required": ["threadId"]
+      "required": [
+        "threadId"
+      ]
     },
     "ThreadRealtimeListVoicesParams": {
       "type": "object",
@@ -886,7 +1027,9 @@
           "minLength": 1
         }
       },
-      "required": ["threadId"]
+      "required": [
+        "threadId"
+      ]
     },
     "ThreadRealtimeStartedParams": {
       "type": "object",
@@ -911,7 +1054,10 @@
           "$ref": "#/definitions/ThreadRealtimeVersion"
         }
       },
-      "required": ["threadId", "version"]
+      "required": [
+        "threadId",
+        "version"
+      ]
     },
     "ThreadRealtimeItemAddedParams": {
       "type": "object",
@@ -923,7 +1069,10 @@
         },
         "item": true
       },
-      "required": ["threadId", "item"]
+      "required": [
+        "threadId",
+        "item"
+      ]
     },
     "ThreadRealtimeTranscriptDeltaParams": {
       "type": "object",
@@ -940,7 +1089,11 @@
           "type": "string"
         }
       },
-      "required": ["threadId", "role", "delta"]
+      "required": [
+        "threadId",
+        "role",
+        "delta"
+      ]
     },
     "ThreadRealtimeTranscriptDoneParams": {
       "type": "object",
@@ -957,7 +1110,11 @@
           "type": "string"
         }
       },
-      "required": ["threadId", "role", "text"]
+      "required": [
+        "threadId",
+        "role",
+        "text"
+      ]
     },
     "ThreadRealtimeOutputAudioDeltaParams": {
       "type": "object",
@@ -971,7 +1128,10 @@
           "$ref": "#/definitions/ThreadRealtimeAudioChunk"
         }
       },
-      "required": ["threadId", "audio"]
+      "required": [
+        "threadId",
+        "audio"
+      ]
     },
     "ThreadRealtimeSdpParams": {
       "type": "object",
@@ -986,7 +1146,10 @@
           "minLength": 1
         }
       },
-      "required": ["threadId", "sdp"]
+      "required": [
+        "threadId",
+        "sdp"
+      ]
     },
     "ThreadRealtimeErrorParams": {
       "type": "object",
@@ -1001,7 +1164,10 @@
           "minLength": 1
         }
       },
-      "required": ["threadId", "message"]
+      "required": [
+        "threadId",
+        "message"
+      ]
     },
     "ThreadRealtimeClosedParams": {
       "type": "object",
@@ -1022,7 +1188,9 @@
           ]
         }
       },
-      "required": ["threadId"]
+      "required": [
+        "threadId"
+      ]
     },
     "ToolApproveParams": {
       "type": "object",
@@ -1038,10 +1206,17 @@
         },
         "scope": {
           "type": "string",
-          "enum": ["once", "session", "agent"]
+          "enum": [
+            "once",
+            "session",
+            "agent"
+          ]
         }
       },
-      "required": ["sessionId", "requestId"]
+      "required": [
+        "sessionId",
+        "requestId"
+      ]
     },
     "ToolDenyParams": {
       "type": "object",
@@ -1059,7 +1234,10 @@
           "type": "string"
         }
       },
-      "required": ["sessionId", "requestId"]
+      "required": [
+        "sessionId",
+        "requestId"
+      ]
     },
     "ToolCancelParams": {
       "type": "object",
@@ -1077,7 +1255,10 @@
           "type": "string"
         }
       },
-      "required": ["sessionId", "requestId"]
+      "required": [
+        "sessionId",
+        "requestId"
+      ]
     },
     "ElicitationRespondParams": {
       "type": "object",
@@ -1092,7 +1273,10 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["request_user_input", "mcp"]
+          "enum": [
+            "request_user_input",
+            "mcp"
+          ]
         },
         "serverName": {
           "type": "string",
@@ -1102,7 +1286,12 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["sessionId", "requestId", "kind", "response"]
+      "required": [
+        "sessionId",
+        "requestId",
+        "kind",
+        "response"
+      ]
     },
     "PermissionListParams": {
       "type": "object",
@@ -1144,7 +1333,10 @@
           ]
         }
       },
-      "required": ["query", "roots"]
+      "required": [
+        "query",
+        "roots"
+      ]
     },
     "CommandExecTerminalSize": {
       "type": "object",
@@ -1159,7 +1351,10 @@
           "minimum": 1
         }
       },
-      "required": ["rows", "cols"]
+      "required": [
+        "rows",
+        "cols"
+      ]
     },
     "CommandExecEnv": {
       "type": "object",
@@ -1291,7 +1486,9 @@
           ]
         }
       },
-      "required": ["command"]
+      "required": [
+        "command"
+      ]
     },
     "CommandExecWriteParams": {
       "type": "object",
@@ -1315,7 +1512,9 @@
           "type": "boolean"
         }
       },
-      "required": ["processId"]
+      "required": [
+        "processId"
+      ]
     },
     "CommandExecTerminateParams": {
       "type": "object",
@@ -1326,7 +1525,9 @@
           "minLength": 1
         }
       },
-      "required": ["processId"]
+      "required": [
+        "processId"
+      ]
     },
     "CommandExecResizeParams": {
       "type": "object",
@@ -1340,7 +1541,10 @@
           "$ref": "#/definitions/CommandExecTerminalSize"
         }
       },
-      "required": ["processId", "size"]
+      "required": [
+        "processId",
+        "size"
+      ]
     },
     "CommandExecOutputDeltaParams": {
       "type": "object",
@@ -1352,7 +1556,10 @@
         },
         "stream": {
           "type": "string",
-          "enum": ["stdout", "stderr"]
+          "enum": [
+            "stdout",
+            "stderr"
+          ]
         },
         "deltaBase64": {
           "type": "string"
@@ -1361,7 +1568,12 @@
           "type": "boolean"
         }
       },
-      "required": ["processId", "stream", "deltaBase64", "capReached"]
+      "required": [
+        "processId",
+        "stream",
+        "deltaBase64",
+        "capReached"
+      ]
     },
     "AgenCEventBaseParams": {
       "type": "object",
@@ -1391,7 +1603,10 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["sessionId", "eventId"]
+      "required": [
+        "sessionId",
+        "eventId"
+      ]
     },
     "EventMessageChunkParams": {
       "type": "object",
@@ -1432,7 +1647,11 @@
           "type": "string"
         }
       },
-      "required": ["sessionId", "eventId", "delta"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "delta"
+      ]
     },
     "EventToolRequestParams": {
       "type": "object",
@@ -1475,7 +1694,12 @@
         },
         "input": {}
       },
-      "required": ["sessionId", "eventId", "requestId", "toolName"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "requestId",
+        "toolName"
+      ]
     },
     "EventPermissionRequestParams": {
       "type": "object",
@@ -1528,7 +1752,12 @@
           "type": "string"
         }
       },
-      "required": ["sessionId", "eventId", "requestId", "permissions"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "requestId",
+        "permissions"
+      ]
     },
     "EventUserInputRequestParams": {
       "type": "object",
@@ -1578,7 +1807,14 @@
           }
         }
       },
-      "required": ["sessionId", "eventId", "requestId", "callId", "turnId", "questions"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "requestId",
+        "callId",
+        "turnId",
+        "questions"
+      ]
     },
     "EventMcpElicitationRequestParams": {
       "type": "object",
@@ -1622,7 +1858,14 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["sessionId", "eventId", "requestId", "serverName", "turnId", "request"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "requestId",
+        "serverName",
+        "turnId",
+        "request"
+      ]
     },
     "EventAgentStatusParams": {
       "type": "object",
@@ -1676,7 +1919,12 @@
           "type": "string"
         }
       },
-      "required": ["sessionId", "eventId", "agentId", "status"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "agentId",
+        "status"
+      ]
     },
     "EventSessionEventParams": {
       "type": "object",
@@ -1709,7 +1957,11 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["sessionId", "eventId", "event"]
+      "required": [
+        "sessionId",
+        "eventId",
+        "event"
+      ]
     },
     "HealthPingParams": {
       "type": "object",
@@ -1960,7 +2212,11 @@
           "$ref": "#/definitions/CommandExecOutputDeltaParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventMessageChunkNotification": {
       "type": "object",
@@ -1976,7 +2232,11 @@
           "$ref": "#/definitions/EventMessageChunkParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventToolRequestNotification": {
       "type": "object",
@@ -1992,7 +2252,11 @@
           "$ref": "#/definitions/EventToolRequestParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventPermissionRequestNotification": {
       "type": "object",
@@ -2008,7 +2272,11 @@
           "$ref": "#/definitions/EventPermissionRequestParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventUserInputRequestNotification": {
       "type": "object",
@@ -2024,7 +2292,11 @@
           "$ref": "#/definitions/EventUserInputRequestParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventMcpElicitationRequestNotification": {
       "type": "object",
@@ -2040,7 +2312,11 @@
           "$ref": "#/definitions/EventMcpElicitationRequestParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventAgentStatusNotification": {
       "type": "object",
@@ -2056,7 +2332,11 @@
           "$ref": "#/definitions/EventAgentStatusParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventSessionEventNotification": {
       "type": "object",
@@ -2072,7 +2352,11 @@
           "$ref": "#/definitions/EventSessionEventParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventGapNotification": {
       "type": "object",
@@ -2088,7 +2372,11 @@
           "$ref": "#/definitions/EventGapParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "EventGapParams": {
       "type": "object",
@@ -2125,7 +2413,10 @@
         },
         "source": {
           "type": "string",
-          "enum": ["background_runner_retention", "multiplexer_retention"]
+          "enum": [
+            "background_runner_retention",
+            "multiplexer_retention"
+          ]
         },
         "retiredCount": {
           "type": "integer",
@@ -2167,7 +2458,11 @@
           "$ref": "#/definitions/ThreadRealtimeStartedParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeItemAddedNotification": {
       "type": "object",
@@ -2183,7 +2478,11 @@
           "$ref": "#/definitions/ThreadRealtimeItemAddedParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeTranscriptDeltaNotification": {
       "type": "object",
@@ -2199,7 +2498,11 @@
           "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeTranscriptDoneNotification": {
       "type": "object",
@@ -2215,7 +2518,11 @@
           "$ref": "#/definitions/ThreadRealtimeTranscriptDoneParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeOutputAudioDeltaNotification": {
       "type": "object",
@@ -2231,7 +2538,11 @@
           "$ref": "#/definitions/ThreadRealtimeOutputAudioDeltaParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeSdpNotification": {
       "type": "object",
@@ -2247,7 +2558,11 @@
           "$ref": "#/definitions/ThreadRealtimeSdpParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeErrorNotification": {
       "type": "object",
@@ -2263,7 +2578,11 @@
           "$ref": "#/definitions/ThreadRealtimeErrorParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeClosedNotification": {
       "type": "object",
@@ -2279,7 +2598,11 @@
           "$ref": "#/definitions/ThreadRealtimeClosedParams"
         }
       },
-      "required": ["jsonrpc", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
     },
     "InitializeRequest": {
       "type": "object",
@@ -2298,7 +2621,12 @@
           "$ref": "#/definitions/InitializeParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RequestCancelRequest": {
       "type": "object",
@@ -2317,7 +2645,12 @@
           "$ref": "#/definitions/RequestCancelParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "AgentCreateRequest": {
       "type": "object",
@@ -2336,7 +2669,12 @@
           "$ref": "#/definitions/AgentCreateParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "AgentListRequest": {
       "type": "object",
@@ -2355,7 +2693,12 @@
           "$ref": "#/definitions/AgentListParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "AgentAttachRequest": {
       "type": "object",
@@ -2374,7 +2717,12 @@
           "$ref": "#/definitions/AgentAttachParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "AgentStopRequest": {
       "type": "object",
@@ -2393,7 +2741,12 @@
           "$ref": "#/definitions/AgentStopParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "AgentLogsRequest": {
       "type": "object",
@@ -2412,7 +2765,12 @@
           "$ref": "#/definitions/AgentLogsParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunStatusRequest": {
       "type": "object",
@@ -2431,7 +2789,12 @@
           "$ref": "#/definitions/RunStatusParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunResultRequest": {
       "type": "object",
@@ -2450,7 +2813,12 @@
           "$ref": "#/definitions/RunResultParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunReplayRequest": {
       "type": "object",
@@ -2469,7 +2837,12 @@
           "$ref": "#/definitions/RunReplayParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunEvidenceRequest": {
       "type": "object",
@@ -2488,7 +2861,12 @@
           "$ref": "#/definitions/RunEvidenceParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunCancelRequest": {
       "type": "object",
@@ -2507,7 +2885,12 @@
           "$ref": "#/definitions/RunCancelParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "RunStartRequest": {
       "type": "object",
@@ -2526,7 +2909,12 @@
           "$ref": "#/definitions/RunStartParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionCreateRequest": {
       "type": "object",
@@ -2545,7 +2933,12 @@
           "$ref": "#/definitions/SessionCreateParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionListRequest": {
       "type": "object",
@@ -2564,7 +2957,12 @@
           "$ref": "#/definitions/SessionListParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionAttachRequest": {
       "type": "object",
@@ -2583,7 +2981,12 @@
           "$ref": "#/definitions/SessionAttachParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionDetachRequest": {
       "type": "object",
@@ -2602,7 +3005,12 @@
           "$ref": "#/definitions/SessionDetachParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionTerminateRequest": {
       "type": "object",
@@ -2621,7 +3029,12 @@
           "$ref": "#/definitions/SessionTerminateParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionClearRequest": {
       "type": "object",
@@ -2640,7 +3053,12 @@
           "$ref": "#/definitions/SessionClearParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionSnapshotRequest": {
       "type": "object",
@@ -2659,7 +3077,12 @@
           "$ref": "#/definitions/SessionSnapshotParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionTranscriptRequest": {
       "type": "object",
@@ -2678,7 +3101,12 @@
           "$ref": "#/definitions/SessionTranscriptParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionCancelTurnRequest": {
       "type": "object",
@@ -2697,7 +3125,36 @@
           "$ref": "#/definitions/SessionCancelTurnParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionResolveToolCallRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.resolveToolCall"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionResolveToolCallParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "SessionMcpAddServerRequest": {
       "type": "object",
@@ -2716,7 +3173,12 @@
           "$ref": "#/definitions/SessionMcpAddServerParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "MessageSendRequest": {
       "type": "object",
@@ -2735,7 +3197,12 @@
           "$ref": "#/definitions/MessageSendParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "MessageStreamRequest": {
       "type": "object",
@@ -2754,7 +3221,12 @@
           "$ref": "#/definitions/MessageStreamParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeStartRequest": {
       "type": "object",
@@ -2773,7 +3245,12 @@
           "$ref": "#/definitions/ThreadRealtimeStartParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeAppendAudioRequest": {
       "type": "object",
@@ -2792,7 +3269,12 @@
           "$ref": "#/definitions/ThreadRealtimeAppendAudioParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeAppendTextRequest": {
       "type": "object",
@@ -2811,7 +3293,12 @@
           "$ref": "#/definitions/ThreadRealtimeAppendTextParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeStopRequest": {
       "type": "object",
@@ -2830,7 +3317,12 @@
           "$ref": "#/definitions/ThreadRealtimeStopParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ThreadRealtimeListVoicesRequest": {
       "type": "object",
@@ -2849,7 +3341,11 @@
           "$ref": "#/definitions/ThreadRealtimeListVoicesParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "ToolApproveRequest": {
       "type": "object",
@@ -2868,7 +3364,12 @@
           "$ref": "#/definitions/ToolApproveParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ToolDenyRequest": {
       "type": "object",
@@ -2887,7 +3388,12 @@
           "$ref": "#/definitions/ToolDenyParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ToolCancelRequest": {
       "type": "object",
@@ -2906,7 +3412,12 @@
           "$ref": "#/definitions/ToolCancelParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "ElicitationRespondRequest": {
       "type": "object",
@@ -2925,7 +3436,12 @@
           "$ref": "#/definitions/ElicitationRespondParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "PermissionListRequest": {
       "type": "object",
@@ -2944,7 +3460,12 @@
           "$ref": "#/definitions/PermissionListParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "FuzzyFileSearchRequest": {
       "type": "object",
@@ -2963,7 +3484,12 @@
           "$ref": "#/definitions/FuzzyFileSearchParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "CommandExecStartRequest": {
       "type": "object",
@@ -2982,7 +3508,12 @@
           "$ref": "#/definitions/CommandExecStartParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "CommandExecWriteRequest": {
       "type": "object",
@@ -3001,7 +3532,12 @@
           "$ref": "#/definitions/CommandExecWriteParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "CommandExecResizeRequest": {
       "type": "object",
@@ -3020,7 +3556,12 @@
           "$ref": "#/definitions/CommandExecResizeParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "CommandExecTerminateRequest": {
       "type": "object",
@@ -3039,7 +3580,12 @@
           "$ref": "#/definitions/CommandExecTerminateParams"
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
     },
     "HealthPingRequest": {
       "type": "object",
@@ -3058,7 +3604,11 @@
           "$ref": "#/definitions/HealthPingParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "HealthReadyRequest": {
       "type": "object",
@@ -3077,7 +3627,11 @@
           "$ref": "#/definitions/HealthReadyParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "HealthStatsRequest": {
       "type": "object",
@@ -3096,7 +3650,11 @@
           "$ref": "#/definitions/HealthStatsParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "DaemonReloadRequest": {
       "type": "object",
@@ -3115,7 +3673,11 @@
           "$ref": "#/definitions/DaemonReloadParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "AuthLoginRequest": {
       "type": "object",
@@ -3134,7 +3696,11 @@
           "$ref": "#/definitions/AuthLoginParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "AuthWhoamiRequest": {
       "type": "object",
@@ -3153,7 +3719,11 @@
           "$ref": "#/definitions/AuthWhoamiParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "AuthLogoutRequest": {
       "type": "object",
@@ -3172,7 +3742,11 @@
           "$ref": "#/definitions/AuthLogoutParams"
         }
       },
-      "required": ["jsonrpc", "id", "method"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
     },
     "AgenCDaemonSuccessResponse": {
       "type": "object",
@@ -3188,7 +3762,11 @@
           "$ref": "#/definitions/JsonObject"
         }
       },
-      "required": ["jsonrpc", "id", "result"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ]
     },
     "AgenCDaemonErrorResponse": {
       "type": "object",
@@ -3211,7 +3789,11 @@
           "$ref": "#/definitions/AgenCDaemonErrorObject"
         }
       },
-      "required": ["jsonrpc", "id", "error"]
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ]
     },
     "AgenCDaemonErrorObject": {
       "type": "object",
@@ -3219,7 +3801,14 @@
       "properties": {
         "code": {
           "type": "integer",
-          "enum": [-32700, -32600, -32601, -32602, -32603, -32000]
+          "enum": [
+            -32700,
+            -32600,
+            -32601,
+            -32602,
+            -32603,
+            -32000
+          ]
         },
         "message": {
           "type": "string",
@@ -3227,7 +3816,10 @@
         },
         "data": true
       },
-      "required": ["code", "message"]
+      "required": [
+        "code",
+        "message"
+      ]
     }
   }
 }

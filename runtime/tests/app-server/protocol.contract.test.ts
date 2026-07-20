@@ -58,6 +58,7 @@ const expectedMethods = [
   "session.snapshot",
   "session.transcript",
   "session.cancelTurn",
+  "session.resolveToolCall",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
