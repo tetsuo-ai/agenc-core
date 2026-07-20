@@ -681,6 +681,72 @@ describe("GrokProvider incremental continuation", () => {
     });
   });
 
+  test("streamed usage is last-cumulative-wins, never a sum across events", async () => {
+    // xAI streams usage snapshots as CUMULATIVE totals; a stream can carry
+    // usage on more than one event (in_progress snapshots plus the final
+    // response.completed). Per-turn usage must equal the FINAL cumulative
+    // value — summing the snapshots would blow up quadratically (the
+    // absurd "+900M cached" family of readings). Pins exactly-once
+    // per-response usage accounting at the adapter boundary.
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    });
+    const finalUsage = {
+      input_tokens: 48_892,
+      output_tokens: 169,
+      total_tokens: 49_061,
+      input_tokens_details: { cached_tokens: 46_720 },
+      output_tokens_details: { reasoning_tokens: 15 },
+    };
+    const create = vi.fn(() =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "response.in_progress",
+            response: {
+              ...buildXaiResponse("resp_usage_stream", ""),
+              status: "in_progress",
+              usage: {
+                input_tokens: 48_892,
+                output_tokens: 40,
+                total_tokens: 48_932,
+                input_tokens_details: { cached_tokens: 46_720 },
+              },
+            },
+          },
+          { type: "response.output_text.delta", delta: "part one " },
+          { type: "response.output_text.delta", delta: "part two" },
+          {
+            type: "response.completed",
+            response: {
+              ...buildXaiResponse("resp_usage_stream", "part one part two"),
+              usage: finalUsage,
+            },
+          },
+        ]),
+      )
+    );
+    (provider as any).client = { responses: { create } };
+
+    const result = await provider.chatStream(
+      [{ role: "user", content: "go" }],
+      () => {},
+    );
+
+    expect(result.usage).toMatchObject({
+      promptTokens: 48_892,
+      completionTokens: 169,
+      totalTokens: 49_061,
+      cachedInputTokens: 46_720,
+      reasoningOutputTokens: 15,
+    });
+    // Guard the failure mode explicitly: any summing across the two
+    // usage-bearing events would exceed the final cumulative values.
+    expect(result.usage.totalTokens).toBeLessThanOrEqual(49_061);
+    expect(result.usage.cachedInputTokens).toBeLessThanOrEqual(46_720);
+  });
+
   test("does not replace streamed text with a tool-disabled retry", async () => {
     const provider = new GrokProvider({
       apiKey: "xai-test",

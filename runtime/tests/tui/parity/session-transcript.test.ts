@@ -196,6 +196,42 @@ describe("AgenC TUI session transcript", () => {
     });
   });
 
+  test("token ledger fallback total never re-adds cached tokens", () => {
+    // Cached input tokens are a SUBSET of promptTokens (OpenAI/xAI
+    // convention the daemon's LLMUsage normalizes to); when the provider
+    // omits totalTokens the fallback must be in + out — the old fallback
+    // added cached + cacheCreation + reasoning back in and nearly doubled
+    // the displayed total (absurd cached/total readings, 2026-07-20).
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "usage",
+        seq: 1,
+        msg: {
+          type: "token_count",
+          payload: {
+            promptTokens: 48_892,
+            completionTokens: 169,
+            // no totalTokens from the provider
+            cachedInputTokens: 46_720,
+            reasoningOutputTokens: 15,
+            model: "grok-4.5",
+            provider: "grok",
+          },
+        },
+      },
+    ]);
+
+    const row = transcript.messages[0];
+    expect(row).toMatchObject({ type: "system" });
+    const content = String((row as { content?: unknown })?.content ?? "");
+    // 48,892 + 169 = 49,061 → "49.1K total"; the buggy fallback produced
+    // 95,796 → "95.8K total".
+    expect(content).toContain("49.1K total");
+    expect(content).not.toContain("95.8K total");
+    // Cache read still reported separately, honestly.
+    expect(content).toContain("46.7K cache read");
+  });
+
   test("renders protocol events as inline system rows with badge variants", () => {
     const transcript = adaptTranscriptEvents([
       {
