@@ -317,6 +317,50 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
   });
 
+  it("replays the event backlog to subscribers that register late", async () => {
+    const client = createClient();
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    // The early subscriber opens the shared RPC subscription — its presence
+    // is what makes the daemon's one-shot replay fire exactly once.
+    const early: JsonObject[] = [];
+    const unsubscribeEarly = session.subscribeToEvents((event) => {
+      early.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+    });
+    expect(early).toEqual([
+      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+    ]);
+
+    // The late subscriber must receive the same backlog at registration.
+    const late: JsonObject[] = [];
+    const unsubscribeLate = session.subscribeToEvents((event) => {
+      late.push(event as JsonObject);
+    });
+    expect(late).toEqual([
+      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+    ]);
+
+    // Live events after registration keep flowing to both (no doubles).
+    client.emit("session_1", {
+      type: "daemon.event",
+      msg: { type: "turn_delta", id: "turn_1" },
+    });
+    expect(late).toEqual([
+      { type: "user_message", payload: { message: "hello", displayText: "hello" } },
+      { type: "turn_delta", id: "turn_1" },
+    ]);
+    unsubscribeEarly();
+    unsubscribeLate();
+  });
+
   it("attaches the TUI client before returning a daemon-backed session", async () => {
     const client = createClient();
 

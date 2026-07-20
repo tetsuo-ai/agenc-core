@@ -372,6 +372,16 @@ export function createDaemonTuiSession<
   const realtimeThreadId = options.realtimeThreadId ?? conversationId;
   const queuedInputs: MessageContentBlock[] = [];
   const eventSubscribers = new Set<(event: unknown) => void>();
+  // Backlog of received daemon events, replayed to subscribers that register
+  // LATE. The daemon replays the session's early events exactly once when the
+  // RPC subscription opens — a local subscriber that registers after that
+  // single replay (the transcript hook mounts after other subscriptions)
+  // would otherwise lose early events FOREVER: the user's first prompt
+  // (user_message) never reached the transcript hook and the message was
+  // invisible until ctrl+o. Replay from the same received stream — ids match,
+  // so the reducer's eventKey dedupe collapses any overlap with live events.
+  const receivedEvents: unknown[] = [];
+  const REPLAY_BACKLOG_LIMIT = 500;
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let queuedInputCount = 0;
   let unsubscribeDaemonEvents: (() => void) | null = null;
@@ -430,6 +440,9 @@ export function createDaemonTuiSession<
   };
   const broadcastDaemonEvent = (event: unknown): void => {
     noteDaemonActivity(event);
+    if (receivedEvents.length < REPLAY_BACKLOG_LIMIT) {
+      receivedEvents.push(event);
+    }
     for (const subscriber of [...eventSubscribers]) {
       subscriber(event);
     }
@@ -679,6 +692,12 @@ export function createDaemonTuiSession<
         ...(p.reload !== undefined ? { reload: p.reload } : {}),
       } satisfies SessionApplyConfigParams),
     subscribeToEvents: (cb) => {
+      // Late registrants get the backlog first (see receivedEvents above) —
+      // without this, a subscriber mounting after the daemon's one-shot RPC
+      // replay permanently misses every event that preceded it.
+      for (const event of receivedEvents) {
+        cb(event);
+      }
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();
       return () => {

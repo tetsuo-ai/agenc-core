@@ -2132,6 +2132,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     setSubmitCount(count => count + 1);
     if (parsedSlashCommand === null && parsedDollarSkill === null) {
       startPendingSubmission();
+      // Snap the transcript to the bottom on every prompt submit. The
+      // welcome→transcript layout flip (first message) can leave the
+      // ScrollBox parked above the viewport, hiding the just-sent message
+      // until the next interaction (the "text disappears" report);
+      // scrollToBottom shows the submission immediately and re-engages
+      // sticky follow so the streaming reply stays visible. Fires only on
+      // user action, so it never fights a deliberate scroll-up mid-turn.
+      scrollRef.current?.scrollToBottom();
     }
     setInput("");
     // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
