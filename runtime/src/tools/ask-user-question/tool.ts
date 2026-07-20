@@ -140,11 +140,13 @@ export function parseAskUserQuestionInput(
       const label = nonEmptyString(optionRecord.label);
       const preview = nonEmptyString(optionRecord.preview);
       // Models are split on which field carries the option detail: Claude
-      // sends `description`, Grok consistently sends `preview` (and keeps
-      // sending it even after a validation error says otherwise — observed
-      // 4 consecutive failures in the wild). Accept either: with neither,
-      // the option is unexplainable and still rejected.
-      const description = nonEmptyString(optionRecord.description) ?? preview;
+      // sends `description`, Grok sends `preview` — or, most often, a bare
+      // `label` alone (observed repeatedly in the wild). Rejecting the
+      // label-only shape just loops the model into the same invalid call,
+      // so the description falls back to the label itself: the picker shows
+      // the label prominently either way and the detail line simply drops.
+      const description =
+        nonEmptyString(optionRecord.description) ?? preview ?? label;
       if (label === null) {
         return {
           ok: false,
@@ -154,7 +156,7 @@ export function parseAskUserQuestionInput(
       if (description === null) {
         return {
           ok: false,
-          error: `questions[${questionIndex}].options[${optionIndex}] needs a description (or preview)`,
+          error: `questions[${questionIndex}].options[${optionIndex}] needs a label with text`,
         };
       }
       if (seenLabels.has(label)) {

@@ -163,7 +163,11 @@ export function AskUserQuestionOverlay({
         {question.options.map((option, index) => {
           const selected = index === optionIndex;
           const marked = picked.has(index);
-          const detail = option.preview ?? option.description;
+          const rawDetail = option.preview ?? option.description;
+          // The description falls back to the label (label-only options are
+          // the common Grok shape) — don't render a redundant detail line
+          // that just repeats the label under itself.
+          const detail = rawDetail !== option.label ? rawDetail : "";
           if (selected) {
             return (
               <Box key={option.label} flexDirection="column">

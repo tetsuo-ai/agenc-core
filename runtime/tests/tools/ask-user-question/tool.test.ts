@@ -71,11 +71,26 @@ describe("AskUserQuestion tool", () => {
             ],
           },
         ],
-      }),
-    ).toEqual({
-      ok: false,
-      error: "questions[0].options[1] needs a description (or preview)",
+      }).ok,
+    ).toBe(true);
+  });
+
+  test("accepts label-only options (the common Grok shape)", () => {
+    // The most frequent Grok payload is a bare label with no description or
+    // preview at all — the parser falls back to the label as the description
+    // instead of looping the model into the same invalid call.
+    const parsed = parseAskUserQuestionInput({
+      questions: [
+        {
+          header: "Theme",
+          question: "Which theme?",
+          options: [{ label: "Dark" }, { label: "Light" }],
+        },
+      ],
     });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.input.questions[0]?.options[0]?.description).toBe("Dark");
   });
 
   test("accepts preview-only options (Grok-style payloads)", () => {
