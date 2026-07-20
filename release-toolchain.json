@@ -49,9 +49,9 @@
     "releaseRepository": "tetsuo-ai/agenc-releases",
     "releaseTag": "agenc-v0.7.2",
     "filename": "agenc-runtime-manifest.json",
-    "status": "pending-v0.7.2-publication",
-    "sha256": null,
-    "bytes": null
+    "status": "pinned",
+    "sha256": "b48635506a687be44d763c606fff4604f701983f6fe049aa1ff10b4211755f5d",
+    "bytes": 2318
   },
   "nodeDistributions": {
     "linux-x64": {
