@@ -59,7 +59,19 @@ Effect classification drives restart recovery:
   effect from its durable result, a live child is re-awaited, an unknowable
   child marks the effect `unknown_outcome` and the run terminates
   `unknown_outcome` with review pending. No mutation is ever silently
-  replayed.
+  replayed. Adoption survives daemon restarts: when a spawned child settles,
+  its terminal outcome is durably recorded through the EXISTING run
+  machinery (its own `run_lifecycle_epochs` + immutable
+  `run_terminal_results` rows, keyed by the deterministic child run id the
+  effect intent already carries) BEFORE the parent `effect_result` can
+  commit. A post-restart `inspect(childRunId)` therefore adopts the durable
+  terminal — this closes exactly the
+  `after_spawn_before_effect_result` crash window when the child finished
+  first. A child that genuinely died mid-flight with the daemon recorded no
+  terminal and honestly stays "unknown" → `unknown_outcome`. (The
+  independent-review child settles inside its own effect execution and does
+  not yet record a separate durable terminal; a crash mid-review still
+  resolves `unknown_outcome` — an explicit M6 candidate.)
 
 Dependency unlocks stop on failed verification, cancellation, budget
 exhaustion, and `unknown_outcome` — enforced first by the controller's
@@ -71,6 +83,16 @@ A failed verification earns one bounded re-implement attempt
 (`workflow.implement#2`, fresh verify sub-steps) when the spec's
 `maxImplementAttempts` and remaining budget allow; otherwise the run
 terminates `failed/verification_failed`.
+
+## Session policy
+
+The frozen spec's `permissionMode` and unattended allow/deny lists govern the
+run's daemon session, applied when the session is bootstrapped for the run —
+the exact background-agent mechanism (`--yolo`/`--permission-mode` bootstrap
+argv plus the unattended permission-policy install on the session's
+permission-mode registry). Resumed runs re-resolve the same policy from the
+durable intake spec, so a restarted daemon never silently downgrades a run to
+its default policy.
 
 ## Checkout protection
 
@@ -135,3 +157,14 @@ digests, review output, spec digest, terminal status, and unresolved risks
 are all re-derivable and re-verifiable from the exported bytes alone —
 reconstructing what happened requires no daemon, no SQLite, and no trust in
 the final prose summary.
+
+`reconstructVerifiedChange(bundleDir)`
+(`runtime/src/workflow/evidence-reconstruction.ts`) is the mechanical form of
+that claim: it re-validates the record (canonical document digest + spec
+binding), verifies the sealed hash chain via `verifyEvidenceLedger` — pinned
+by the `evidenceLedger.sealDigest` the completed record now carries and the
+bundle's local anchor material — recomputes every artifact digest from the
+exact CAS bytes, re-derives the review blockers from the
+`independent_review` artifact, and cross-checks the recorded verification
+commands against a `test_result` artifact. Any tampered byte fails loudly
+with a typed error; a summary is never produced from unverified bytes.

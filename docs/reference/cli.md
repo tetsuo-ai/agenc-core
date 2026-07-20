@@ -258,22 +258,50 @@ Design: [`../design/execution-admission-kernel.md`](../design/execution-admissio
 ## `run`
 
 ```text
-agenc run status <run-id>
+agenc run start --goal <text> [--goal-file <path>] [--cwd <dir>]
+                [--model <model>] [--reviewer-model <model>]
+                [--max-cost <usd>] [--permission-mode <mode>]
+                [--verify "label=script"]... [--json] [--follow]
+agenc run status <run-id> [--json]
 agenc run result <run-id>
 agenc run replay <run-id> [--after <sequence>] [--limit <1-200>]
 agenc run evidence <run-id> [--after <sequence>] [--limit <1-200>]
 agenc run cancel <run-id> [--reason <text>]
 ```
 
-These commands use the daemon's durable run/admission contract and print
+`run start` launches the M5 **verified-change workflow** as a durable daemon
+run: intake freezes the spec (goal, base commit, pinned reviewer model,
+permission policy, required verification commands) and the fixed pipeline
+`intake → worktree → plan → implement → verify → review → finalize` continues
+in the daemon. At least one `--verify "label=script"` command is required —
+`completed` mechanically demands every required command exit 0, an
+adversarial-verification `VERDICT: PASS`, and an independent review with zero
+blockers. The frozen spec's `--permission-mode` and unattended allow/deny
+lists are applied to the run's daemon session, so pipeline children execute
+under the declared policy rather than the daemon default. The command returns
+after the durable intake commit (`runId`, `specDigest`, `baseCommit`);
+`--follow` then tails the run journal until the terminal result.
+
+The other commands use the daemon's durable run/admission contract and print
 canonical JSON. `status` includes aggregate admission and budget/hold state;
+for workflow runs it also carries a `workflow` block — one entry per pipeline
+stage with attempts, machine verdicts, and content-addressed artifact
+pointers, plus a machine-readable `stopReason` on failure (and the CLI renders
+a step table unless `--json`).
 `result` succeeds only after the durable run is terminal; its `lastSequence`
 is the terminal snapshot coordinate. A later exclusively leased offline effect
 review can advance the replay tail without resuming execution or changing that
 result. `replay` pages the
 canonical append-only rollout journal with an exclusive per-run sequence
 cursor. `evidence` adds source/completeness metadata and SHA-256 hashes for
-mechanical review. `cancel` durably locks the run tree, cancels queued
+mechanical review; for workflow runs it also includes a `bundle` block
+describing the sealed per-run evidence ledger
+(`<agencHome>/run-evidence/<run-id>/`): `sealed`, the verified-change
+`recordDigest`, the ledger path, and every artifact pointer
+(`cas://sha256/...`). The exported bundle is self-contained — hash chain,
+per-command records, patch/changed-file digests, review output, and terminal
+status are re-verifiable offline from the exported bytes alone.
+`cancel` durably locks the run tree, cancels queued
 descendants, and propagates to running descendants without deleting partial
 evidence.
 
