@@ -769,10 +769,23 @@ use GitHub-hosted jobs to produce release artifacts. They do not run tests.
 Before artifact work starts, each workflow:
 
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
-2. requires `tested_sha` to equal the workflow's exact `GITHUB_SHA`;
-3. binds dispatch to the matching `agenc-v<version>` tag and `main` ancestry;
-   and
+2. normally requires `tested_sha` to equal the workflow's exact
+   `GITHUB_SHA`;
+3. binds dispatch to the matching `agenc-v<version>` tag and `main`
+   ancestry; and
 4. requires the checked-out tree to be clean before artifact work.
+
+The npm workflow has one reviewed partial-release exception. If an immutable
+runtime release already exists but the tagged npm workflow failed before
+upload because its release tooling was defective, `recovery_tag` may be set
+while dispatching the repaired workflow from current `main`. In that mode,
+`tested_sha` must equal the immutable recovery tag commit rather than the
+workflow tooling commit. The workflow still requires the exact-tag evidence,
+clean tagged source, `main` ancestry, and matching lockfile/toolchain/manifest
+validator; the produced receipt remains bound to `tested_sha`. The workflow
+attestations and npm provenance bind the separate reviewed `main` tooling
+commit. Runtime publication has no recovery exception and still requires
+`tested_sha == GITHUB_SHA`.
 
 They run no tests and do not read a GitHub App check. The operator must first
 complete and retain the exact-tag local evidence defined above. A PR-head test

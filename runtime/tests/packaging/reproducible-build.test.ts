@@ -411,16 +411,18 @@ describe("reproducible install and release contract", () => {
     expect(packJob).not.toContain("id-token: write");
     expect(packJob).not.toContain("actions/attest@");
     expect(workflow).toContain('test "$GITHUB_REF_TYPE" = tag');
-    expect(workflow).toContain('expected_ref="refs/tags/agenc-v${version}"');
+    expect(workflow).toContain("recovery_tag:");
+    expect(workflow).toContain('test "$GITHUB_REF" = refs/heads/main');
+    expect(workflow).toContain(
+      'test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"',
+    );
     expect(workflow).toContain('test "$REPOSITORY_VISIBILITY" = public');
     expect(releaseSourceJob).not.toContain("checks: read");
     expect(releaseSourceJob).not.toContain("AGENC_LOCAL_GATE_APP_ID");
     expect(releaseSourceJob).not.toContain("scripts/verify-required-gate-check.mjs");
     expect(releaseSourceJob).toContain("LOCAL_EVIDENCE_SHA256");
     expect(releaseSourceJob).toContain('test "$TESTED_SHA" = "$GITHUB_SHA"');
-    expect(releaseSourceJob).toContain(
-      'test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"',
-    );
+    expect(releaseSourceJob).toContain('test "$source_sha" = "$TESTED_SHA"');
     expect(workflow).not.toContain("required-gates:");
     expectArtifactWorkflowWithoutHostedTests(workflow);
     for (const job of [releaseSourceJob, packJob, publishJob]) {
@@ -441,7 +443,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("--legacy-manifest");
     expect(workflow).not.toContain("npm test --workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("git worktree add --detach");
-    expect(workflow).toMatch(/\(\n\s+cd \"\$source\"[\s\S]+node scripts\/npm-release\.mjs pack/);
+    expect(workflow).toMatch(/\(\n\s+cd \"\$source\"[\s\S]+node \"\$release_tool\" pack/);
     expect(workflow).toContain("--workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("*.tgz.release.json");
     expect(workflow).toContain("gh attestation verify \"$asset\"");
@@ -478,9 +480,9 @@ describe("reproducible install and release contract", () => {
       expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(pin.bytes).toBeGreaterThan(0);
     }
-    expect(workflow).toContain('node scripts/npm-release.mjs verify "$tarball"');
+    expect(workflow).toContain('node "$NPM_RELEASE_TOOL" verify "$tarball"');
     expect(workflow).toContain(
-      'node scripts/npm-release.mjs publish "$tarball" --tag=latest',
+      'node "$NPM_RELEASE_TOOL" publish "$tarball" --tag=latest',
     );
     expect(workflow).toContain('NODE_AUTH_TOKEN: ""');
     expect(workflow).toContain('NPM_TOKEN: ""');
@@ -493,11 +495,11 @@ describe("reproducible install and release contract", () => {
     expect(workflow.indexOf("environment: npm-production")).toBeLessThan(
       workflow.indexOf("actions/attest@"),
     );
-    expect(workflow.indexOf("npm-release.mjs verify")).toBeLessThan(
+    expect(workflow.indexOf('node "$NPM_RELEASE_TOOL" verify')).toBeLessThan(
       workflow.indexOf("actions/attest@"),
     );
     expect(workflow.indexOf("actions/attest@")).toBeLessThan(
-      workflow.indexOf("npm-release.mjs publish"),
+      workflow.indexOf('node "$NPM_RELEASE_TOOL" publish'),
     );
   });
 
