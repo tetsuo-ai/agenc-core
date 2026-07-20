@@ -105,7 +105,7 @@ describe("reproducible install and release contract", () => {
     );
   });
 
-  test("every workspace package bin checks out with canonical LF endings", () => {
+  test("release-sensitive text inputs check out with canonical LF endings", () => {
     const root = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
       workspaces: string[];
     };
@@ -118,12 +118,13 @@ describe("reproducible install and release contract", () => {
         : Object.values(manifest.bin ?? {});
       return targets.map((target) => join(workspace, target).replaceAll("\\", "/"));
     });
+    const lfSubjects = [...binSubjects, "package-lock.json"];
     const attributes = execFileSync(
       "git",
-      ["check-attr", "eol", "--", ...binSubjects],
+      ["check-attr", "eol", "--", ...lfSubjects],
       { cwd: REPO_ROOT, encoding: "utf8" },
     );
-    for (const subject of binSubjects) {
+    for (const subject of lfSubjects) {
       expect(attributes).toContain(`${subject}: eol: lf`);
     }
   });

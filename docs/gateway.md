@@ -5,7 +5,7 @@ your local daemon. It is a **daemon client**: it talks to the daemon only
 through the embedding SDK (`@tetsuo-ai/agenc-sdk`), never runtime internals.
 Channels are a client-side addition, not a runtime change.
 
-**Shipped channels (0.7.1):** Telegram, Discord, Slack, WebChat, and stdio.
+**Shipped channels (0.7.2):** Telegram, Discord, Slack, WebChat, and stdio.
 Signal, WhatsApp, and email **channels** are **not** shipped. (The LIVE
 **Browser** tool is a coding-agent capability, not a gateway channel — see
 [browser.md](browser.md).)

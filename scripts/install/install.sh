@@ -28,7 +28,7 @@
 #   override Node compatibility detection.
 #
 # Publishing this script to a stable URL (get.agenc.ag, release asset) and
-# uploading agenc-runtime-manifest-v2.json (plus the frozen v0.7.1 legacy
+# uploading agenc-runtime-manifest-v2.json (plus the frozen v0.7.2 legacy
 # bridge) as release assets are owner/release
 # steps; see docs/install.md.
 
@@ -444,7 +444,7 @@ sha256_of() {
 verify_official_provenance() {
   # Official modern releases are authenticated back to the hosted source
   # workflow. Mirrors and explicit local inputs intentionally retain their
-  # explicit-trust contract, and the frozen v0.7.1 bridge remains unchanged.
+  # explicit-trust contract, and the frozen v0.7.2 bridge remains unchanged.
   [ "$MANIFEST_TRUST" = "official" ] || return 0
   [ -n "$SOURCE_COMMIT" ] && [ -n "$SOURCE_REF" ] || {
     log "official manifest did not provide source provenance"
@@ -622,8 +622,8 @@ case "$MANIFEST_URL" in
   https://*)
     if [ "$REPO" = "$OFFICIAL_REPO" ] && [ "$MANIFEST_EXPLICIT" -eq 0 ]; then
       MANIFEST_TRUST="official"
-    elif [ "$REPO" = "$OFFICIAL_REPO" ] && [ "$PIN_VERSION" = "0.7.1" ] && \
-         [ "$MANIFEST_URL" = "https://github.com/${OFFICIAL_REPO}/releases/download/agenc-v0.7.1/agenc-runtime-manifest.json" ]; then
+    elif [ "$REPO" = "$OFFICIAL_REPO" ] && [ "$PIN_VERSION" = "0.7.2" ] && \
+         [ "$MANIFEST_URL" = "https://github.com/${OFFICIAL_REPO}/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json" ]; then
       MANIFEST_TRUST="officialLegacy"
     else
       MANIFEST_TRUST="explicitHttps"
@@ -719,8 +719,8 @@ SELECTED="$(node -e '
   let artifacts;
   const legacy = m.manifestVersion === 1;
   if (legacy) {
-    const bridgeVersion = "0.7.1";
-    const bridgeTag = "agenc-v0.7.1";
+    const bridgeVersion = "0.7.2";
+    const bridgeTag = "agenc-v0.7.2";
     const bridgePlatforms = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win-x64"];
     const expectedManifest =
       `https://github.com/${expectedRepo}/releases/download/${bridgeTag}/agenc-runtime-manifest.json`;
@@ -728,7 +728,7 @@ SELECTED="$(node -e '
         !exactKeys(m, ["manifestVersion", "runtimeVersion", "releaseRepository", "releaseTag", "artifacts"]) ||
         m.runtimeVersion !== bridgeVersion || m.releaseRepository !== expectedRepo || m.releaseTag !== bridgeTag ||
         !Array.isArray(m.artifacts) || m.artifacts.length !== bridgePlatforms.length) {
-      reject("legacy manifest is not the exact frozen v0.7.1 bridge", 2);
+      reject("legacy manifest is not the exact frozen v0.7.2 bridge", 2);
     }
     artifacts = m.artifacts.map((artifact, index) => {
       const key = `${artifact?.platform}-${artifact?.arch}`;
@@ -762,7 +762,7 @@ SELECTED="$(node -e '
       reject(`unsupported runtime manifest version ${m.manifestVersion ?? "missing"}`, 2);
     }
     if (trustMode === "officialLegacy") {
-      reject("legacy manifest URL did not return the exact frozen v0.7.1 bridge", 2);
+      reject("legacy manifest URL did not return the exact frozen v0.7.2 bridge", 2);
     }
     if (!cleanString(m.runtimeVersion) || !versionPattern.test(m.runtimeVersion) ||
         !cleanString(m.releaseTag) || !cleanString(m.releaseRepository) ||

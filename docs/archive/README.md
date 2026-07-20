@@ -2,7 +2,7 @@
 
 These files are **historical only**. They are **not product truth** and must not
 be used to decide what is shipped. Prefer [`../INDEX.md`](../INDEX.md) and
-[`../roadmap.md`](../roadmap.md) for current 0.7.1 product state.
+[`../roadmap.md`](../roadmap.md) for current 0.7.2 product state.
 
 | File | Why archived | Notes |
 | --- | --- | --- |

@@ -33,7 +33,7 @@ Workbench panes (not mounted inside the transcript `ScrollBox`):
 - BUFFER editor surface (embedded Neovim preferred — see
   [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md))
 
-## Operator surfaces added in 0.7.1
+## Operator surfaces added in 0.7.2
 
 - **`ctrl+r` review rail** — moves the open file to a shiki-highlighted
   right-hand rail; chat keeps the center so you can review while prompting.

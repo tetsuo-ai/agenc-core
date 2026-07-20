@@ -97,7 +97,7 @@ import {
 } from "../utils/sqlite-lock.js";
 
 export const DEFAULT_RELEASE_REPO = OFFICIAL_RELEASE_REPOSITORY;
-export const MINIMUM_MODERN_UPDATE_VERSION = "0.7.1";
+export const MINIMUM_MODERN_UPDATE_VERSION = "0.7.2";
 const RUNTIME_MARKER = ".agenc-runtime-ok";
 const OFFICIAL_PROVENANCE_RECEIPT = ".agenc-official-provenance-v1.json";
 const DEFAULT_UPDATE_FETCH_TIMEOUT_MS = 120_000;
