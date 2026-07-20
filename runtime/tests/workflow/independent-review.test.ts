@@ -166,11 +166,14 @@ describe("M5 independent review", () => {
       step: STEP,
     });
     expect(captured).toHaveLength(1);
-    // The transport contract is closed: exactly these four fields, so no
+    // The transport contract is closed: exactly these five fields, so no
     // future call site can smuggle implementer context alongside them.
+    // `runId` is routing metadata for the daemon-backed invoker (Phase 5);
+    // prompt assembly never reads it.
     expect(Object.keys(captured[0]).sort()).toEqual([
-      "reviewerModel", "systemPrompt", "timeoutMs", "userMessage",
+      "reviewerModel", "runId", "systemPrompt", "timeoutMs", "userMessage",
     ]);
+    expect(captured[0].runId).toBe(STEP.runId);
     // And the user message is byte-identical to the single assembly point's
     // output for the same task+diff+evidence inputs.
     const expected = buildReviewerMessages({
