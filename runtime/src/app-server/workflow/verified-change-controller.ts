@@ -157,13 +157,41 @@ export interface WorkflowRunJournal {
     readonly evidence?: unknown;
     readonly observedAt: string;
   }): WorkflowEffectEventRef;
-  /** Journal the terminal event; its sequence becomes the replay upper bound. */
-  appendTerminal(): WorkflowEffectEventRef;
+  /**
+   * Journal the terminal event; its sequence becomes the replay upper bound.
+   * The optional intent (additive, Phase 5) lets a real rollout-backed
+   * journal emit a faithful `run_terminal` event; test journals ignore it.
+   */
+  appendTerminal(intent?: WorkflowTerminalJournalIntent): WorkflowEffectEventRef;
   close(): Promise<void>;
 }
 
+/** Terminal facts available when the terminal journal event is allocated. */
+export interface WorkflowTerminalJournalIntent {
+  readonly status: RunTerminalStatus;
+  readonly stopReason: WorkflowStopReason | null;
+  readonly finalMessage: string | null;
+  readonly usage: RunUsageTotals | null;
+  readonly finishedAt: string;
+}
+
+/**
+ * Optional per-run resolution for the durability repository (additive,
+ * Phase 5): the daemon backs each run with the state database of the run's
+ * own repository path, so the journal projection and the controller's reads
+ * stay in ONE database. Callers that ignore the context (tests, single-project
+ * daemons) keep the Phase 4 behavior.
+ */
+export interface WorkflowDurabilityContext {
+  readonly runId?: string;
+  readonly repoPath?: string;
+}
+
 export interface WorkflowJournalWriter {
-  open(runId: string): Promise<WorkflowRunJournal>;
+  open(
+    runId: string,
+    context?: { readonly repoPath?: string },
+  ): Promise<WorkflowRunJournal>;
 }
 
 export type WorkflowSpawnKind = "plan" | "implement" | "verify_agent" | "review";
@@ -195,7 +223,11 @@ export interface WorkflowAgentSpawner {
 
 /** Worktree/git seam over the Phase 2 worktree-lifecycle library. */
 export interface WorkflowWorktreeBroker {
-  captureBaseState(repoPath: string): Promise<BaseState>;
+  /** The optional context (additive, Phase 5) routes the daemon adapter to the run's session broker. */
+  captureBaseState(
+    repoPath: string,
+    context?: { readonly runId?: string },
+  ): Promise<BaseState>;
   provision(
     spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit">,
   ): Promise<WorktreeHandle>;
@@ -237,7 +269,9 @@ export interface WorkflowEvidenceLedger extends EvidenceArtifactSink {
 }
 
 export interface VerifiedChangeWorkflowControllerDeps {
-  readonly durability: () => StateRunDurabilityRepository;
+  readonly durability: (
+    context?: WorkflowDurabilityContext,
+  ) => StateRunDurabilityRepository;
   readonly journal: WorkflowJournalWriter;
   readonly admission: (input: {
     readonly runId: string;
@@ -450,9 +484,13 @@ export class VerifiedChangeWorkflowController {
       );
     }
     const runId = params.runId ?? this.#newRunId();
-    const repo = this.#deps.durability();
-    const journal = await this.#deps.journal.open(runId);
-    const base = await this.#deps.worktrees.captureBaseState(params.repoPath);
+    const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
+    const journal = await this.#deps.journal.open(runId, {
+      repoPath: params.repoPath,
+    });
+    const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
+      runId,
+    });
     const spec = freezeWorkflowSpec(runId, params, base);
     const specDigest = computeSpecDigest(spec);
     const admission = this.#deps.admission({
@@ -511,7 +549,7 @@ export class VerifiedChangeWorkflowController {
 
   /** Durable status projection — works after restart, no live state needed. */
   status(runId: string): WorkflowRunStatus | undefined {
-    const repo = this.#deps.durability();
+    const repo = this.#deps.durability({ runId });
     const effects = repo.listEffects(runId);
     const terminal = repo.getCurrentTerminalResult(runId);
     if (effects.length === 0 && terminal === undefined) return undefined;
@@ -2003,7 +2041,6 @@ export class VerifiedChangeWorkflowController {
       }
     }
     try {
-      const terminalEvent = ctx.journal.appendTerminal();
       const usage = ctx.usage.any
         ? {
             inputTokens: ctx.usage.input,
@@ -2012,6 +2049,13 @@ export class VerifiedChangeWorkflowController {
             costUsd: ctx.usage.cost,
           }
         : null;
+      const terminalEvent = ctx.journal.appendTerminal({
+        status: terminal.status,
+        stopReason: terminal.stopReason,
+        finalMessage: terminal.finalMessage,
+        usage,
+        finishedAt: this.#nowIso(),
+      });
       ctx.repo.recordTerminalResult({
         epoch: ctx.journal.epoch,
         eventId: terminalEvent.eventId,

@@ -40,6 +40,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.start",
   "session.create",
   "session.list",
   "session.attach",
@@ -201,6 +202,32 @@ export interface RunEvidenceParams extends JsonObject {
 export interface RunCancelParams extends JsonObject {
   readonly runId: string;
   readonly reason?: string;
+}
+
+/** One required verification command for a verified-change workflow run. */
+export interface RunStartVerificationCommand extends JsonObject {
+  readonly label: string;
+  readonly script: string;
+}
+
+export interface RunStartParams extends JsonObject {
+  /** The engineering goal / issue text driving the change. */
+  readonly goal: string;
+  /** Absolute directory inside the target git repository (daemon cwd default). */
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  /** Reviewer configuration pinned into the frozen spec at intake. */
+  readonly reviewerModel?: string;
+  readonly maxCostUsd?: number;
+  readonly maxTokens?: number;
+  readonly deadlineAt?: string;
+  readonly permissionMode?: PermissionMode;
+  readonly unattendedAllow?: readonly string[];
+  readonly unattendedDeny?: readonly string[];
+  /** Required verification commands; the workflow demands at least one. */
+  readonly requiredVerification?: readonly RunStartVerificationCommand[];
+  readonly maxImplementAttempts?: number;
 }
 
 export interface SessionCreateParams extends JsonObject {
@@ -419,6 +446,7 @@ export interface AgencParamsByMethod {
   readonly "run.replay": RunReplayParams;
   readonly "run.evidence": RunEvidenceParams;
   readonly "run.cancel": RunCancelParams;
+  readonly "run.start": RunStartParams;
   readonly "session.create": SessionCreateParams;
   readonly "session.list": SessionListParams;
   readonly "session.attach": SessionAttachParams;
@@ -553,6 +581,73 @@ export interface RunCancelResult extends JsonObject {
   readonly voidedHolds: number;
 }
 
+/** Dirty-state summary of the user's checkout captured at workflow intake. */
+export interface RunStartBaseDirty extends JsonObject {
+  readonly dirty: boolean;
+  readonly fileCount: number;
+}
+
+export interface RunStartResult extends JsonObject {
+  readonly runId: string;
+  /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
+  readonly specDigest: string;
+  /** Exact base commit recorded before any work began. */
+  readonly baseCommit: string;
+  readonly baseDirty: RunStartBaseDirty;
+}
+
+/** JSON-serializable mirror of a workflow step's content-addressed artifact. */
+export interface RunWorkflowArtifactPointer extends JsonObject {
+  readonly step: {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly parentRunId?: string;
+  };
+  readonly role: string;
+  readonly digest: string;
+  readonly bytes: number;
+  readonly storagePath: string;
+  readonly recordedAt: string;
+}
+
+export type RunWorkflowStepStatus =
+  | "pending"
+  | "running"
+  | "committed"
+  | "failed"
+  | "cancelled"
+  | "unknown_outcome"
+  | "blocked";
+
+export interface RunWorkflowStatusStep extends JsonObject {
+  readonly stepId: string;
+  readonly stage: string;
+  readonly status: RunWorkflowStepStatus;
+  readonly attempts: number;
+  readonly verdict?: string;
+  readonly artifacts?: readonly RunWorkflowArtifactPointer[];
+}
+
+/**
+ * M5 verified-change workflow projection, present on `run.status` only for
+ * runs that recorded workflow steps.
+ */
+export interface RunWorkflowStatus extends JsonObject {
+  readonly steps: readonly RunWorkflowStatusStep[];
+  readonly stopReason?: string;
+}
+
+/**
+ * M5 evidence-bundle summary for `run.evidence`, present only when the run
+ * has a per-run evidence ledger directory.
+ */
+export interface RunEvidenceBundle extends JsonObject {
+  readonly recordDigest?: string;
+  readonly sealed: boolean;
+  readonly ledgerPath: string;
+  readonly artifacts: readonly RunWorkflowArtifactPointer[];
+}
+
 export interface RunDurableRecord extends JsonObject {
   readonly objective: string;
   readonly status: string;
@@ -627,6 +722,8 @@ export interface RunStatusResult extends JsonObject {
   readonly durableRun?: RunDurableRecord;
   readonly admission: RunAdmissionSummary;
   readonly source: RunStateSource;
+  /** M5 workflow projection; present only for verified-change workflow runs. */
+  readonly workflow?: RunWorkflowStatus;
 }
 
 export type RunTerminalOutcome =
@@ -885,6 +982,8 @@ export interface RunEvidenceResult extends JsonObject {
   readonly gap: RunReplayGap | null;
   readonly events: readonly RunReplayEvent[];
   readonly hashes: RunEvidenceHashes;
+  /** M5 evidence-ledger summary; present only when the run has a ledger dir. */
+  readonly bundle?: RunEvidenceBundle;
 }
 
 export interface SessionCreateResult extends SessionSummary {}
@@ -1066,6 +1165,7 @@ export interface AgencResultByMethod {
   readonly "run.replay": RunReplayResult;
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
+  readonly "run.start": RunStartResult;
   readonly "session.create": SessionCreateResult;
   readonly "session.list": SessionListResult;
   readonly "session.attach": SessionAttachResult;

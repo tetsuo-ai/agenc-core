@@ -33,6 +33,12 @@ export interface ReviewerInvoker {
     readonly userMessage: string;
     readonly reviewerModel: string;
     readonly timeoutMs: number;
+    /**
+     * Owning workflow run id (additive, Phase 5): lets a daemon-backed
+     * invoker route the one-shot review through the run's own session.
+     * Prompt assembly never reads it — context hygiene is unchanged.
+     */
+    readonly runId?: string;
   }): Promise<string>;
 }
 
@@ -155,6 +161,7 @@ export async function runIndependentReview(opts: {
     userMessage: prompt.userMessage,
     reviewerModel: opts.spec.reviewerModel,
     timeoutMs: opts.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    runId: opts.step.runId,
   });
   const review = parseReviewOutput(raw);
   // parseReviewOutput's plain-text fallback has this exact shape; a review

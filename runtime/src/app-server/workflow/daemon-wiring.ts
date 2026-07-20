@@ -1,29 +1,32 @@
 /**
- * M5 Phase 4 — daemon-side wiring for the verified-change workflow
+ * M5 Phase 5 — daemon-side wiring for the verified-change workflow
  * controller.
  *
- * Wires the seams that are clean to back today:
- *   - the REAL durability repository (daemon-home + primary-cwd state DB),
+ * Wires every controller seam with real daemon services:
+ *   - per-run durability repositories resolved from the run's OWN
+ *     repository path (journal projection and controller reads share one
+ *     state database; the Phase 4 primary-cwd repository stays the
+ *     default),
  *   - the REAL execution-admission kernel (`bindClient` per workflow run),
  *   - a REAL per-run evidence ledger over the eval-contract ledger
  *     (`<agencHome>/run-evidence/<runId>/`, `artifact.recorded` events,
- *     local integrity-only anchoring).
+ *     local integrity-only anchoring),
+ *   - the session-coupled seams (rollout journal, worktree/command broker,
+ *     child-agent spawner, reviewer invoker) backed by ONE
+ *     `bootstrapLocalRuntimeSession`-owned daemon session per run — see
+ *     `session-adapters.ts`.
  *
- * TODO(M5 Phase 5 — run.start dispatcher): the session-coupled seams
- * (rollout-journal writer, plan/implement/verify-agent spawner, reviewer
- * invoker, sandbox-brokered worktree/command execution) must be backed by a
- * `bootstrapLocalRuntimeSession`-owned daemon session, exactly as
- * `app-server/background-agent-runner.ts` owns its bootstrap. Until that
- * dispatcher lands they throw {@link WorkflowSeamPendingError}; the
- * controller itself is complete and fully tested through injected seams,
- * and `resumeOpenWorkflows()` warn-skips any run it cannot yet drive
- * (durable state is left untouched for the Phase 5 daemon to resume).
+ * `resumeOpenWorkflows()` sweeps every known project state database so a
+ * daemon restarted in a different cwd still resumes runs it started for
+ * other repositories.
  */
 
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
+import type { AuthBackend } from "../../auth/backend.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import {
   appendEvidenceEvent,
@@ -37,7 +40,9 @@ import { sha256Digest } from "../../eval-contract/canonical-json.js";
 import { canonicalizeJson } from "../../eval-contract/canonical-json.js";
 import type { Sha256Digest } from "../../eval-contract/types.js";
 import {
-  openStateDatabases,
+  openStateDatabasePaths,
+  resolveStateDatabasePaths,
+  type StateDatabasePaths,
   type StateSqliteDriver,
 } from "../../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../../state/run-durability.js";
@@ -49,19 +54,15 @@ import type {
 import { computeSpecDigest } from "../../workflow/evidence-record.js";
 import {
   VerifiedChangeWorkflowController,
+  type WorkflowDurabilityContext,
   type WorkflowEvidenceLedger,
 } from "./verified-change-controller.js";
-
-/** A workflow seam whose daemon adapter lands with the Phase 5 dispatcher. */
-export class WorkflowSeamPendingError extends Error {
-  constructor(readonly seam: string) {
-    super(
-      `verified-change workflow seam "${seam}" is not wired yet ` +
-        "(lands with the M5 Phase 5 run.start dispatcher)",
-    );
-    this.name = "WorkflowSeamPendingError";
-  }
-}
+import { readWorkflowStepEvidence } from "./steps.js";
+import {
+  createWorkflowSessionSeams,
+  type WorkflowSessionSeams,
+  type WorkflowSessionSeamsOptions,
+} from "./session-adapters.js";
 
 const WORKFLOW_TASK_ID = "verified-change";
 const WORKFLOW_SYSTEM_ID = "agenc.workflow.m5";
@@ -119,7 +120,9 @@ async function loadLocalAnchorProvider(
         signatureAlgorithm: "ed25519",
         signatureDigest: signatureFor(statementBytes),
         verificationMaterialDigest,
-        anchorUri: `local://agenc-daemon/${statementDigest.slice("sha256:".length)}`,
+        // The seal schema requires an https URI; the reserved `.invalid`
+        // TLD makes the local-only (non-fetchable) anchoring explicit.
+        anchorUri: `https://local-anchor.agenc-daemon.invalid/${statementDigest.slice("sha256:".length)}`,
         signerIdentity: "agenc-daemon-local-anchor",
       };
     },
@@ -181,7 +184,7 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
     };
     const append = async (input: {
       eventId: string;
-      type: "run.started" | "artifact.recorded";
+      type: "run.started" | "artifact.recorded" | "run.finished";
       mediaType: string;
       payloadBytes: Uint8Array;
     }) => {
@@ -260,13 +263,30 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
         throw new Error(`workflow evidence payload not found: ${pointer.digest}`);
       },
       async seal(sealedAt: string): Promise<{ sealDigest: string }> {
-        // Reuse the first chosen sealedAt so a crash-resumed seal converges
-        // on the identical frozen statement.
-        let effectiveSealedAt = sealedAt;
+        // The eval-contract ledger only seals a ledger whose LAST event is
+        // the terminal `run.finished`; append it first (idempotent by event
+        // id, deterministic payload).
+        await append({
+          eventId: "run.finished",
+          type: "run.finished",
+          mediaType: "application/json",
+          payloadBytes: new TextEncoder().encode(
+            canonicalizeJson({ runId: spec.runId }),
+          ),
+        });
+        // The frozen seal timestamp must not predate the terminal event
+        // (the requested sealedAt was captured just before the append, so
+        // clamp across a millisecond boundary), and a crash-resumed seal
+        // must converge on the identical frozen statement — reuse the
+        // first persisted choice.
+        const terminalAt = state.lastOccurredAt;
+        let effectiveSealedAt = sealedAt >= terminalAt ? sealedAt : terminalAt;
         try {
           effectiveSealedAt = (await readFile(sealedAtPath, "utf8")).trim();
         } catch {
-          await writeFile(sealedAtPath, `${sealedAt}\n`, { mode: 0o600 });
+          await writeFile(sealedAtPath, `${effectiveSealedAt}\n`, {
+            mode: 0o600,
+          });
         }
         const anchorProvider = await loadLocalAnchorProvider(evidenceRoot);
         const seal = await sealEvidenceLedger({
@@ -295,6 +315,12 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
 
 export interface DaemonWorkflowWiring {
   readonly controller: VerifiedChangeWorkflowController;
+  /**
+   * D3 startup recovery across every known project state database (a run
+   * journals into its OWN repository's project database, which need not be
+   * the daemon's primary one).
+   */
+  resumeOpenWorkflows(): Promise<readonly string[]>;
   close(): void;
 }
 
@@ -303,22 +329,105 @@ export function createDaemonWorkflowController(options: {
   readonly primaryCwd: string;
   readonly kernel: ExecutionAdmissionKernel;
   readonly warn: (message: string) => void;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly authBackend?: AuthBackend;
+  /**
+   * Fresh discovery of project state databases owned by this daemon home
+   * (`run.start` may target any repository; resume must sweep them all).
+   * Defaults to just the primary cwd's database.
+   */
+  readonly stateDatabasePaths?: () => readonly StateDatabasePaths[];
+  /** Test seam: inject scripted session seams instead of real bootstraps. */
+  readonly sessionSeams?: WorkflowSessionSeams;
+  /** Test seam forwarded to the session adapters' bootstrap. */
+  readonly bootstrap?: WorkflowSessionSeamsOptions["bootstrap"];
 }): DaemonWorkflowWiring {
-  let driver: StateSqliteDriver | undefined;
-  let repository: StateRunDurabilityRepository | undefined;
-  const durability = (): StateRunDurabilityRepository => {
-    if (repository === undefined) {
-      driver = openStateDatabases({
-        cwd: options.primaryCwd,
-        agencHome: options.agencHome,
-      });
-      repository = new StateRunDurabilityRepository(driver);
-    }
+  const opened = new Map<
+    string,
+    { readonly driver: StateSqliteDriver; readonly repository: StateRunDurabilityRepository }
+  >();
+  const repoForPaths = (
+    paths: StateDatabasePaths,
+  ): StateRunDurabilityRepository => {
+    const existing = opened.get(paths.stateDbPath);
+    if (existing !== undefined) return existing.repository;
+    const driver = openStateDatabasePaths(paths);
+    const repository = new StateRunDurabilityRepository(driver);
+    opened.set(paths.stateDbPath, { driver, repository });
     return repository;
   };
-  const pending = (seam: string): never => {
-    throw new WorkflowSeamPendingError(seam);
+  const primaryPaths = resolveStateDatabasePaths({
+    cwd: options.primaryCwd,
+    agencHome: options.agencHome,
+  });
+  const candidatePaths = (): readonly StateDatabasePaths[] => {
+    const all = [primaryPaths, ...(options.stateDatabasePaths?.() ?? [])];
+    const seen = new Set<string>();
+    const unique: StateDatabasePaths[] = [];
+    for (const paths of all) {
+      if (seen.has(paths.stateDbPath)) continue;
+      seen.add(paths.stateDbPath);
+      if (
+        paths.stateDbPath !== primaryPaths.stateDbPath &&
+        !existsSync(paths.stateDbPath)
+      ) {
+        continue;
+      }
+      unique.push(paths);
+    }
+    return unique;
   };
+  /** Repository the current resume sweep is scoped to (see resumeOpenWorkflows). */
+  let activeResumePaths: StateDatabasePaths | undefined;
+  const durability = (
+    context?: WorkflowDurabilityContext,
+  ): StateRunDurabilityRepository => {
+    if (context?.repoPath !== undefined) {
+      return repoForPaths(
+        resolveStateDatabasePaths({
+          cwd: context.repoPath,
+          agencHome: options.agencHome,
+        }),
+      );
+    }
+    if (context?.runId !== undefined) {
+      for (const paths of candidatePaths()) {
+        const repository = repoForPaths(paths);
+        if (
+          repository.getEffect(context.runId, "workflow.intake") !==
+            undefined ||
+          repository.getCurrentTerminalResult(context.runId) !== undefined
+        ) {
+          return repository;
+        }
+      }
+    }
+    return repoForPaths(activeResumePaths ?? primaryPaths);
+  };
+  const resolveRunRepoPath = (runId: string): string | undefined => {
+    const intake = durability({ runId }).getEffect(runId, "workflow.intake");
+    if (intake === undefined) return undefined;
+    const spec = readWorkflowStepEvidence(intake).spec as
+      | WorkflowSpec
+      | undefined;
+    return spec?.repoPath;
+  };
+  const seams =
+    options.sessionSeams ??
+    createWorkflowSessionSeams({
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.authBackend !== undefined
+        ? { authBackend: options.authBackend }
+        : {}),
+      kernel: options.kernel,
+      durability,
+      resolveRunRepoPath,
+      fallbackCwd: options.primaryCwd,
+      warn: options.warn,
+      ...(options.bootstrap !== undefined
+        ? { bootstrap: options.bootstrap }
+        : {}),
+    });
   const controller = new VerifiedChangeWorkflowController({
     durability,
     admission: ({ runId, sessionId, workspaceId, spec }) =>
@@ -344,29 +453,42 @@ export function createDaemonWorkflowController(options: {
     evidenceLedger: createDaemonWorkflowEvidenceLedgerFactory({
       agencHome: options.agencHome,
     }),
-    // -- Phase 5 session seams (see the module TODO above). -----------------
-    journal: { open: async () => pending("journal") },
-    worktrees: {
-      captureBaseState: async () => pending("worktrees.captureBaseState"),
-      provision: async () => pending("worktrees.provision"),
-      exportPatch: async () => pending("worktrees.exportPatch"),
-      checkBaseMovement: async () => pending("worktrees.checkBaseMovement"),
-      cleanup: async () => pending("worktrees.cleanup"),
-    },
-    commands: { run: async () => pending("commands.run") },
-    spawner: {
-      spawn: async () => pending("spawner.spawn"),
-      inspect: async () => pending("spawner.inspect"),
-    },
-    reviewer: { invoke: async () => pending("reviewer.invoke") },
+    journal: seams.journal,
+    worktrees: seams.worktrees,
+    commands: seams.commands,
+    spawner: seams.spawner,
+    reviewer: seams.reviewer,
     warn: options.warn,
   });
   return {
     controller,
+    resumeOpenWorkflows: async () => {
+      const resumed: string[] = [];
+      // Sequential sweep: `durability()` (no context) is scoped to the
+      // database currently being resumed so the controller's enumeration
+      // sees each project exactly once.
+      for (const paths of candidatePaths()) {
+        activeResumePaths = paths;
+        try {
+          resumed.push(...(await controller.resumeOpenWorkflows()));
+        } finally {
+          activeResumePaths = undefined;
+        }
+      }
+      return resumed;
+    },
     close: () => {
-      driver?.close();
-      driver = undefined;
-      repository = undefined;
+      void seams.close().catch((error) => {
+        options.warn(
+          `workflow session seams close failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+      for (const entry of opened.values()) {
+        entry.driver.close();
+      }
+      opened.clear();
     },
   };
 }

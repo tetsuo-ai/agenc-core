@@ -40,6 +40,8 @@ import {
   type RunReplayParams,
   type RunReplayResult,
   type RunResultResult,
+  type RunStartParams,
+  type RunStartResult,
   type RunStatusResult,
   type SessionCreateParams,
   type SessionSnapshotResult,
@@ -903,6 +905,15 @@ export class AgencClient {
       runId,
       ...(reason !== undefined ? { reason } : {}),
     });
+  }
+
+  /**
+   * Start the M5 verified-change workflow as a durable daemon run. Resolves
+   * after the intake commit; follow the pipeline with the existing
+   * status/replay/result/evidence cursor contract on the returned run id.
+   */
+  startRun(params: RunStartParams): Promise<RunStartResult> {
+    return this.request("run.start", params);
   }
 
   /**
