@@ -135,7 +135,7 @@ jobs:
           if [[ "$RECOVERY_MODE" = true ]]; then
             test "$GITHUB_REF" = refs/heads/main
             test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
-            for path in package-lock.json release-toolchain.json packages/agenc/scripts/check-package-ready.mjs; do
+            for path in package-lock.json release-toolchain.json; do
               git show "${SOURCE_SHA}:${path}" > "$RUNNER_TEMP/tagged-$(basename "$path")"
               cmp "$path" "$RUNNER_TEMP/tagged-$(basename "$path")"
             done

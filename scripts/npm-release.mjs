@@ -450,6 +450,7 @@ export async function packRelease({
   git = gitDefault,
   nodeVersion = process.versions.node,
   lockfilePath = join(repoRoot, "package-lock.json"),
+  validationRepositoryRoot = repoRoot,
   validateManifest = validateLauncherManifest,
 } = {}) {
   const packOptions = parsePackOptions(args, cwd);
@@ -464,6 +465,7 @@ export async function packRelease({
   validateManifest({
     launcherPackagePath: join(packageRoot, "package.json"),
     manifestPath: join(packageRoot, RUNTIME_MANIFEST_PATH),
+    repositoryRoot: validationRepositoryRoot,
   });
   const source = assertExactTaggedSource({ cwd, git, version: packageIdentity.version });
   const preflight = parsePackJson(runNpm([
@@ -868,6 +870,7 @@ async function inspectRelease({
   nodeVersion = process.versions.node,
   lockfilePath = join(repoRoot, "package-lock.json"),
   packageRoot: suppliedPackageRoot,
+  validationRepositoryRoot = repoRoot,
   validateManifest = validateLauncherManifest,
 } = {}) {
   if (typeof tarball !== "string" || !tarball.endsWith(".tgz")) {
@@ -908,6 +911,7 @@ async function inspectRelease({
     validateManifest({
       launcherPackagePath: embeddedPackagePath,
       manifestPath: embeddedManifestPath,
+      repositoryRoot: validationRepositoryRoot,
     });
     const receipt = JSON.parse(readFileSync(resolvedReceipt, "utf8"));
     const identity = validateReceipt(
@@ -1092,20 +1096,30 @@ async function main(argv) {
   // npm's tar writer applies the parent process umask to archive member modes.
   if (process.platform !== "win32") process.umask(0o022);
   if (command === "pack") {
-    const result = await packRelease({ args });
+    const result = await packRelease({
+      args,
+      validationRepositoryRoot: process.cwd(),
+    });
     process.stderr.write(`wrote immutable release receipt ${result.receiptPath}\n`);
     process.stdout.write(`${result.filename}\n`);
     return;
   }
   if (command === "publish") {
     const [tarball, ...publishArgs] = args;
-    await publishRelease({ tarball, args: publishArgs });
+    await publishRelease({
+      tarball,
+      args: publishArgs,
+      validationRepositoryRoot: process.cwd(),
+    });
     return;
   }
   if (command === "verify") {
     const [tarball, ...unexpected] = args;
     if (unexpected.length > 0) throw new Error(usage());
-    const result = await verifyRelease({ tarball });
+    const result = await verifyRelease({
+      tarball,
+      validationRepositoryRoot: process.cwd(),
+    });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
