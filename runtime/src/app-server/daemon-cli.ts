@@ -7,6 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createDaemonWorkflowController } from "./workflow/daemon-wiring.js";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
@@ -1630,6 +1631,27 @@ async function runAgenCDaemonForeground(
         }),
     },
   );
+  // M5 verified-change workflow controller (Phase 4). Constructed over the
+  // shared admission kernel + durable state; open workflow runs are resumed
+  // (D3 recovery) after admission recovery and startup journal recovery so
+  // adopted/re-executed effects observe fully recovered budget state. The
+  // run.start dispatcher and session-backed seams land in Phase 5; until
+  // then resume warn-skips runs it cannot drive without touching their
+  // durable state (see workflow/daemon-wiring.ts).
+  const workflowWiring = createDaemonWorkflowController({
+    agencHome: authStartup.daemonHome,
+    primaryCwd,
+    kernel: executionAdmissionKernel,
+    warn: (message) => io.stderr.write(`agenc: ${message}\n`),
+  });
+  cleanup.register("daemon-workflow-controller", () => {
+    workflowWiring.close();
+  });
+  void workflowWiring.controller.resumeOpenWorkflows().catch((error) => {
+    io.stderr.write(
+      `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
+    );
+  });
   const health = new AgenCDaemonHealthService({
     sessionCounter: sessionManager,
     stateCounter: new StateSqliteHealthStatsReader(
