@@ -12,6 +12,7 @@ import {
 } from "../config/resolve-model.js";
 import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
 import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
@@ -229,6 +230,21 @@ function authState(params: {
       label: managedKeysEnabled ? "managed on" : "managed",
       source: "managed key vending",
     };
+  }
+
+  // xAI OAuth (/grok-login) IS a credential for grok — without this check the
+  // row only looked at XAI_API_KEY and showed "credential required" to users
+  // who are fully signed in, making their OAuth account invisible in the
+  // picker (and pushing them onto other providers such as OpenRouter).
+  if (params.provider === "grok") {
+    const oauth = readXaiOauthCredentials();
+    if (oauth !== undefined && oauth.quarantinedAt === undefined) {
+      return {
+        state: "ready",
+        label: "xAI OAuth",
+        source: `signed in as ${oauth.accountLabel ?? "xAI account"} via /grok-login`,
+      };
+    }
   }
 
   const envVar = params.configuredEnvVar ?? params.defaultEnvVar;
