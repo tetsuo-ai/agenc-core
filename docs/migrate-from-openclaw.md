@@ -5,7 +5,7 @@ center of gravity: OS-sandboxed execution, a fail-closed permission layer, and
 an auditable state model. This guide maps concepts honestly — including what
 AgenC does **not** have yet.
 
-**AgenC 0.7.1.** Related: [quickstart](quickstart.md) ·
+**AgenC 0.7.2.** Related: [quickstart](quickstart.md) ·
 [onboarding](onboarding.md) · [gateway](gateway.md) ·
 [Hermes migrate](migrate-from-hermes.md).
 

@@ -8,7 +8,7 @@ requests to the AgenC LiteLLM/OpenRouter gateway.
 Related: [onboarding](onboarding.md) · [quickstart](quickstart.md) ·
 [install](install.md).
 
-## Defaults (0.7.1)
+## Defaults (0.7.2)
 
 | Setting | Value |
 |---|---|

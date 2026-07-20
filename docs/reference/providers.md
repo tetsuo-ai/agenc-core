@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.7.1**. Source of truth:
+Built-in model providers for AgenC **0.7.2**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs).
 

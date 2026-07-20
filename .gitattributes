@@ -3,3 +3,7 @@
 packages/agenc/bin/agenc text eol=lf
 runtime/bin/agenc text eol=lf
 runtime/bin/agenc-linux-sandbox text eol=lf
+
+# Runtime manifests bind every native build to the exact committed lockfile
+# bytes. Keep that identity stable across Windows and POSIX checkouts.
+package-lock.json text eol=lf

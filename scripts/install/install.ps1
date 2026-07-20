@@ -626,9 +626,9 @@ if (-not $manifestUrl) {
 }
 $expectedManifestRepo = if (-not $manifestExplicit) { $repo } else { "" }
 $manifestTrust = if ($manifestUrl -match "^https://") {
-  $legacyUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.1/agenc-runtime-manifest.json"
+  $legacyUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"
   if ($repo -eq $OfficialRepo -and -not $manifestExplicit) { "official" }
-  elseif ($repo -eq $OfficialRepo -and $env:AGENC_INSTALL_VERSION -eq "0.7.1" -and $manifestUrl -eq $legacyUrl) {
+  elseif ($repo -eq $OfficialRepo -and $env:AGENC_INSTALL_VERSION -eq "0.7.2" -and $manifestUrl -eq $legacyUrl) {
     "officialLegacy"
   } else { "explicitHttps" }
 } elseif ($manifestUrl -match "^http://") {
@@ -705,23 +705,23 @@ try {
   $legacy = [int]$manifest.manifestVersion -eq 1
   if ($legacy) {
     $bridgePlatforms = @("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win-x64")
-    $bridgeManifestUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.1/agenc-runtime-manifest.json"
+    $bridgeManifestUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"
     if ($manifestTrust -ne "officialLegacy" -or $manifestUrl -cne $bridgeManifestUrl -or
-        $env:AGENC_INSTALL_VERSION -cne "0.7.1" -or
+        $env:AGENC_INSTALL_VERSION -cne "0.7.2" -or
         -not (Test-ExactProperties $manifest @("manifestVersion", "runtimeVersion", "releaseRepository", "releaseTag", "artifacts")) -or
-        [string]$manifest.runtimeVersion -cne "0.7.1" -or
+        [string]$manifest.runtimeVersion -cne "0.7.2" -or
         [string]$manifest.releaseRepository -cne $OfficialRepo -or
-        [string]$manifest.releaseTag -cne "agenc-v0.7.1" -or @($manifest.artifacts).Count -ne 5) {
-      Fail "legacy manifest is not the exact frozen v0.7.1 bridge"
+        [string]$manifest.releaseTag -cne "agenc-v0.7.2" -or @($manifest.artifacts).Count -ne 5) {
+      Fail "legacy manifest is not the exact frozen v0.7.2 bridge"
     }
     for ($index = 0; $index -lt 5; $index += 1) {
       $candidate = @($manifest.artifacts)[$index]
       $key = "$($candidate.platform)-$($candidate.arch)"
-      $expectedUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.1/agenc-runtime-0.7.1-$key-node25-abi141.tar.gz"
+      $expectedUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-$key-node25-abi141.tar.gz"
       if ($key -cne $bridgePlatforms[$index] -or
           -not (Test-ExactProperties $candidate @("platform", "arch", "runtimeVersion", "url", "sha256", "bytes", "bins")) -or
           -not (Test-ExactProperties $candidate.bins @("agenc")) -or
-          [string]$candidate.runtimeVersion -cne "0.7.1" -or [string]$candidate.url -cne $expectedUrl -or
+          [string]$candidate.runtimeVersion -cne "0.7.2" -or [string]$candidate.url -cne $expectedUrl -or
           -not (Test-CleanString $candidate.sha256) -or [string]$candidate.sha256 -notmatch "^[0-9a-f]{64}$" -or
           -not (Test-JsonInteger $candidate.bytes) -or
           [long]$candidate.bytes -le 0 -or [long]$candidate.bytes -gt $MaxArtifactBytes -or
@@ -731,13 +731,13 @@ try {
     }
     if ($nodeMajor -ne 25 -or [string]$nodeModuleAbi -cne "141" -or
         [string](node -e "process.stdout.write(process.versions.napi)") -cne "10") {
-      Fail "the frozen v0.7.1 bridge requires exact Node 25 ABI 141 / N-API 10"
+      Fail "the frozen v0.7.2 bridge requires exact Node 25 ABI 141 / N-API 10"
     }
     $matches = @($manifest.artifacts | Where-Object { $_.platform -eq "win" -and $_.arch -eq $arch })
   } else {
     if ([int]$manifest.manifestVersion -ne 2) { Fail "unsupported runtime manifest version $($manifest.manifestVersion)" }
     if ($manifestTrust -eq "officialLegacy") {
-      Fail "legacy manifest URL did not return the exact frozen v0.7.1 bridge"
+      Fail "legacy manifest URL did not return the exact frozen v0.7.2 bridge"
     }
     if (-not (Test-CleanString $manifest.runtimeVersion) -or
         -not (Test-CleanString $manifest.releaseTag) -or

@@ -925,7 +925,7 @@ describe("agenc update CLI", () => {
         kind: "update",
         check: true,
         json: false,
-        pinVersion: "0.6.1",
+        pinVersion: "0.7.1",
       },
       {
         ...deps,
@@ -937,7 +937,7 @@ describe("agenc update CLI", () => {
     );
     expect(code).toBe(1);
     expect(fetched).toBe(false);
-    expect(err.join("\n")).toContain("0.7.1 or newer");
+    expect(err.join("\n")).toContain("0.7.2 or newer");
     expect(err.join("\n")).toContain("has no published modern v2 update contract");
     expect(existsSync(join(agencHome, "runtime"))).toBe(false);
   });
