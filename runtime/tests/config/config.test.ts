@@ -590,6 +590,29 @@ describe("provider resolution (T13)", () => {
     });
   });
 
+  test("resolveProviderSettings maps [providers.<name>] timeout_ms including the 0 disable value", () => {
+    const configured = mergeConfigs(defaultConfig(), {
+      providers: { grok: { timeout_ms: 600_000 } },
+    });
+    expect(resolveProviderSettings("grok", configured, {})).toMatchObject({
+      provider: "grok",
+      timeoutMs: 600_000,
+    });
+
+    // 0 is meaningful (disable the timeout) and must not be dropped.
+    const disabled = mergeConfigs(defaultConfig(), {
+      providers: { grok: { timeout_ms: 0 } },
+    });
+    expect(resolveProviderSettings("grok", disabled, {})).toMatchObject({
+      provider: "grok",
+      timeoutMs: 0,
+    });
+
+    // Unset stays absent so the provider default applies.
+    const unset = resolveProviderSettings("grok", defaultConfig(), {});
+    expect(unset).not.toHaveProperty("timeoutMs");
+  });
+
   test("resolveProviderSettings lets OPENAI env configure local compatible endpoints", () => {
     const settings = resolveProviderSettings("openai-compatible", defaultConfig(), {
       OPENAI_API_KEY: "local-token",

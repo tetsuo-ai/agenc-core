@@ -771,3 +771,119 @@ describe("GrokProvider incremental continuation", () => {
     });
   });
 });
+
+describe("GrokProvider stream timeout semantics", () => {
+  // Chunks arrive `gapMs` after the previous chunk is consumed, so the
+  // stream is never idle for longer than `gapMs` even though its total
+  // duration is `events.length * gapMs`.
+  function steadilyChunkingStream(
+    events: readonly Record<string, unknown>[],
+    gapMs: number,
+  ): AsyncIterable<Record<string, unknown>> {
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (const event of events) {
+          await new Promise((resolve) => setTimeout(resolve, gapMs));
+          yield event;
+        }
+      },
+    };
+  }
+
+  test("healthy stream longer than timeoutMs completes — timeout is inter-chunk idle, not a total deadline", async () => {
+    // Revert guard: with the pre-0.7.3 streamDeadlineAt total-budget
+    // semantics this stream is killed at t=1000ms mid-flight and the call
+    // rejects; with idle semantics every chunk gap (600ms) is under the
+    // 1000ms window and the stream completes.
+    vi.useFakeTimers();
+    try {
+      const provider = new GrokProvider({
+        apiKey: "xai-test",
+        model: "grok-4-fast",
+        timeoutMs: 1000,
+      });
+      const create = vi.fn().mockImplementation(() =>
+        withResponse(
+          steadilyChunkingStream(
+            [
+              { type: "response.output_text.delta", delta: "one " },
+              { type: "response.output_text.delta", delta: "two " },
+              { type: "response.output_text.delta", delta: "three" },
+              {
+                type: "response.completed",
+                response: buildXaiResponse("resp_slow_stream", "one two three"),
+              },
+            ],
+            600,
+          ),
+        ),
+      );
+      (provider as any).client = { responses: { create } };
+
+      const deltas: string[] = [];
+      const resultPromise = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        (chunk) => {
+          if (typeof (chunk as { delta?: unknown }).delta === "string") {
+            deltas.push((chunk as { delta: string }).delta);
+          }
+        },
+      );
+      // Surface rejections through the assertion below instead of an
+      // unhandled-rejection crash while timers advance.
+      resultPromise.catch(() => {});
+      // 4 gaps x 600ms = 2400ms total stream time, well past the 1000ms
+      // timeout that the old code treated as a wall-clock deadline.
+      await vi.advanceTimersByTimeAsync(2600);
+      const result = await resultPromise;
+      expect(result.content).toBe("one two three");
+      expect(result.finishReason).toBe("stop");
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stream idle past timeoutMs still aborts with the stalled error", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new GrokProvider({
+        apiKey: "xai-test",
+        model: "grok-4-fast",
+        timeoutMs: 1000,
+      });
+      const create = vi.fn().mockImplementation(() =>
+        withResponse({
+          // Chunk two never arrives inside the idle window: the stream goes
+          // silent for far longer than timeoutMs after chunk one.
+          async *[Symbol.asyncIterator]() {
+            yield { type: "response.output_text.delta", delta: "one " };
+            await new Promise((resolve) => setTimeout(resolve, 60_000));
+            yield { type: "response.output_text.delta", delta: "two" };
+          },
+        }),
+      );
+      (provider as any).client = { responses: { create } };
+
+      const resultPromise = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      resultPromise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1100);
+      // The stalled abort retains admission until the pending physical read
+      // settles; advance past the hung read so teardown can complete.
+      await vi.advanceTimersByTimeAsync(60_000);
+      // The adapter captures the stall in the result rather than rejecting:
+      // partial content is preserved and the mapped timeout error is carried
+      // on finishReason "error".
+      const result = await resultPromise;
+      expect(result.content).toBe("one ");
+      expect(result.finishReason).toBe("error");
+      expect(result.error?.name).toBe("LLMTimeoutError");
+      expect(result.error).toMatchObject({ timeoutMs: 1000 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

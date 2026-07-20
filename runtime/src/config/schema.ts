@@ -483,6 +483,13 @@ export interface ProviderConfig {
   readonly default_model?: string;
   readonly context_window_tokens?: number;
   readonly max_output_tokens?: number;
+  /**
+   * Provider request timeout in milliseconds. For streaming responses this
+   * is the inter-chunk idle timeout, not a total-stream deadline. 0 disables
+   * the timeout entirely. Unset falls back to the provider's built-in
+   * default.
+   */
+  readonly timeout_ms?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
   readonly fallback_models?: readonly string[];
   readonly fallback?: ProviderFallbackConfig;
@@ -1431,6 +1438,7 @@ const PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "default_model",
   "context_window_tokens",
   "max_output_tokens",
+  "timeout_ms",
   "capability_overrides",
   "fallback_models",
   "fallback",
@@ -1622,6 +1630,12 @@ function validateSingleProviderConfig(raw: unknown, providerId: string): Provide
     (field, detail) => new InvalidProviderConfigError(field, detail),
   );
   if (maxOutput !== undefined) out.max_output_tokens = maxOutput;
+  const timeoutMs = optionalNonNegativeInteger(
+    record.timeout_ms,
+    fieldPath(providerId, "timeout_ms"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (timeoutMs !== undefined) out.timeout_ms = timeoutMs;
   const capabilities = validateProviderCapabilities(
     record.capability_overrides,
     fieldPath(providerId, "capability_overrides"),
