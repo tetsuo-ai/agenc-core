@@ -27,6 +27,11 @@ const STALL_NOTE_AFTER_MS = 8_000;
 // enough tokens that the figure is meaningful (mirrors the budget-path gate).
 const RATE_MIN_ELAPSED_MS = 5_000;
 const RATE_MIN_TOKENS = 20;
+// "slow model" is a claim about the MODEL, so it needs genuine streaming-rate
+// evidence: only attach the label when the measured active-streaming rate is
+// below this floor. Silence alone (e.g. between chunks) stays a neutral
+// "last token Ns ago" note.
+const SLOW_MODEL_MAX_RATE_PER_SEC = 10;
 // Mirrors Claude Code's spinner affordance: shown at the end of the status
 // byline whenever there is any status content to attach it to.
 const ESC_HINT_TEXT = 'esc to interrupt';
@@ -51,12 +56,85 @@ function getWholeSecondNow(): number {
 }
 
 /**
+ * Pure per-render step for token-liveness tracking. Exported for unit tests;
+ * the {@link useTokenLiveness} hook owns the ref plumbing.
+ *
+ * Honesty contract (operator bug 2026-07-20): the tok/s denominator counts
+ * ONLY active streaming windows. Wall-clock spent executing tools (or
+ * otherwise not waiting on the model) previously stayed in the denominator,
+ * so a healthy model read "2.4 tok/s · slow model" after a long tool run.
+ * While `streamingActive` is false the active clock pauses AND the
+ * no-token clock slides forward — tool time is never billed to the model.
+ */
+export interface TokenLivenessState {
+  firstSeenAt: number | null;
+  lastChangeAt: number;
+  lastTokens: number;
+  /** Accumulated ms spent in active streaming windows since first token. */
+  activeStreamMs: number;
+  /** Wall clock of the previous step (for active-window accumulation). */
+  lastStepAt: number;
+}
+
+export function initialTokenLivenessState(
+  totalTokens: number,
+  now: number,
+  turnStartedAt: number,
+): TokenLivenessState {
+  // First render of this turn. If no token has streamed yet, anchor the
+  // no-token clock at the turn start so a long pre-token silence reads as
+  // honest immediately (e.g. a remount mid-stall). If tokens are already
+  // present we don't know when the last one arrived, so treat "now" as fresh
+  // and never falsely flag a clearly-alive stream as stalled.
+  return {
+    firstSeenAt: totalTokens > 0 ? now : null,
+    lastChangeAt: totalTokens > 0 ? now : Math.min(turnStartedAt, now),
+    lastTokens: totalTokens,
+    activeStreamMs: 0,
+    lastStepAt: now,
+  };
+}
+
+export function stepTokenLiveness(
+  s: TokenLivenessState,
+  input: {
+    readonly totalTokens: number;
+    readonly now: number;
+    /** True while the turn is waiting on / receiving model output (no tools running). */
+    readonly streamingActive: boolean;
+  },
+): { msSinceLastToken: number; ratePerSec: number } {
+  const { totalTokens, now, streamingActive } = input;
+  const stepMs = Math.max(0, now - s.lastStepAt);
+  if (streamingActive && s.firstSeenAt !== null) {
+    s.activeStreamMs += stepMs;
+  }
+  s.lastStepAt = now;
+  if (!streamingActive) {
+    // Not the model's silence: tools (or another non-model phase) own this
+    // window. Slide the no-token clock so the eventual "last token Ns ago"
+    // note measures only model-owned silence.
+    s.lastChangeAt = Math.max(s.lastChangeAt, now);
+  }
+  if (totalTokens !== s.lastTokens) {
+    if (s.firstSeenAt === null && totalTokens > 0) s.firstSeenAt = now;
+    s.lastTokens = totalTokens;
+    s.lastChangeAt = now;
+  }
+  const msSinceLastToken = Math.max(0, now - s.lastChangeAt);
+  const ratePerSec =
+    totalTokens >= RATE_MIN_TOKENS && s.activeStreamMs >= RATE_MIN_ELAPSED_MS
+      ? (totalTokens / s.activeStreamMs) * 1000
+      : 0;
+  return { msSinceLastToken, ratePerSec };
+}
+
+/**
  * Tracks token liveness across renders so the row can tell "alive but slow"
  * from "hung". Returns ms since the token counter last moved and a tokens/sec
- * rate once tokens are flowing. Refs (not state) — the row re-renders from
- * its own 1s tick and from streaming state changes, so reading on render is
- * enough and avoids extra re-renders. `firstSeenAt` lets us measure rate from
- * when tokens started, not from a pre-stream zero.
+ * rate (active-streaming-window denominator) once tokens are flowing. Refs
+ * (not state) — the row re-renders from its own 1s tick and from streaming
+ * state changes, so reading on render is enough and avoids extra re-renders.
  *
  * `turnStartedAt` seeds the no-token clock so a turn that has already been
  * silent for minutes reports its real silence on the very first render (e.g.
@@ -66,46 +144,55 @@ function useTokenLiveness(
   totalTokens: number,
   now: number,
   turnStartedAt: number,
+  streamingActive: boolean,
 ): {
   msSinceLastToken: number;
   ratePerSec: number;
 } {
-  const state = React.useRef<{
-    firstSeenAt: number | null;
-    lastChangeAt: number;
-    lastTokens: number;
-  } | null>(null);
+  const state = React.useRef<TokenLivenessState | null>(null);
   if (state.current === null) {
-    // First render of this turn. If no token has streamed yet, anchor the
-    // no-token clock at the turn start so a long pre-token silence reads as
-    // honest immediately (e.g. a remount mid-stall). If tokens are already
-    // present we don't know when the last one arrived, so treat "now" as fresh
-    // and never falsely flag a clearly-alive stream as stalled.
-    state.current = {
-      firstSeenAt: totalTokens > 0 ? now : null,
-      lastChangeAt: totalTokens > 0 ? now : Math.min(turnStartedAt, now),
-      lastTokens: totalTokens,
-    };
+    state.current = initialTokenLivenessState(totalTokens, now, turnStartedAt);
   }
-  const s = state.current;
-  if (totalTokens !== s.lastTokens) {
-    if (s.firstSeenAt === null && totalTokens > 0) s.firstSeenAt = now;
-    s.lastTokens = totalTokens;
-    s.lastChangeAt = now;
-  }
-  const msSinceLastToken = Math.max(0, now - s.lastChangeAt);
-  const sinceFirst = s.firstSeenAt !== null ? now - s.firstSeenAt : 0;
-  const ratePerSec =
-    totalTokens >= RATE_MIN_TOKENS && sinceFirst >= RATE_MIN_ELAPSED_MS
-      ? (totalTokens / sinceFirst) * 1000
-      : 0;
-  return { msSinceLastToken, ratePerSec };
+  return stepTokenLiveness(state.current, { totalTokens, now, streamingActive });
 }
 
-function formatRate(ratePerSec: number): string {
+/**
+ * The rate is derived from a chars/4 token ESTIMATE, not provider-reported
+ * usage — mark it so it cannot be mistaken for provider truth.
+ */
+export function formatRate(ratePerSec: number): string {
   return ratePerSec >= 10
-    ? `${Math.round(ratePerSec)} tok/s`
-    : `${ratePerSec.toFixed(1)} tok/s`;
+    ? `~${Math.round(ratePerSec)} tok/s`
+    : `~${ratePerSec.toFixed(1)} tok/s`;
+}
+
+/**
+ * Stall-note selection, exported for unit tests.
+ *
+ * - While tools are running the model is not being asked for tokens, so no
+ *   note at all (the previous behavior showed "slow model · last token 16s
+ *   ago" mid-tool-run — meaningless and defamatory).
+ * - "slow model" requires genuine streaming-rate evidence (a measured
+ *   active-window rate below {@link SLOW_MODEL_MAX_RATE_PER_SEC}); plain
+ *   silence gets a neutral "last token Ns ago".
+ * - Pre-first-token silence reads "waiting for model" — we have no rate
+ *   evidence to blame the model with.
+ */
+export function selectStallNote(input: {
+  readonly totalTokens: number;
+  readonly msSinceLastToken: number;
+  readonly ratePerSec: number;
+  readonly toolsRunning: boolean;
+}): string | null {
+  if (input.toolsRunning) return null;
+  if (input.msSinceLastToken <= STALL_NOTE_AFTER_MS) return null;
+  if (input.totalTokens <= 0) {
+    return "waiting for model · no output yet";
+  }
+  const gap = `last token ${formatDuration(input.msSinceLastToken)} ago`;
+  const slowEvidence =
+    input.ratePerSec > 0 && input.ratePerSec < SLOW_MODEL_MAX_RATE_PER_SEC;
+  return slowEvidence ? `slow model · ${gap}` : gap;
 }
 
 export type SpinnerAnimationRowProps = {
@@ -197,24 +284,31 @@ export function SpinnerAnimationRow({
   // the leader's own stream (a foregrounded teammate reports its own progress).
   const trackLiveness =
     showLeaderTokenStats && !(foregroundedTeammate && !foregroundedTeammate.isIdle);
+  // While tools run the model is not streaming; the rate denominator pauses
+  // and stall notes are suppressed (tool time is not model time).
+  const toolsRunning =
+    hasActiveTools || mode === 'tool-use' || mode === 'tool-input';
   const { msSinceLastToken, ratePerSec } = useTokenLiveness(
     trackLiveness ? totalTokens : 0,
     now,
     loadingStartTimeRef.current,
+    !toolsRunning,
   );
   // Show the heartbeat once the turn has been waiting on a token long enough to
   // look stuck — but not while "thinking" is already explaining the silence.
-  const showStallNote =
+  const stallNoteText =
     trackLiveness &&
     !hasRunningTeammates &&
     thinkingStatus !== 'thinking' &&
-    elapsedTimeMs > STALL_NOTE_AFTER_MS &&
-    msSinceLastToken > STALL_NOTE_AFTER_MS;
-  const stallNoteText = showStallNote
-    ? totalTokens > 0
-      ? `slow model · last token ${formatDuration(msSinceLastToken)} ago`
-      : 'slow model · still generating'
-    : null;
+    elapsedTimeMs > STALL_NOTE_AFTER_MS
+      ? selectStallNote({
+          totalTokens,
+          msSinceLastToken,
+          ratePerSec,
+          toolsRunning,
+        })
+      : null;
+  const showStallNote = stallNoteText !== null;
   const stallNoteWidth = stallNoteText ? stringWidth(stallNoteText) : 0;
   const rateText = ratePerSec > 0 ? formatRate(ratePerSec) : null;
 
