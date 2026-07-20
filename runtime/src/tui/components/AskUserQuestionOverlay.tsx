@@ -153,51 +153,58 @@ export function AskUserQuestionOverlay({
           {question.header}
         </Text>
         {questions.length > 1 ? (
-          <Text color="muted3">{`  ${questionIndex + 1}/${questions.length}`}</Text>
+          <Text color="muted3">{`  question ${questionIndex + 1} of ${questions.length}`}</Text>
         ) : null}
       </Box>
-      <Box>
-        <Text color="text2">{question.question}</Text>
+      <Box marginBottom={1}>
+        <Text color="text2" bold={true}>
+          {question.question}
+        </Text>
       </Box>
-      <Box flexDirection="column" marginTop={1}>
+      <Box
+        flexDirection="column"
+        borderStyle="single"
+        borderLeft={true}
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor="planMode"
+        paddingLeft={1}
+      >
         {question.options.map((option, index) => {
           const selected = index === optionIndex;
           const marked = picked.has(index);
           const rawDetail = option.preview ?? option.description;
           // The description falls back to the label (label-only options are
-          // the common Grok shape) — don't render a redundant detail line
-          // that just repeats the label under itself.
+          // the common Grok shape) — don't render a detail that just repeats
+          // the label next to itself.
           const detail = rawDetail !== option.label ? rawDetail : "";
-          if (selected) {
-            return (
-              <Box key={option.label} flexDirection="column">
-                <Box>
-                  <Text color="planMode" bold={true}>
-                    {`${question.multiSelect === true ? (marked ? "[x] " : "[ ] ") : "❯ "}${index + 1}  ${option.label}`}
-                  </Text>
-                </Box>
-                {detail.length > 0 ? (
-                  <Box paddingLeft={4}>
-                    <Text color="muted3">{detail}</Text>
-                  </Box>
-                ) : null}
-              </Box>
-            );
-          }
+          const marker =
+            question.multiSelect === true ? (marked ? "[x] " : "[ ] ") : selected ? "❯ " : "  ";
+          const rowText = `${marker}${index + 1}  ${option.label}`;
+          const detailText = detail.length > 0 ? `  ${detail}` : "";
           return (
             <Box key={option.label}>
-              <Text color="muted3">
-                {`  ${question.multiSelect === true ? (marked ? "[x] " : "[ ] ") : ""}${index + 1}  ${option.label}`}
-              </Text>
+              {selected ? (
+                <Text color="planMode" bold={true}>
+                  {rowText}
+                  <Text color="text2" bold={false}>
+                    {detailText}
+                  </Text>
+                </Text>
+              ) : (
+                <Text color="text2">
+                  {rowText}
+                  <Text color="muted3">{detailText}</Text>
+                </Text>
+              )}
             </Box>
           );
         })}
         {isOther ? (
           <Box flexDirection="column">
             <Box>
-              <Text color="planMode" bold={true}>
-                {`❯ ${rowCount}  ${OTHER_LABEL}`}
-              </Text>
+              <Text color="planMode" bold={true}>{`❯ ${rowCount}  ${OTHER_LABEL}`}</Text>
             </Box>
             <Box paddingLeft={4}>
               {otherMode ? (
@@ -209,7 +216,7 @@ export function AskUserQuestionOverlay({
           </Box>
         ) : (
           <Box>
-            <Text color="muted3">{`   ${rowCount}  ${OTHER_LABEL}`}</Text>
+            <Text color="muted3">{`   ${rowCount}  ${OTHER_LABEL}  type a custom answer`}</Text>
           </Box>
         )}
       </Box>
