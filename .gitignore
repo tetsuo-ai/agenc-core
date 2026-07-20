@@ -60,6 +60,7 @@ obj/
 !runtime/tests/fixtures/*.json
 !runtime/tests/fixtures/replay-cli/*.json
 !runtime/tests/fixtures/golden/*.json
+!/packages/agenc/test/fixtures/agenc-v0.7.2-legacy-manifest.json
 !docs/api-baseline/*.json
 !docs/security/fender-medium-baseline.json
 !docs/security/fender-full-baseline.json
