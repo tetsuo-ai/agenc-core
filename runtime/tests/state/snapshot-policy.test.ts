@@ -712,25 +712,29 @@ describe("AgenCSessionSnapshotPolicy", () => {
     expect(existsSync(`${outputLogPath}.1`)).toBe(true);
   });
 
-  it("applies snapshotRetention after writing each snapshot", () => {
+  it("applies snapshotRetention on writes separated by the prune interval", () => {
     seedRun("run-retention", "session-retention");
     const policy = new AgenCSessionSnapshotPolicy(driver, {
       now: clock([
         "2026-05-01T00:00:00.000Z",
-        "2026-05-01T00:00:01.000Z",
-        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:01:01.000Z",
+        "2026-05-01T00:02:02.000Z",
       ]),
       snapshotRetention: { snapshot_max_count: 2 },
     });
 
-    for (const index of [1, 2, 3]) {
+    for (const [index, at] of [
+      [1, "2026-05-01T00:00:00.000Z"],
+      [2, "2026-05-01T00:01:01.000Z"],
+      [3, "2026-05-01T00:02:02.000Z"],
+    ] as const) {
       policy.recordMessageExchange({
         sessionId: "session-retention",
         agentId: "run-retention",
         content: `message-${index}`,
         messageId: `message-${index}`,
         streamId: "stream-retention",
-        acceptedAt: `2026-05-01T00:00:0${index}.000Z`,
+        acceptedAt: at,
       });
     }
 
@@ -741,8 +745,47 @@ describe("AgenCSessionSnapshotPolicy", () => {
       expect.objectContaining({ content: "message-3" }),
     ]);
     expect(runLastSnapshotAt("run-retention")).toBe(
-      "2026-05-01T00:00:02.000Z",
+      "2026-05-01T00:02:02.000Z",
     );
+  });
+
+  it("throttles snapshotRetention sweeps inside the prune interval", () => {
+    seedRun("run-retention-fast", "session-retention-fast");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:01:04.000Z",
+      ]),
+      snapshotRetention: { snapshot_max_count: 2 },
+    });
+
+    // Three writes 1s apart: the sweep runs on the first write (nothing to
+    // prune yet) and is then throttled — per-snapshot sweeps would scan the
+    // whole table on the hot path (measured daemon stall).
+    for (const index of [1, 2, 3]) {
+      policy.recordMessageExchange({
+        sessionId: "session-retention-fast",
+        agentId: "run-retention-fast",
+        content: `message-${index}`,
+        messageId: `message-${index}`,
+        streamId: "stream-retention-fast",
+        acceptedAt: `2026-05-01T00:00:0${index}.000Z`,
+      });
+    }
+    expect(snapshotCount("session-retention-fast")).toBe(3);
+
+    // Once the interval elapses, the next write sweeps again.
+    policy.recordMessageExchange({
+      sessionId: "session-retention-fast",
+      agentId: "run-retention-fast",
+      content: "message-4",
+      messageId: "message-4",
+      streamId: "stream-retention-fast",
+      acceptedAt: "2026-05-01T00:01:04.000Z",
+    });
+    expect(snapshotCount("session-retention-fast")).toBe(2);
   });
 });
 

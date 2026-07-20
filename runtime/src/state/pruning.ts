@@ -57,9 +57,14 @@ interface AgentRunPruneCandidate {
 interface SessionSnapshotPruneCandidate {
   readonly session_id: string;
   readonly snapshot_at: string;
-  readonly conversation_json: string;
-  readonly tool_state_json: string;
-  readonly mcp_connection_state_json: string;
+  // Byte lengths computed in SQL via LENGTH() — never the payload itself.
+  // The full JSON columns (hundreds of MB across the table) are only needed
+  // as sizes for the byte-cap check, and loading them per prune was the
+  // dominant interactive-session slowdown (measured: ~106s CPU + ~58s GC
+  // per turn on a 19k-row / ~600MB table).
+  readonly conversation_bytes: number;
+  readonly tool_state_bytes: number;
+  readonly mcp_connection_state_bytes: number;
   readonly linked_agent_id: string | null;
   readonly agent_run_id: string | null;
   readonly thread_source_json: string | null;
@@ -646,9 +651,9 @@ function loadSnapshotPruneCandidates(
       `SELECT
          snapshots.session_id,
          snapshots.snapshot_at,
-         snapshots.conversation_json,
-         snapshots.tool_state_json,
-         snapshots.mcp_connection_state_json,
+         LENGTH(snapshots.conversation_json) AS conversation_bytes,
+         LENGTH(COALESCE(snapshots.tool_state_json, '')) AS tool_state_bytes,
+         LENGTH(COALESCE(snapshots.mcp_connection_state_json, '')) AS mcp_connection_state_bytes,
          session_agent_links.agent_id AS linked_agent_id,
          agent_runs.id AS agent_run_id,
          threads.source_json AS thread_source_json
@@ -667,9 +672,9 @@ function loadSnapshotPruneCandidates(
     sortedRows.find((row) => row.session_id === sessionId) ?? {
       session_id: sessionId,
       snapshot_at: "",
-      conversation_json: "",
-      tool_state_json: "",
-      mcp_connection_state_json: "",
+      conversation_bytes: 0,
+      tool_state_bytes: 0,
+      mcp_connection_state_bytes: 0,
       linked_agent_id: null,
       agent_run_id: null,
       thread_source_json: null,
@@ -771,9 +776,9 @@ function latestSnapshotKeysForRecovery(
 
 function snapshotBytes(row: SessionSnapshotPruneCandidate): number {
   return (
-    Buffer.byteLength(row.conversation_json, "utf8") +
-    Buffer.byteLength(row.tool_state_json, "utf8") +
-    Buffer.byteLength(row.mcp_connection_state_json, "utf8")
+    row.conversation_bytes +
+    row.tool_state_bytes +
+    row.mcp_connection_state_bytes
   );
 }
 

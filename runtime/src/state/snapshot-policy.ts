@@ -130,6 +130,9 @@ interface SnapshotRow {
 }
 
 const DEFAULT_PERIODIC_INTERVAL_MS = 30_000;
+// Snapshot-retention sweeps run at most once per interval per policy
+// instance instead of on every snapshot write (see #writeSnapshot).
+const SNAPSHOT_PRUNE_INTERVAL_MS = 60_000;
 const DEFAULT_MAX_CONVERSATION_EVENTS = 200;
 const DEFAULT_MAX_TRACKED_SESSIONS = 1_024;
 const DEFAULT_MAX_COMPLETED_TOOL_CALLS = 200;
@@ -162,6 +165,7 @@ export class AgenCSessionSnapshotPolicy {
   readonly #sessions = new Map<string, SessionSnapshotState>();
   #periodicTimer: SnapshotPolicyTimer | undefined;
   #lastSnapshotMs = 0;
+  #lastSnapshotPruneMs = 0;
   #sessionTouchSeq = 0;
 
   constructor(
@@ -828,11 +832,24 @@ export class AgenCSessionSnapshotPolicy {
       },
       { updateRunLastSnapshotAt: true, replayOnStartup: true },
     );
-    pruneSessionStateSnapshots(
-      this.#driver,
-      { ...(this.#snapshotRetention ?? {}), now: () => snapshotAt },
-      state.sessionId,
-    );
+    // Pruning is maintenance, not a consistency boundary: running it on every
+    // snapshot made each write cost a full-table scan (see pruning.ts note),
+    // which stalled long interactive turns for minutes. Throttle to one pass
+    // per interval per policy instance; retention still applies, just not on
+    // the hot path of every single snapshot.
+    const pruneNowMs = Date.parse(snapshotAt);
+    if (
+      this.#lastSnapshotPruneMs === 0 ||
+      (Number.isFinite(pruneNowMs) &&
+        pruneNowMs - this.#lastSnapshotPruneMs >= SNAPSHOT_PRUNE_INTERVAL_MS)
+    ) {
+      this.#lastSnapshotPruneMs = Number.isFinite(pruneNowMs) ? pruneNowMs : Date.now();
+      pruneSessionStateSnapshots(
+        this.#driver,
+        { ...(this.#snapshotRetention ?? {}), now: () => snapshotAt },
+        state.sessionId,
+      );
+    }
     return {
       sessionId: state.sessionId,
       snapshotAt,

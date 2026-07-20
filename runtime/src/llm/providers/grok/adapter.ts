@@ -105,6 +105,25 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 // the entire tools array on every tool-followup request.
 //
 
+/**
+ * Default for the xAI Responses `store` request field.
+ *
+ * Measured on this repo's own OAuth grant (2026-07-20, same prompt, same
+ * account): `store: true` streams in ~6s while `store: false` takes 25-280s
+ * — xAI serves non-stored streams from a much slower path, and every turn
+ * also pays a full uncached prefill. The previous hardcoded `false` was the
+ * single dominant cause of "grok is fucking slow" in interactive sessions.
+ *
+ * Privacy trade-off: `store: true` lets xAI retain the conversation server
+ * side (and enables their prompt caching). Operators who need non-retention
+ * can opt out with `AGENC_XAI_STORE=0` (or "false"/"off"), which restores
+ * the old behavior at the documented speed cost.
+ */
+export function xaiResponseStoreDefault(): boolean {
+  const raw = process.env.AGENC_XAI_STORE?.trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
 type ProviderFallbackWaitDecision = Extract<
   ProviderFallbackDecision,
   { readonly kind: "wait" }
@@ -1830,7 +1849,7 @@ export class GrokProvider implements LLMProvider {
       options?.tools,
     );
     const built = this.buildParams(messages, {
-      store: false,
+      store: xaiResponseStoreDefault(),
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
       maxOutputTokens: options?.maxOutputTokens,
@@ -1923,7 +1942,7 @@ export class GrokProvider implements LLMProvider {
     const params: Record<string, unknown> = {
       model,
       input: xaiInput.input,
-      store: options?.store ?? false,
+      store: options?.store ?? xaiResponseStoreDefault(),
     };
     // Cut 5.10: xAI prompt caching is prefix-based and is maximized by
     // routing requests with the same conversation ID to the same
