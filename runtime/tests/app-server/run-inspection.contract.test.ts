@@ -51,6 +51,7 @@ beforeEach(() => {
   };
   service = new AgenCDaemonRunInspectionService({
     stateDatabasePaths: () => [paths],
+    agencHome: home,
   });
 });
 
@@ -779,5 +780,183 @@ describe("durable run inspection", () => {
 
     await client.close();
     await transport.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5 verified-change workflow additive fields (Phase 5)
+// ---------------------------------------------------------------------------
+
+describe("M5 workflow run inspection (additive fields)", () => {
+  const WORKFLOW_RUN_ID = "wf-run-inspection";
+  let sequence = 0;
+
+  function seedWorkflowEffects(): void {
+    sequence = 0;
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.ensureInitialEpoch({ runId: WORKFLOW_RUN_ID, openedAt: NOW });
+    const epoch = durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch;
+    const begin = (
+      stepId: string,
+      toolName: string,
+      recoveryCategory: "idempotent" | "side-effecting",
+    ): void => {
+      sequence += 1;
+      durability.beginEffect({
+        runId: WORKFLOW_RUN_ID,
+        epoch,
+        stepId,
+        sessionId: `${WORKFLOW_RUN_ID}-session`,
+        callId: stepId,
+        toolName,
+        recoveryCategory,
+        ...(recoveryCategory === "idempotent"
+          ? { idempotencyKey: `key-${stepId}` }
+          : {}),
+        intentDigest: `sha256:${"1".repeat(64)}`,
+        eventId: `evt-${sequence}`,
+        eventSequence: sequence,
+        intentAt: NOW,
+      });
+    };
+    const complete = (stepId: string, evidence: unknown): void => {
+      sequence += 1;
+      durability.completeEffect({
+        runId: WORKFLOW_RUN_ID,
+        stepId,
+        outcome: "committed",
+        eventId: `evt-${sequence}`,
+        eventSequence: sequence,
+        evidence,
+        completedAt: NOW,
+      });
+    };
+    begin("workflow.intake", "workflow.intake", "idempotent");
+    complete("workflow.intake", {
+      stage: "workflow.intake",
+      attempt: 1,
+      spec: { runId: WORKFLOW_RUN_ID, goal: "fix it", repoPath: cwd },
+      specDigest: `sha256:${"2".repeat(64)}`,
+    });
+    begin("workflow.worktree", "workflow.worktree", "idempotent");
+    complete("workflow.worktree", {
+      stage: "workflow.worktree",
+      attempt: 1,
+      artifacts: [
+        {
+          step: { runId: WORKFLOW_RUN_ID, stepId: "workflow.worktree" },
+          role: "base_state",
+          digest: `sha256:${"3".repeat(64)}`,
+          bytes: 12,
+          storagePath: `cas://sha256/${"3".repeat(64)}`,
+          recordedAt: NOW,
+        },
+      ],
+    });
+    // Plan intent without a result: the stage projects as running.
+    begin("workflow.plan", "workflow.plan", "side-effecting");
+  }
+
+  it("attaches the workflow step projection to run.status for workflow runs only", () => {
+    seedDurableRuns();
+    seedWorkflowEffects();
+
+    const status = service.status({ runId: WORKFLOW_RUN_ID });
+    expect(status.workflow).toBeDefined();
+    const steps = status.workflow!.steps;
+    expect(steps.map((step) => [step.stage, step.status])).toEqual([
+      ["workflow.intake", "committed"],
+      ["workflow.worktree", "committed"],
+      ["workflow.plan", "running"],
+      ["workflow.implement", "pending"],
+      ["workflow.verify", "pending"],
+      ["workflow.review", "pending"],
+      ["workflow.finalize", "pending"],
+    ]);
+    expect(steps[1].artifacts).toMatchObject([{ role: "base_state" }]);
+    expect(status.workflow!.stopReason).toBeUndefined();
+
+    // Ordinary runs stay untouched: no workflow field at all.
+    expect(service.status({ runId: "run-complete" }).workflow).toBeUndefined();
+  });
+
+  it("carries the frozen workflow stop reason through the projection", () => {
+    seedWorkflowEffects();
+    const durability = new StateRunDurabilityRepository(driver);
+    const epoch = durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch;
+    sequence += 1;
+    durability.completeEffect({
+      runId: WORKFLOW_RUN_ID,
+      stepId: "workflow.plan",
+      outcome: "failed",
+      eventId: `evt-${sequence}`,
+      eventSequence: sequence,
+      evidence: { stage: "workflow.plan", attempt: 1 },
+      completedAt: NOW,
+    });
+    sequence += 1;
+    durability.recordTerminalResult({
+      epoch,
+      eventId: `evt-${sequence}`,
+      result: {
+        runId: WORKFLOW_RUN_ID,
+        status: "failed",
+        exitCode: 1,
+        stopReason: "step_retries_exhausted",
+        finalMessage: "plan failed terminally",
+        usage: null,
+        lastSequence: sequence,
+        finishedAt: NOW,
+      },
+    });
+
+    const status = service.status({ runId: WORKFLOW_RUN_ID });
+    expect(status.workflow).toMatchObject({
+      stopReason: "step_retries_exhausted",
+    });
+    // Unstarted stages are blocked once the run is terminal.
+    expect(
+      status.workflow!.steps.find((step) => step.stage === "workflow.verify"),
+    ).toMatchObject({ status: "blocked" });
+  });
+
+  it("describes the evidence-ledger bundle on run.evidence when the ledger dir exists", () => {
+    seedWorkflowEffects();
+
+    // No ledger dir yet: the additive field stays absent.
+    expect(
+      service.evidence({ runId: WORKFLOW_RUN_ID }).bundle,
+    ).toBeUndefined();
+
+    const ledgerPath = join(home, "run-evidence", WORKFLOW_RUN_ID);
+    mkdirSync(join(ledgerPath, `${WORKFLOW_RUN_ID}.seals`), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(ledgerPath, `${WORKFLOW_RUN_ID}.seals`, `sha256-${"4".repeat(64)}.json`),
+      "{}\n",
+    );
+    writeFileSync(
+      join(ledgerPath, "verified-change-record.json"),
+      `${JSON.stringify({ documentDigest: `sha256:${"5".repeat(64)}` })}\n`,
+    );
+
+    const evidence = service.evidence({ runId: WORKFLOW_RUN_ID });
+    expect(evidence.bundle).toMatchObject({
+      recordDigest: `sha256:${"5".repeat(64)}`,
+      sealed: true,
+      ledgerPath,
+      artifacts: [
+        {
+          role: "base_state",
+          digest: `sha256:${"3".repeat(64)}`,
+          storagePath: `cas://sha256/${"3".repeat(64)}`,
+        },
+      ],
+    });
+
+    // Non-workflow runs (no ledger dir) remain bundle-free.
+    seedDurableRuns();
+    expect(service.evidence({ runId: "run-complete" }).bundle).toBeUndefined();
   });
 });

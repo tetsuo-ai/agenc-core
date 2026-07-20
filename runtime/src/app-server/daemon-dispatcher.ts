@@ -67,6 +67,8 @@ import {
   type RunResultParams,
   type RunStatusParams,
   type RunCancelParams,
+  type RunStartParams,
+  type RunStartResult,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -120,6 +122,17 @@ import {
 } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
+import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
+
+/**
+ * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
+ * Backed in production by the workflow controller wiring
+ * (`app-server/workflow/run-start-service.ts`); tests inject scripted
+ * implementations.
+ */
+export interface AgenCDaemonWorkflowStartService {
+  startRun(params: RunStartParams): Promise<RunStartResult>;
+}
 
 export interface AgenCDaemonConnectionInitializeState {
   readonly protocol: {
@@ -176,6 +189,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly realtime: AgenCRealtimeRpcHandlers;
   readonly runInspection: AgenCDaemonDispatcherOptions["runInspection"];
+  readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
 }
 
 function buildServerCapabilities(
@@ -196,6 +210,7 @@ function buildServerCapabilities(
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
+    "run.start": hasMethod(inputs.workflow, "startRun"),
     "session.create": hasMethod(sessionManager, "createSession"),
     "session.list": hasMethod(sessionManager, "listSessions"),
     "session.attach": hasMethod(sessionManager, "attachSession"),
@@ -370,6 +385,8 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonRunInspectionService,
     "status" | "result" | "replay" | "evidence"
   >;
+  /** M5 verified-change workflow `run.start` seam (omit = not implemented). */
+  readonly workflow?: AgenCDaemonWorkflowStartService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -460,6 +477,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         "status" | "result" | "replay" | "evidence"
       >
     | undefined;
+  readonly #workflow: AgenCDaemonWorkflowStartService | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -483,6 +501,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       });
     this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
     this.#runInspection = options.runInspection;
+    this.#workflow = options.workflow;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -501,6 +520,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       realtime: this.#realtime,
       runInspection: this.#runInspection,
       sessionManager: this.#sessionManager,
+      workflow: this.#workflow,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -707,6 +727,14 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#agentManager.cancelRunTree(
             validateRunCancelParams(params),
           ),
+        );
+      case "run.start":
+        if (this.#workflow === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(
+          id,
+          await this.#workflow.startRun(validateRunStartParams(params)),
         );
       case "session.create":
         return this.#createSession(id, params);
@@ -1744,6 +1772,98 @@ function validateRunCancelParams(params: JsonObject): RunCancelParams {
   });
   validateRequiredString(validated, "run.cancel", "runId");
   return validated as RunCancelParams;
+}
+
+function validateRunStartParams(params: JsonObject): RunStartParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.start",
+    stringFields: [
+      "goal",
+      "cwd",
+      "model",
+      "provider",
+      "reviewerModel",
+      "deadlineAt",
+      "permissionMode",
+    ],
+    numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
+    stringArrayFields: ["unattendedAllow", "unattendedDeny"],
+    valueFields: ["requiredVerification"],
+  });
+  validateRequiredString(validated, "run.start", "goal");
+  let cwd: string | undefined;
+  if (validated.cwd !== undefined) {
+    // Same DAE-02 discipline as agent.create/session.create: an absolute,
+    // existing directory or a clean INVALID_ARGUMENT — never a daemon-side
+    // invention, never a crash.
+    try {
+      cwd = requireAbsoluteWorkspaceCwd(validated.cwd, "run.start");
+    } catch (error) {
+      if (error instanceof WorkspaceCwdError) {
+        throw invalidParams(error.message);
+      }
+      throw error;
+    }
+  }
+  if (validated.permissionMode !== undefined) {
+    const mode = validated.permissionMode;
+    if (
+      mode !== "default" &&
+      mode !== "plan" &&
+      mode !== "acceptEdits" &&
+      mode !== "bypassPermissions"
+    ) {
+      throw invalidParams(
+        `run.start param 'permissionMode' must be one of "default" | "plan" | "acceptEdits" | "bypassPermissions"`,
+      );
+    }
+  }
+  const maxCostUsd = validated.maxCostUsd;
+  if (
+    maxCostUsd !== undefined &&
+    (typeof maxCostUsd !== "number" ||
+      !Number.isFinite(maxCostUsd) ||
+      maxCostUsd <= 0)
+  ) {
+    throw invalidParams(
+      "run.start param 'maxCostUsd' must be a positive finite number",
+    );
+  }
+  validatePositiveInteger(validated, "run.start", "maxTokens", false);
+  validatePositiveInteger(validated, "run.start", "maxImplementAttempts", false);
+  const requiredVerification = validated.requiredVerification;
+  if (requiredVerification !== undefined) {
+    if (!Array.isArray(requiredVerification)) {
+      throw invalidParams(
+        "run.start param 'requiredVerification' must be an array",
+      );
+    }
+    for (const [index, entry] of requiredVerification.entries()) {
+      if (!isPlainJsonObject(entry)) {
+        throw invalidParams(
+          `run.start param 'requiredVerification[${index}]' must be an object`,
+        );
+      }
+      validateObjectShape(entry, {
+        methodName: `run.start.requiredVerification[${index}]`,
+        stringFields: ["label", "script"],
+      });
+      validateRequiredString(
+        entry,
+        `run.start.requiredVerification[${index}]`,
+        "label",
+      );
+      validateRequiredString(
+        entry,
+        `run.start.requiredVerification[${index}]`,
+        "script",
+      );
+    }
+  }
+  return {
+    ...validated,
+    ...(cwd !== undefined ? { cwd } : {}),
+  } as RunStartParams;
 }
 
 function validateRunStatusParams(params: JsonObject): RunStatusParams {
@@ -2821,6 +2941,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonRunInspectionError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonWorkflowStartError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCSessionLifecycleError) {

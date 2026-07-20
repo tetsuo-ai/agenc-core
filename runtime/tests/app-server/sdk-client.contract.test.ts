@@ -71,6 +71,7 @@ describe("AgenC SDK daemon client wrapper", () => {
       "sdk-run-replay",
       "sdk-run-evidence",
       "sdk-run-cancel",
+      "sdk-run-start",
     ]);
     const transport: SdkDaemonTransport = {
       request: async (request) => {
@@ -102,6 +103,12 @@ describe("AgenC SDK daemon client wrapper", () => {
             runId: "run_sdk",
             alreadyTerminal: true,
           },
+          "run.start": {
+            runId: "run_sdk_wf",
+            specDigest: `sha256:${"a".repeat(64)}`,
+            baseCommit: "b".repeat(40),
+            baseDirty: { dirty: false, fileCount: 0 },
+          },
         } as const;
         return {
           jsonrpc: "2.0",
@@ -130,6 +137,14 @@ describe("AgenC SDK daemon client wrapper", () => {
     await expect(
       client.cancelRun("run_sdk", "operator"),
     ).resolves.toMatchObject({ alreadyTerminal: true });
+    await expect(
+      client.startRun({
+        goal: "Fix the reported bug",
+        cwd: "/workspace/repo",
+        reviewerModel: "reviewer-model",
+        requiredVerification: [{ label: "unit", script: "npm test" }],
+      }),
+    ).resolves.toMatchObject({ runId: "run_sdk_wf" });
 
     expect(requests).toEqual([
       {
@@ -161,6 +176,17 @@ describe("AgenC SDK daemon client wrapper", () => {
         id: "sdk-run-cancel",
         method: "run.cancel",
         params: { runId: "run_sdk", reason: "operator" },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "sdk-run-start",
+        method: "run.start",
+        params: {
+          goal: "Fix the reported bug",
+          cwd: "/workspace/repo",
+          reviewerModel: "reviewer-model",
+          requiredVerification: [{ label: "unit", script: "npm test" }],
+        },
       },
     ]);
   });

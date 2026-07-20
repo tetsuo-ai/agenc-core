@@ -8,6 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { createDaemonWorkflowController } from "./workflow/daemon-wiring.js";
+import { DaemonWorkflowStartService } from "./workflow/run-start-service.js";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
@@ -1631,26 +1632,38 @@ async function runAgenCDaemonForeground(
         }),
     },
   );
-  // M5 verified-change workflow controller (Phase 4). Constructed over the
-  // shared admission kernel + durable state; open workflow runs are resumed
-  // (D3 recovery) after admission recovery and startup journal recovery so
-  // adopted/re-executed effects observe fully recovered budget state. The
-  // run.start dispatcher and session-backed seams land in Phase 5; until
-  // then resume warn-skips runs it cannot drive without touching their
-  // durable state (see workflow/daemon-wiring.ts).
+  // M5 verified-change workflow controller. Constructed over the shared
+  // admission kernel + durable state, with the Phase 5 session-backed seams
+  // (per-run daemon session, rollout journal, sandbox-brokered worktrees and
+  // verification commands, delegate spawner, one-shot reviewer). Open
+  // workflow runs are resumed (D3 recovery) after admission recovery and
+  // startup journal recovery so adopted/re-executed effects observe fully
+  // recovered budget state.
   const workflowWiring = createDaemonWorkflowController({
     agencHome: authStartup.daemonHome,
     primaryCwd,
     kernel: executionAdmissionKernel,
     warn: (message) => io.stderr.write(`agenc: ${message}\n`),
+    env: host.env,
+    authBackend: reloadableAuthBackend,
+    stateDatabasePaths: () =>
+      discoverAgenCDaemonStateDatabasePaths(authStartup.daemonHome, primaryCwd),
   });
   cleanup.register("daemon-workflow-controller", () => {
     workflowWiring.close();
   });
-  void workflowWiring.controller.resumeOpenWorkflows().catch((error) => {
+  void workflowWiring.resumeOpenWorkflows().catch((error) => {
     io.stderr.write(
       `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
     );
+  });
+  const workflowStartService = new DaemonWorkflowStartService({
+    controller: workflowWiring.controller,
+    primaryCwd,
+    recordAgentRun: (run) => {
+      snapshotPolicies.recordAgentRun(run);
+    },
+    warn: (message) => io.stderr.write(`agenc: ${message}\n`),
   });
   const health = new AgenCDaemonHealthService({
     sessionCounter: sessionManager,
@@ -1743,7 +1756,9 @@ async function runAgenCDaemonForeground(
           authStartup.daemonHome,
           primaryCwd,
         ),
+      agencHome: authStartup.daemonHome,
     }),
+    workflow: workflowStartService,
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
   });

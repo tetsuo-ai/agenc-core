@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import Database from "better-sqlite3";
 import type BetterSqlite3 from "better-sqlite3";
@@ -7,6 +8,7 @@ import type BetterSqlite3 from "better-sqlite3";
 import type {
   JsonObject,
   JsonValue,
+  RunEvidenceBundle,
   RunEvidenceParams,
   RunEvidenceResult,
   RunReplayParams,
@@ -15,14 +17,28 @@ import type {
   RunResultResult,
   RunStatusParams,
   RunStatusResult,
+  RunWorkflowArtifactPointer,
+  RunWorkflowStatus,
 } from "./protocol/index.js";
+import type {
+  RunArtifactPointer,
+  RunTerminalStatus,
+} from "../contracts/run-contracts.js";
 import { isTerminalAgentRunStatus } from "../state/run-cancellation.js";
+import type {
+  DurableRunEffect,
+  DurableRunTerminalRecord,
+} from "../state/run-durability.js";
+import type { EffectOutcome } from "../contracts/run-contracts.js";
+import type { ToolRecoveryCategory } from "../tools/types.js";
 import {
   openStateDatabasePaths,
   type StateDatabasePaths,
 } from "../state/sqlite-driver.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
 import { buildCanonicalRunReplay } from "./run-journal-replay.js";
+import { readWorkflowStepEvidence } from "./workflow/steps.js";
+import { projectWorkflowStatus } from "./workflow/status-projection.js";
 
 export const DEFAULT_RUN_REPLAY_LIMIT = 100;
 export const MAX_RUN_REPLAY_LIMIT = 200;
@@ -50,6 +66,12 @@ export interface AgenCDaemonRunInspectionOptions {
    * daemon home; the service opens them read-only and never runs migrations.
    */
   readonly stateDatabasePaths: () => readonly StateDatabasePaths[];
+  /**
+   * Daemon home holding per-run workflow evidence ledgers
+   * (`<agencHome>/run-evidence/<runId>/`). Optional: when absent,
+   * `run.evidence` simply omits the M5 `bundle` summary.
+   */
+  readonly agencHome?: string;
 }
 
 interface AgentRunRow {
@@ -148,9 +170,11 @@ const MAX_RUN_TREE_IDS = 1_000;
  */
 export class AgenCDaemonRunInspectionService {
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
+  readonly #agencHome: string | undefined;
 
   constructor(options: AgenCDaemonRunInspectionOptions) {
     this.#stateDatabasePaths = options.stateDatabasePaths;
+    this.#agencHome = options.agencHome;
   }
 
   status(params: RunStatusParams): RunStatusResult {
@@ -283,6 +307,7 @@ export class AgenCDaemonRunInspectionService {
           gapSha256,
           eventHashes,
         } as const;
+        const bundle = workflowEvidenceBundle(this.#agencHome, db, runId);
         const result: RunEvidenceResult = {
           runId,
           source: {
@@ -310,6 +335,7 @@ export class AgenCDaemonRunInspectionService {
             eventHashes,
             bundleSha256: sha256(bundleDocument),
           },
+          ...(bundle !== undefined ? { bundle } : {}),
         };
         return result;
       })();
@@ -379,6 +405,7 @@ function buildRunStatus(
   const run = readAgentRun(db, runId) ?? located.run;
   const currentLifecycleEpoch = readCurrentLifecycleEpoch(db, runId);
   const durableTerminal = readCurrentTerminalResult(db, runId);
+  const workflow = workflowStatusProjection(db, runId, durableTerminal);
   const reopenedWithoutTerminal =
     currentLifecycleEpoch !== undefined && durableTerminal === undefined;
   return {
@@ -405,7 +432,237 @@ function buildRunStatus(
     ...(run !== undefined ? { durableRun: durableRunFromRow(run) } : {}),
     admission,
     source: runStateSource(located.paths),
+    ...(workflow !== undefined ? { workflow } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// M5 verified-change workflow projections (additive, read-only)
+// ---------------------------------------------------------------------------
+
+interface WorkflowEffectRow {
+  readonly run_id: string;
+  readonly step_id: string;
+  readonly epoch: number;
+  readonly child_run_id: string | null;
+  readonly session_id: string;
+  readonly call_id: string;
+  readonly tool_name: string;
+  readonly recovery_category: string;
+  readonly idempotency_key: string | null;
+  readonly intent_digest: string;
+  readonly intent_event_id: string;
+  readonly intent_sequence: number;
+  readonly intent_at: string;
+  readonly outcome: string | null;
+  readonly result_sequence: number | null;
+  readonly result_digest: string | null;
+  readonly evidence_json: string | null;
+  readonly unknown_reason: string | null;
+  readonly completed_at: string | null;
+}
+
+/** Read the run's workflow effect rows into the shared durable-effect shape. */
+function readWorkflowEffects(
+  db: BetterSqlite3.Database,
+  runId: string,
+): DurableRunEffect[] {
+  if (!tableExists(db, "run_effects")) return [];
+  const rows = db
+    .prepare<[string], WorkflowEffectRow>(
+      `SELECT run_id, step_id, epoch, child_run_id, session_id, call_id,
+              tool_name, recovery_category, idempotency_key, intent_digest,
+              intent_event_id, intent_sequence, intent_at, outcome,
+              result_sequence, result_digest, evidence_json, unknown_reason,
+              completed_at
+       FROM run_effects
+       WHERE run_id = ? AND step_id LIKE 'workflow.%'
+       ORDER BY intent_sequence ASC`,
+    )
+    .all(runId);
+  return rows.map((row) => ({
+    runId: row.run_id,
+    stepId: row.step_id,
+    epoch: row.epoch,
+    ...(row.child_run_id !== null ? { childRunId: row.child_run_id } : {}),
+    sessionId: row.session_id,
+    callId: row.call_id,
+    toolName: row.tool_name,
+    recoveryCategory: row.recovery_category as ToolRecoveryCategory,
+    ...(row.idempotency_key !== null
+      ? { idempotencyKey: row.idempotency_key }
+      : {}),
+    intentDigest: row.intent_digest,
+    intentEventId: row.intent_event_id,
+    intentSequence: row.intent_sequence,
+    intentAt: row.intent_at,
+    ...(row.outcome !== null ? { outcome: row.outcome as EffectOutcome } : {}),
+    ...(row.result_sequence !== null
+      ? { resultSequence: row.result_sequence }
+      : {}),
+    ...(row.result_digest !== null ? { resultDigest: row.result_digest } : {}),
+    ...(row.evidence_json !== null
+      ? { evidence: parseJsonUnknown(row.evidence_json) }
+      : {}),
+    ...(row.unknown_reason !== null
+      ? { unknownReason: row.unknown_reason }
+      : {}),
+    ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),
+    reviewStatus: "none" as const,
+  }));
+}
+
+function durableTerminalRecordFromRow(
+  row: RunTerminalRow,
+): DurableRunTerminalRecord {
+  return {
+    runId: row.run_id,
+    epoch: row.epoch,
+    eventId: row.event_id,
+    status: row.status as RunTerminalStatus,
+    exitCode: row.exit_code,
+    stopReason: row.stop_reason,
+    finalMessage: row.final_message,
+    usage: parseRunUsage(row.usage_json),
+    lastSequence: row.last_sequence,
+    finishedAt: row.finished_at,
+  };
+}
+
+function workflowArtifactPointer(
+  pointer: RunArtifactPointer,
+): RunWorkflowArtifactPointer {
+  return {
+    step: {
+      runId: pointer.step.runId,
+      stepId: pointer.step.stepId,
+      ...(pointer.step.parentRunId !== undefined
+        ? { parentRunId: pointer.step.parentRunId }
+        : {}),
+    },
+    role: pointer.role,
+    digest: pointer.digest,
+    bytes: pointer.bytes,
+    storagePath: pointer.storagePath,
+    recordedAt: pointer.recordedAt,
+  };
+}
+
+/**
+ * Additive M5 projection: the Phase 4 status projection applied read-only
+ * to the run's durable `run_effects` rows. Present only for runs that
+ * actually recorded workflow steps.
+ */
+function workflowStatusProjection(
+  db: BetterSqlite3.Database,
+  runId: string,
+  terminal: RunTerminalRow | undefined,
+): RunWorkflowStatus | undefined {
+  const effects = readWorkflowEffects(db, runId);
+  if (effects.length === 0) return undefined;
+  const projected = projectWorkflowStatus({
+    runId,
+    effects,
+    ...(terminal !== undefined
+      ? { terminal: durableTerminalRecordFromRow(terminal) }
+      : {}),
+  });
+  return {
+    steps: projected.steps.map((step) => ({
+      stepId: step.stepId,
+      stage: step.stage,
+      status: step.status,
+      attempts: step.attempts,
+      ...(step.verdict !== undefined ? { verdict: step.verdict } : {}),
+      ...(step.artifacts !== undefined && step.artifacts.length > 0
+        ? { artifacts: step.artifacts.map(workflowArtifactPointer) }
+        : {}),
+    })),
+    ...(projected.stopReason !== undefined
+      ? { stopReason: projected.stopReason }
+      : {}),
+  };
+}
+
+const RUN_EVIDENCE_SEAL_FILE_PATTERN = /^sha256-[0-9a-f]{64}\.json$/u;
+
+function sanitizeRunEvidenceIdentifier(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._:-]/g, "-");
+}
+
+/**
+ * Additive M5 evidence-bundle summary: describes the run's evidence-ledger
+ * directory (`<agencHome>/run-evidence/<runId>/`) when present. Artifact
+ * pointers are re-read from the durable workflow effect evidence — the
+ * exact pointers each producing step committed.
+ */
+function workflowEvidenceBundle(
+  agencHome: string | undefined,
+  db: BetterSqlite3.Database,
+  runId: string,
+): RunEvidenceBundle | undefined {
+  if (agencHome === undefined) return undefined;
+  const ledgerPath = join(
+    agencHome,
+    "run-evidence",
+    sanitizeRunEvidenceIdentifier(runId),
+  );
+  if (!existsSync(ledgerPath)) return undefined;
+  let sealed = false;
+  try {
+    for (const entry of readdirSync(ledgerPath)) {
+      if (!entry.endsWith(".seals")) continue;
+      const seals = readdirSync(join(ledgerPath, entry));
+      if (seals.some((name) => RUN_EVIDENCE_SEAL_FILE_PATTERN.test(name))) {
+        sealed = true;
+        break;
+      }
+    }
+  } catch {
+    // An unreadable ledger dir reports as unsealed rather than failing the
+    // whole evidence export.
+  }
+  let recordDigest: string | undefined;
+  try {
+    const record: unknown = JSON.parse(
+      readFileSync(join(ledgerPath, "verified-change-record.json"), "utf8"),
+    );
+    if (
+      typeof record === "object" &&
+      record !== null &&
+      typeof (record as { documentDigest?: unknown }).documentDigest ===
+        "string"
+    ) {
+      recordDigest = (record as { documentDigest: string }).documentDigest;
+    }
+  } catch {
+    // No persisted record yet (run still open or failed before finalize).
+  }
+  const artifacts: RunWorkflowArtifactPointer[] = [];
+  const seen = new Set<string>();
+  for (const effect of readWorkflowEffects(db, runId)) {
+    const evidence = readWorkflowStepEvidence(effect);
+    for (const pointer of evidence.artifacts ?? []) {
+      const key = `${pointer.step.stepId}:${pointer.role}:${pointer.digest}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      artifacts.push(workflowArtifactPointer(pointer));
+    }
+  }
+  return {
+    ...(recordDigest !== undefined ? { recordDigest } : {}),
+    sealed,
+    ledgerPath,
+    artifacts,
+  };
+}
+
+function parseJsonUnknown(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function buildRunReplay(
