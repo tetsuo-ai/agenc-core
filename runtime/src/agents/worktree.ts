@@ -72,8 +72,14 @@ export interface GitResult {
   readonly stderr: string;
 }
 
-/** Run `git <args>` under `cwd`. Does NOT throw; returns a result. */
-function runGit(
+/**
+ * Run `git <args>` under `cwd`. Does NOT throw; returns a result.
+ *
+ * Exported for the M5 worktree-lifecycle library so every workflow git
+ * invocation shares this hardened path (broker spawn, scrubbed child env,
+ * argument hardening, bounded output) instead of growing a second one.
+ */
+export function runGit(
   args: ReadonlyArray<string>,
   cwd: string,
   sandboxExecutionBroker: SandboxExecutionBrokerLike,
@@ -106,7 +112,7 @@ function runGit(
   }));
 }
 
-function runGitMutation(
+export function runGitMutation(
   args: ReadonlyArray<string>,
   cwd: string,
   sandboxExecutionBroker: SandboxExecutionBrokerLike,

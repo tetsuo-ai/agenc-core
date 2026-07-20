@@ -595,6 +595,23 @@ export class StateRunDurabilityRepository {
     return row === undefined ? undefined : effectFromRow(row);
   }
 
+  /**
+   * Runs that recorded a specific durable step (e.g. `workflow.intake`).
+   * Additive M5 helper: lets the workflow controller enumerate workflow runs
+   * without a parallel registry table (D2).
+   */
+  listRunIdsWithStep(stepId: string): readonly RunId[] {
+    return this.driver
+      .prepareState<[string], { readonly run_id: string }>(
+        `SELECT DISTINCT run_id
+         FROM run_effects
+         WHERE step_id = ?
+         ORDER BY run_id ASC`,
+      )
+      .all(stepId)
+      .map((row) => row.run_id);
+  }
+
   listEffects(runId: RunId): readonly DurableRunEffect[] {
     return this.driver
       .prepareState<[string], EffectRow>(
