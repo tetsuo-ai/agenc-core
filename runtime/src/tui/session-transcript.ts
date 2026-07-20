@@ -1000,13 +1000,14 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
   const cacheCreationInputTokens = nonNegativeInteger(payload.cacheCreationInputTokens);
   const reasoningOutputTokens = nonNegativeInteger(payload.reasoningOutputTokens);
   const webSearchRequests = nonNegativeInteger(payload.webSearchRequests);
+  // Fallback mirrors coerceUsage's own totalTokens fallback (prompt +
+  // completion). The old fallback also re-added cached/cache-creation/
+  // reasoning tokens — for the OpenAI/xAI convention cached is a SUBSET of
+  // promptTokens (and reasoning a subset of completion on the Responses
+  // API), so a missing provider total nearly doubled the displayed ledger
+  // total and its cost estimate.
   const totalTokens =
-    nonNegativeInteger(payload.totalTokens) ||
-    inputTokens +
-      outputTokens +
-      cachedInputTokens +
-      cacheCreationInputTokens +
-      reasoningOutputTokens;
+    nonNegativeInteger(payload.totalTokens) || inputTokens + outputTokens;
 
   return {
     model: nonEmptyString(payload.model) ?? "unknown",

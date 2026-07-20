@@ -11,6 +11,9 @@
  *    the user must sign in again.
  */
 
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import {
   discoverXaiOauthEndpoints,
   decodeXaiJwtClaims,
@@ -20,7 +23,8 @@ import {
   isTrustedXaiOauthEndpoint,
 } from '../services/xai/oauth.js'
 import type { XaiOauthTokens } from '../services/xai/oauth.js'
-import { isBareMode } from './envUtils.js'
+import { getAgenCConfigHomeDir, isBareMode } from './envUtils.js'
+import * as lockfile from './lockfile.js'
 import { getSecureStorage } from './secureStorage/index.js'
 
 export const XAI_OAUTH_STORAGE_KEY = 'xaiOauth' as const
@@ -200,6 +204,32 @@ export async function refreshXaiOauthCredentialsIfNeeded(): Promise<
   return forceRefreshXaiOauthCredentials()
 }
 
+/**
+ * Cross-process advisory lock around the token-endpoint exchange. The
+ * in-process single-flight above cannot see a sibling agenc process (TUI +
+ * daemon, or two daemons on different projects share ~/.agenc credentials);
+ * two processes exchanging the same rotating refresh token concurrently
+ * means the loser gets a terminal `invalid_grant` and — before this fix —
+ * quarantined the blob, clobbering the winner's freshly rotated grant and
+ * killing the live session ("Not logged in" mid-turn).
+ *
+ * Best-effort: when the lock cannot be acquired the refresh still proceeds,
+ * protected by the adopt-on-conflict checks in {@link doRefresh}.
+ */
+async function acquireRefreshLock(): Promise<() => Promise<void>> {
+  try {
+    const dir = getAgenCConfigHomeDir()
+    await mkdir(dir, { recursive: true })
+    return await lockfile.lock(join(dir, '.xai-oauth-refresh'), {
+      realpath: false,
+      stale: 30_000,
+      retries: { retries: 5, minTimeout: 200, maxTimeout: 2_000 },
+    })
+  } catch {
+    return async () => {}
+  }
+}
+
 async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
   // Fresh read: another process may have already rotated the grant, and a
   // refresh with a stale (consumed) refresh token would burn it.
@@ -208,38 +238,95 @@ async function doRefresh(): Promise<XaiOauthCredentialBlob | undefined> {
   const refreshToken = blob.refreshToken?.trim()
   if (!refreshToken) return undefined
 
-  let tokenEndpoint = blob.tokenEndpoint
-  if (tokenEndpoint === undefined || !isTrustedXaiOauthEndpoint(tokenEndpoint)) {
-    try {
-      tokenEndpoint = (await discoverXaiOauthEndpoints()).tokenEndpoint
-    } catch {
+  const release = await acquireRefreshLock()
+  try {
+    // Re-read under the lock: a sibling process may have rotated the grant
+    // while we waited. Exchanging the stale token would burn the account's
+    // rotating-refresh chain, so adopt the sibling's rotation instead.
+    const current = readXaiOauthCredentialsFresh()
+    if (current === undefined || current.quarantinedAt !== undefined) {
       return undefined
     }
-  }
-
-  try {
-    const tokens = await refreshXaiOauthTokens({ tokenEndpoint, refreshToken })
-    const next = xaiOauthTokensToBlob(tokens, { tokenEndpoint, previous: blob })
-    saveXaiOauthCredentials(next)
-    return next
-  } catch (error) {
-    if (
-      error instanceof XaiOauthError &&
-      (error.code === 'invalid_grant' ||
-        error.code === 'access_denied' ||
-        error.code === 'expired_token')
-    ) {
-      // Terminal: the rotated grant is dead. Quarantine so no caller
-      // replays a doomed refresh; the user must run the login again.
-      saveXaiOauthCredentials({
-        ...blob,
-        quarantinedAt: Date.now(),
-        quarantineReason: error.message,
-      })
+    const currentRefresh = current.refreshToken?.trim()
+    if (!currentRefresh) return undefined
+    if (currentRefresh !== refreshToken) {
+      return current
     }
-    // Transport/transient failures leave the blob untouched: the refresh
-    // token may not have been consumed, and a retry would burn it if it
-    // was. The next 401 triggers another single attempt.
-    return undefined
+
+    let tokenEndpoint = current.tokenEndpoint
+    if (
+      tokenEndpoint === undefined ||
+      !isTrustedXaiOauthEndpoint(tokenEndpoint)
+    ) {
+      try {
+        tokenEndpoint = (await discoverXaiOauthEndpoints()).tokenEndpoint
+      } catch {
+        return undefined
+      }
+    }
+
+    try {
+      const tokens = await refreshXaiOauthTokens({
+        tokenEndpoint,
+        refreshToken: currentRefresh,
+      })
+      const next = xaiOauthTokensToBlob(tokens, {
+        tokenEndpoint,
+        previous: current,
+      })
+      saveXaiOauthCredentials(next)
+      return next
+    } catch (error) {
+      if (
+        error instanceof XaiOauthError &&
+        (error.code === 'invalid_grant' ||
+          error.code === 'access_denied' ||
+          error.code === 'expired_token')
+      ) {
+        // Terminal for OUR refresh token — but only quarantine when the
+        // stored grant is still the one that just failed. If a sibling
+        // process rotated the grant between our read and the failure
+        // (lock unavailable / bypassed), writing a quarantined stale blob
+        // here would destroy the sibling's good rotation and force a
+        // needless re-login. Adopt the sibling's grant instead.
+        const latest = readXaiOauthCredentialsFresh()
+        if (
+          latest !== undefined &&
+          latest.quarantinedAt === undefined &&
+          latest.refreshToken?.trim() !== currentRefresh
+        ) {
+          return latest
+        }
+        // Quarantine so no caller replays a doomed refresh; the user must
+        // run the login again.
+        saveXaiOauthCredentials({
+          ...(latest ?? current),
+          quarantinedAt: Date.now(),
+          quarantineReason: error.message,
+        })
+      }
+      // Transport/transient failures leave the blob untouched: the refresh
+      // token may not have been consumed, and a retry would burn it if it
+      // was. The next 401 triggers another single attempt.
+      return undefined
+    }
+  } finally {
+    await release()
   }
+}
+
+/**
+ * True when the stored grant is quarantined (terminal refresh failure) or
+ * absent — i.e. a new `/grok-login` is genuinely required. Used by the
+ * provider's refresh callback to keep the "run /grok-login" error honest:
+ * a transient network failure during refresh must NOT tell the user they
+ * are logged out.
+ */
+export function xaiOauthRequiresRelogin(): boolean {
+  const blob = readXaiOauthCredentialsFresh()
+  return (
+    blob === undefined ||
+    blob.quarantinedAt !== undefined ||
+    !blob.refreshToken?.trim()
+  )
 }

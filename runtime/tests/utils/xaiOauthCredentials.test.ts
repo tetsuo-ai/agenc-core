@@ -51,9 +51,18 @@ function storedBlob(overrides: Record<string, unknown> = {}) {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   process.env = { ...originalEnv }
   delete process.env.AGENC_SIMPLE
+  // Hermetic per-test home for the cross-process refresh lock.
+  // AGENC_CONFIG_DIR (not AGENC_HOME) is what getAgenCConfigHomeDir prefers,
+  // and the shared vitest setup already pins it per worker — override it per
+  // test so lock contention cannot leak between tests. The memoize is keyed
+  // off the env var, so each test dir gets a fresh value.
+  const { mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  process.env.AGENC_CONFIG_DIR = await mkdtemp(join(tmpdir(), 'xai-oauth-test-'))
   process.argv = originalArgv.filter(arg => arg !== '--bare')
   storageState = {}
   refreshMock.mockReset()
@@ -216,11 +225,116 @@ test('concurrent force refreshes share a single flight', async () => {
 
   const first = forceRefreshXaiOauthCredentials()
   const second = forceRefreshXaiOauthCredentials()
+  // The refresh now acquires a cross-process lock before hitting the
+  // endpoint; wait for the exchange to actually start before releasing.
+  await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1))
   release(undefined)
   const [a, b] = await Promise.all([first, second])
   expect(a?.accessToken).toBe('access-2')
   expect(b?.accessToken).toBe('access-2')
   expect(refreshMock).toHaveBeenCalledTimes(1)
+})
+
+test('refresh adopts a sibling rotation instead of exchanging a stale token', async () => {
+  const {
+    forceRefreshXaiOauthCredentials,
+    readXaiOauthCredentials,
+    saveXaiOauthCredentials,
+  } = await importFreshModule()
+  const lockfileMod = await import('../../src/utils/lockfile.js')
+  const { join } = await import('node:path')
+  const { mkdir } = await import('node:fs/promises')
+
+  saveXaiOauthCredentials(storedBlob())
+  refreshMock.mockImplementation(async () => {
+    throw new Error('endpoint must not be called when a sibling rotated')
+  })
+
+  // Simulate a sibling process holding the refresh lock: acquire the same
+  // lock target first, start the refresh (it waits on lock retries), rotate
+  // the stored grant "from the sibling", then release. The under-lock
+  // re-read must observe the rotation and adopt it without hitting the
+  // token endpoint.
+  const { getAgenCConfigHomeDir } = await import('../../src/utils/envUtils.js')
+  const home = getAgenCConfigHomeDir()
+  await mkdir(home, { recursive: true })
+  const releaseSibling = await lockfileMod.lock(
+    join(home, '.xai-oauth-refresh'),
+    { realpath: false },
+  )
+  const pending = forceRefreshXaiOauthCredentials()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  storageState = {
+    xaiOauth: storedBlob({
+      accessToken: 'access-sibling',
+      refreshToken: 'refresh-sibling',
+    }),
+  }
+  await releaseSibling()
+
+  const result = await pending
+  expect(result?.accessToken).toBe('access-sibling')
+  expect(refreshMock).not.toHaveBeenCalled()
+  expect(readXaiOauthCredentials()?.refreshToken).toBe('refresh-sibling')
+})
+
+test('terminal invalid_grant must not clobber a sibling rotation with quarantine', async () => {
+  const module = await importFreshModule()
+  const {
+    forceRefreshXaiOauthCredentials,
+    readXaiOauthAccessToken,
+    readXaiOauthCredentials,
+    saveXaiOauthCredentials,
+  } = module
+  const { XaiOauthError } = await vi.importActual<
+    typeof import('../../src/services/xai/oauth.ts')
+  >(oauthServiceModulePath)
+
+  saveXaiOauthCredentials(storedBlob())
+  // The exchange fails with terminal invalid_grant because a sibling
+  // process consumed refresh-1 first — and by the time the failure lands,
+  // the sibling has persisted its rotated grant. Quarantining now would
+  // destroy the sibling's good credentials (the observed live failure:
+  // grok session flaps to "Not logged in" mid-turn).
+  refreshMock.mockImplementation(async () => {
+    storageState = {
+      xaiOauth: storedBlob({
+        accessToken: 'access-sibling',
+        refreshToken: 'refresh-sibling',
+      }),
+    }
+    throw new XaiOauthError('invalid_grant', 'xAI OAuth error invalid_grant', 400)
+  })
+
+  const result = await forceRefreshXaiOauthCredentials()
+  expect(result?.accessToken).toBe('access-sibling')
+  const stored = readXaiOauthCredentials()
+  expect(stored?.quarantinedAt).toBeUndefined()
+  expect(stored?.refreshToken).toBe('refresh-sibling')
+  expect(readXaiOauthAccessToken()).toBe('access-sibling')
+})
+
+test('xaiOauthRequiresRelogin distinguishes dead grants from viable ones', async () => {
+  const { saveXaiOauthCredentials, xaiOauthRequiresRelogin, clearXaiOauthCredentials } =
+    await importFreshModule()
+
+  // No credentials at all → re-login required.
+  expect(xaiOauthRequiresRelogin()).toBe(true)
+
+  // Viable grant → no re-login.
+  saveXaiOauthCredentials(storedBlob())
+  expect(xaiOauthRequiresRelogin()).toBe(false)
+
+  // Quarantined grant → re-login required.
+  saveXaiOauthCredentials(
+    storedBlob({ quarantinedAt: Date.now(), quarantineReason: 'invalid_grant' }),
+  )
+  expect(xaiOauthRequiresRelogin()).toBe(true)
+
+  // Grant without a refresh token → re-login required.
+  clearXaiOauthCredentials()
+  saveXaiOauthCredentials(storedBlob({ refreshToken: undefined }))
+  expect(xaiOauthRequiresRelogin()).toBe(true)
 })
 
 test('missing token endpoint falls back to discovery', async () => {
