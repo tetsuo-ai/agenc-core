@@ -536,7 +536,11 @@ describe("GrokProvider incremental continuation", () => {
     );
 
     expect(result.content).toBe("stream done");
-    expect(chunks).toEqual([]);
+    // Since the stream-resilience change (bbf85192f), a completed response
+    // whose stream produced no output_text.delta emits its envelope text as
+    // one streaming chunk too — a delta-less xAI stream must not render a
+    // successful-but-blank turn.
+    expect(chunks).toEqual(["stream done"]);
     expect(requestBodies[0]?.previous_response_id).toBe("resp_prev_stream");
     expect(JSON.stringify(requestBodies[0]?.input)).toContain("follow up");
     expect(JSON.stringify(requestBodies[0]?.input)).not.toContain("hello");
