@@ -78,10 +78,12 @@ import {
   type VerifiedChangeStepRecord,
 } from "../../workflow/evidence-record.js";
 import {
+  extractBlockers,
   ReviewParseError,
   runIndependentReview,
   type ReviewerInvoker,
 } from "../../workflow/independent-review.js";
+import type { ReviewOutput } from "../../session/review.js";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   parseVerificationVerdict,
@@ -96,6 +98,11 @@ import {
   type ExportedPatchArtifacts,
   type SealedEvidenceProof,
 } from "../../workflow/worktree-lifecycle.js";
+import {
+  decodeWorkflowReviewTerminal,
+  encodeWorkflowReviewTerminal,
+  recordWorkflowChildTerminal,
+} from "./child-terminals.js";
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
 import {
   deriveStageProjection,
@@ -216,7 +223,18 @@ export type WorkflowSpawnKind = "plan" | "implement" | "verify_agent" | "review"
 export interface WorkflowChildOutcome {
   readonly status: RunTerminalStatus;
   readonly finalMessage: string | null;
+  /**
+   * Reconciled actual usage for the child's own admissions (null = nothing
+   * reconciled / honestly unknown). Already charged against the budget by
+   * the child's own reservations — reported into the run's usage rollup,
+   * never re-reconciled against the parent spawn reservation.
+   */
   readonly usage: RunUsageTotals | null;
+  /**
+   * Admission reservations of the child whose spend is unknowable
+   * (`held_unknown`); surfaced as a count, NEVER summed into `usage`.
+   */
+  readonly usageHeldUnknownCount?: number;
 }
 
 export type WorkflowChildInspection =
@@ -395,7 +413,15 @@ interface CompletedGates {
 interface EffectExecution {
   readonly outcome: "committed" | "failed" | "cancelled";
   readonly evidence: WorkflowStepEvidence;
+  /** Usage reconciled against THIS step's admission reservation. */
   readonly usage?: AdmissionUsage;
+  /**
+   * Usage already reconciled at its durable source (the child run's own
+   * admission reservations): accumulated into the run's usage rollup only,
+   * never re-reconciled against this step's reservation — reconciling it
+   * here would double-charge the shared allocation scopes.
+   */
+  readonly rollupUsage?: AdmissionUsage;
 }
 
 interface EffectStepPlan {
@@ -1157,29 +1183,38 @@ export class VerifiedChangeWorkflowController {
                 sink: ledger,
                 step: { runId: ctx.runId, stepId },
               });
-              const nonBlocking = review.review.findings
-                .map((finding) => finding.title)
-                .filter((title) => !review.blockers.includes(title));
-              return {
-                outcome: "committed",
-                evidence: {
-                  stage: "workflow.review",
-                  attempt,
-                  review: {
-                    blockerCount: review.blockers.length,
-                    findingCount: review.review.findings.length,
-                    overallCorrectness: review.review.overallCorrectness,
-                    overallConfidenceScore:
-                      review.review.overallConfidenceScore,
-                    blockers: review.blockers,
-                    nonBlockingFindings: nonBlocking,
-                    reviewerModel: ctx.spec.reviewerModel,
-                  },
-                  artifacts: [review.artifact],
-                },
-              };
+              // A1 for the review child: the reviewer settled inside this
+              // effect execution, so ITS terminal becomes durable here —
+              // strictly before the review effect_result can commit. The
+              // payload carries the parsed ReviewOutput and the recorded
+              // independent_review artifact pointer, enough to complete the
+              // parent effect honestly on post-restart adoption.
+              this.#recordReviewChildTerminal(ctx, childRunId, {
+                status: "completed",
+                finalMessage: encodeWorkflowReviewTerminal({
+                  review: review.review,
+                  reviewerModel: ctx.spec.reviewerModel,
+                  artifact: review.artifact,
+                }),
+                usage: null,
+              });
+              return this.#reviewExecution(
+                attempt,
+                review.review,
+                ctx.spec.reviewerModel,
+                review.artifact,
+              );
             } catch (error) {
               if (error instanceof ReviewParseError) {
+                // A settled-but-unparseable reviewer is a KNOWN failure —
+                // durable for adoption too, so a crash in the commit window
+                // resumes into the same failed outcome (and its bounded
+                // retry), never into unknown_outcome.
+                this.#recordReviewChildTerminal(ctx, childRunId, {
+                  status: "failed",
+                  finalMessage: error.message,
+                  usage: null,
+                });
                 return {
                   outcome: "failed",
                   evidence: {
@@ -1195,7 +1230,7 @@ export class VerifiedChangeWorkflowController {
               throw error;
             }
           },
-          adopt: async (existing) => this.#adoptChild(ctx, existing),
+          adopt: async (existing) => this.#adoptReview(ctx, existing, attempt),
         } satisfies EffectStepPlan;
       },
     });
@@ -1526,6 +1561,7 @@ export class VerifiedChangeWorkflowController {
     const spec = ctx.spec;
     const toEvidence = (outcome: WorkflowChildOutcome): EffectExecution => {
       const decorated = input.decorate?.(outcome) ?? {};
+      const heldUnknown = outcome.usageHeldUnknownCount ?? 0;
       const evidence: WorkflowStepEvidence = {
         stage: input.stage,
         attempt: input.attempt,
@@ -1535,6 +1571,8 @@ export class VerifiedChangeWorkflowController {
           ...(truncate(outcome.finalMessage) !== undefined
             ? { finalMessage: truncate(outcome.finalMessage)! }
             : {}),
+          ...(outcome.usage !== null ? { usage: outcome.usage } : {}),
+          ...(heldUnknown > 0 ? { usageHeldUnknown: heldUnknown } : {}),
         },
         ...decorated,
       };
@@ -1544,7 +1582,12 @@ export class VerifiedChangeWorkflowController {
           : outcome.status === "cancelled"
             ? "cancelled"
             : "failed";
-      const usage =
+      // The child's usage is already reconciled at its durable source (the
+      // child run's own admission reservations charge the shared allocation
+      // scopes), so it rides `rollupUsage` — accumulated into the run's
+      // terminal usage rollup, never re-reconciled against the parent spawn
+      // reservation (that would double-charge the budget).
+      const rollupUsage =
         outcome.usage === null
           ? undefined
           : {
@@ -1555,7 +1598,7 @@ export class VerifiedChangeWorkflowController {
       return {
         outcome: mapped,
         evidence,
-        ...(usage !== undefined ? { usage } : {}),
+        ...(rollupUsage !== undefined ? { rollupUsage } : {}),
       };
     };
     return {
@@ -1608,16 +1651,123 @@ export class VerifiedChangeWorkflowController {
       adopt: async (existing) => {
         const adopted = await this.#adoptChild(ctx, existing);
         if (adopted === undefined) return undefined;
-        // Re-decorate verdict-bearing evidence from the adopted message.
+        // Re-decorate verdict-bearing evidence from the adopted message,
+        // preserving the durable terminal's usage rollup.
         const child = adopted.evidence.child;
         if (input.decorate !== undefined && child !== undefined) {
           return toEvidence({
             status: child.status as RunTerminalStatus,
             finalMessage: child.finalMessage ?? null,
-            usage: null,
+            usage: child.usage ?? null,
+            ...(child.usageHeldUnknown !== undefined
+              ? { usageHeldUnknownCount: child.usageHeldUnknown }
+              : {}),
           });
         }
         return adopted;
+      },
+    };
+  }
+
+  /** Best-effort durable terminal for the review child (never fatal). */
+  #recordReviewChildTerminal(
+    ctx: RunContext,
+    childRunId: string,
+    outcome: WorkflowChildOutcome,
+  ): void {
+    try {
+      recordWorkflowChildTerminal(ctx.repo, childRunId, outcome, this.#now);
+    } catch (error) {
+      this.#deps.warn(
+        `workflow review child ${childRunId} terminal was not durably recorded: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  /**
+   * The ONE assembly point for committed review-effect evidence — used by
+   * the live execution and by durable-terminal adoption, so both paths
+   * derive identical blockers/non-blocking findings from the ReviewOutput.
+   */
+  #reviewExecution(
+    attempt: number,
+    review: ReviewOutput,
+    reviewerModel: string,
+    artifact: RunArtifactPointer,
+  ): EffectExecution {
+    const blockers = extractBlockers(review);
+    const nonBlocking = review.findings
+      .map((finding) => finding.title)
+      .filter((title) => !blockers.includes(title));
+    return {
+      outcome: "committed",
+      evidence: {
+        stage: "workflow.review",
+        attempt,
+        review: {
+          blockerCount: blockers.length,
+          findingCount: review.findings.length,
+          overallCorrectness: review.overallCorrectness,
+          overallConfidenceScore: review.overallConfidenceScore,
+          blockers,
+          nonBlockingFindings: nonBlocking,
+          reviewerModel,
+        },
+        artifacts: [artifact],
+      },
+    };
+  }
+
+  /**
+   * D3 adoption for the independent-review child: a durable terminal whose
+   * payload decodes to the recorded ReviewOutput + independent_review
+   * artifact completes the parent effect exactly as the live execution
+   * would. A reviewer that genuinely died mid-flight recorded no terminal
+   * (or an undecodable one) and honestly stays unknowable.
+   */
+  async #adoptReview(
+    _ctx: RunContext,
+    existing: DurableRunEffect,
+    attempt: number,
+  ): Promise<EffectExecution | undefined> {
+    const childRunId = existing.childRunId;
+    if (childRunId === undefined) return undefined;
+    const inspection = await this.#deps.spawner.inspect(childRunId);
+    if (inspection.state === "unknown") return undefined;
+    const outcome =
+      inspection.state === "terminal"
+        ? inspection.outcome
+        : await inspection.outcome;
+    if (outcome.status === "unknown_outcome") return undefined;
+    if (outcome.status === "completed") {
+      const payload = decodeWorkflowReviewTerminal(outcome.finalMessage);
+      if (payload === undefined) {
+        this.#deps.warn(
+          `workflow review child ${childRunId} terminal carries no decodable review payload; the outcome stays unknown`,
+        );
+        return undefined;
+      }
+      return this.#reviewExecution(
+        attempt,
+        payload.review,
+        payload.reviewerModel,
+        payload.artifact,
+      );
+    }
+    return {
+      outcome: outcome.status === "cancelled" ? "cancelled" : "failed",
+      evidence: {
+        stage: "workflow.review",
+        attempt,
+        failure: {
+          reason:
+            outcome.status === "cancelled"
+              ? "review_cancelled"
+              : "review_unparseable",
+          ...(outcome.finalMessage !== null
+            ? { message: outcome.finalMessage }
+            : {}),
+        },
       },
     };
   }
@@ -1644,6 +1794,7 @@ export class VerifiedChangeWorkflowController {
         : outcome.status === "cancelled"
           ? "cancelled"
           : "failed";
+    const heldUnknown = outcome.usageHeldUnknownCount ?? 0;
     return {
       outcome: mapped,
       evidence: {
@@ -1656,8 +1807,19 @@ export class VerifiedChangeWorkflowController {
           ...(truncate(outcome.finalMessage) !== undefined
             ? { finalMessage: truncate(outcome.finalMessage)! }
             : {}),
+          ...(outcome.usage !== null ? { usage: outcome.usage } : {}),
+          ...(heldUnknown > 0 ? { usageHeldUnknown: heldUnknown } : {}),
         },
       },
+      ...(outcome.usage !== null
+        ? {
+            rollupUsage: {
+              inputTokens: outcome.usage.inputTokens,
+              outputTokens: outcome.usage.outputTokens,
+              costUsd: outcome.usage.costUsd,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1717,10 +1879,22 @@ export class VerifiedChangeWorkflowController {
   ): Promise<EffectStepResult> {
     const existing = ctx.repo.getEffect(ctx.runId, plan.stepId);
     if (existing?.outcome !== undefined) {
-      // Sticky durable outcome — replay, never re-execute.
+      // Sticky durable outcome — replay, never re-execute. A replayed spawn
+      // step re-accumulates its durably recorded child usage so the
+      // post-restart terminal rollup stays honest (the in-memory rollup
+      // restarts at zero on resume; the durable evidence is the source).
+      const evidence = readWorkflowStepEvidence(existing);
+      const childUsage = evidence.child?.usage;
+      if (childUsage !== undefined) {
+        this.#accumulateUsage(ctx, {
+          inputTokens: childUsage.inputTokens,
+          outputTokens: childUsage.outputTokens,
+          costUsd: childUsage.costUsd,
+        });
+      }
       return {
         outcome: existing.outcome,
-        evidence: readWorkflowStepEvidence(existing),
+        evidence,
         replayed: true,
       };
     }
@@ -1749,6 +1923,9 @@ export class VerifiedChangeWorkflowController {
           ),
           replayed: false,
         };
+      }
+      if (adopted.rollupUsage !== undefined) {
+        this.#accumulateUsage(ctx, adopted.rollupUsage);
       }
       return this.#commitResult(ctx, plan, adopted, false);
     }
@@ -1849,6 +2026,9 @@ export class VerifiedChangeWorkflowController {
           outputTokens: 0,
           costUsd: 0,
         });
+      }
+      if (execution.rollupUsage !== undefined) {
+        this.#accumulateUsage(ctx, execution.rollupUsage);
       }
       settled = true;
       return result;

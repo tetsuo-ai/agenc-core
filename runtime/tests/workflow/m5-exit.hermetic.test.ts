@@ -31,6 +31,7 @@ import { resolveStateDatabasePaths } from "../../src/state/sqlite-driver.js";
 import {
   assertBundleAndHiddenVerifier,
   assertExitReport,
+  assertReviewExitReport,
   cleanupM5ExitStateDirs,
   crashPhase,
   makeStateDir,
@@ -120,6 +121,22 @@ describe.sequential("M5 exit proof — hermetic SIGKILL crash/restart", () => {
       expect(tail.events).toEqual([]);
       expect(tail.gap).toBeNull();
 
+      await assertBundleAndHiddenVerifier(stateDir, report.bundleDir);
+    },
+  );
+
+  it(
+    "completes after a kill at before_review_commit by adopting the reviewer's durable terminal",
+    { timeout: 240_000 },
+    async () => {
+      // The kill lands AFTER the reviewer settled and its terminal was
+      // durably recorded, BEFORE the review effect_result committed. The
+      // restart must complete the run by ADOPTION — never re-invoking the
+      // reviewer — and the sealed bundle must still verify end to end.
+      const stateDir = makeStateDir("agenc-m5-exit-review-");
+      await crashPhase("controller", stateDir, "review");
+      const report = await resumePhase("controller", stateDir, "review");
+      assertReviewExitReport(report, M5_EXIT_RUN_ID);
       await assertBundleAndHiddenVerifier(stateDir, report.bundleDir);
     },
   );

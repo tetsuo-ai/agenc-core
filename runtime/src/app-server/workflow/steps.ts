@@ -159,6 +159,18 @@ export interface WorkflowChildEvidence {
   readonly childRunId: string;
   readonly status: string;
   readonly finalMessage?: string;
+  /**
+   * Reconciled actual usage of the child's own admissions (absent =
+   * honestly unknown; reserved amounts are never reported as spent).
+   */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+  };
+  /** Child reservations held unknown — noted, never summed into `usage`. */
+  readonly usageHeldUnknown?: number;
 }
 
 export interface WorkflowReviewEvidence {

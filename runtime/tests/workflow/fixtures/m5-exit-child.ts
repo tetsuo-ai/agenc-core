@@ -25,10 +25,12 @@ import { join } from "node:path";
 import { buildM5Harness, M5_EXIT_RUN_ID } from "./m5-harness.js";
 
 const FAILPOINT = "after_spawn_before_effect_result";
+const REVIEW_FAILPOINT = "before_review_commit";
 const FAILPOINT_TOKEN = "m5-workflow-child";
 
 type Command = "crash" | "resume";
 type Mode = "controller" | "wiring";
+type Scenario = "implement" | "review";
 
 function requireArgument(value: string | undefined, name: string): string {
   if (value === undefined || value.length === 0) {
@@ -40,6 +42,7 @@ function requireArgument(value: string | undefined, name: string): string {
 const command = requireArgument(process.argv[2], "command") as Command;
 const mode = requireArgument(process.argv[3], "mode") as Mode;
 const stateDir = requireArgument(process.argv[4], "state directory");
+const scenario = (process.argv[5] ?? "implement") as Scenario;
 
 const home = join(stateDir, "home");
 const repoPath = join(stateDir, "repo");
@@ -59,7 +62,7 @@ function buildHarness(withCrashArming: boolean) {
     receiptsDir,
     implementFix: IMPLEMENT_FIX,
     throughDaemonWiring: mode === "wiring",
-    ...(withCrashArming
+    ...(withCrashArming && scenario === "implement"
       ? {
           onImplementSettled: () => {
             // Arm the production failpoint ONLY now: the child terminal is
@@ -75,6 +78,15 @@ function buildHarness(withCrashArming: boolean) {
 }
 
 async function crash(): Promise<never> {
+  if (scenario === "review") {
+    // `before_review_commit` fires strictly AFTER the review execute — the
+    // reviewer has settled and the controller has durably recorded the
+    // review child's terminal — and BEFORE the review effect_result
+    // journals. Arming it from process start is safe: no earlier boundary
+    // matches this name.
+    process.env.AGENC_TEST_DURABILITY_FAILPOINT = REVIEW_FAILPOINT;
+    process.env.AGENC_TEST_DURABILITY_FAILPOINT_TOKEN = FAILPOINT_TOKEN;
+  }
   const harness = buildHarness(true);
   const started = await harness.controller.start({
     goal: "lib/add.js returns the wrong value: add(2, 3) must equal 5. Fix the arithmetic bug so the required script passes.",
@@ -120,6 +132,12 @@ async function resume(): Promise<void> {
     implementChildTerminal:
       harness.repo.getCurrentTerminalResult(`${M5_EXIT_RUN_ID}:implement#1`)
         ?.status ?? null,
+    reviewOutcome:
+      harness.repo.getEffect(M5_EXIT_RUN_ID, "workflow.review")?.outcome ??
+      null,
+    reviewChildTerminal:
+      harness.repo.getCurrentTerminalResult(`${M5_EXIT_RUN_ID}:review#1`)
+        ?.status ?? null,
     terminal:
       harness.repo.getCurrentTerminalResult(M5_EXIT_RUN_ID)?.status ?? null,
   };
@@ -163,6 +181,7 @@ async function resume(): Promise<void> {
 
   const report = {
     mode,
+    scenario,
     preResume,
     resumed,
     terminal:
@@ -184,6 +203,15 @@ async function resume(): Promise<void> {
         harness.repo.getCurrentTerminalResult(`${M5_EXIT_RUN_ID}:implement#2`)
           ?.status ?? null,
     },
+    reviewChildTerminals: {
+      attempt1:
+        harness.repo.getCurrentTerminalResult(`${M5_EXIT_RUN_ID}:review#1`)
+          ?.status ?? null,
+      attempt2:
+        harness.repo.getCurrentTerminalResult(`${M5_EXIT_RUN_ID}:review#2`)
+          ?.status ?? null,
+    },
+    reviewInvocations: readReceipts("review-invocations.jsonl"),
     resumeSpawnKinds: harness.spawnKinds,
     reservations,
     warnings: harness.warnings,

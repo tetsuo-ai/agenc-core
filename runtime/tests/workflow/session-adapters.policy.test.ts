@@ -24,11 +24,12 @@ import {
   createWorkflowSessionSeams,
   inspectWorkflowChildTerminal,
   recordWorkflowChildTerminal,
+  workflowChildAdmissionUsage,
   workflowPermissionModeArgv,
   type WorkflowSessionSeams,
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
-import type { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
@@ -280,5 +281,91 @@ describe("A1 — durable child terminals for cross-restart adoption", () => {
       seams.spawner.inspect(`${RUN_ID}:verify-agent#1`),
     ).resolves.toEqual({ state: "unknown" });
     await seams.close();
+  });
+});
+
+describe("child usage rollup from reconciled admissions", () => {
+  it("sums the child run's reconciled actuals and surfaces held_unknown as a count", async () => {
+    const kernel = new ExecutionAdmissionKernel({
+      agencHome: home,
+      ownerId: "m5-usage-test",
+      ownerPid: process.pid,
+    });
+    try {
+      const client = kernel.bindClient({
+        cwd,
+        budgetIdentity: "wf-usage-run",
+        scope: {
+          runId: "wf-usage-run",
+          sessionId: "wf-usage-session",
+          autonomous: true,
+        },
+      });
+      // The delegate child's admissions live under ITS run id (the child
+      // thread id) — exactly how run-agent binds forSession for a spawned
+      // agent.
+      const child = client.forSession({
+        runId: "thread-child-1",
+        sessionId: "thread-child-1",
+      });
+      const settle = async (
+        stepId: string,
+        outcome:
+          | { kind: "reconciled"; inputTokens: number; outputTokens: number; costUsd: number }
+          | { kind: "held_unknown" },
+      ): Promise<void> => {
+        const lease = await child.acquire({
+          stepId,
+          kind: "model_turn",
+          maxInputTokens: 1_000,
+          maxOutputTokens: 1_000,
+          maxCostUsd: 1,
+        });
+        const reservationId = lease.reservation.reservationId;
+        child.markDispatched(reservationId, { boundary: "provider_wire" });
+        if (outcome.kind === "reconciled") {
+          child.reconcile(reservationId, {
+            inputTokens: outcome.inputTokens,
+            outputTokens: outcome.outputTokens,
+            costUsd: outcome.costUsd,
+          });
+        } else {
+          child.holdUnknown(reservationId, "daemon_killed_mid_turn");
+        }
+        child.acknowledgeCompletion(reservationId);
+      };
+      await settle("turn-1", {
+        kind: "reconciled",
+        inputTokens: 11,
+        outputTokens: 22,
+        costUsd: 0.25,
+      });
+      await settle("turn-2", {
+        kind: "reconciled",
+        inputTokens: 4,
+        outputTokens: 6,
+        costUsd: 0.5,
+      });
+      await settle("turn-3", { kind: "held_unknown" });
+
+      // Reconciled actuals only; the held reservation's RESERVED 2000
+      // tokens / $1 are never reported as spent.
+      expect(workflowChildAdmissionUsage(kernel, "thread-child-1")).toEqual({
+        usage: {
+          inputTokens: 15,
+          outputTokens: 28,
+          totalTokens: 43,
+          costUsd: 0.75,
+        },
+        heldUnknownCount: 1,
+      });
+      // Nothing reconciled → honestly null, never invented zeros-as-spend.
+      expect(workflowChildAdmissionUsage(kernel, "thread-none")).toEqual({
+        usage: null,
+        heldUnknownCount: 0,
+      });
+    } finally {
+      kernel.close();
+    }
   });
 });
