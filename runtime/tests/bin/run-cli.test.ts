@@ -95,6 +95,199 @@ describe("agenc run CLI", () => {
     expect(parseAgenCRunCliArgs(["run", "the", "tests"])).toBeNull();
   });
 
+  it("parses the start verb with accumulating --verify flags", () => {
+    expect(
+      parseAgenCRunCliArgs([
+        "run",
+        "start",
+        "--goal",
+        "Fix the reported bug",
+        "--cwd",
+        "/workspace/repo",
+        "--model",
+        "impl-model",
+        "--reviewer-model",
+        "review-model",
+        "--max-cost",
+        "5",
+        "--permission-mode",
+        "acceptEdits",
+        "--verify",
+        "unit=npm test",
+        "--verify=typecheck=npx tsc --noEmit",
+        "--json",
+        "--follow",
+      ]),
+    ).toEqual({
+      kind: "start",
+      goal: "Fix the reported bug",
+      cwd: "/workspace/repo",
+      model: "impl-model",
+      reviewerModel: "review-model",
+      maxCostUsd: 5,
+      permissionMode: "acceptEdits",
+      verify: [
+        { label: "unit", script: "npm test" },
+        { label: "typecheck", script: "npx tsc --noEmit" },
+      ],
+      json: true,
+      follow: true,
+    });
+  });
+
+  it("rejects malformed start invocations", () => {
+    expect(parseAgenCRunCliArgs(["run", "start"])).toEqual({
+      kind: "error",
+      message: "run start requires exactly one of --goal or --goal-file",
+    });
+    expect(
+      parseAgenCRunCliArgs([
+        "run",
+        "start",
+        "--goal",
+        "g",
+        "--goal-file",
+        "goal.md",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message: "run start requires exactly one of --goal or --goal-file",
+    });
+    expect(
+      parseAgenCRunCliArgs(["run", "start", "--goal", "g", "--verify", "npm test"]),
+    ).toEqual({
+      kind: "error",
+      message: 'run start option --verify requires "label=script"',
+    });
+    expect(
+      parseAgenCRunCliArgs(["run", "start", "--goal", "g", "--max-cost", "-1"]),
+    ).toEqual({
+      kind: "error",
+      message: "--max-cost must be a positive number of USD",
+    });
+    expect(
+      parseAgenCRunCliArgs([
+        "run",
+        "start",
+        "--goal",
+        "g",
+        "--permission-mode",
+        "yolo",
+      ]),
+    ).toEqual({
+      kind: "error",
+      message:
+        "--permission-mode must be one of: default, plan, acceptEdits, bypassPermissions",
+    });
+  });
+
+  it("frames run.start onto the daemon protocol, passing verification through verbatim", async () => {
+    const request = vi.fn(async () => ({
+      runId: "wf-run-1",
+      specDigest: `sha256:${"a".repeat(64)}`,
+      baseCommit: "b".repeat(40),
+      baseDirty: { dirty: true, fileCount: 2 },
+    }));
+    const output = captureIo();
+    const code = await runAgenCRunCli(
+      {
+        kind: "start",
+        goal: "Fix the reported bug",
+        cwd: "/workspace/repo",
+        reviewerModel: "review-model",
+        verify: [{ label: "unit", script: "npm test" }],
+      },
+      {
+        io: output.io,
+        ensureDaemonReady: async () => {},
+        client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+      },
+    );
+    expect(code).toBe(0);
+    expect(request).toHaveBeenCalledWith("run.start", {
+      goal: "Fix the reported bug",
+      cwd: "/workspace/repo",
+      reviewerModel: "review-model",
+      requiredVerification: [{ label: "unit", script: "npm test" }],
+    });
+    expect(output.stdout()).toContain("run wf-run-1");
+    expect(output.stdout()).toContain("checkout dirty: 2 file(s)");
+  });
+
+  it("omits requiredVerification entirely when no --verify was given", async () => {
+    const request = vi.fn(async () => ({
+      runId: "wf-run-2",
+      specDigest: `sha256:${"a".repeat(64)}`,
+      baseCommit: "b".repeat(40),
+      baseDirty: { dirty: false, fileCount: 0 },
+    }));
+    await runAgenCRunCli(
+      { kind: "start", goal: "g", cwd: "/workspace/repo", verify: [] },
+      {
+        io: captureIo().io,
+        ensureDaemonReady: async () => {},
+        client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+      },
+    );
+    expect(request).toHaveBeenCalledWith("run.start", {
+      goal: "g",
+      cwd: "/workspace/repo",
+    });
+  });
+
+  it("renders the workflow step table when run.status carries workflow", async () => {
+    const request = vi.fn(async () => ({
+      runId: "wf-run-1",
+      status: "failed",
+      terminal: true,
+      workflow: {
+        steps: [
+          {
+            stepId: "workflow.intake",
+            stage: "workflow.intake",
+            status: "committed",
+            attempts: 1,
+          },
+          {
+            stepId: "workflow.verify.agent",
+            stage: "workflow.verify",
+            status: "committed",
+            attempts: 1,
+            verdict: "FAIL",
+          },
+        ],
+        stopReason: "verification_failed",
+      },
+    }));
+    const output = captureIo();
+    const code = await runAgenCRunCli(
+      { kind: "status", runId: "wf-run-1" },
+      {
+        io: output.io,
+        ensureDaemonReady: async () => {},
+        client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+      },
+    );
+    expect(code).toBe(0);
+    expect(output.stdout()).toContain("workflow.verify");
+    expect(output.stdout()).toContain("FAIL");
+    expect(output.stdout()).toContain("stop reason: verification_failed");
+
+    // --json restores the raw canonical JSON output.
+    const jsonOutput = captureIo();
+    await runAgenCRunCli(
+      { kind: "status", runId: "wf-run-1", json: true },
+      {
+        io: jsonOutput.io,
+        ensureDaemonReady: async () => {},
+        client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+      },
+    );
+    expect(JSON.parse(jsonOutput.stdout()).workflow.stopReason).toBe(
+      "verification_failed",
+    );
+  });
+
   it("prints the canonical daemon response as JSON", async () => {
     const request = vi.fn(async () => ({
       runId: "run-1",
