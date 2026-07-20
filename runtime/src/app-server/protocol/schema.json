@@ -20,6 +20,7 @@
     "run.replay",
     "run.evidence",
     "run.cancel",
+    "run.start",
     "session.create",
     "session.list",
     "session.attach",
@@ -64,6 +65,7 @@
     "event.mcp_elicitation_request",
     "event.agent_status",
     "event.session_event",
+    "event.event_gap",
     "thread/realtime/started",
     "thread/realtime/itemAdded",
     "thread/realtime/transcript/delta",
@@ -370,6 +372,81 @@
         }
       },
       "required": ["runId"]
+    },
+    "RunStartVerificationCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "script": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["label", "script"]
+    },
+    "RunStartParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reviewerModel": {
+          "type": "string"
+        },
+        "maxCostUsd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "type": "string"
+        },
+        "permissionMode": {
+          "type": "string",
+          "enum": ["default", "plan", "acceptEdits", "bypassPermissions"]
+        },
+        "unattendedAllow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unattendedDeny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requiredVerification": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunStartVerificationCommand"
+          }
+        },
+        "maxImplementAttempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": ["goal"]
     },
     "SessionCreateParams": {
       "type": "object",
@@ -1708,6 +1785,9 @@
           "$ref": "#/definitions/RunCancelRequest"
         },
         {
+          "$ref": "#/definitions/RunStartRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCreateRequest"
         },
         {
@@ -1836,6 +1916,9 @@
         },
         {
           "$ref": "#/definitions/EventSessionEventNotification"
+        },
+        {
+          "$ref": "#/definitions/EventGapNotification"
         },
         {
           "$ref": "#/definitions/ThreadRealtimeStartedNotification"
@@ -1990,6 +2073,85 @@
         }
       },
       "required": ["jsonrpc", "method", "params"]
+    },
+    "EventGapNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.event_gap"
+        },
+        "params": {
+          "$ref": "#/definitions/EventGapParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventGapParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "event_gap"
+        },
+        "kind": {
+          "const": "event_gap"
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "const": "retention"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["background_runner_retention", "multiplexer_retention"]
+        },
+        "retiredCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coordinatesAvailable": {
+          "type": "boolean"
+        },
+        "afterSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstAvailableSequence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "sessionId",
+        "runId",
+        "reason",
+        "source",
+        "retiredCount"
+      ]
     },
     "ThreadRealtimeStartedNotification": {
       "type": "object",
@@ -2343,6 +2505,25 @@
         },
         "params": {
           "$ref": "#/definitions/RunCancelParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RunStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.start"
+        },
+        "params": {
+          "$ref": "#/definitions/RunStartParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
