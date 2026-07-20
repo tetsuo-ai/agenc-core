@@ -78,9 +78,64 @@ export function hitM4DurabilityFailpoint(
   process.kill(process.pid, "SIGKILL");
 }
 
+/**
+ * M5 verified-change workflow failpoints — one per durable pipeline
+ * boundary. Same inert-unless-armed mechanism as M4, with a distinct token
+ * so an M4 harness can never trip an M5 boundary by accident.
+ */
+export const M5_WORKFLOW_FAILPOINTS = [
+  "before_intake_commit",
+  "after_intake_commit",
+  "before_worktree_provision",
+  "after_worktree_provision",
+  "after_spawn_before_effect_result",
+  "before_verify_commit",
+  "after_verify_commit",
+  "before_review_commit",
+  "after_review_commit",
+  "before_patch_export",
+  "after_patch_export_before_seal",
+  "after_seal_before_terminal",
+  "after_terminal_before_cleanup",
+] as const;
+
+export type M5WorkflowFailpoint = (typeof M5_WORKFLOW_FAILPOINTS)[number];
+
+const M5_FAILPOINT_TOKEN = "m5-workflow-child";
+
+export class M5WorkflowFailpointError extends Error {
+  readonly failpoint: M5WorkflowFailpoint;
+
+  constructor(failpoint: M5WorkflowFailpoint) {
+    super(`M5 workflow failpoint reached: ${failpoint}`);
+    this.name = "M5WorkflowFailpointError";
+    this.failpoint = failpoint;
+  }
+}
+
+/** Crash (default) or throw at one named M5 workflow boundary. */
+export function hitM5WorkflowFailpoint(
+  failpoint: M5WorkflowFailpoint,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (env[FAILPOINT_ENV] !== failpoint) return;
+  if (env[FAILPOINT_TOKEN_ENV] !== M5_FAILPOINT_TOKEN) return;
+
+  const markerPath = env[FAILPOINT_MARKER_ENV];
+  if (markerPath !== undefined && markerPath.length > 0) {
+    writeMarkerDurably(markerPath, failpoint);
+  }
+
+  if (env[FAILPOINT_ACTION_ENV] === "throw") {
+    throw new M5WorkflowFailpointError(failpoint);
+  }
+
+  process.kill(process.pid, "SIGKILL");
+}
+
 function writeMarkerDurably(
   markerPath: string,
-  failpoint: M4DurabilityFailpoint,
+  failpoint: M4DurabilityFailpoint | M5WorkflowFailpoint,
 ): void {
   const fd = openSync(markerPath, "w", 0o600);
   try {

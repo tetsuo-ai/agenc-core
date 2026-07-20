@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   hitM4DurabilityFailpoint,
+  hitM5WorkflowFailpoint,
   M4DurabilityFailpointError,
   M4_DURABILITY_FAILPOINTS,
+  M5WorkflowFailpointError,
+  M5_WORKFLOW_FAILPOINTS,
 } from "../../src/durability/failpoints.js";
 
 describe("M4 durability failpoints", () => {
@@ -64,5 +67,41 @@ describe("M4 durability failpoints", () => {
       "before_terminal_commit",
       "after_terminal_commit",
     ]);
+  });
+});
+
+describe("M5 workflow failpoints", () => {
+  it("publishes the complete pipeline boundary matrix", () => {
+    expect(M5_WORKFLOW_FAILPOINTS).toEqual([
+      "before_intake_commit",
+      "after_intake_commit",
+      "before_worktree_provision",
+      "after_worktree_provision",
+      "after_spawn_before_effect_result",
+      "before_verify_commit",
+      "after_verify_commit",
+      "before_review_commit",
+      "after_review_commit",
+      "before_patch_export",
+      "after_patch_export_before_seal",
+      "after_seal_before_terminal",
+      "after_terminal_before_cleanup",
+    ]);
+  });
+
+  it("is inert without the M5 token and throws with it under the throw action", () => {
+    // The M4 token must NOT arm an M5 boundary.
+    hitM5WorkflowFailpoint("before_intake_commit", {
+      AGENC_TEST_DURABILITY_FAILPOINT: "before_intake_commit",
+      AGENC_TEST_DURABILITY_FAILPOINT_TOKEN: "m4-durability-child",
+      AGENC_TEST_DURABILITY_FAILPOINT_ACTION: "throw",
+    });
+    expect(() =>
+      hitM5WorkflowFailpoint("before_intake_commit", {
+        AGENC_TEST_DURABILITY_FAILPOINT: "before_intake_commit",
+        AGENC_TEST_DURABILITY_FAILPOINT_TOKEN: "m5-workflow-child",
+        AGENC_TEST_DURABILITY_FAILPOINT_ACTION: "throw",
+      }),
+    ).toThrow(M5WorkflowFailpointError);
   });
 });
