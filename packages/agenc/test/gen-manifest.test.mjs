@@ -447,27 +447,27 @@ test("future releases can only reuse exact pinned canonical v0.7.2 legacy bytes"
 });
 
 test("future release tooling accepts only the centrally reviewed legacy bridge identity", () => {
-  assert.throws(
-    () => reviewedLegacyBridgeIdentity(releaseToolchain),
-    /must be pinned in release-toolchain\.json/,
-  );
-  const pinned = {
-    ...releaseToolchain,
-    legacyBridge: {
-      ...releaseToolchain.legacyBridge,
-      status: "pinned",
-      sha256: "a".repeat(64),
-      bytes: 1234,
-    },
-  };
-  assert.deepEqual(reviewedLegacyBridgeIdentity(pinned), {
-    sha256: "a".repeat(64),
-    bytes: 1234,
+  assert.deepEqual(reviewedLegacyBridgeIdentity(releaseToolchain), {
+    sha256: "b48635506a687be44d763c606fff4604f701983f6fe049aa1ff10b4211755f5d",
+    bytes: 2318,
   });
+  for (const mutation of [
+    { status: "pending-v0.7.2-publication" },
+    { sha256: null },
+    { bytes: null },
+  ]) {
+    assert.throws(
+      () => reviewedLegacyBridgeIdentity({
+        ...releaseToolchain,
+        legacyBridge: { ...releaseToolchain.legacyBridge, ...mutation },
+      }),
+      /must be pinned in release-toolchain\.json/,
+    );
+  }
   assert.throws(
     () => reviewedLegacyBridgeIdentity({
-      ...pinned,
-      legacyBridge: { ...pinned.legacyBridge, releaseTag: "agenc-v0.6.3" },
+      ...releaseToolchain,
+      legacyBridge: { ...releaseToolchain.legacyBridge, releaseTag: "agenc-v0.6.3" },
     }),
     /legacy bridge contract is invalid/,
   );
