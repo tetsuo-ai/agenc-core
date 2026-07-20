@@ -1,5 +1,5 @@
 AgenC MUST-DO TODO
-Updated: 2026-07-14
+Updated: 2026-07-20
 
 PURPOSE
 -------
@@ -483,7 +483,7 @@ Why this is mandatory: the competitive product is the completed, verified
 engineering outcome. A generic DAG, Kanban board, or collection of primitives is
 not the product.
 
-[ ] Converge existing machinery into this fixed first workflow:
+[x] Converge existing machinery into this fixed first workflow:
 
         intake and policy check
         -> isolated worktree
@@ -493,14 +493,14 @@ not the product.
         -> independent fresh-context review
         -> finalize evidence and patch
 
-[ ] Build on what already exists.
+[x] Build on what already exists.
     - Extend `runtime/src/agents/workflow-runner.ts`, the job orchestrator, task
       store, worktree helpers, durable rollout state, daemon protocol, and SDK.
     - Do not create a parallel WorkGraph database or a second task engine.
     - Persist workflow/step state, dependencies, leases, attempts, worktree and
       artifact pointers, verifier results, and terminal status.
 
-[ ] Protect the user's source checkout and patch integrity.
+[x] Protect the user's source checkout and patch integrity.
     - Record the exact base commit and dirty-state summary before work begins.
     - Never clean or modify the user's source checkout or unrelated dirty files;
       all agent changes happen in the isolated worktree.
@@ -508,14 +508,14 @@ not the product.
     - Detect base movement and patch conflicts. Rebase/reverify safely or return
       an explicit conflict instead of overwriting newer work.
 
-[ ] Make steps transactional where possible and explicit where not.
+[x] Make steps transactional where possible and explicit where not.
     - Use idempotency keys for supported effects.
     - Retry only safe steps.
     - Run independent steps in parallel within M3 limits.
     - Stop dependency unlocks after failed verification, cancellation, budget
       exhaustion, or `unknown_outcome`.
 
-[ ] Make verification part of completion, not optional metadata.
+[x] Make verification part of completion, not optional metadata.
     - Capture commands, exit codes, relevant output, and artifact hashes.
     - Run a reviewer in a fresh context that sees the task, diff, and evidence,
       not the implementer's hidden chain of thought.
@@ -525,7 +525,7 @@ not the product.
       reviewer reports an unresolved blocker.
     - Return unresolved risks honestly; do not convert them into success text.
 
-[ ] Expose one stable run across CLI/TUI/SDK.
+[x] Expose one stable run across CLI/TUI/SDK.
     - Starting the same workflow through any surface must create the same kind of
       durable run ID and policy/evidence contract.
     - Support start, status, attach/replay, cancel, terminal-result fetch, and
@@ -539,6 +539,25 @@ M5 DONE WHEN:
   platform-issued mutation or silently replayed uncertain effect.
 - A reviewer can reconstruct what happened from the exported evidence without
   reading daemon logs or trusting the final prose summary.
+
+M5 SHIPPED 2026-07-20 (PRs #1556-#1560, six phases):
+- Contract freeze (run.start + frozen workflow vocabulary), worktree/patch
+  integrity lib, verification + fresh-context review executors, the durable
+  controller over the M3/M4 spine (no new store; step state = run_effects
+  projection), run.start across protocol/CLI/SDK with real session adapters,
+  and the exit proofs.
+- DONE-WHEN evidence: hermetic exit test SIGKILLs the daemon harness at
+  after_spawn_before_effect_result (+ disconnect), restarts, adopts the
+  durably-recorded child terminal (never respawns), completes, and a hidden
+  verifier absent from every prompt passes against the exported patch on a
+  fresh clone; reservations reconciled-or-held; evidence-only reconstruction
+  re-derives the run from the exported bundle alone and detects single-byte
+  tampering. Revert-sensitivity observed (disabling child-terminal recording
+  turns the exit test red).
+- Honest M6 residuals: crash mid-independent-review still terminates
+  unknown_outcome (reviewer has no durable child terminal); local anchor is
+  integrity-only; child usage rollup undercounts for real delegate spawns;
+  docs/design/verified-change-workflow-m5.md records the full semantics.
 
 
 M6 -- PRODUCTIZE, DOGFOOD, COMPARE, AND RELEASE-GATE THE WIN
