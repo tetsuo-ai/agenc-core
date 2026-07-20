@@ -3,9 +3,11 @@
 # `npm-production` environment, allow `npm publish`, and do not provide an npm
 # token. This is an artifact-publish workflow, not a test workflow. Before
 # dispatch, the operator must complete and retain the exact-tag local release
-# evidence defined in docs/ci-required-gates.md. Dispatch only at the matching
-# immutable source tag, after the runtime release in tetsuo-ai/agenc-releases
-# has been published and made immutable.
+# evidence defined in docs/ci-required-gates.md. Normally dispatch at the
+# matching immutable source tag. If that immutable tag's publish tooling fails
+# before upload, a reviewed main-branch tooling repair may set recovery_tag to
+# package the unchanged tagged source. In either mode, the runtime release in
+# tetsuo-ai/agenc-releases must already be published and immutable.
 
 name: publish-npm
 
@@ -19,6 +21,11 @@ on:
       local_evidence_sha256:
         description: SHA-256 of the reviewed local release evidence record
         required: true
+        type: string
+      recovery_tag:
+        description: Immutable agenc-vX.Y.Z source tag for a reviewed tooling-only recovery
+        required: false
+        default: ""
         type: string
 
 concurrency:
@@ -39,6 +46,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      release-tag: ${{ steps.source.outputs.release-tag }}
+      source-sha: ${{ steps.source.outputs.source-sha }}
+      recovery-mode: ${{ steps.source.outputs.recovery-mode }}
     steps:
       - name: Check out the exact release SHA
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,8 +59,10 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Bind the run to the reviewed source tag
+        id: source
         env:
           LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          RECOVERY_TAG: ${{ inputs.recovery_tag }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           TESTED_SHA: ${{ inputs.tested_sha }}
         shell: bash
@@ -56,18 +70,35 @@ jobs:
           set -euo pipefail
           [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          test "$TESTED_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          test "$GITHUB_REF_TYPE" = tag
-          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          expected_ref="refs/tags/agenc-v${version}"
-          test "$GITHUB_REF" = "$expected_ref"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          if [[ -z "$RECOVERY_TAG" ]]; then
+            test "$TESTED_SHA" = "$GITHUB_SHA"
+            test "$GITHUB_REF_TYPE" = tag
+            release_tag="$GITHUB_REF_NAME"
+            recovery_mode=false
+          else
+            [[ "$RECOVERY_TAG" =~ ^agenc-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$GITHUB_REF" = refs/heads/main
+            test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+            release_tag="$RECOVERY_TAG"
+            recovery_mode=true
+          fi
+          source_sha="$(git rev-parse --verify "refs/tags/${release_tag}^{commit}")"
+          test "$source_sha" = "$TESTED_SHA"
+          version="$(git show "${source_sha}:package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$release_tag" = "agenc-v${version}"
+          if [[ "$recovery_mode" = false ]]; then
+            test "$GITHUB_REF" = "refs/tags/${release_tag}"
+          fi
+          git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'release-tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+          printf 'source-sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          printf 'recovery-mode=%s\n' "$recovery_mode" >> "$GITHUB_OUTPUT"
   pack:
     needs: release-source
     runs-on: ubuntu-24.04
@@ -88,20 +119,35 @@ jobs:
       - name: Bind the run to the reviewed source tag
         id: source
         env:
+          RECOVERY_MODE: ${{ needs.release-source.outputs.recovery-mode }}
+          RELEASE_TAG: ${{ needs.release-source.outputs.release-tag }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          SOURCE_SHA: ${{ needs.release-source.outputs.source-sha }}
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          test "$GITHUB_REF_TYPE" = tag
-          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          expected_ref="refs/tags/agenc-v${version}"
-          test "$GITHUB_REF" = "$expected_ref"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^agenc-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "$SOURCE_SHA"
+          if [[ "$RECOVERY_MODE" = true ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+            for path in package-lock.json release-toolchain.json packages/agenc/scripts/check-package-ready.mjs; do
+              git show "${SOURCE_SHA}:${path}" > "$RUNNER_TEMP/tagged-$(basename "$path")"
+              cmp "$path" "$RUNNER_TEMP/tagged-$(basename "$path")"
+            done
+          else
+            test "$RECOVERY_MODE" = false
+            test "$GITHUB_REF" = "refs/tags/${RELEASE_TAG}"
+            test "$GITHUB_SHA" = "$SOURCE_SHA"
+          fi
+          version="$(git show "${SOURCE_SHA}:package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "agenc-v${version}"
+          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
@@ -157,7 +203,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "true"
           GH_NO_UPDATE_NOTIFIER: "true"
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.release-source.outputs.release-tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -194,7 +240,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "true"
           GH_NO_UPDATE_NOTIFIER: "true"
-          RELEASE_TAG: ${{ github.ref_name }}
+          RECOVERY_MODE: ${{ needs.release-source.outputs.recovery-mode }}
+          RELEASE_TAG: ${{ needs.release-source.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.release-source.outputs.source-sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -211,17 +259,25 @@ jobs:
           trap cleanup EXIT INT TERM
           cleanup
           mkdir -m 700 "$owned_root" "$artifacts"
-          git worktree add --detach "$source" "$GITHUB_SHA"
-          test "$(git -C "$source" rev-parse HEAD)" = "$GITHUB_SHA"
+          git worktree add --detach "$source" "$SOURCE_SHA"
+          test "$(git -C "$source" rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git -C "$source" status --porcelain=v1 --untracked-files=all)"
           npm ci --prefix "$source" --cache "$owned_root/npm-cache" \
             --ignore-scripts --no-audit --no-fund
+          release_tool="$source/scripts/npm-release.mjs"
+          if [[ "$RECOVERY_MODE" = true ]]; then
+            npm ci --prefix "$source_root" --cache "$owned_root/npm-tooling-cache" \
+              --ignore-scripts --no-audit --no-fund
+            release_tool="$source_root/scripts/npm-release.mjs"
+          else
+            test "$RECOVERY_MODE" = false
+          fi
           install -m 0644 "$RUNNER_TEMP/runtime-release/agenc-runtime-manifest-v2.json" \
             "$source/packages/agenc/generated/agenc-runtime-manifest-v2.json"
           source_epoch="$(git -C "$source" show -s --format=%ct HEAD)"
           (
             cd "$source"
-            export AGENC_BUILD_COMMIT="$GITHUB_SHA"
+            export AGENC_BUILD_COMMIT="$SOURCE_SHA"
             export SOURCE_DATE_EPOCH="$source_epoch"
             npm run sbom -- --output "$owned_root/agenc-core.spdx.json"
             node packages/agenc/scripts/prepare-release-assets.mjs \
@@ -239,7 +295,7 @@ jobs:
               --prepared-root "$owned_root/verified-release" \
               --tag "$RELEASE_TAG"
             node packages/agenc/scripts/check-package-ready.mjs
-            node scripts/npm-release.mjs pack --silent \
+            node "$release_tool" pack --silent \
               --pack-destination "$artifacts" --workspace=@tetsuo-ai/agenc
           )
           test "$(find "$artifacts" -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
@@ -289,7 +345,7 @@ jobs:
           PY
 
   publish:
-    needs: pack
+    needs: [release-source, pack]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: npm-production
@@ -307,18 +363,30 @@ jobs:
       - name: Revalidate the approved source tag
         env:
           PACKAGE_VERSION: ${{ needs.pack.outputs.package-version }}
+          RECOVERY_MODE: ${{ needs.release-source.outputs.recovery-mode }}
+          RELEASE_TAG: ${{ needs.release-source.outputs.release-tag }}
           REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          SOURCE_SHA: ${{ needs.release-source.outputs.source-sha }}
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
-          test "$GITHUB_REF_TYPE" = tag
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^agenc-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$GITHUB_REF" = "refs/tags/agenc-v${PACKAGE_VERSION}"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse --verify "${GITHUB_REF}^{commit}")" = "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test "$RELEASE_TAG" = "agenc-v${PACKAGE_VERSION}"
+          test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "$SOURCE_SHA"
+          if [[ "$RECOVERY_MODE" = true ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+          else
+            test "$RECOVERY_MODE" = false
+            test "$GITHUB_REF" = "refs/tags/${RELEASE_TAG}"
+            test "$GITHUB_SHA" = "$SOURCE_SHA"
+          fi
+          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
       - name: Install digest-pinned Node and npm
@@ -369,11 +437,26 @@ jobs:
           echo "$gh_root/bin" >> "$GITHUB_PATH"
 
       - name: Install the release verifier dependencies
+        env:
+          RECOVERY_MODE: ${{ needs.release-source.outputs.recovery-mode }}
+          SOURCE_SHA: ${{ needs.release-source.outputs.source-sha }}
         shell: bash
         run: |
           set -euo pipefail
           npm ci --ignore-scripts --no-audit --no-fund
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          source_root="$(pwd -P)"
+          if [[ "$RECOVERY_MODE" = true ]]; then
+            release_source="$RUNNER_TEMP/npm-release-source"
+            git worktree add --detach "$release_source" "$SOURCE_SHA"
+          else
+            test "$RECOVERY_MODE" = false
+            release_source="$source_root"
+          fi
+          test "$(git -C "$release_source" rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git -C "$release_source" status --porcelain=v1 --untracked-files=all)"
+          printf 'NPM_RELEASE_SOURCE=%s\n' "$release_source" >> "$GITHUB_ENV"
+          printf 'NPM_RELEASE_TOOL=%s\n' "$source_root/scripts/npm-release.mjs" >> "$GITHUB_ENV"
 
       - name: Download the exact reviewed npm bytes
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -397,7 +480,10 @@ jobs:
           test -n "$tarball"
           test -f "$tarball.release.json"
           test "$(find "$artifacts" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
-          node scripts/npm-release.mjs verify "$tarball"
+          (
+            cd "$NPM_RELEASE_SOURCE"
+            node "$NPM_RELEASE_TOOL" verify "$tarball"
+          )
 
       - name: Attest the approved npm tarball and receipt
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
@@ -434,4 +520,7 @@ jobs:
           done
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
-          node scripts/npm-release.mjs publish "$tarball" --tag=latest
+          (
+            cd "$NPM_RELEASE_SOURCE"
+            node "$NPM_RELEASE_TOOL" publish "$tarball" --tag=latest
+          )

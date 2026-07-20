@@ -245,6 +245,33 @@ test("pack writes a deterministic receipt bound to exact tarball bytes", async (
   }
 });
 
+test("pack accepts lifecycle output before npm's terminal JSON document", async () => {
+  const work = fixture();
+  try {
+    const packagePath = join(work.source, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.scripts = { prepack: "node prepack-output.mjs" };
+    writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+    writeFileSync(
+      join(work.source, "prepack-output.mjs"),
+      "process.stdout.write('[launcher package] verified 5 runtime artifact(s)\\n' +\n" +
+        "  '[package modes] files=0644 dirs/bins=0755\\n');\n",
+    );
+
+    const packed = await packRelease({
+      cwd: work.source,
+      args: ["--silent", "--pack-destination", work.output],
+      git: fakeGit(),
+      nodeVersion: releaseToolchain.nodeVersion,
+      validateManifest: skipManifestValidation,
+    });
+    assert.ok(readFileSync(packed.artifactPath).length > 0);
+    assert.ok(readFileSync(packed.receiptPath).length > 0);
+  } finally {
+    rmSync(work.root, { recursive: true, force: true });
+  }
+});
+
 test("pack rejects an incomplete launcher manifest before invoking npm pack", async () => {
   const work = fixture();
   let packCalls = 0;

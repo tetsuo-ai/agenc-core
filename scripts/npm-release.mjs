@@ -417,9 +417,24 @@ function writeReceiptAtomic(path, receipt) {
 
 function parsePackJson(stdout) {
   let value;
-  try {
-    value = JSON.parse(stdout);
-  } catch {
+  let parsed = false;
+  // npm forwards successful lifecycle-script stdout before the JSON requested
+  // by --json. Parse only a terminal JSON document so those reviewed messages
+  // are allowed without accepting trailing non-JSON output.
+  for (
+    let offset = stdout.lastIndexOf("[");
+    offset >= 0;
+    offset = stdout.lastIndexOf("[", offset - 1)
+  ) {
+    try {
+      value = JSON.parse(stdout.slice(offset));
+      parsed = true;
+      break;
+    } catch {
+      // Nested arrays and non-JSON lifecycle messages are not document starts.
+    }
+  }
+  if (!parsed) {
     throw new Error(`npm pack did not emit valid JSON: ${stdout.slice(0, 500)}`);
   }
   if (!Array.isArray(value) || value.length !== 1) {

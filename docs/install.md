@@ -465,6 +465,34 @@ resolved package inventory is stored at
      -f local_evidence_sha256="$evidence_sha256"
    ```
 
+   If the immutable tag's npm workflow fails before upload because of a
+   release-tooling defect, do not move the tag, rebuild runtime assets, or
+   publish locally. Land a reviewed tooling repair on `main`, reverify the
+   immutable runtime release and unchanged evidence digest, then use the
+   workflow's explicit recovery mode:
+
+   ```bash
+   git fetch origin main --tags
+   test "$(git rev-parse "${tag}^{commit}")" = "$tested_sha"
+   git merge-base --is-ancestor "$tested_sha" origin/main
+   gh workflow run publish-npm.yml --repo tetsuo-ai/agenc-core \
+     --ref main \
+     -f tested_sha="$tested_sha" \
+     -f local_evidence_sha256="$evidence_sha256" \
+     -f recovery_tag="$tag"
+   ```
+
+   Recovery mode requires the workflow checkout to equal current `main`,
+   resolves `tested_sha` from the immutable `recovery_tag`, requires that
+   source to remain in `main`, and compares the lockfile, release-toolchain
+   pins, and launcher manifest validator with the tag. It executes the reviewed
+   repaired packer outside a clean detached checkout of the tagged source, so
+   the tarball and receipt remain bound to the original tag commit. The
+   workflow-run attestations and npm provenance identify the reviewed recovery
+   tooling commit. This exception is only for downstream npm recovery after an
+   immutable matching runtime release; identity drift still requires a new
+   version.
+
 5. `https://get.agenc.ag/{install.sh,install.ps1,manifest-v2.json,manifest.json}`
    307-redirect to the release assets. The site root serves the versioned
    installer landing page. Vercel project `agenc-get` has its complete tracked
