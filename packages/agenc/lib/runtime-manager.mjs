@@ -1143,7 +1143,36 @@ export async function ensureRuntime({
   const binRel = artifact?.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc";
   const versionDir = dirname(installDir);
   mkdirSync(versionDir, { recursive: true, mode: 0o700 });
-  chmodSync(versionDir, 0o700);
+  // Repair every owner-owned segment between the version dir and the home
+  // root, inclusive of the version dir. Pre-hardening launchers created
+  // <home>/runtime with the ambient umask, so an 002-umask install from
+  // before the 0.6.2 private-directory assertion is group-writable and every
+  // command since then fails with "permits untrusted mutation" and no
+  // automatic path out. Directories not owned by this uid are left alone —
+  // the assertion downstream reports those precisely, and chmod would throw
+  // EPERM anyway.
+  if (process.platform !== "win32" && typeof process.getuid === "function") {
+    for (
+      let current = versionDir;
+      current !== home && dirname(current) !== current;
+      current = dirname(current)
+    ) {
+      try {
+        const stats = lstatSync(current);
+        if (
+          stats.isDirectory() &&
+          !stats.isSymbolicLink() &&
+          stats.uid === process.getuid()
+        ) {
+          chmodSync(current, 0o700);
+        }
+      } catch {
+        /* leave it for the private-directory assertion */
+      }
+    }
+  } else {
+    chmodSync(versionDir, 0o700);
+  }
   const lockPath = `${installDir}.agenc-lock.sqlite`;
 
   if (

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   ensureDaemonForLaunch,
+  main,
   readDaemonPid,
   resolveAgenCHome,
   resolveDaemonCookiePath,
@@ -132,5 +133,57 @@ test("ensureDaemonForLaunch starts daemon and waits for health check", async () 
     });
     assert.equal(result.status, "started");
     assert.deepEqual(calls, [1, undefined]);
+  });
+});
+
+test("main continues to the requested command when daemon autostart fails", async () => {
+  await withTempHome(async (home) => {
+    // Fake runtime: `daemon start` always fails; any other command records
+    // its argv and succeeds. Models the bootstrap deadlock where a broken
+    // daemon blocked `agenc update` — the command that would fix it.
+    const marker = join(home, "spawned-args.json");
+    const fakeRuntime = join(home, "fake-runtime.mjs");
+    await writeFile(
+      fakeRuntime,
+      [
+        'import { writeFileSync } from "node:fs";',
+        "const args = process.argv.slice(2);",
+        'if (args[0] === "daemon") process.exit(1);',
+        `writeFileSync(${JSON.stringify(marker)}, JSON.stringify(args));`,
+        "process.exit(0);",
+      ].join("\n"),
+    );
+    const env = {
+      ...process.env,
+      AGENC_HOME: home,
+      AGENC_DAEMON_READY_TIMEOUT_MS: "25",
+    };
+    const stderrChunks = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk, ...rest) => {
+      stderrChunks.push(String(chunk));
+      return originalWrite.call(process.stderr, chunk, ...rest);
+    };
+    let exitCode;
+    try {
+      exitCode = await main(["update"], {
+        env,
+        cwd: home,
+        runtimeBin: fakeRuntime,
+        userHome: home,
+      });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    // Revert guard: the pre-0.7.3 launcher returned 1 here and never spawned
+    // the runtime, so the marker file did not exist.
+    assert.equal(exitCode, 0);
+    assert.deepEqual(
+      JSON.parse(await readFile(marker, "utf8")),
+      ["update"],
+    );
+    const stderrText = stderrChunks.join("");
+    assert.match(stderrText, /daemon autostart failed/);
+    assert.match(stderrText, /continuing without the daemon/);
   });
 });

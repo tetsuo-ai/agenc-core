@@ -125,11 +125,18 @@ base_url = "https://api.openai.com/v1"
 default_model = "gpt-5"
 context_window_tokens = 128000
 max_output_tokens = 16384
+timeout_ms = 120000
 fallback_models = ["gpt-4.1"]
 ```
 
 Optional: `capability_overrides`, nested `fallback` (`targets`, `models`,
 `max_failures`, `statuses`).
+
+`timeout_ms` is the provider request timeout. For streaming responses it is
+the **inter-chunk idle timeout** — how long the stream may go silent before
+it is aborted — not a cap on total stream duration; a long reasoning turn
+that keeps streaming is never cut off by elapsed time alone. `0` disables
+the timeout entirely. Unset uses the provider's built-in default (120s).
 
 ### `[permissions]`
 

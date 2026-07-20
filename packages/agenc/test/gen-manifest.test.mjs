@@ -42,6 +42,15 @@ const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const releaseToolchain = JSON.parse(
   readFileSync(join(repoRoot, "release-toolchain.json"), "utf8"),
 );
+// Post-v0.7.2 trees must feed generateManifest the immutable pinned v0.7.2
+// legacy bridge bytes. The fixture is the exact public release asset; its
+// identity is asserted against the reviewed central pins so fixture drift
+// fails loudly instead of masking a contract change.
+const frozenLegacyFixture = {
+  frozenLegacyPath: resolve(import.meta.dirname, "fixtures", "agenc-v0.7.2-legacy-manifest.json"),
+  frozenLegacySha256: releaseToolchain.legacyBridge.sha256,
+  frozenLegacyBytes: releaseToolchain.legacyBridge.bytes,
+};
 const sourceCommit = process.env.AGENC_BUILD_COMMIT || execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: repoRoot,
   encoding: "utf8",
@@ -553,6 +562,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       outputPath: manifestPath,
       legacyOutputPath: legacyManifestPath,
       resolveSourceTagCommit,
+      ...frozenLegacyFixture,
     });
     execFileSync(
       process.execPath,
@@ -702,7 +712,10 @@ test("release asset preparation revalidates and binds every provenance sidecar",
         verifySourceTag: false,
         readSourceFile,
       }),
-      /not the deterministic projection/,
+      // Post-v0.7.2 a tampered legacy bridge fails the pinned byte-identity
+      // check (pre-projection); at v0.7.2 it failed the deterministic
+      // projection check. Both are the same fail-closed contract.
+      /does not match its pinned byte identity/,
     );
     assert.equal(existsSync(detachedLegacyOutput), false);
     writeFileSync(legacyManifestPath, reviewedLegacy);
@@ -904,15 +917,20 @@ test("full release manifest covers the exact five-platform matrix and enforces t
       outputPath,
       legacyOutputPath,
       resolveSourceTagCommit,
+      ...frozenLegacyFixture,
     });
     assert.deepEqual(
       manifest.artifacts.map((artifact) => `${artifact.platform}-${artifact.arch}`),
       ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win-x64"],
     );
-    assert.deepEqual(legacyManifest, projectLegacyManifest(manifest));
+    // Post-v0.7.2 the legacy bridge is the frozen pinned asset, byte for
+    // byte — never a projection of the current release manifest.
+    assert.equal(legacyManifest.runtimeVersion, LEGACY_BRIDGE_CONTRACT.runtimeVersion);
+    const writtenLegacy = readFileSync(legacyOutputPath);
+    assert.equal(writtenLegacy.length, releaseToolchain.legacyBridge.bytes);
     assert.equal(
-      readFileSync(legacyOutputPath, "utf8"),
-      `${JSON.stringify(legacyManifest, null, 2)}\n`,
+      createHash("sha256").update(writtenLegacy).digest("hex"),
+      releaseToolchain.legacyBridge.sha256,
     );
     assert.ok(
       manifest.artifacts

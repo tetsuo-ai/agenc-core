@@ -1110,6 +1110,9 @@ async function providerFactoryOptionsFromSettings(params: {
   return {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
+    ...(params.settings?.timeoutMs !== undefined
+      ? { timeoutMs: params.settings.timeoutMs }
+      : {}),
     ...(managedCredential?.baseURL !== undefined
       ? { extra: { ...extra, managedGateway: true } }
       : {}),

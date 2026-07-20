@@ -1,0 +1,63 @@
+{
+  "manifestVersion": 1,
+  "runtimeVersion": "0.7.2",
+  "releaseRepository": "tetsuo-ai/agenc-releases",
+  "releaseTag": "agenc-v0.7.2",
+  "artifacts": [
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "runtimeVersion": "0.7.2",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-darwin-arm64-node25-abi141.tar.gz",
+      "sha256": "5b11f8ceeb0fa0bbfdf010e2d691fa5bdbfc1fe4c23580f6ed94f7e12407a948",
+      "bytes": 64289302,
+      "bins": {
+        "agenc": "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      }
+    },
+    {
+      "platform": "darwin",
+      "arch": "x64",
+      "runtimeVersion": "0.7.2",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-darwin-x64-node25-abi141.tar.gz",
+      "sha256": "c3b5bdce06831fd4dbf5791194aeaace46672f560f8b4ae0ae67b9521bbe58f0",
+      "bytes": 64926866,
+      "bins": {
+        "agenc": "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      }
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "runtimeVersion": "0.7.2",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-linux-arm64-node25-abi141.tar.gz",
+      "sha256": "abcb28cc611be964300b07d8d6105f60cd70bb67414e80a1d97b87abe487f89d",
+      "bytes": 73128376,
+      "bins": {
+        "agenc": "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      }
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "runtimeVersion": "0.7.2",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-linux-x64-node25-abi141.tar.gz",
+      "sha256": "1f1d6e445963876b2f8900ed3188bfc01741fe2007eda55cc0119c9c38f4eff4",
+      "bytes": 72649356,
+      "bins": {
+        "agenc": "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      }
+    },
+    {
+      "platform": "win",
+      "arch": "x64",
+      "runtimeVersion": "0.7.2",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.7.2/agenc-runtime-0.7.2-win-x64-node25-abi141.tar.gz",
+      "sha256": "3035b3ec41460b84ce8d313b81303493e54d3816ca754b41b38749bfde02c419",
+      "bytes": 65825990,
+      "bins": {
+        "agenc": "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      }
+    }
+  ]
+}

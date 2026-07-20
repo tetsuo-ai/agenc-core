@@ -1183,6 +1183,9 @@ export async function bootstrapLocalRuntimeSession(
       apiKey: selectedApiKey,
       ...(selectedBaseURL ? { baseURL: selectedBaseURL } : {}),
       model: selectedProviderModel,
+      ...(providerSettings?.timeoutMs !== undefined
+        ? { timeoutMs: providerSettings.timeoutMs }
+        : {}),
       tools: registry.toLLMTools(),
       extra: {
         emitWarning: emitProviderWarning,

@@ -39,6 +39,8 @@ export interface ResolvedProviderSettings {
   readonly defaultModel?: string;
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
+  /** Request timeout in ms; inter-chunk idle for streams. 0 disables. */
+  readonly timeoutMs?: number;
   readonly capabilityOverrides?: ProviderCapabilityOverrides;
   readonly fallbackTargets?: readonly ProviderFallbackTargetConfig[];
   readonly fallbackMaxFailures?: number;
@@ -122,6 +124,7 @@ export function resolveProviderSettings(
     providerConfig?.context_window_tokens,
   );
   const maxOutputTokens = positiveInteger(providerConfig?.max_output_tokens);
+  const timeoutMs = nonNegativeInteger(providerConfig?.timeout_ms);
   const fallbackTargets = normalizeProviderFallbackTargets(slug, providerConfig);
   const fallbackMaxFailures = positiveInteger(
     providerConfig?.fallback?.max_failures,
@@ -145,6 +148,7 @@ export function resolveProviderSettings(
     ...(maxOutputTokens !== undefined
       ? { maxOutputTokens }
       : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(providerConfig?.capability_overrides
       ? { capabilityOverrides: providerConfig.capability_overrides }
       : {}),
@@ -160,6 +164,14 @@ function positiveInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+// 0 is meaningful for timeout_ms: it disables the timeout rather than being
+// dropped like an invalid value.
+function nonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized >= 0 ? normalized : undefined;
 }
 
 function normalizePositiveIntegerArray(
