@@ -54,6 +54,8 @@ import {
 } from "../../session/agenc-delegate.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import { applyUnattendedPermissionPolicyToContext } from "../../permissions/unattended-policy.js";
+import type { PermissionModeRegistry } from "../../permissions/permission-mode.js";
 import type { StateRunDurabilityRepository } from "../../state/run-durability.js";
 import type { ReviewerInvoker } from "../../workflow/independent-review.js";
 import type {
@@ -74,6 +76,7 @@ import type {
   WorkflowChildOutcome,
   WorkflowJournalWriter,
   WorkflowRunJournal,
+  WorkflowRunSessionPolicy,
   WorkflowTerminalJournalIntent,
   WorkflowWorktreeBroker,
 } from "./verified-change-controller.js";
@@ -108,6 +111,16 @@ export interface WorkflowSessionSeamsOptions {
    * `fallbackCwd` so the failure diagnostic itself stays journalable).
    */
   readonly resolveRunRepoPath: (runId: string) => string | undefined;
+  /**
+   * Resolve a resumable run's frozen permission policy from its durable
+   * intake spec so a restarted daemon re-applies the SAME policy the run
+   * was admitted under. `undefined` = no durable spec (the session keeps
+   * the daemon default, which only ever happens for runs that are about to
+   * be fail-closed anyway).
+   */
+  readonly resolveRunPolicy: (
+    runId: string,
+  ) => WorkflowRunSessionPolicy | undefined;
   readonly fallbackCwd: string;
   readonly warn: (message: string) => void;
   /** Test seam — production uses {@link bootstrapLocalRuntimeSession}. */
@@ -177,6 +190,133 @@ function sessionBroker(
 function ownerRunIdOfChild(childRunId: string): string | undefined {
   const separator = childRunId.lastIndexOf(":");
   return separator > 0 ? childRunId.slice(0, separator) : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// A1 — durable child terminals for cross-restart adoption
+// ---------------------------------------------------------------------------
+
+/** Deterministic event id for a child's durable terminal record. */
+export const WORKFLOW_CHILD_TERMINAL_EVENT_PREFIX = "workflow-child-terminal:";
+
+/**
+ * Durably record a workflow child's terminal outcome in the owning run's
+ * state database, keyed by the deterministic child run id that the parent
+ * effect intent already carries. This honestly extends the EXISTING run
+ * machinery — the child gets its own `run_lifecycle_epochs` row and its own
+ * immutable `run_terminal_results` row (no new store, no parallel table) —
+ * so a post-restart `spawner.inspect(childRunId)` can adopt the outcome
+ * instead of reporting "unknown".
+ *
+ * Idempotent: re-recording an existing terminal is a no-op; the sticky
+ * per-(run, epoch) terminal-conflict rules of the repository still apply to
+ * genuinely conflicting content.
+ */
+export function recordWorkflowChildTerminal(
+  repo: StateRunDurabilityRepository,
+  childRunId: string,
+  outcome: WorkflowChildOutcome,
+  now: () => Date = () => new Date(),
+): void {
+  const at = now().toISOString();
+  repo.ensureInitialEpoch({ runId: childRunId, openedAt: at });
+  const epoch = repo.currentEpoch(childRunId)?.epoch ?? 1;
+  if (repo.getTerminalResult(childRunId, epoch) !== undefined) return;
+  repo.recordTerminalResult({
+    epoch,
+    eventId: `${WORKFLOW_CHILD_TERMINAL_EVENT_PREFIX}${childRunId}`,
+    result: {
+      runId: childRunId,
+      status: outcome.status,
+      exitCode: outcome.status === "completed" ? 0 : 1,
+      stopReason: null,
+      finalMessage: outcome.finalMessage,
+      usage: outcome.usage,
+      lastSequence: null,
+      finishedAt: at,
+    },
+  });
+}
+
+/**
+ * D3 adoption source of truth after a daemon restart: the child's durable
+ * terminal, if one was recorded before the crash. A child that genuinely
+ * died mid-flight with the daemon recorded nothing and stays `undefined`
+ * (the caller reports "unknown" → the run terminates `unknown_outcome`).
+ */
+export function inspectWorkflowChildTerminal(
+  repo: StateRunDurabilityRepository,
+  childRunId: string,
+): WorkflowChildOutcome | undefined {
+  const terminal = repo.getCurrentTerminalResult(childRunId);
+  if (terminal === undefined) return undefined;
+  return {
+    status: terminal.status,
+    finalMessage: terminal.finalMessage,
+    usage: terminal.usage,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A2 — spec permission policy on the run session
+// ---------------------------------------------------------------------------
+
+/**
+ * Bootstrap argv for the spec's frozen permission mode — the exact
+ * background-agent-runner mechanism (`buildBootstrapArgv`):
+ * `bypassPermissions` rides `--yolo` (startup-selection wires the full
+ * bypass semantics off that flag); every other mode rides
+ * `--permission-mode <mode>`. Duplicate flags already present on the
+ * daemon's argv are never doubled.
+ */
+export function workflowPermissionModeArgv(
+  permissionMode: WorkflowRunSessionPolicy["permissionMode"],
+  baseArgv: readonly string[] = process.argv,
+): readonly string[] {
+  const argv = [...baseArgv];
+  if (
+    permissionMode === "bypassPermissions" &&
+    !argv.includes("--yolo") &&
+    !argv.includes("--dangerously-bypass-approvals-and-sandbox") &&
+    !argv.includes("--allow-dangerously-skip-permissions")
+  ) {
+    argv.push("--yolo");
+  }
+  if (
+    permissionMode !== "bypassPermissions" &&
+    !argv.includes("--permission-mode")
+  ) {
+    argv.push("--permission-mode", permissionMode);
+  }
+  return argv;
+}
+
+/**
+ * Install the spec's unattended allow/deny lists on the run session —
+ * mirrors the runner's `installUnattendedPermissionPolicy`. Explicit modes
+ * (`bypassPermissions`/`plan`/`acceptEdits`) are preserved by
+ * `applyUnattendedPermissionPolicyToContext`; `default` becomes
+ * `unattended` with the declared lists.
+ */
+async function installWorkflowUnattendedPolicy(
+  registry: PermissionModeRegistry,
+  policy: WorkflowRunSessionPolicy,
+): Promise<void> {
+  if (
+    policy.unattendedAllow === undefined &&
+    policy.unattendedDeny === undefined
+  ) {
+    return;
+  }
+  const next = applyUnattendedPermissionPolicyToContext(registry.current(), {
+    ...(policy.unattendedAllow !== undefined
+      ? { allowlist: policy.unattendedAllow }
+      : {}),
+    ...(policy.unattendedDeny !== undefined
+      ? { denylist: policy.unattendedDeny }
+      : {}),
+  });
+  await registry.update(next);
 }
 
 interface StepJournalContext {
@@ -425,12 +565,16 @@ export function createWorkflowSessionSeams(
   const openEntry = (
     runId: string,
     repoPath?: string,
+    policy?: WorkflowRunSessionPolicy,
   ): Promise<RunSessionEntry> => {
     const existing = entries.get(runId);
     if (existing !== undefined) return existing;
     const pending = (async (): Promise<RunSessionEntry> => {
       const resolvedRepoPath =
         repoPath ?? options.resolveRunRepoPath(runId) ?? options.fallbackCwd;
+      // A2: the frozen spec's policy governs the run session — explicit on
+      // start, re-resolved from the durable intake spec on resume.
+      const resolvedPolicy = policy ?? options.resolveRunPolicy(runId);
       const boot = await bootstrap({
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.authBackend !== undefined
@@ -441,10 +585,19 @@ export function createWorkflowSessionSeams(
         // rollout it journaled before the restart.
         resumeConversation: repoPath === undefined,
         cwd: resolvedRepoPath,
+        ...(resolvedPolicy !== undefined
+          ? { argv: workflowPermissionModeArgv(resolvedPolicy.permissionMode) }
+          : {}),
         executionAdmissionAutonomous: true,
         executionAdmissionKernel: options.kernel,
         executionAdmissionBudgetIdentity: runId,
       });
+      if (resolvedPolicy !== undefined) {
+        await installWorkflowUnattendedPolicy(
+          boot.session.permissionModeRegistry,
+          resolvedPolicy,
+        );
+      }
       return {
         runId,
         repoPath: resolvedRepoPath,
@@ -495,7 +648,7 @@ export function createWorkflowSessionSeams(
 
   const journal: WorkflowJournalWriter = {
     open: async (runId, context) => {
-      const entry = await openEntry(runId, context?.repoPath);
+      const entry = await openEntry(runId, context?.repoPath, context?.policy);
       return new SessionWorkflowJournal(entry, () => closeEntry(runId));
     },
   };
@@ -661,6 +814,18 @@ export function createWorkflowSessionSeams(
       entry.liveChildren.set(input.childRunId, pending);
       try {
         const outcome = await pending;
+        // A1: make the child's terminal durable BEFORE the parent effect
+        // result can commit, keyed by the deterministic child run id the
+        // effect intent recorded. This is exactly the window the M5 exit
+        // criterion exercises — child finished, daemon dies before the
+        // parent `effect_result` — and adoption recovers it after restart.
+        try {
+          recordWorkflowChildTerminal(entry.repo, input.childRunId, outcome);
+        } catch (error) {
+          options.warn(
+            `workflow child ${input.childRunId} terminal was not durably recorded: ${errorMessage(error)}`,
+          );
+        }
         rememberSettled(entry, input.childRunId, outcome);
         return outcome;
       } finally {
@@ -669,22 +834,38 @@ export function createWorkflowSessionSeams(
     },
     inspect: async (childRunId): Promise<WorkflowChildInspection> => {
       const ownerRunId = ownerRunIdOfChild(childRunId);
-      const pending =
-        ownerRunId === undefined ? undefined : entries.get(ownerRunId);
-      if (pending === undefined) return { state: "unknown" };
-      const entry = await pending;
-      const settled = entry.settledChildren.get(childRunId);
-      if (settled !== undefined) {
-        return { state: "terminal", outcome: settled };
+      if (ownerRunId === undefined) return { state: "unknown" };
+      const pending = entries.get(ownerRunId);
+      const entry = pending === undefined ? undefined : await pending;
+      if (entry !== undefined) {
+        const settled = entry.settledChildren.get(childRunId);
+        if (settled !== undefined) {
+          return { state: "terminal", outcome: settled };
+        }
+        const live = entry.liveChildren.get(childRunId);
+        if (live !== undefined) {
+          return { state: "live", outcome: live };
+        }
       }
-      const live = entry.liveChildren.get(childRunId);
-      if (live !== undefined) {
-        return { state: "live", outcome: live };
+      // A1 cross-restart adoption: a child from a previous daemon process
+      // died with that process, but its terminal outcome may have been
+      // durably recorded (keyed by this child id) before the crash. Adopt
+      // that durable terminal. A child with NO durable terminal genuinely
+      // has an unknowable outcome — the only honest answer stays `unknown`
+      // (D3: the run terminates unknown_outcome with review pending, never
+      // a silent respawn).
+      try {
+        const repo =
+          entry?.repo ?? options.durability({ runId: ownerRunId });
+        const durable = inspectWorkflowChildTerminal(repo, childRunId);
+        if (durable !== undefined) {
+          return { state: "terminal", outcome: durable };
+        }
+      } catch (error) {
+        options.warn(
+          `workflow child ${childRunId} durable-terminal inspection failed: ${errorMessage(error)}`,
+        );
       }
-      // A delegate child from a previous daemon process died with that
-      // process and left no durable terminal keyed by this child id. The
-      // only honest durable answer is `unknown` (D3: the run terminates
-      // unknown_outcome with review pending, never a silent respawn).
       return { state: "unknown" };
     },
   };

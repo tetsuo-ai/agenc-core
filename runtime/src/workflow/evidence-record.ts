@@ -105,6 +105,13 @@ export interface VerifiedChangeRecord {
     readonly eventCount: number;
     readonly headEventDigest: Sha256Digest;
     readonly sealed: boolean;
+    /**
+     * The ledger seal's own digest (sha256 of the exact seal-document
+     * bytes). Required for `completed` records: it is the external pin an
+     * offline reconstruction hands to `verifyEvidenceLedger`, making the
+     * exported bundle self-verifiable without local seal discovery.
+     */
+    readonly sealDigest?: Sha256Digest;
   };
   readonly documentDigest: Sha256Digest;
 }
@@ -255,8 +262,20 @@ export function validateVerifiedChangeRecord(
     if (!SHA256_PATTERN.test(String(ledger.headEventDigest))) {
       errors.push("evidenceLedger.headEventDigest must be sha256:<64 hex>");
     }
+    if (
+      ledger.sealDigest !== undefined &&
+      !SHA256_PATTERN.test(String(ledger.sealDigest))
+    ) {
+      errors.push("evidenceLedger.sealDigest must be sha256:<64 hex>");
+    }
     if (record.terminal?.status === "completed" && ledger.sealed !== true) {
       errors.push("completed record requires a sealed evidence ledger");
+    }
+    if (
+      record.terminal?.status === "completed" &&
+      ledger.sealDigest === undefined
+    ) {
+      errors.push("completed record requires evidenceLedger.sealDigest");
     }
   }
   if (typeof record.documentDigest === "string") {

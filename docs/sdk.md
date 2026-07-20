@@ -69,9 +69,12 @@ Key `AgencClient` methods:
 - `spawnAgent(params)` → background agent (`agent.create`)
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
 - `listAgents()` / `stopAgent(id)` / `agentLogs(id)`
+- `startRun(params)` → start the M5 verified-change workflow as a durable
+  daemon run (`run.start`; resolves after the intake commit with
+  `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
-- `request(method, params)` → raw typed JSON-RPC for any of the **45** daemon methods
+- `request(method, params)` → raw typed JSON-RPC for any of the **46** daemon methods
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 
 Permission requests with no registered handler are **denied** (never granted)
@@ -165,6 +168,29 @@ node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 
+### Starting a verified-change workflow
+
+```ts
+const started = await client.startRun({
+  goal: "Fix the flaky retry counter in the sync worker.",
+  cwd: "/abs/path/to/repo",
+  reviewerModel: "grok-4.5",
+  permissionMode: "acceptEdits",
+  requiredVerification: [{ label: "unit", script: "npm test" }],
+});
+// started: { runId, specDigest, baseCommit, baseDirty }
+```
+
+`startRun` resolves after the durable intake commit; the fixed pipeline
+continues in the daemon. Follow it by run id with the existing cursor
+contract: `runStatus` adds a `workflow` step projection (stage statuses,
+attempts, verdicts, artifact pointers, stop reason), `runResult` returns the
+durable terminal, and `runEvidence` adds the sealed evidence `bundle`
+(verified-change record digest, ledger path, `cas://sha256/...` artifact
+pointers). The workflow demands at least one required verification command;
+`completed` is refused without passing commands, a `VERDICT: PASS`
+verification agent, and a zero-blocker independent review.
+
 ### Durable run inspection
 
 ```ts
@@ -226,7 +252,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (45 methods)
+## Daemon method surface (46 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -235,7 +261,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | --- | --- |
 | lifecycle | `initialize`, `request.cancel` |
 | agents | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs` |
-| runs | `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel` |
+| runs | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel` |
 | sessions | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.cancelTurn`, `session.mcp.addServer` |
 | messaging | `message.send`, `message.stream` |
 | realtime | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices` |
