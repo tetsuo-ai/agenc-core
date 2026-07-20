@@ -38,7 +38,10 @@ import {
 } from "../../eval-contract/evidence-ledger.js";
 import { sha256Digest } from "../../eval-contract/canonical-json.js";
 import { canonicalizeJson } from "../../eval-contract/canonical-json.js";
-import type { Sha256Digest } from "../../eval-contract/types.js";
+import {
+  WORKFLOW_LOCAL_ANCHOR_SECRET_FILENAME,
+  workflowLocalAnchorProvider,
+} from "../../workflow/local-anchor.js";
 import {
   openStateDatabasePaths,
   resolveStateDatabasePaths,
@@ -56,6 +59,7 @@ import {
   VerifiedChangeWorkflowController,
   type WorkflowDurabilityContext,
   type WorkflowEvidenceLedger,
+  type WorkflowRunSessionPolicy,
 } from "./verified-change-controller.js";
 import { readWorkflowStepEvidence } from "./steps.js";
 import {
@@ -83,13 +87,17 @@ function sanitizeIdentifierPart(value: string): string {
  * Integrity-only local anchor for the per-run workflow evidence ledger.
  * Keyed by a per-daemon-home secret so a seal cannot be silently reforged
  * by editing ledger files, but NOT externally anchored — external anchoring
- * remains an explicit later concern.
+ * remains an explicit later concern. The crypto construction is shared with
+ * offline evidence reconstruction (`workflow/local-anchor.ts`).
  */
 async function loadLocalAnchorProvider(
   evidenceRoot: string,
 ): Promise<EvidenceAnchorProvider> {
   await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
-  const secretPath = path.join(evidenceRoot, "local-anchor-secret");
+  const secretPath = path.join(
+    evidenceRoot,
+    WORKFLOW_LOCAL_ANCHOR_SECRET_FILENAME,
+  );
   let secret: Uint8Array;
   try {
     secret = await readFile(secretPath);
@@ -101,38 +109,7 @@ async function loadLocalAnchorProvider(
       },
     );
   }
-  const anchorPolicyDigest = sha256Digest("agenc.workflow.m5.local-anchor.v1");
-  const verifierDigest = sha256Digest("agenc.workflow.m5.local-anchor-verifier.v1");
-  const verificationMaterialDigest = sha256Digest(secret);
-  const signatureFor = (bytes: Uint8Array): Sha256Digest => {
-    const joined = new Uint8Array(secret.byteLength + bytes.byteLength);
-    joined.set(secret, 0);
-    joined.set(bytes, secret.byteLength);
-    return sha256Digest(joined);
-  };
-  return {
-    anchorPolicyDigest,
-    verifierDigest,
-    async anchor(statementBytes, statementDigest) {
-      return {
-        statementDigest,
-        anchorPolicyDigest,
-        signatureAlgorithm: "ed25519",
-        signatureDigest: signatureFor(statementBytes),
-        verificationMaterialDigest,
-        // The seal schema requires an https URI; the reserved `.invalid`
-        // TLD makes the local-only (non-fetchable) anchoring explicit.
-        anchorUri: `https://local-anchor.agenc-daemon.invalid/${statementDigest.slice("sha256:".length)}`,
-        signerIdentity: "agenc-daemon-local-anchor",
-      };
-    },
-    verify(statementBytes, receipt) {
-      return (
-        receipt.signatureDigest === signatureFor(statementBytes) &&
-        receipt.verificationMaterialDigest === verificationMaterialDigest
-      );
-    },
-  };
+  return workflowLocalAnchorProvider(secret);
 }
 
 /**
@@ -404,13 +381,27 @@ export function createDaemonWorkflowController(options: {
     }
     return repoForPaths(activeResumePaths ?? primaryPaths);
   };
-  const resolveRunRepoPath = (runId: string): string | undefined => {
+  const resolveRunSpec = (runId: string): WorkflowSpec | undefined => {
     const intake = durability({ runId }).getEffect(runId, "workflow.intake");
     if (intake === undefined) return undefined;
-    const spec = readWorkflowStepEvidence(intake).spec as
-      | WorkflowSpec
-      | undefined;
-    return spec?.repoPath;
+    return readWorkflowStepEvidence(intake).spec as WorkflowSpec | undefined;
+  };
+  const resolveRunRepoPath = (runId: string): string | undefined =>
+    resolveRunSpec(runId)?.repoPath;
+  const resolveRunPolicy = (
+    runId: string,
+  ): WorkflowRunSessionPolicy | undefined => {
+    const spec = resolveRunSpec(runId);
+    if (spec === undefined) return undefined;
+    return {
+      permissionMode: spec.permissionMode,
+      ...(spec.unattendedAllow !== undefined
+        ? { unattendedAllow: spec.unattendedAllow }
+        : {}),
+      ...(spec.unattendedDeny !== undefined
+        ? { unattendedDeny: spec.unattendedDeny }
+        : {}),
+    };
   };
   const seams =
     options.sessionSeams ??
@@ -422,6 +413,7 @@ export function createDaemonWorkflowController(options: {
       kernel: options.kernel,
       durability,
       resolveRunRepoPath,
+      resolveRunPolicy,
       fallbackCwd: options.primaryCwd,
       warn: options.warn,
       ...(options.bootstrap !== undefined

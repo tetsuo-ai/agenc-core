@@ -187,10 +187,27 @@ export interface WorkflowDurabilityContext {
   readonly repoPath?: string;
 }
 
+/**
+ * The frozen spec's execution policy, applied to the run's bootstrapped
+ * session (Phase 6): the session-backed journal writer mirrors the
+ * background-agent runner (`--permission-mode`/`--yolo` bootstrap argv +
+ * `installUnattendedPermissionPolicy`) so children never run under the
+ * daemon's default policy. Resumed runs re-resolve it from the durable
+ * intake spec.
+ */
+export interface WorkflowRunSessionPolicy {
+  readonly permissionMode: WorkflowSpec["permissionMode"];
+  readonly unattendedAllow?: readonly string[];
+  readonly unattendedDeny?: readonly string[];
+}
+
 export interface WorkflowJournalWriter {
   open(
     runId: string,
-    context?: { readonly repoPath?: string },
+    context?: {
+      readonly repoPath?: string;
+      readonly policy?: WorkflowRunSessionPolicy;
+    },
   ): Promise<WorkflowRunJournal>;
 }
 
@@ -333,6 +350,7 @@ export class WorkflowIntakeError extends Error {
 }
 
 const DEFAULT_MAX_IMPLEMENT_ATTEMPTS = 2;
+const DEFAULT_PERMISSION_MODE: WorkflowSpec["permissionMode"] = "acceptEdits";
 /** Bounded per-stage retry budget for stage-level (non-verdict) failures. */
 const MAX_STAGE_ATTEMPTS = 2;
 const ZERO_ESTIMATE = {
@@ -487,6 +505,15 @@ export class VerifiedChangeWorkflowController {
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
     const journal = await this.#deps.journal.open(runId, {
       repoPath: params.repoPath,
+      policy: {
+        permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
+        ...(params.unattendedAllow !== undefined
+          ? { unattendedAllow: params.unattendedAllow }
+          : {}),
+        ...(params.unattendedDeny !== undefined
+          ? { unattendedDeny: params.unattendedDeny }
+          : {}),
+      },
     });
     const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
       runId,
@@ -1342,6 +1369,7 @@ export class VerifiedChangeWorkflowController {
         headCommit: exported.headCommit,
         risks,
         ledgerHead: head,
+        sealDigest,
       });
     } catch (error) {
       throw new WorkflowHaltError({
@@ -1410,6 +1438,8 @@ export class VerifiedChangeWorkflowController {
       readonly headCommit: string;
       readonly risks: readonly string[];
       readonly ledgerHead: WorkflowEvidenceLedgerHead;
+      /** Ledger seal digest — pins the exported bundle's seal in the record. */
+      readonly sealDigest: string;
     },
   ): VerifiedChangeRecord {
     const effects = ctx.repo.listEffects(ctx.runId);
@@ -1468,6 +1498,7 @@ export class VerifiedChangeWorkflowController {
         eventCount: input.ledgerHead.eventCount,
         headEventDigest: input.ledgerHead.headEventDigest,
         sealed: input.ledgerHead.sealed,
+        sealDigest: input.sealDigest as Sha256Digest,
       },
     });
   }
@@ -2130,7 +2161,7 @@ function freezeWorkflowSpec(
     ...(params.provider !== undefined ? { provider: params.provider } : {}),
     reviewerModel:
       params.reviewerModel ?? params.model ?? "default-reviewer",
-    permissionMode: params.permissionMode ?? "acceptEdits",
+    permissionMode: params.permissionMode ?? DEFAULT_PERMISSION_MODE,
     ...(params.unattendedAllow !== undefined
       ? { unattendedAllow: params.unattendedAllow }
       : {}),

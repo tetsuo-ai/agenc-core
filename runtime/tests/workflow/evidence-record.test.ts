@@ -101,6 +101,7 @@ function goldenInput() {
       eventCount: 12,
       headEventDigest: `sha256:${HEX_64}` as const,
       sealed: true,
+      sealDigest: `sha256:${HEX_64}` as const,
     },
   };
 }
@@ -164,6 +165,17 @@ describe("verified-change evidence record (M5)", () => {
         evidenceLedger: { ...input.evidenceLedger, sealed: false },
       }),
     ).toThrow(/sealed evidence ledger/);
+  });
+
+  test("completed without the pinned ledger sealDigest is rejected", () => {
+    const input = goldenInput();
+    const { sealDigest: _dropped, ...withoutSealDigest } = input.evidenceLedger;
+    expect(() =>
+      assembleVerifiedChangeRecord({
+        ...input,
+        evidenceLedger: withoutSealDigest,
+      }),
+    ).toThrow(/requires evidenceLedger.sealDigest/);
   });
 
   test("non-completed terminal status requires a machine-readable stopReason", () => {
