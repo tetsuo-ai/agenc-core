@@ -231,12 +231,19 @@ export async function main(
   try {
     await ensureDaemonForLaunch({ argv, env, cwd, runtimeBin: resolvedBin, userHome });
   } catch (error) {
+    // The launcher is transport, not policy: a daemon that cannot start must
+    // not block daemon-independent commands. `agenc update` is the canonical
+    // case — a stale binary whose daemon refuses newer on-disk state made the
+    // fixing update itself unreachable (bootstrap deadlock, 2026-07-20). The
+    // runtime owns the per-command decision and reports the precise failure,
+    // including the daemon child's stderr tail, when a command truly needs
+    // the daemon.
     process.stderr.write(
       `agenc: daemon autostart failed: ${
         error instanceof Error ? error.message : String(error)
-      }\n`,
+      }\n` +
+        "agenc: continuing without the daemon; commands that require it will report the failure\n",
     );
-    return 1;
   }
   return spawnNodeScript(resolvedBin, argv, { env, cwd, stdio: "inherit" });
 }
