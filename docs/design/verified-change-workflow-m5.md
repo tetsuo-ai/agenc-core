@@ -67,11 +67,30 @@ Effect classification drives restart recovery:
   commit. A post-restart `inspect(childRunId)` therefore adopts the durable
   terminal — this closes exactly the
   `after_spawn_before_effect_result` crash window when the child finished
-  first. A child that genuinely died mid-flight with the daemon recorded no
-  terminal and honestly stays "unknown" → `unknown_outcome`. (The
-  independent-review child settles inside its own effect execution and does
-  not yet record a separate durable terminal; a crash mid-review still
-  resolves `unknown_outcome` — an explicit M6 candidate.)
+  first. The independent-review child gets the same treatment even though
+  it settles inside its own effect execution: the controller records its
+  durable terminal (whose payload carries the parsed ReviewOutput and the
+  recorded `independent_review` artifact pointer) strictly before the
+  review `effect_result` can commit, so a crash in the
+  `before_review_commit` window resumes to the same committed review by
+  adoption — the reviewer is never re-invoked. A child that genuinely died
+  mid-flight with the daemon recorded no terminal and honestly stays
+  "unknown" → `unknown_outcome`; a review terminal whose payload cannot be
+  decoded is treated the same way.
+
+Child usage is reported honestly from the durable source that already
+exists: the admission kernel reconciles ACTUAL provider usage per
+reservation, so a real delegate child's rollup is the sum of the reconciled
+reservations under its own admission run id
+(`sumReconciledUsageByRunId`). `held_unknown` reservations are surfaced as
+a count in the step evidence and never summed — reserved is never reported
+as spent, and a child with nothing reconciled reports `null`, not invented
+zeros. The rollup rides the durable child terminal and step evidence, so
+replayed and adopted steps re-accumulate it into the post-restart terminal
+usage. Honest residuals that remain: a child's own sub-agents admit under
+their own run ids and are not folded into the child's rollup, and the
+independent reviewer's one-shot model spend is not attributed to the
+review child's rollup.
 
 Dependency unlocks stop on failed verification, cancellation, budget
 exhaustion, and `unknown_outcome` — enforced first by the controller's

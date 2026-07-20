@@ -80,6 +80,11 @@ import type {
   WorkflowTerminalJournalIntent,
   WorkflowWorktreeBroker,
 } from "./verified-change-controller.js";
+import type { RunUsageTotals } from "../../contracts/run-contracts.js";
+import {
+  inspectWorkflowChildTerminal,
+  recordWorkflowChildTerminal,
+} from "./child-terminals.js";
 import { parseWorkflowStepId } from "./steps.js";
 
 const COMMAND_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -196,64 +201,43 @@ function ownerRunIdOfChild(childRunId: string): string | undefined {
 // A1 — durable child terminals for cross-restart adoption
 // ---------------------------------------------------------------------------
 
-/** Deterministic event id for a child's durable terminal record. */
-export const WORKFLOW_CHILD_TERMINAL_EVENT_PREFIX = "workflow-child-terminal:";
+// The A1 helpers live in `child-terminals.ts` (shared with the controller,
+// which records the independent-review child's terminal itself); re-export
+// them here so existing importers are unchanged.
+export {
+  WORKFLOW_CHILD_TERMINAL_EVENT_PREFIX,
+  inspectWorkflowChildTerminal,
+  recordWorkflowChildTerminal,
+} from "./child-terminals.js";
 
 /**
- * Durably record a workflow child's terminal outcome in the owning run's
- * state database, keyed by the deterministic child run id that the parent
- * effect intent already carries. This honestly extends the EXISTING run
- * machinery — the child gets its own `run_lifecycle_epochs` row and its own
- * immutable `run_terminal_results` row (no new store, no parallel table) —
- * so a post-restart `spawner.inspect(childRunId)` can adopt the outcome
- * instead of reporting "unknown".
- *
- * Idempotent: re-recording an existing terminal is a no-op; the sticky
- * per-(run, epoch) terminal-conflict rules of the repository still apply to
- * genuinely conflicting content.
+ * The child usage rollup for a real delegate spawn, resolved from the
+ * durable source that already exists: the admission kernel reconciles
+ * ACTUAL provider usage per reservation for the child run's admissions.
+ * Only reconciled actuals are reported; `held_unknown` reservations are
+ * counted (never summed) so holds are surfaced without ever reporting
+ * reserved as spent. `null` usage means nothing was reconciled — honestly
+ * unknown, never invented.
  */
-export function recordWorkflowChildTerminal(
-  repo: StateRunDurabilityRepository,
-  childRunId: string,
-  outcome: WorkflowChildOutcome,
-  now: () => Date = () => new Date(),
-): void {
-  const at = now().toISOString();
-  repo.ensureInitialEpoch({ runId: childRunId, openedAt: at });
-  const epoch = repo.currentEpoch(childRunId)?.epoch ?? 1;
-  if (repo.getTerminalResult(childRunId, epoch) !== undefined) return;
-  repo.recordTerminalResult({
-    epoch,
-    eventId: `${WORKFLOW_CHILD_TERMINAL_EVENT_PREFIX}${childRunId}`,
-    result: {
-      runId: childRunId,
-      status: outcome.status,
-      exitCode: outcome.status === "completed" ? 0 : 1,
-      stopReason: null,
-      finalMessage: outcome.finalMessage,
-      usage: outcome.usage,
-      lastSequence: null,
-      finishedAt: at,
-    },
-  });
-}
-
-/**
- * D3 adoption source of truth after a daemon restart: the child's durable
- * terminal, if one was recorded before the crash. A child that genuinely
- * died mid-flight with the daemon recorded nothing and stays `undefined`
- * (the caller reports "unknown" → the run terminates `unknown_outcome`).
- */
-export function inspectWorkflowChildTerminal(
-  repo: StateRunDurabilityRepository,
-  childRunId: string,
-): WorkflowChildOutcome | undefined {
-  const terminal = repo.getCurrentTerminalResult(childRunId);
-  if (terminal === undefined) return undefined;
+export function workflowChildAdmissionUsage(
+  kernel: ExecutionAdmissionKernel,
+  childAdmissionRunId: string,
+): {
+  readonly usage: RunUsageTotals | null;
+  readonly heldUnknownCount: number;
+} {
+  const summary = kernel.sumReconciledUsageByRunId(childAdmissionRunId);
   return {
-    status: terminal.status,
-    finalMessage: terminal.finalMessage,
-    usage: terminal.usage,
+    usage:
+      summary.reconciledCount > 0
+        ? {
+            inputTokens: summary.inputTokens,
+            outputTokens: summary.outputTokens,
+            totalTokens: summary.totalTokens,
+            costUsd: summary.costUsd,
+          }
+        : null,
+    heldUnknownCount: summary.heldUnknownCount,
   };
 }
 
@@ -805,10 +789,39 @@ export function createWorkflowSessionSeams(
             : result.outcome === "interrupted" || result.outcome === "aborted"
               ? "cancelled"
               : "failed";
+        // Honest usage rollup: delegate's RunAgentResult carries no usage
+        // totals, but the admission kernel durably reconciled ACTUAL
+        // provider usage per reservation under the child's admission run id
+        // (its thread id — `run-agent` binds `forSession({ runId:
+        // live.agentId })`). Sum what was reconciled; never invent numbers
+        // for held_unknown reservations.
+        let usage: RunUsageTotals | null = null;
+        let heldUnknownCount = 0;
+        try {
+          const resolved = workflowChildAdmissionUsage(
+            options.kernel,
+            result.threadId,
+          );
+          usage = resolved.usage;
+          heldUnknownCount = resolved.heldUnknownCount;
+          if (heldUnknownCount > 0) {
+            options.warn(
+              `workflow ${input.kind} child ${input.childRunId} holds ${heldUnknownCount} held_unknown admission reservation(s); ` +
+                "their spend is unknowable and is NOT counted in the reported usage",
+            );
+          }
+        } catch (error) {
+          options.warn(
+            `workflow ${input.kind} child ${input.childRunId} admission usage lookup failed: ${errorMessage(error)}`,
+          );
+        }
         return {
           status,
           finalMessage: result.finalMessage ?? null,
-          usage: null,
+          usage,
+          ...(heldUnknownCount > 0
+            ? { usageHeldUnknownCount: heldUnknownCount }
+            : {}),
         };
       })();
       entry.liveChildren.set(input.childRunId, pending);

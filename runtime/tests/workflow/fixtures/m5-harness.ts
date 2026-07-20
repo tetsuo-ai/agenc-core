@@ -338,7 +338,15 @@ export function buildM5Harness(options: M5HarnessOptions): M5Harness {
   };
 
   const reviewer: ReviewerInvoker = {
-    invoke: async () => M5_APPROVING_REVIEW,
+    invoke: async () => {
+      // Physical receipt: reviewer invocations survive kills, so the resume
+      // phase can prove adoption never re-ran the reviewer.
+      appendFileSync(
+        join(options.receiptsDir, "review-invocations.jsonl"),
+        `${JSON.stringify({ pid: process.pid })}\n`,
+      );
+      return M5_APPROVING_REVIEW;
+    },
   };
 
   const warn = (message: string): void => {

@@ -15,7 +15,9 @@ import {
   type WorkflowStartParams,
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
+import { inspectWorkflowChildTerminal } from "../../src/app-server/workflow/child-terminals.js";
 import { AdmissionDeniedError, type ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
+import { M5WorkflowFailpointError } from "../../src/durability/failpoints.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type {
   RunArtifactPointer,
@@ -372,6 +374,8 @@ class FakeSpawner implements WorkflowAgentSpawner {
   }[] = [];
   readonly queues = new Map<WorkflowSpawnKind, WorkflowChildOutcome[]>();
   readonly inspections = new Map<string, WorkflowChildInspection>();
+  /** Mirrors production: inspect falls back to the durable child terminal. */
+  durableRepo?: StateRunDurabilityRepository;
   beforeReturn?: (input: { kind: WorkflowSpawnKind }) => void;
 
   queue(kind: WorkflowSpawnKind, outcome: WorkflowChildOutcome): void {
@@ -410,7 +414,13 @@ class FakeSpawner implements WorkflowAgentSpawner {
   }
 
   async inspect(childRunId: string): Promise<WorkflowChildInspection> {
-    return this.inspections.get(childRunId) ?? { state: "unknown" };
+    const scripted = this.inspections.get(childRunId);
+    if (scripted !== undefined) return scripted;
+    if (this.durableRepo !== undefined) {
+      const durable = inspectWorkflowChildTerminal(this.durableRepo, childRunId);
+      if (durable !== undefined) return { state: "terminal", outcome: durable };
+    }
+    return { state: "unknown" };
   }
 }
 
@@ -424,6 +434,8 @@ const APPROVING_REVIEW = JSON.stringify({
 class FakeReviewer implements ReviewerInvoker {
   readonly invocations: { reviewerModel: string; userMessage: string }[] = [];
   readonly responses: string[] = [];
+  /** Simulate a daemon death mid-review (before the reviewer settled). */
+  onInvoke?: () => void;
 
   async invoke(input: {
     reviewerModel: string;
@@ -433,6 +445,7 @@ class FakeReviewer implements ReviewerInvoker {
       reviewerModel: input.reviewerModel,
       userMessage: input.userMessage,
     });
+    this.onInvoke?.();
     return this.responses.shift() ?? APPROVING_REVIEW;
   }
 }
@@ -488,6 +501,7 @@ function makeHarness(): Harness {
   const spawner = new FakeSpawner();
   const reviewer = new FakeReviewer();
   const commands = new FakeCommands();
+  spawner.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
   const controller = new VerifiedChangeWorkflowController({
@@ -1029,5 +1043,238 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(
       harness.spawner.spawns.filter((s) => s.kind === "verify_agent"),
     ).toHaveLength(1);
+  });
+});
+
+describe("VerifiedChangeWorkflowController — review-child adoption (A1 for the reviewer)", () => {
+  const REVIEW_CHILD = `${RUN_ID}:review#1`;
+
+  it("crash after the reviewer's durable terminal, before the review effect result commits → resume completes by adoption", async () => {
+    // `before_review_commit` sits AFTER the review execute (where the
+    // reviewer settled and its terminal became durable) and BEFORE the
+    // review effect_result journals — the engineered window.
+    armFailpoint("before_review_commit");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
+      /failpoint/,
+    );
+    disarmFailpoint();
+
+    // The objective window: review intent journaled without an outcome,
+    // and the reviewer's terminal ALREADY durable. This durable terminal is
+    // the revert-sensitive fact — without the controller recording it, the
+    // resume below resolves unknown_outcome instead of completing.
+    const interrupted = harness.repo.getEffect(RUN_ID, "workflow.review")!;
+    expect(interrupted.outcome).toBeUndefined();
+    expect(interrupted.childRunId).toBe(REVIEW_CHILD);
+    expect(
+      harness.repo.getCurrentTerminalResult(REVIEW_CHILD)?.status,
+    ).toBe("completed");
+    expect(harness.reviewer.invocations).toHaveLength(1);
+
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
+      "completed",
+    );
+    const adopted = harness.repo.getEffect(RUN_ID, "workflow.review")!;
+    expect(adopted.outcome).toBe("committed");
+    const evidence = adopted.evidence as {
+      review?: { blockerCount: number; reviewerModel: string };
+      artifacts?: unknown[];
+    };
+    expect(evidence.review).toMatchObject({
+      blockerCount: 0,
+      reviewerModel: "test-reviewer",
+    });
+    expect(evidence.artifacts).toHaveLength(1);
+    // Adoption, never a re-run: the reviewer was invoked exactly once.
+    expect(harness.reviewer.invocations).toHaveLength(1);
+  });
+
+  it("a reviewer that genuinely died mid-flight (no durable terminal) stays unknown → unknown_outcome", async () => {
+    harness.reviewer.onInvoke = () => {
+      // The daemon dies while the reviewer is in flight: nothing settles,
+      // nothing becomes durable.
+      throw new M5WorkflowFailpointError("before_review_commit");
+    };
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
+      /failpoint/,
+    );
+    harness.reviewer.onInvoke = undefined as never;
+
+    expect(
+      harness.repo.getEffect(RUN_ID, "workflow.review")?.outcome,
+    ).toBeUndefined();
+    expect(
+      harness.repo.getCurrentTerminalResult(REVIEW_CHILD),
+    ).toBeUndefined();
+
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "unknown_outcome",
+      stopReason: "unknown_outcome_effect",
+    });
+    const effect = harness.repo.getEffect(RUN_ID, "workflow.review")!;
+    expect(effect.outcome).toBe("unknown_outcome");
+    expect(effect.reviewStatus).toBe("pending");
+    // Honesty: the reviewer is never silently re-run.
+    expect(harness.reviewer.invocations).toHaveLength(1);
+  });
+
+  it("a settled-but-unparseable reviewer adopted after a crash keeps its failed outcome and retries once", async () => {
+    harness.reviewer.responses.push("no structured output at all");
+    armFailpoint("before_review_commit");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
+      /failpoint/,
+    );
+    disarmFailpoint();
+    // The unparseable settle IS durable — as a FAILED review child terminal.
+    expect(
+      harness.repo.getCurrentTerminalResult(REVIEW_CHILD)?.status,
+    ).toBe("failed");
+
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+
+    // Attempt 1 adopted as failed; attempt 2 re-ran the reviewer fresh and
+    // approved.
+    expect(harness.repo.getEffect(RUN_ID, "workflow.review")?.outcome).toBe(
+      "failed",
+    );
+    expect(
+      harness.repo.getEffect(RUN_ID, "workflow.review#2")?.outcome,
+    ).toBe("committed");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe(
+      "completed",
+    );
+    expect(harness.reviewer.invocations).toHaveLength(2);
+  });
+});
+
+describe("VerifiedChangeWorkflowController — child usage rollup", () => {
+  it("the terminal usage reflects the children's reconciled sums exactly; holds are noted, never spent", async () => {
+    harness.spawner.queue("plan", {
+      status: "completed",
+      finalMessage: "PLAN: make the edit",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        costUsd: 0.25,
+      },
+    });
+    harness.spawner.queue("implement", {
+      status: "completed",
+      finalMessage: "done",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        costUsd: 0.5,
+      },
+      usageHeldUnknownCount: 2,
+    });
+    harness.spawner.queue("verify_agent", {
+      status: "completed",
+      finalMessage: "checked everything\nVERDICT: PASS",
+      usage: {
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+        costUsd: 0.125,
+      },
+    });
+    await runToTerminal(harness);
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+    expect(terminal.status).toBe("completed");
+    // Exact reconciled sums: 10+100+7 / 5+50+3 / 0.25+0.5+0.125.
+    expect(terminal.usage).toEqual({
+      inputTokens: 117,
+      outputTokens: 58,
+      totalTokens: 175,
+      costUsd: 0.875,
+    });
+    // The durable child evidence carries the usage and NOTES the holds
+    // (held_unknown spend is never summed into any total).
+    const implement = harness.repo.getEffect(RUN_ID, "workflow.implement")!;
+    const child = (implement.evidence as {
+      child?: { usage?: unknown; usageHeldUnknown?: number };
+    }).child!;
+    expect(child.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+      costUsd: 0.5,
+    });
+    expect(child.usageHeldUnknown).toBe(2);
+  });
+
+  it("adoption and replay carry durably recorded child usage into the post-restart terminal rollup", async () => {
+    harness.spawner.queue("plan", {
+      status: "completed",
+      finalMessage: "PLAN: make the edit",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        costUsd: 0.25,
+      },
+    });
+    harness.spawner.queue("verify_agent", {
+      status: "completed",
+      finalMessage: "checked everything\nVERDICT: PASS",
+      usage: {
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+        costUsd: 0.125,
+      },
+    });
+    harness.spawner.beforeReturn = (input) => {
+      if (input.kind === "implement") {
+        armFailpoint("after_spawn_before_effect_result");
+      }
+    };
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(
+      /failpoint/,
+    );
+    harness.spawner.beforeReturn = undefined as never;
+    disarmFailpoint();
+
+    // The implementer's durable terminal (recorded before the crash)
+    // carries its reconciled usage — adoption must roll it up.
+    harness.spawner.inspections.set(`${RUN_ID}:implement#1`, {
+      state: "terminal",
+      outcome: {
+        status: "completed",
+        finalMessage: "done",
+        usage: {
+          inputTokens: 40,
+          outputTokens: 2,
+          totalTokens: 42,
+          costUsd: 0.5,
+        },
+      },
+    });
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+    expect(terminal.status).toBe("completed");
+    // Replayed plan (10/5/0.25) + adopted implement (40/2/0.5) + fresh
+    // verify agent (7/3/0.125): the post-restart rollup keeps every child.
+    expect(terminal.usage).toEqual({
+      inputTokens: 57,
+      outputTokens: 10,
+      totalTokens: 67,
+      costUsd: 0.875,
+    });
   });
 });

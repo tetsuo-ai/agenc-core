@@ -27,6 +27,7 @@ import type { ExecutionAdmissionBudgetPolicy } from "./admission-config.js";
 import { DEFAULT_ADMISSION_CONCURRENCY_LIMITS } from "./admission-config.js";
 import {
   ExecutionAdmissionRepository,
+  type AdmissionRunUsageSummary,
   type PersistedAdmissionReservation,
 } from "../state/execution-admission.js";
 import {
@@ -615,6 +616,41 @@ export class ExecutionAdmissionKernel {
         : {}),
       ...(options.limit !== undefined ? { limit: options.limit } : {}),
     });
+  }
+
+  /**
+   * Sum the ACTUAL reconciled usage recorded for one run id (additive read
+   * over the repository's `sumReconciledUsageByRunId`). The run's own
+   * workspace database is used when a binding is known; otherwise every
+   * open workspace database is swept — reservation rows for one run id live
+   * in exactly one database, so component-wise addition is exact.
+   */
+  sumReconciledUsageByRunId(runId: string): AdmissionRunUsageSummary {
+    this.#assertOpen();
+    const statePath = this.#runStatePath.get(runId);
+    const bound =
+      statePath === undefined ? undefined : this.#byStatePath.get(statePath);
+    if (bound !== undefined) {
+      return bound.repository.sumReconciledUsageByRunId(runId);
+    }
+    const total = {
+      reconciledCount: 0,
+      heldUnknownCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+    };
+    for (const binding of this.#byStatePath.values()) {
+      const summary = binding.repository.sumReconciledUsageByRunId(runId);
+      total.reconciledCount += summary.reconciledCount;
+      total.heldUnknownCount += summary.heldUnknownCount;
+      total.inputTokens += summary.inputTokens;
+      total.outputTokens += summary.outputTokens;
+      total.totalTokens += summary.totalTokens;
+      total.costUsd += summary.costUsd;
+    }
+    return total;
   }
 
   cancelRun(

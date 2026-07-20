@@ -32,6 +32,9 @@ const NODE_TEST_LOADER = fileURLToPath(
 const TSX_IMPORT = fileURLToPath(import.meta.resolve("tsx"));
 
 export const M5_EXIT_FAILPOINT = "after_spawn_before_effect_result";
+export const M5_EXIT_REVIEW_FAILPOINT = "before_review_commit";
+
+export type M5ExitScenario = "implement" | "review";
 
 const HIDDEN_VERIFIER = `#!/usr/bin/env bash
 # HIDDEN verifier: never present in the fixture repo, any prompt, or the
@@ -58,9 +61,12 @@ interface ChildExit {
 
 export interface M5ExitReport {
   readonly mode: string;
+  readonly scenario: M5ExitScenario;
   readonly preResume: {
     readonly implementOutcome: string | null;
     readonly implementChildTerminal: string | null;
+    readonly reviewOutcome: string | null;
+    readonly reviewChildTerminal: string | null;
     readonly terminal: string | null;
   };
   readonly resumed: readonly string[];
@@ -83,6 +89,11 @@ export interface M5ExitReport {
     readonly attempt1: string | null;
     readonly attempt2: string | null;
   };
+  readonly reviewChildTerminals: {
+    readonly attempt1: string | null;
+    readonly attempt2: string | null;
+  };
+  readonly reviewInvocations: readonly unknown[];
   readonly resumeSpawnKinds: readonly string[];
   readonly reservations: readonly {
     readonly id: string;
@@ -181,6 +192,7 @@ function spawnFixture(
   mode: M5ExitMode,
   stateDir: string,
   env: NodeJS.ProcessEnv,
+  scenario: M5ExitScenario,
 ): ChildProcess {
   return spawn(
     process.execPath,
@@ -193,6 +205,7 @@ function spawnFixture(
       command,
       mode,
       stateDir,
+      scenario,
     ],
     { cwd: stateDir, env, stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -201,14 +214,18 @@ function spawnFixture(
 export async function crashPhase(
   mode: M5ExitMode,
   stateDir: string,
+  scenario: M5ExitScenario = "implement",
 ): Promise<void> {
   const marker = join(stateDir, "failpoint-reached.json");
   const env = cleanChildEnvironment();
   // Only the marker path is armed from outside; the child arms the
-  // failpoint NAME itself, strictly after the implement child's terminal is
-  // durable — that engineered ordering IS the exit-criterion window.
+  // failpoint NAME itself — for the implement scenario strictly after the
+  // implement child's terminal is durable, for the review scenario at the
+  // `before_review_commit` boundary (which the controller reaches only
+  // after the reviewer settled and its terminal became durable). That
+  // engineered ordering IS the exit-criterion window.
   env.AGENC_TEST_DURABILITY_FAILPOINT_MARKER = marker;
-  const child = spawnFixture("crash", mode, stateDir, env);
+  const child = spawnFixture("crash", mode, stateDir, env, scenario);
   const exitPromise = collectChild(child);
   const deadline = Date.now() + 120_000;
   while (!existsSync(marker)) {
@@ -228,15 +245,23 @@ export async function crashPhase(
     `crash child output:\nstdout=${result.stdout}\nstderr=${result.stderr}`,
   ).toMatchObject({ code: null, signal: "SIGKILL" });
   expect(JSON.parse(readFileSync(marker, "utf8"))).toMatchObject({
-    failpoint: M5_EXIT_FAILPOINT,
+    failpoint:
+      scenario === "review" ? M5_EXIT_REVIEW_FAILPOINT : M5_EXIT_FAILPOINT,
   });
 }
 
 export async function resumePhase(
   mode: M5ExitMode,
   stateDir: string,
+  scenario: M5ExitScenario = "implement",
 ): Promise<M5ExitReport> {
-  const child = spawnFixture("resume", mode, stateDir, cleanChildEnvironment());
+  const child = spawnFixture(
+    "resume",
+    mode,
+    stateDir,
+    cleanChildEnvironment(),
+    scenario,
+  );
   const result = await collectChild(child);
   expect(
     result,
@@ -254,6 +279,8 @@ export function assertExitReport(report: M5ExitReport, runId: string): void {
   expect(report.preResume).toEqual({
     implementOutcome: null,
     implementChildTerminal: "completed",
+    reviewOutcome: null,
+    reviewChildTerminal: null,
     terminal: null,
   });
   expect(report.resumed).toContain(runId);
@@ -301,6 +328,59 @@ export function assertExitReport(report: M5ExitReport, runId: string): void {
       (reservation) => reservation.status === "held_unknown",
     ).length,
   ).toBeGreaterThanOrEqual(1);
+}
+
+/**
+ * Review-scenario exit assertions: a SIGKILL AFTER the reviewer's durable
+ * terminal was recorded but BEFORE the review effect_result committed must
+ * resume to `completed` by ADOPTING the durable review terminal — the
+ * reviewer is never re-invoked. This is revert-sensitive to the
+ * controller's review-terminal recording: without it the resume resolves
+ * `unknown_outcome`.
+ */
+export function assertReviewExitReport(
+  report: M5ExitReport,
+  runId: string,
+): void {
+  // The engineered kill window: review child terminal durable, review
+  // effect result NOT committed, run not terminal.
+  expect(report.preResume).toMatchObject({
+    implementOutcome: "committed",
+    reviewOutcome: null,
+    reviewChildTerminal: "completed",
+    terminal: null,
+  });
+  expect(report.resumed).toContain(runId);
+  expect(report.terminal?.status).toBe("completed");
+  expect(report.terminal?.finalMessage).toContain("verified change completed");
+  // Exactly ONE reviewer invocation ever happened — in the crashed
+  // process. Adoption completed the effect from the durable terminal.
+  expect(report.reviewInvocations).toHaveLength(1);
+  expect(report.reviewChildTerminals).toEqual({
+    attempt1: "completed",
+    attempt2: null,
+  });
+  expect(
+    report.effects.filter((effect) =>
+      effect.stepId.startsWith("workflow.review"),
+    ),
+  ).toEqual([
+    {
+      stepId: "workflow.review",
+      outcome: "committed",
+      childRunId: `${runId}:review#1`,
+    },
+  ]);
+  // The whole pipeline is durably committed after resume.
+  for (const effect of report.effects) {
+    expect(effect.outcome).toBe("committed");
+  }
+  // Budget honesty is unchanged: nothing dangling.
+  for (const reservation of report.reservations) {
+    expect(["reconciled", "held_unknown", "voided"]).toContain(
+      reservation.status,
+    );
+  }
 }
 
 export async function assertBundleAndHiddenVerifier(
