@@ -207,6 +207,8 @@ export const KEYBINDING_ACTION_NAMES = [
   'agents:down',
   'agents:open',
   'agents:stop',
+  'agents:backToComposer',
+  'explorer:backToComposer',
 ] as const
 
 export type KeybindingAction = (typeof KEYBINDING_ACTION_NAMES)[number]

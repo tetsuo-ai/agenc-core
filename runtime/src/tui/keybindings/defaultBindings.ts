@@ -378,6 +378,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       r: 'explorer:rename',
       d: 'explorer:delete',
       R: 'explorer:revealActive',
+      escape: 'explorer:backToComposer',
     },
   },
   {
@@ -451,6 +452,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       enter: 'agents:open',
       o: 'agents:open',
       x: 'agents:stop',
+      escape: 'agents:backToComposer',
     },
   },
   {

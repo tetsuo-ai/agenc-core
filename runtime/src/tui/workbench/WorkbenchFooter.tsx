@@ -46,8 +46,8 @@ export function WorkbenchFooter(): React.ReactElement {
 }
 
 function hintsForPane(pane: string, surface: string, railOpen: boolean): string {
-  if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter/o edit  a add  r rename  d delete  @ attach";
-  if (pane === "agents") return "Agents: enter detail  ctrl+w w next";
+  if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter/o edit  a add  r rename  d delete  @ attach  esc composer";
+  if (pane === "agents") return "Agents: enter detail  ctrl+w w next  esc composer";
   if (pane === "composer") {
     const base = "Composer: write prompt  / commands  @ attach file  ctrl+w k focus transcript";
     // The rail toggle is global, but the buffer/preview hints only show while

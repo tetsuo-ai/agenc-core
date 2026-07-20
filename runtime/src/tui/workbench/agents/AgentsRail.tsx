@@ -44,6 +44,9 @@ export function AgentsRail({
       "agents:stop": () => {
         if (selectedTask) stopWorkbenchTask(selectedTask, setAppState);
       },
+      // Same escape hatch as the explorer: a click on the rail hands it
+      // keyboard focus, and esc is the way back to the prompt.
+      "agents:backToComposer": () => dispatch({ type: "focus", pane: "composer" }),
     },
     { context: "Agents", isActive: focused },
   );

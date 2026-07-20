@@ -478,6 +478,25 @@ describe("ProjectExplorer interactions", () => {
     }
   });
 
+  it("returns keyboard focus to the composer on explorer:backToComposer", async () => {
+    const { changes, root, stdin, stdout } = await renderExplorer({
+      workbench: {
+        focusedPane: "explorer",
+      },
+    });
+
+    try {
+      explorerHarness.handlers["explorer:backToComposer"]?.();
+      await sleep();
+
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        focusedPane: "composer",
+      });
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
+    }
+  });
+
   it.each([
     ["explorer:open", true],
     ["explorer:openKeepFocus", false],

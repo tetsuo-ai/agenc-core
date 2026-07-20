@@ -180,6 +180,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       "explorer:addFile": beginCreateFile,
       "explorer:rename": beginRename,
       "explorer:delete": beginDelete,
+      // A click on the tree hands it keyboard focus; esc is the way back to
+      // the prompt. Without this the explorer swallowed focus with no visible
+      // escape hatch (users were trapped out of the composer).
+      "explorer:backToComposer": () => dispatch({ type: "focus", pane: "composer" }),
     },
     { context: "Explorer", isActive: focused && fileAction === null },
   );

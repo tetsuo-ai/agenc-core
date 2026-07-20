@@ -33,6 +33,15 @@ describe("default keybindings", () => {
       enter: "autocomplete:confirm",
       tab: "autocomplete:accept",
     });
+
+    // Click-to-focus panes must offer esc as the way back to the composer —
+    // without it keyboard focus is trapped (no visible escape hatch).
+    expect(bindingsFor("Explorer")).toMatchObject({
+      escape: "explorer:backToComposer",
+    });
+    expect(bindingsFor("Agents")).toMatchObject({
+      escape: "agents:backToComposer",
+    });
   });
 
   test("enables user customization in AgenC without remote feature gates", () => {
