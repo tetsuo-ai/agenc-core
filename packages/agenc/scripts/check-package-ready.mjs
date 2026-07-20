@@ -101,6 +101,7 @@ export function validateLauncherManifest({
     V2_MANIFEST_FILENAME,
   ),
   allowTestPartial = false,
+  repositoryRoot,
 } = {}) {
   if (!existsSync(manifestPath)) fail(`missing ${manifestPath}`);
   const manifestMetadata = lstatSync(manifestPath);
@@ -124,7 +125,9 @@ export function validateLauncherManifest({
     fail(`manifest exceeds ${MAX_RUNTIME_MANIFEST_BYTES} bytes`);
   }
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
-  const repoRoot = resolve(launcherDir, "..", "..");
+  const repoRoot = repositoryRoot === undefined
+    ? resolve(launcherDir, "..", "..")
+    : resolve(repositoryRoot);
   const releaseToolchain = JSON.parse(
     readFileSync(resolve(repoRoot, "release-toolchain.json"), "utf8"),
   );

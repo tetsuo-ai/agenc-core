@@ -247,6 +247,8 @@ test("pack writes a deterministic receipt bound to exact tarball bytes", async (
 
 test("pack accepts lifecycle output before npm's terminal JSON document", async () => {
   const work = fixture();
+  const validationRepositoryRoot = join(work.root, "reviewed-source");
+  let observedValidationRoot;
   try {
     const packagePath = join(work.source, "package.json");
     const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
@@ -263,8 +265,12 @@ test("pack accepts lifecycle output before npm's terminal JSON document", async 
       args: ["--silent", "--pack-destination", work.output],
       git: fakeGit(),
       nodeVersion: releaseToolchain.nodeVersion,
-      validateManifest: skipManifestValidation,
+      validationRepositoryRoot,
+      validateManifest({ repositoryRoot }) {
+        observedValidationRoot = repositoryRoot;
+      },
     });
+    assert.equal(observedValidationRoot, validationRepositoryRoot);
     assert.ok(readFileSync(packed.artifactPath).length > 0);
     assert.ok(readFileSync(packed.receiptPath).length > 0);
   } finally {

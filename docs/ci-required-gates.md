@@ -782,7 +782,7 @@ while dispatching the repaired workflow from current `main`. In that mode,
 `tested_sha` must equal the immutable recovery tag commit rather than the
 workflow tooling commit. The workflow still requires the exact-tag evidence,
 clean tagged source, `main` ancestry, and matching lockfile/toolchain/manifest
-validator; the produced receipt remains bound to `tested_sha`. The workflow
+identity; the produced receipt remains bound to `tested_sha`. The workflow
 attestations and npm provenance bind the separate reviewed `main` tooling
 commit. Runtime publication has no recovery exception and still requires
 `tested_sha == GITHUB_SHA`.

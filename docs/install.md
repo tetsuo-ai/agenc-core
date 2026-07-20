@@ -484,10 +484,10 @@ resolved package inventory is stored at
 
    Recovery mode requires the workflow checkout to equal current `main`,
    resolves `tested_sha` from the immutable `recovery_tag`, requires that
-   source to remain in `main`, and compares the lockfile, release-toolchain
-   pins, and launcher manifest validator with the tag. It executes the reviewed
-   repaired packer outside a clean detached checkout of the tagged source, so
-   the tarball and receipt remain bound to the original tag commit. The
+   source to remain in `main`, and compares the lockfile and release-toolchain
+   pins with the tag. It executes the reviewed repaired packer and manifest
+   validator against a clean detached checkout of the tagged source, so the
+   tarball and receipt remain bound to the original tag commit. The
    workflow-run attestations and npm provenance identify the reviewed recovery
    tooling commit. This exception is only for downstream npm recovery after an
    immutable matching runtime release; identity drift still requires a new
