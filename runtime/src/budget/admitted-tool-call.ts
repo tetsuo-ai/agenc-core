@@ -25,6 +25,17 @@ export interface AdmittedToolCallOptions {
   readonly tool: Tool;
   readonly args: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
+  /**
+   * Suffix appended to the persisted admission stepId for PHYSICAL
+   * re-dispatches of the same logical tool call (transient retry, sandbox
+   * escalation). The first attempt's admission record is already terminal by
+   * then, and the kernel dedupes by stepId — without a fresh stepId the
+   * legitimate retry is denied as `admission_already_terminal` (observed:
+   * sandbox escalation of a plan-file Write surfaced exactly that to the
+   * model instead of running unsandboxed). Genuine new calls keep the bare
+   * stepId, so dedupe protection is unchanged.
+   */
+  readonly stepIdSuffix?: string;
   readonly invoke: (
     context: AdmittedToolDispatchContext,
   ) => Promise<ToolDispatchResult>;
@@ -312,6 +323,29 @@ function errorEvidence(error: unknown): Readonly<Record<string, unknown>> {
 }
 
 /**
+ * Determinate failures: the tool provably did NOT perform its effect, so the
+ * outcome is known — recording `unknown_outcome` instead poisons the whole
+ * session behind the M4 operator-review gate for routine, recoverable errors.
+ *
+ * Two structural cases (no imports of the heavy tools/execution chains):
+ *   - Tool-reported timeout (`ToolTimeoutError.reason === "timeout"`): the
+ *     tool explicitly says it did not complete (observed: a slow write_stdin
+ *     wait blocked every later side-effecting call).
+ *   - `SandboxDeniedError`: the sandbox policy check runs BEFORE the process
+ *     is spawned, so a denial is pre-effect by construction (observed: plan
+ *     mode + `2>/dev/null` self-poisoned the session, and the escalated
+ *     retry then surfaced the gate message — not the real denial — to the
+ *     model).
+ */
+function isDeterminateToolFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if ((error as { readonly reason?: unknown }).reason === "timeout") {
+    return true;
+  }
+  return error.name === "SandboxDeniedError";
+}
+
+/**
  * Runs after permission/approval but immediately before `tool.execute`.
  * Local tools reserve a zero monetary charge while still consuming durable
  * capacity. Model-backed tools make their nested charged calls through the
@@ -322,6 +356,7 @@ export async function runAdmittedToolCall(
 ): Promise<ToolDispatchResult> {
   const category = recoveryCategory(params.tool);
   params.session.rolloutStore?.assertToolAdmissionAllowed(category);
+  const stepId = `tool:${params.turnId}:${params.callId}${params.stepIdSuffix ?? ""}`;
 
   const client = params.session.services?.executionAdmission;
   if (client === undefined) {
@@ -329,7 +364,6 @@ export async function runAdmittedToolCall(
       throw new AdmissionDeniedError("admission_kernel_unavailable");
     }
     const dispatch = createDispatchContext(params.signal);
-    const stepId = `tool:${params.turnId}:${params.callId}`;
     let effect: EffectJournalContext | undefined;
     let dispatched = false;
     let acknowledgementStarted = false;
@@ -377,17 +411,7 @@ export async function runAdmittedToolCall(
       if (effect !== undefined && !acknowledgementStarted && !acknowledged) {
         acknowledgementStarted = true;
         if (dispatched && category !== "idempotent") {
-          // A tool-reported timeout (ToolTimeoutError.reason === "timeout")
-          // is a DETERMINATE failure — the tool explicitly says it did not
-          // complete. Recording it as an unknown outcome instead poisons the
-          // whole session behind the M4 operator-review gate for a routine
-          // 30s wait (observed: a slow write_stdin wait blocked every later
-          // side-effecting call). Structural check — no import of the heavy
-          // tools/execution chain.
-          const isToolTimeout =
-            error instanceof Error &&
-            (error as { readonly reason?: unknown }).reason === "timeout";
-          if (isToolTimeout) {
+          if (isDeterminateToolFailure(error)) {
             appendEffectResult(params.session, effect, {
               outcome: "failed",
               evidence: errorEvidence(error),
@@ -425,7 +449,7 @@ export async function runAdmittedToolCall(
   };
   const lease = await client.acquire(
     {
-      stepId: `tool:${params.turnId}:${params.callId}`,
+      stepId,
       kind: "tool_exec",
       sessionId: params.session.conversationId,
       parentScopeId: params.turnId,
@@ -531,13 +555,23 @@ export async function runAdmittedToolCall(
     if (effect !== undefined && !acknowledgementStarted && !acknowledged) {
       acknowledgementStarted = true;
       if (dispatched && category !== "idempotent") {
-        appendEffectUnknownOutcome(
-          params.session,
-          effect,
-          dispatch.context.signal.aborted
-            ? "tool_cancelled_after_dispatch"
-            : "tool_failed_after_dispatch_without_acknowledgement",
-        );
+        if (isDeterminateToolFailure(error)) {
+          appendEffectResult(params.session, effect, {
+            outcome: "failed",
+            evidence: {
+              reservationId,
+              ...errorEvidence(error),
+            },
+          });
+        } else {
+          appendEffectUnknownOutcome(
+            params.session,
+            effect,
+            dispatch.context.signal.aborted
+              ? "tool_cancelled_after_dispatch"
+              : "tool_failed_after_dispatch_without_acknowledgement",
+          );
+        }
       } else {
         appendEffectResult(params.session, effect, {
           outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",

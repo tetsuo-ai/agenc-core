@@ -55,7 +55,7 @@ describe("state migration registry", () => {
 
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -73,6 +73,7 @@ describe("state migration registry", () => {
       "thread_listing_indexes",
       "execution_admission_schema",
       "run_durability_schema",
+      "run_effects_session_call_step_index",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -106,6 +107,7 @@ describe("state migration registry", () => {
       "013_thread_listing_indexes.ts",
       "014_execution_admission_schema.ts",
       "015_run_durability_schema.ts",
+      "016_run_effects_session_call_step_index.ts",
     ]);
   });
 
@@ -138,6 +140,13 @@ describe("state migration registry", () => {
           )
           .get(),
       ).toEqual({ version: 15, name: "run_durability_schema" });
+      expect(
+        db
+          .prepare<[], { version: number; name: string }>(
+            "SELECT version, name FROM schema_migrations WHERE version = 16",
+          )
+          .get(),
+      ).toEqual({ version: 16, name: "run_effects_session_call_step_index" });
 
       const effectIndexes = db
         .prepare<[], { name: string }>("PRAGMA index_list(run_effects)")
@@ -148,8 +157,12 @@ describe("state migration registry", () => {
           "idx_run_effects_intent_sequence",
           "idx_run_effects_result_sequence",
           "idx_run_effects_pending_review",
+          "idx_run_effects_session_call_step",
         ]),
       );
+      // The old per-(session, call) uniqueness is gone: legitimate physical
+      // re-dispatches of one logical call register one row per step.
+      expect(effectIndexes).not.toContain("idx_run_effects_session_call");
       const journalIndexes = db
         .prepare<[], { name: string }>(
           "PRAGMA index_list(run_journal_bindings)",

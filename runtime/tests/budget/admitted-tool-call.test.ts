@@ -484,4 +484,80 @@ describe("runAdmittedToolCall", () => {
     }
     expect(acknowledgement.msg.payload.outcome).toBe("failed");
   });
+
+  it("records a sandbox denial as a determinate failed outcome, not unknown", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "write.sandbox-denied",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+
+    // The sandbox policy check runs before the process is spawned, so a
+    // denial is pre-effect by construction — poisoning the session behind
+    // the M4 review gate for it is wrong (observed: plan mode + 2>/dev/null).
+    const denied = new Error(
+      "sandbox workspace_write blocked write outside workspace: /dev/null",
+    );
+    denied.name = "SandboxDeniedError";
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-sandbox-denied",
+        tool,
+        args: {},
+        invoke: async () => {
+          throw denied;
+        },
+      }),
+    ).rejects.toThrow("sandbox workspace_write blocked");
+
+    const acknowledgement = state.effectEvents.at(-1);
+    expect(acknowledgement?.msg.type).toBe("effect_result");
+    if (acknowledgement?.msg.type !== "effect_result") {
+      throw new Error("missing effect result");
+    }
+    expect(acknowledgement.msg.payload.outcome).toBe("failed");
+  });
+
+  it("records a tool-reported timeout as a determinate failed outcome, not unknown", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "write.timeout",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+
+    await expect(
+      runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-1",
+        callId: "call-timeout",
+        tool,
+        args: {},
+        invoke: async () => {
+          throw Object.assign(new Error("wait exceeded 30000ms timeout"), {
+            reason: "timeout",
+          });
+        },
+      }),
+    ).rejects.toThrow("exceeded 30000ms timeout");
+
+    const acknowledgement = state.effectEvents.at(-1);
+    expect(acknowledgement?.msg.type).toBe("effect_result");
+    if (acknowledgement?.msg.type !== "effect_result") {
+      throw new Error("missing effect result");
+    }
+    expect(acknowledgement.msg.payload.outcome).toBe("failed");
+  });
 });

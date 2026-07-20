@@ -507,6 +507,78 @@ describe("tools/runtimes", () => {
       }),
     ).toThrow(/workspace_write blocked/);
 
+    // Redirecting into safe pseudo-devices (`2>/dev/null`, `>/dev/stdout`,
+    // `>/dev/fd/1`) never mutates the filesystem and must not be treated as
+    // an outside-workspace write — plan mode runs every exploration command
+    // through this path (observed: `2>/dev/null` self-poisoned a session).
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation: sandboxedInvocation,
+        },
+        tool: shellTool,
+        args: { cmd: "ls -la 2>/dev/null" },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation: sandboxedInvocation,
+        },
+        tool: shellTool,
+        args: { cmd: "make build &> /dev/null" },
+      }),
+    ).not.toThrow();
+
+    // /dev/tty stays gated: writing to the user's terminal is an observable
+    // side effect the sandbox policy must still see.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "workspace_write",
+          sandboxMode: "workspace_write",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation: sandboxedInvocation,
+        },
+        tool: shellTool,
+        args: { cmd: "echo hi > /dev/tty" },
+      }),
+    ).toThrow(/workspace_write blocked/);
+
+    // Reading a pseudo-device (operand or `<` redirect) is not an
+    // outside-workspace read either.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: {
+          ...base,
+          approvalPolicy: "never",
+          requestedSandboxMode: "read_only",
+          sandboxMode: "read_only",
+          approvalResolved: false,
+          rawArgs: "{}",
+          invocation: sandboxedInvocation,
+        },
+        tool: shellTool,
+        args: { cmd: "cat /dev/null" },
+      }),
+    ).not.toThrow();
+
     const scopedAdditionalContext = {
       ...sandboxedWorkspaceContext,
       additionalPermissions: {

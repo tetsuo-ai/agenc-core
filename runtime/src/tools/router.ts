@@ -556,6 +556,11 @@ export class ToolRouter {
         source: invocation.source,
         supportsParallelToolCalls: spec.supportsParallelToolCalls,
       });
+      // Physical re-dispatches of this logical tool call (transient retry,
+      // sandbox escalation) need a fresh admission stepId: the first
+      // attempt's admission record is terminal, and the kernel dedupes by
+      // stepId.
+      let directDispatchAttempt = 0;
       return await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx: {
@@ -597,6 +602,7 @@ export class ToolRouter {
         ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
         ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
         dispatch: async (sandbox, dispatchContext) => {
+          directDispatchAttempt += 1;
           const dispatchArgs = dispatchContext.approvalResolved
             ? withApprovedFilesystemRoot(nameDisplay(invocation.toolName), executionArgs)
             : executionArgs;
@@ -654,6 +660,9 @@ export class ToolRouter {
               tool: spec.tool,
               args: dispatchArgs,
               signal: toolAbortController.signal,
+              ...(directDispatchAttempt > 1
+                ? { stepIdSuffix: `:dispatch${directDispatchAttempt}` }
+                : {}),
               invoke: ({ signal, abortController }) =>
                 executeToolDispatch({
                   rawArgs: dispatchRawArgs,
@@ -1054,6 +1063,11 @@ export class ToolRouter {
       supportsParallelToolCalls: spec.supportsParallelToolCalls,
     });
 
+    // Physical re-dispatches of this logical tool call (transient retry,
+    // sandbox escalation) need a fresh admission stepId: the first attempt's
+    // admission record is terminal, and the kernel dedupes by stepId.
+    let orchestrateDispatchAttempt = 0;
+
     try {
       const result = await orchestrateToolCall({
         tool: spec.tool,
@@ -1099,6 +1113,7 @@ export class ToolRouter {
           void ctx;
         },
         dispatch: async (sandbox, dispatchContext) => {
+          orchestrateDispatchAttempt += 1;
           const dispatchArgs = dispatchContext.approvalResolved
             ? withApprovedFilesystemRoot(toolCall.name, executionArgs)
             : executionArgs;
@@ -1138,6 +1153,9 @@ export class ToolRouter {
             tool: spec.tool,
             args: dispatchArgs,
             signal: toolAbortController.signal,
+            ...(orchestrateDispatchAttempt > 1
+              ? { stepIdSuffix: `:dispatch${orchestrateDispatchAttempt}` }
+              : {}),
             invoke: ({ abortController }) =>
               executeToolDispatch(
                 rawDispatchOptions(dispatchRawArgs, {

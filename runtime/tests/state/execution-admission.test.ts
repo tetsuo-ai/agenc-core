@@ -161,7 +161,7 @@ describe("execution admission schema migration", () => {
         db
           .prepare("SELECT MAX(version) AS version FROM schema_migrations")
           .get(),
-      ).toEqual({ version: 15 });
+      ).toEqual({ version: 16 });
     } finally {
       db.close();
     }

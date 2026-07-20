@@ -49,6 +49,35 @@ const WORKSPACE_GENERATED_ROOTS = new Set([
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const DYNAMIC_SHELL_TARGET_RE = /(?:[$*?\[\]{}~]|`|\$\(|<\()/;
 
+/**
+ * Pseudo-device targets that are always safe to redirect into: they never
+ * mutate the filesystem (`2>/dev/null`, `>/dev/stdout`, `>/dev/fd/1`, …).
+ * Treating them as workspace-escaping write targets makes the sandbox deny
+ * utterly routine commands (`2>/dev/null` under plan mode) — observed as a
+ * session-poisoning SandboxDeniedError. `/dev/tty` is deliberately NOT
+ * listed: writing to the user's terminal is an interactive side effect the
+ * policy should still see.
+ */
+const SAFE_PSEUDO_DEVICE_TARGETS = new Set([
+  "/dev/null",
+  "/dev/zero",
+  "/dev/full",
+  "/dev/random",
+  "/dev/urandom",
+  "/dev/stdin",
+  "/dev/stdout",
+  "/dev/stderr",
+]);
+const SAFE_PSEUDO_DEVICE_FD_RE = /^\/dev\/fd\/\d+$/;
+
+export function isSafePseudoDevicePath(rawPath: string): boolean {
+  const trimmed = rawPath.trim();
+  return (
+    SAFE_PSEUDO_DEVICE_TARGETS.has(trimmed) ||
+    SAFE_PSEUDO_DEVICE_FD_RE.test(trimmed)
+  );
+}
+
 export interface ShellWorkspaceWritePolicyDecision {
   readonly blocked: boolean;
   readonly indeterminate: boolean;
@@ -360,6 +389,9 @@ function collectRedirectionTargets(
       token === ">&" &&
       (/^\d+$/.test(next) || /^&\d+$/.test(next))
     ) {
+      continue;
+    }
+    if (isSafePseudoDevicePath(next)) {
       continue;
     }
     const normalized = normalizeConcreteTargetPath(next, cwd);

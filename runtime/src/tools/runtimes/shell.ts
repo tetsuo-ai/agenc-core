@@ -3,7 +3,10 @@ import {
   SHELL_COMMAND_SEPARATORS,
   tokenizeShellCommand,
 } from "../../llm/_deps/command-line.js";
-import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import {
+  classifyShellWorkspaceWritePolicy,
+  isSafePseudoDevicePath,
+} from "../../llm/shell-write-policy.js";
 import type { Tool } from "../types.js";
 import {
   isUnifiedExecRuntimeTool,
@@ -135,6 +138,7 @@ function collectShellSegmentReadTargets(
       continue;
     }
     if (pathOptionValueIndexes.has(i) || isShellPathOperand(token)) {
+      if (isSafePseudoDevicePath(token)) continue;
       targets.add(resolveRuntimePathTarget(token, cwd));
     }
   }

@@ -14,6 +14,7 @@ import { agentRoleWorkspaceProvenanceMigration } from "./012_agent_role_workspac
 import { threadListingIndexesMigration } from "./013_thread_listing_indexes.js";
 import { executionAdmissionSchemaMigration } from "./014_execution_admission_schema.js";
 import { runDurabilitySchemaMigration } from "./015_run_durability_schema.js";
+import { runEffectsSessionCallStepIndexMigration } from "./016_run_effects_session_call_step_index.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -35,6 +36,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   threadListingIndexesMigration,
   executionAdmissionSchemaMigration,
   runDurabilitySchemaMigration,
+  runEffectsSessionCallStepIndexMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [
