@@ -2474,11 +2474,18 @@ function PromptInput({
   const showFastIcon = isFastModeEnabled() ? isFastMode && (isFastModeAvailable() || fastModeCooldown) : false;
   const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
-  // Show effort notification on startup and when effort changes.
+  // Show the effort notification only when the level CHANGES mid-session,
+  // never on startup (UX request: the pinned bottom-right label read as a
+  // permanent login/auth chip). The change itself flashes for 12s and then
+  // clears; /effort and the ModelPicker already confirm their own change.
   // Suppressed in brief/assistant mode — the value reflects the local
   // client's effort, not the connected agent's.
   const effortNotificationText = briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
+  const prevEffortNotificationTextRef = useRef(effortNotificationText);
   useEffect(() => {
+    const previous = prevEffortNotificationTextRef.current;
+    prevEffortNotificationTextRef.current = effortNotificationText;
+    if (previous === effortNotificationText) return;
     if (!effortNotificationText) {
       removeNotification('effort-level');
       return;
