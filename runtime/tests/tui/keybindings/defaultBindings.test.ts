@@ -42,6 +42,11 @@ describe("default keybindings", () => {
     expect(bindingsFor("Agents")).toMatchObject({
       escape: "agents:backToComposer",
     });
+    // The buffer editor is the same trap: with no vim command pending, esc
+    // bubbles out of the store and lands on this binding.
+    expect(bindingsFor("Buffer")).toMatchObject({
+      escape: "workbench:focusComposer",
+    });
   });
 
   test("enables user customization in AgenC without remote feature gates", () => {

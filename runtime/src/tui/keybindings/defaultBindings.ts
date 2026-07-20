@@ -409,6 +409,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     context: 'Buffer',
     bindings: {
       'shift+tab': 'workbench:focusComposer',
+      escape: 'workbench:focusComposer',
       'ctrl+x h': 'workbench:focusExplorer',
       'ctrl+x j': 'workbench:focusComposer',
       'ctrl+x l': 'workbench:focusAgents',

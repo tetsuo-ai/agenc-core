@@ -842,11 +842,30 @@ describe("WorkbenchBufferStore", () => {
     expect(store.handleVimInput("", key({ shift: true, rightArrow: true }), 80)).toBe(false);
     expect(store.getSnapshot().selection).toEqual({ anchor: 0, head: 0 });
 
-    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(true);
+    // Idle NORMAL-mode esc bubbles out of the buffer (the workbench binding
+    // sends focus back to the composer); only a pending vim command keeps it.
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(false);
     expect(store.getSnapshot().vimMode).toBe("NORMAL");
 
     expect(store.handleVimInput("", key({ rightArrow: true }), 80)).toBe(true);
     expect(store.getSnapshot().selection).toEqual({ anchor: 1, head: 1 });
+  });
+
+  it("keeps esc inside the buffer while a vim command is pending", async () => {
+    const file = join(dir, "target.txt");
+    await writeFile(file, "alpha\nomega\n", "utf8");
+    const store = new WorkbenchBufferStore();
+
+    await runWithCwdOverride(dir, () => store.open("target.txt"));
+
+    // A pending operator (`d` waits for a motion) is cancellable with esc…
+    expect(store.handleVimInput("d", key(), 80)).toBe(true);
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(true);
+    expect(store.getSnapshot().vimMode).toBe("NORMAL");
+    expect(store.getText()).toBe("alpha\nomega\n");
+
+    // …and once it is consumed, the next esc bubbles out again.
+    expect(store.handleVimInput("", key({ escape: true }), 80)).toBe(false);
   });
 
   it("supports visual selection yank, delete, change, and paste", async () => {

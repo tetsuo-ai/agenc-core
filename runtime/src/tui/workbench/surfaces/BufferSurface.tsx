@@ -211,7 +211,7 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
             : snapshot.vimMode === "VISUAL"
               ? "VISUAL  h/j/k/l move  y yank  d delete  c change  p paste  esc normal"
               : snapshot.vimMode === "NORMAL"
-                ? "BASIC FALLBACK  ctrl+x ctrl+e external  v visual  y/p register  : command  i/a/o insert"
+                ? "BASIC FALLBACK  v visual  y/p register  : command  i/a/o insert  ctrl+r rail  esc composer"
                 : "INSERT  esc normal"}
         </Text>
       </Box>

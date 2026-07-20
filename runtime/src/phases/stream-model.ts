@@ -58,6 +58,41 @@ import {
   validateToolCallsForDispatch,
 } from "./execute-tools.js";
 import { isPlanMode } from "../session/plan-mode.js";
+import { getInitialEffortSetting } from "../utils/effort.js";
+import type { ReasoningEffort } from "../session/turn-context.js";
+
+type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
+
+/**
+ * Sessions created without an explicit reasoning effort — every
+ * daemon-spawned interactive session today — must still honor the
+ * persisted `effortLevel` from user settings. Without this fallback the
+ * provider default applies and grok-4.5 burns ~16k hidden reasoning
+ * tokens per trivial reply at xAI's HIGH default (measured: ~2m30s for
+ * a 150-word answer, matching the user's "grok is fucking slow").
+ * An explicit per-session "none" stays respected as an opt-out; values
+ * outside the wire vocabulary ("max", "none") are dropped rather than
+ * sent upstream to a provider that would reject them.
+ */
+function resolveSessionReasoningEffort(
+  turnEffort: ReasoningEffort | undefined,
+): WireReasoningEffort | undefined {
+  if (turnEffort !== undefined) {
+    return turnEffort === "none" ? undefined : turnEffort;
+  }
+  const settingsEffort = getInitialEffortSetting();
+  switch (settingsEffort) {
+    case "low":
+    case "medium":
+    case "high":
+      return settingsEffort;
+    default:
+      return undefined;
+  }
+}
+
+// Exported for unit tests; the wiring above is the single call site.
+export { resolveSessionReasoningEffort };
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -184,10 +219,7 @@ function buildProviderOptions(
       ? { toolChoice: "required" as const }
       : {}),
     toolRouting: { allowedToolNames },
-    reasoningEffort:
-      ctx.reasoningEffort && ctx.reasoningEffort !== "none"
-        ? ctx.reasoningEffort
-        : undefined,
+    reasoningEffort: resolveSessionReasoningEffort(ctx.reasoningEffort),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     serviceTier:

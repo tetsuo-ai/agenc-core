@@ -317,6 +317,10 @@ export class WorkbenchBufferStore {
       return true;
     }
     if (key.escape && state.mode === "NORMAL") {
+      // With no vim command pending there is nothing to cancel: let esc
+      // bubble to the workbench keybindings so it leaves the buffer for the
+      // composer (users were trapped inside the basic-fallback editor).
+      if (state.command.type === "idle") return false;
       this.#vimState = { mode: "NORMAL", command: { type: "idle" } };
       this.#emit();
       return true;
