@@ -263,25 +263,31 @@ export function createDaemonWorkflowEvidenceLedgerFactory(options: {
         throw new Error(`workflow evidence payload not found: ${pointer.digest}`);
       },
       async seal(sealedAt: string): Promise<{ sealDigest: string }> {
-        // Reuse the first chosen sealedAt so a crash-resumed seal converges
-        // on the identical frozen statement.
-        let effectiveSealedAt = sealedAt;
-        try {
-          effectiveSealedAt = (await readFile(sealedAtPath, "utf8")).trim();
-        } catch {
-          await writeFile(sealedAtPath, `${sealedAt}\n`, { mode: 0o600 });
-        }
         // The eval-contract ledger only seals a ledger whose LAST event is
-        // the terminal `run.finished`; append it here (idempotent by event
-        // id, deterministic payload from the frozen sealedAt).
+        // the terminal `run.finished`; append it first (idempotent by event
+        // id, deterministic payload).
         await append({
           eventId: "run.finished",
           type: "run.finished",
           mediaType: "application/json",
           payloadBytes: new TextEncoder().encode(
-            canonicalizeJson({ runId: spec.runId, sealedAt: effectiveSealedAt }),
+            canonicalizeJson({ runId: spec.runId }),
           ),
         });
+        // The frozen seal timestamp must not predate the terminal event
+        // (the requested sealedAt was captured just before the append, so
+        // clamp across a millisecond boundary), and a crash-resumed seal
+        // must converge on the identical frozen statement — reuse the
+        // first persisted choice.
+        const terminalAt = state.lastOccurredAt;
+        let effectiveSealedAt = sealedAt >= terminalAt ? sealedAt : terminalAt;
+        try {
+          effectiveSealedAt = (await readFile(sealedAtPath, "utf8")).trim();
+        } catch {
+          await writeFile(sealedAtPath, `${effectiveSealedAt}\n`, {
+            mode: 0o600,
+          });
+        }
         const anchorProvider = await loadLocalAnchorProvider(evidenceRoot);
         const seal = await sealEvidenceLedger({
           ...access,
