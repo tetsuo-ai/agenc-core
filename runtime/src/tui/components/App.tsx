@@ -62,6 +62,7 @@ import { RealtimePanel } from "../realtime/RealtimePanel.js";
 import { useRealtimeState } from "../realtime/useRealtimeState.js";
 import { AgenCPermissionOverlay as PermissionOverlay, buildToolUseConfirmQueue, usePermissionRequests } from "../permission-requests.js";
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
+import { AskUserQuestionOverlay } from "./AskUserQuestionOverlay.js";
 import { findCommand, getCommands, isCommandEnabled, listTuiCommandList } from "../../commands.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { getAgentDefinitionsWithOverrides } from "../../tools/AgentTool/loadAgentsDir.js";
@@ -862,7 +863,8 @@ export function useTuiElicitation(session) {
   if ($[6] !== prompt) {
     t4 = {
       prompt,
-      submit
+      submit,
+      pending
     };
     $[6] = prompt;
     $[7] = t4;
@@ -871,6 +873,35 @@ export function useTuiElicitation(session) {
   }
   return t4;
 }
+function ElicitationPickerOverlay({
+  pending,
+  submit,
+}: {
+  readonly pending: UserPending;
+  readonly submit: (value: string) => boolean;
+}): React.ReactElement | null {
+  const question = pending.request.questions[pending.index];
+  if (question === undefined) return null;
+  // The elicitation "user" request and AskUserQuestion share the exact same
+  // question schema — route it through the interactive picker instead of the
+  // plain text prompt so both decision surfaces feel identical.
+  const input = { questions: [question] } as const;
+  return (
+    <AskUserQuestionOverlay
+      key={`${pending.request.requestId}:${pending.index}`}
+      input={input}
+      onSubmit={(updatedInput) => {
+        const record = updatedInput as { answers?: Record<string, unknown> };
+        const raw = record.answers?.[question.question];
+        if (typeof raw === "string" && raw.trim().length > 0) {
+          submit(raw);
+        }
+      }}
+      onSkip={() => submit("skip")}
+    />
+  );
+}
+
 export function ElicitationOverlay(t0) {
   const $ = _c(13);
   const {
@@ -2943,7 +2974,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       {workbenchEnabled ? <ApprovalSurfaceBridge request={permissionRequests[0]} /> : null}
       {permissionRequests.length > 1 ? <Text color="warning" wrap="truncate">{`+${permissionRequests.length - 1} more pending approval${permissionRequests.length - 1 === 1 ? "" : "s"}`}</Text> : null}
       <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} />
-    </> : elicitation.prompt !== null ? <ElicitationOverlay prompt={elicitation.prompt} /> : null;
+    </> : elicitation.prompt !== null ? (
+      elicitation.pending?.kind === "user" &&
+      (elicitation.pending.request.questions[elicitation.pending.index]?.options.length ?? 0) >= 2 ? (
+        <ElicitationPickerOverlay pending={elicitation.pending} submit={elicitation.submit} />
+      ) : (
+        <ElicitationOverlay prompt={elicitation.prompt} />
+      )
+    ) : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.

@@ -417,6 +417,19 @@ export function createAskUserQuestionTool(): Tool {
         }
       }
       if (answered === null || Object.keys(answered.answers ?? {}).length === 0) {
+        // A deliberate user skip (metadata.skipped set by the picker's esc)
+        // is NOT an error: the model should proceed with its best judgment
+        // instead of being told "no answers" and re-asking in a loop.
+        if (answered?.metadata?.skipped === true) {
+          return {
+            content:
+              "User skipped these questions. Proceed with your best judgment — do not ask the same questions again unless something new makes the answer truly blocking.",
+            codeModeResult: {
+              questions: answered.questions,
+              skipped: true,
+            },
+          };
+        }
         return {
           content: "User did not provide answers.",
           isError: true,

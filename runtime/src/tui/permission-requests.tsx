@@ -13,6 +13,7 @@ import {
   parseAskUserQuestionInput,
   recordAskUserQuestionPlanInterviewAction,
   recordAskUserQuestionUpdatedInput,
+  type AskUserQuestionInput,
   type AskUserQuestionPlanInterviewAction,
 } from "../tools/ask-user-question/tool.js";
 import { makeToolUseMessage } from "./session-transcript.js";
@@ -23,6 +24,7 @@ import { approvalInputText } from "./approval-input-text.js";
 import { Box, useInput } from "./ink.js";
 import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
+import { useRegisterOverlay } from "./context/overlayContext.js";
 import { ApprovalCard, type ApprovalDiffPreview } from "./components/v2/primitives.js";
 import { buildEditDiffPreview } from "./edit-diff-preview.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
@@ -295,6 +297,14 @@ export function AgenCPermissionOverlay({
   readonly isNonInteractiveSession?: boolean;
   readonly debug?: boolean;
 }) {
+  // Register the whole approval family as a modal overlay: without this the
+  // GLOBAL turn-cancel (useCancelRequest) treats esc as "cancel the turn"
+  // while an approval is open — the turn aborts but the permission request
+  // never resolves, leaving a zombie overlay on screen forever. With the
+  // overlay registered, the global cancel defers and esc reaches the
+  // approval's own handlers (skip/keep-planning/reject).
+  useRegisterOverlay("approval", request !== undefined);
+
   const isExitPlanMode =
     request !== undefined &&
     request.ctx.toolName === EXIT_PLAN_MODE_TOOL_NAME;
@@ -332,11 +342,26 @@ export function AgenCPermissionOverlay({
     toolUseConfirm !== null
   ) {
     return (
-      <AskUserQuestionOverlay
+      <AskUserQuestionApprovalContainer
         key={request.id}
         input={askUserQuestionInput}
         onSubmit={(updatedInput) => toolUseConfirm.onAllow(updatedInput, [])}
-        onSkip={() => toolUseConfirm.onReject()}
+        onSkip={() =>
+          // esc is a deliberate skip, not a denial: approve with an empty
+          // answer set flagged skipped — the tool then tells the model to
+          // proceed with best judgment instead of erroring into a re-ask loop.
+          toolUseConfirm.onAllow(
+            {
+              ...askUserQuestionInput,
+              answers: {},
+              metadata: {
+                ...(askUserQuestionInput.metadata ?? {}),
+                skipped: true,
+              },
+            },
+            [],
+          )
+        }
       />
     );
   }
@@ -349,6 +374,38 @@ export function AgenCPermissionOverlay({
       key={request.id}
       request={request}
       toolUseConfirm={toolUseConfirm}
+    />
+  );
+}
+
+function AskUserQuestionApprovalContainer({
+  input,
+  onSubmit,
+  onSkip,
+}: {
+  readonly input: AskUserQuestionInput;
+  onSubmit(updatedInput: unknown): void;
+  onSkip(): void;
+}): React.ReactElement {
+  // Own the Confirmation context like PlanApprovalContainer: without it, esc
+  // falls through to the GLOBAL turn-cancel (useCancelRequest) — the turn
+  // aborts while the permission request stays pending, leaving a zombie
+  // picker on screen forever (observed live: "Turn aborted: interrupted"
+  // with the question still open).
+  useRegisterKeybindingContext("Confirmation");
+  useKeybindings(
+    {
+      "app:interrupt": () => {
+        onSkip();
+      },
+    },
+    { context: "Confirmation" },
+  );
+  return (
+    <AskUserQuestionOverlay
+      input={input}
+      onSubmit={onSubmit}
+      onSkip={onSkip}
     />
   );
 }

@@ -17,6 +17,16 @@ export interface AskUserQuestionOverlayProps {
 const OTHER_LABEL = "Other";
 
 /**
+ * Clamp a single line of picker copy. Long model-authored details
+ * (previews can run to a full paragraph) otherwise balloon the card until
+ * it eats the transcript viewport.
+ */
+function clampLine(text: string, max = 140): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > max ? `${single.slice(0, max - 1)}…` : single;
+}
+
+/**
  * Interactive picker for the AskUserQuestion permission prompt. Without this,
  * an AskUserQuestion approval falls back to the generic tool-approval card —
  * which dumps the questions as raw JSON and, when approved, records NO
@@ -80,8 +90,9 @@ export function AskUserQuestionOverlay({
   };
 
   useInput((inputChar, key, event) => {
-    event.stopImmediatePropagation();
     if (otherMode) {
+      // Free-text entry owns every key while active.
+      event.stopImmediatePropagation();
       if (key.return) {
         const text = otherText.trim();
         if (text.length > 0) commitLabel(text);
@@ -100,6 +111,16 @@ export function AskUserQuestionOverlay({
         setOtherText((value) => value + inputChar);
       }
       return;
+    }
+    // List mode: swallow only the keys the picker actually handles so global
+    // shortcuts (interrupt, overlay switches, focus chords) keep working
+    // while a question is open.
+    const handled =
+      key.escape || key.upArrow || key.downArrow || key.return ||
+      (question.multiSelect === true && inputChar === " ") ||
+      /^[1-9]$/.test(inputChar);
+    if (handled) {
+      event.stopImmediatePropagation();
     }
     if (key.escape) {
       onSkip();
@@ -158,7 +179,7 @@ export function AskUserQuestionOverlay({
       </Box>
       <Box marginBottom={1}>
         <Text color="text2" bold={true}>
-          {question.question}
+          {clampLine(question.question, 200)}
         </Text>
       </Box>
       <Box
@@ -178,7 +199,7 @@ export function AskUserQuestionOverlay({
           // The description falls back to the label (label-only options are
           // the common Grok shape) — don't render a detail that just repeats
           // the label next to itself.
-          const detail = rawDetail !== option.label ? rawDetail : "";
+          const detail = rawDetail !== option.label ? clampLine(rawDetail) : "";
           const marker =
             question.multiSelect === true ? (marked ? "[x] " : "[ ] ") : selected ? "❯ " : "  ";
           const rowText = `${marker}${index + 1}  ${option.label}`;
@@ -216,7 +237,7 @@ export function AskUserQuestionOverlay({
           </Box>
         ) : (
           <Box>
-            <Text color="muted3">{`   ${rowCount}  ${OTHER_LABEL}  type a custom answer`}</Text>
+            <Text color="muted3">{`  ${rowCount}  ${OTHER_LABEL}  type a custom answer`}</Text>
           </Box>
         )}
       </Box>
