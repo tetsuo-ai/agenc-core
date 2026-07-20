@@ -2241,22 +2241,25 @@ async function runDaemonOneShotPrompt(params: {
     });
     completed = true;
     return code;
-  } catch (error) {
-    if (startedAgentId !== null && !completed) {
-      await stopDaemonAgentBestEffort({
-        deps: params.deps,
-        daemonClient,
-        env: params.env,
-        agentId: startedAgentId,
-        reason: "one_shot_failed",
-      });
-    }
-    throw error;
   } finally {
     const stopEvents = unsubscribeEvents as (() => void) | null;
     const stopConnection = unsubscribeConnection as (() => void) | null;
     stopEvents?.();
     stopConnection?.();
+    // One-shot agents are terminal resources, not resumable conversations.
+    // Closing the transport alone leaves the daemon-owned runtime, provider,
+    // session and rollout references alive indefinitely. Always stop the agent
+    // after collecting the terminal snapshot so the daemon can release those
+    // resources on both success and failure.
+    if (startedAgentId !== null) {
+      await stopDaemonAgentBestEffort({
+        deps: params.deps,
+        daemonClient,
+        env: params.env,
+        agentId: startedAgentId,
+        reason: completed ? "one_shot_complete" : "one_shot_failed",
+      });
+    }
     await daemonClient.close().catch(() => {
       /* best effort */
     });

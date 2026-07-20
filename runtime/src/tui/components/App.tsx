@@ -1406,11 +1406,13 @@ function compactHookLabel(hookType: unknown): string {
 }
 const TITLE_ANIMATION_FRAME_COUNT = 2;
 const TITLE_ANIMATION_INTERVAL_MS = 960;
-// A turn that produces zero transcript activity for this long is dead (the
-// error path that emits no terminal event), not merely slow — see the
-// daemon-silence watchdog below. Thinking streams deltas continuously, so a
-// legitimately slow turn never goes a full window without activity.
-const DAEMON_STALL_WATCHDOG_MS = 60_000;
+// Keep this strictly above the provider stream-idle watchdog (90s by default).
+// The provider must get the first chance to emit `stream_idle` and enter its
+// reconnect path; using 60s here made the TUI cancel healthy-but-paused Grok
+// streams as `interrupted` before provider recovery could run. Any recovery
+// event resets the activity clock, while a genuinely silent daemon is still
+// released after this longer safety window.
+const DAEMON_STALL_WATCHDOG_MS = 120_000;
 // A submitted prompt that gets NO daemon acknowledgment within this window
 // (no turn_started, no streaming, no message growth — the 403 flavor where
 // the request dies before any event is broadcast) never started. A cold

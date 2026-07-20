@@ -3878,6 +3878,7 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
+  let emptyResponseRetryCount = 0;
   const consumedCommandUuids: string[] = [];
   const completeConsumedCommands = (): void => {
     for (const uuid of consumedCommandUuids) {
@@ -4344,6 +4345,23 @@ async function* runTurnKernelInner(
 
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
+      // Reasoning providers can occasionally complete a response after
+      // emitting only a reasoning-summary block and no assistant output. A
+      // successful empty turn is indistinguishable from a hung terminal to a
+      // user. Retry once under normal admission/cost accounting with an
+      // ephemeral nudge; keep the bound at one so a broken provider cannot
+      // create an unbounded sampling loop.
+      if (assistantText.length === 0 && emptyResponseRetryCount === 0) {
+        emptyResponseRetryCount += 1;
+        state.messages.push({
+          role: "user",
+          content:
+            "Your previous response contained no visible final answer. " +
+            "Return the final answer now in the assistant output channel.",
+          runtimeOnly: { excludeFromDurableHistory: true },
+        });
+        continue;
+      }
       await commit(state, ctx, session, signal, {
         querySource: turnQuerySource,
       });

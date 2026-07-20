@@ -1968,6 +1968,13 @@ describe("main() smoke", () => {
       expect(
         daemon.requests.some((r) => r.method === "tool.deny"),
       ).toBe(false);
+      expect(daemon.requests).toContainEqual({
+        method: "agent.stop",
+        params: {
+          agentId,
+          reason: "one_shot_complete",
+        },
+      });
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {

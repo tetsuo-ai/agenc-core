@@ -141,6 +141,40 @@ describe("Grok adapter forwards reasoning_summary_text deltas", () => {
     });
   });
 
+  test("emits final text found only in the completed response output envelope", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4.3",
+    });
+    const completed = buildXaiResponse("resp_envelope_only", "visible answer");
+    delete completed.output_text;
+    const create = vi.fn(() =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "response.reasoning_summary_text.delta",
+            delta: "I should answer briefly.",
+          },
+          { type: "response.completed", response: completed },
+        ]),
+      ),
+    );
+    (provider as any).client = { responses: { create } };
+    const chunks: LLMStreamChunk[] = [];
+
+    const result = await provider.chatStream(
+      [{ role: "user", content: "go" }],
+      (chunk) => chunks.push(chunk),
+    );
+
+    expect(result.content).toBe("visible answer");
+    expect(
+      chunks
+        .filter((chunk) => chunk.content.length > 0)
+        .map((chunk) => chunk.content),
+    ).toEqual(["visible answer"]);
+  });
+
   test("empty delta string is dropped — does not emit a chunk", async () => {
     const provider = new GrokProvider({
       apiKey: "xai-test",

@@ -16,6 +16,13 @@ import type { ThemeName } from './theme.js'
 // causing styled text to shift right.
 const EOL = '\n'
 
+// CommonMark soft line breaks inside a paragraph render like ordinary spaces
+// in HTML. Preserve explicit hard breaks (`br` tokens) separately, but do not
+// turn model-authored source wrapping into cramped terminal rows.
+function normalizeSoftLineBreaks(text: string): string {
+  return text.replace(/\r?\n/g, ' ')
+}
+
 let markedConfigured = false
 
 export function configureMarked(): void {
@@ -198,12 +205,12 @@ export function formatToken(
         // in an OSC 8 hyperlink. Linkifying here would nest a second OSC 8
         // sequence, and terminals honor the innermost one, overriding the
         // link's actual href.
-        return token.text
+        return normalizeSoftLineBreaks(token.text)
       }
       if (parent?.type === 'list_item') {
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
+        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(normalizeSoftLineBreaks(token.text))}${EOL}`
       }
-      return linkifyIssueReferences(token.text)
+      return linkifyIssueReferences(normalizeSoftLineBreaks(token.text))
     case 'table': {
       const tableToken = token as Tokens.Table
 

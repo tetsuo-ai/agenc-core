@@ -86,6 +86,18 @@ describe('markdown rendering components', () => {
     expect(output).not.toContain('system-reminder')
   })
 
+  test('renders CommonMark soft breaks as spaces while preserving paragraph gaps', async () => {
+    const output = await renderToString(
+      <Markdown>
+        {'First sentence.\nSecond sentence.\n\nThird sentence.'}
+      </Markdown>,
+      80,
+    )
+
+    expect(output).toContain('First sentence. Second sentence.')
+    expect(output).toContain('Second sentence.\n\nThird sentence.')
+  })
+
   test('renders markdown tables through Markdown integration', async () => {
     const output = await renderToString(
       <Markdown>

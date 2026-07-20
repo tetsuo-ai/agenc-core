@@ -618,6 +618,56 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     );
   });
 
+  test("retries one reasoning-only empty response and returns visible output", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (messages) => {
+        calls += 1;
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        return {
+          content: calls === 1 ? "" : "visible answer",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+          ...(calls === 1
+            ? {
+                thinking: [
+                  {
+                    text: "I should provide a visible answer.",
+                    redacted: false,
+                    kind: "reasoning_summary" as const,
+                  },
+                ],
+              }
+            : {}),
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(calls).toBe(2);
+    expect(
+      seenMessages[1]?.some((message) =>
+        testMessageText(message).includes("no visible final answer"),
+      ),
+    ).toBe(true);
+    const completed = events.findLast(
+      (event) => event.msg.type === "turn_complete",
+    );
+    expect(completed?.msg.type).toBe("turn_complete");
+    if (completed?.msg.type === "turn_complete") {
+      expect(completed.msg.payload.lastAgentMessage).toBe("visible answer");
+    }
+  });
+
   test("compat adapter preserves trusted root-human text when transcript emission is suppressed", async () => {
     const delegatedOptions: unknown[] = [];
     const session = {

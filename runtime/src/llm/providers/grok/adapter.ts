@@ -1533,9 +1533,17 @@ export class GrokProvider implements LLMProvider {
           );
           finishReason = this.mapResponseFinishReason(response, Array.from(toolCallAccum.values()));
           responseError = this.extractResponseError(response, finishReason);
-          const outputText = String(response.output_text ?? "");
+          const outputText = this.extractOutputText(
+            response as Record<string, unknown>,
+          );
           if (outputText && content.length === 0) {
             content = outputText;
+            // Some xAI streams omit output_text.delta and provide the final
+            // assistant text only in response.completed.output[]. Emit that
+            // envelope fallback through the normal streaming path as well as
+            // returning it, otherwise the TUI receives a successful but blank
+            // turn until (or unless) a later status snapshot repairs it.
+            onChunk({ content: outputText, done: false });
           }
           break;
         }
