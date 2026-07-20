@@ -849,3 +849,104 @@ describe("ExecutionAdmissionRepository", () => {
     expect(admissions.listReservations({ runId: "safe-run" })).toHaveLength(2);
   });
 });
+
+describe("sumReconciledUsageByRunId — the child usage rollup read", () => {
+  function reconciledReservation(
+    runId: string,
+    stepId: string,
+    usage: { inputTokens: number; outputTokens: number; costUsd: number },
+  ): void {
+    const step = request(runId, stepId, { input: 500, output: 500, cost: 1 });
+    admissions.enqueue(step);
+    const reservation = claimReservation(admissionRecordKey(step.step));
+    admissions.markDispatched(reservation.reservationId);
+    expect(
+      admissions.reconcile(reservation.reservationId, {
+        kind: "reported",
+        usage,
+      }),
+    ).toEqual({ applied: true, outcome: "reconciled" });
+  }
+
+  it("sums only reconciled actuals; held_unknown is counted, never summed", () => {
+    reconciledReservation("child-x", "turn-1", {
+      inputTokens: 10,
+      outputTokens: 20,
+      costUsd: 0.25,
+    });
+    reconciledReservation("child-x", "turn-2", {
+      inputTokens: 5,
+      outputTokens: 7,
+      costUsd: 0.5,
+    });
+    // A dispatched reservation whose spend is unknowable: held, its RESERVED
+    // 1000 tokens / $1 must never be reported as spent.
+    const held = request("child-x", "turn-3", {
+      input: 500,
+      output: 500,
+      cost: 1,
+    });
+    admissions.enqueue(held);
+    const heldReservation = claimReservation(admissionRecordKey(held.step));
+    admissions.markDispatched(heldReservation.reservationId);
+    admissions.holdUnknown(heldReservation.reservationId, "daemon_killed");
+    // Another run's reconciled row must not leak into child-x's sums.
+    reconciledReservation("child-y", "turn-1", {
+      inputTokens: 100,
+      outputTokens: 100,
+      costUsd: 0.125,
+    });
+
+    expect(admissions.sumReconciledUsageByRunId("child-x")).toEqual({
+      reconciledCount: 2,
+      heldUnknownCount: 1,
+      inputTokens: 15,
+      outputTokens: 27,
+      totalTokens: 42,
+      costUsd: 0.75,
+    });
+    expect(admissions.sumReconciledUsageByRunId("child-y")).toEqual({
+      reconciledCount: 1,
+      heldUnknownCount: 0,
+      inputTokens: 100,
+      outputTokens: 100,
+      totalTokens: 200,
+      costUsd: 0.125,
+    });
+  });
+
+  it("a run with no reservations sums to zero with no holds", () => {
+    expect(admissions.sumReconciledUsageByRunId("child-absent")).toEqual({
+      reconciledCount: 0,
+      heldUnknownCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+    });
+  });
+
+  it("provider_overrun rows contribute their reported actuals", () => {
+    const step = request("child-overrun", "turn-1", {
+      input: 10,
+      output: 10,
+      cost: 0.001,
+    });
+    admissions.enqueue(step);
+    const reservation = claimReservation(admissionRecordKey(step.step));
+    admissions.markDispatched(reservation.reservationId);
+    admissions.reportProviderOverrun(reservation.reservationId, {
+      inputTokens: 50,
+      outputTokens: 10,
+      costUsd: 0.5,
+    });
+    expect(admissions.sumReconciledUsageByRunId("child-overrun")).toEqual({
+      reconciledCount: 1,
+      heldUnknownCount: 0,
+      inputTokens: 50,
+      outputTokens: 10,
+      totalTokens: 60,
+      costUsd: 0.5,
+    });
+  });
+});

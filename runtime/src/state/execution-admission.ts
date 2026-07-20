@@ -157,6 +157,22 @@ export interface PersistedAdmissionReservation {
   readonly updatedAt: string;
 }
 
+/**
+ * Actual reconciled usage summed over one run id's reservations, with
+ * held-unknown reservations surfaced as a count (their reserved amounts are
+ * never reported as spent).
+ */
+export interface AdmissionRunUsageSummary {
+  /** Reservations whose actual usage was reconciled (incl. overruns). */
+  readonly reconciledCount: number;
+  /** Reservations whose spend is unknowable; NOT included in the sums. */
+  readonly heldUnknownCount: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly costUsd: number;
+}
+
 export interface PersistedAdmissionAllocation {
   readonly key: string;
   readonly ownerRunId: string;
@@ -1309,6 +1325,60 @@ export class ExecutionAdmissionRepository {
         .all(...params)
         .map(reservationFromRow);
     });
+  }
+
+  /**
+   * Sum the ACTUAL reconciled provider usage recorded for one run id —
+   * the durable source for a workflow child's usage rollup (additive read,
+   * following the `listRunIdsWithStep` precedent on the durability
+   * repository). Only `reconciled` and `provider_overrun` rows contribute
+   * their reported actuals; `held_unknown` rows are COUNTED but never
+   * summed, so reserved amounts are never reported as spent. An overrun row
+   * with an unpriceable cost contributes its actual tokens and zero cost.
+   */
+  sumReconciledUsageByRunId(runId: string): AdmissionRunUsageSummary {
+    requireNonEmpty(runId, "runId");
+    const row = this.#driver
+      .prepareState<
+        [string],
+        {
+          readonly reconciled_count: number;
+          readonly held_unknown_count: number;
+          readonly input_tokens: number;
+          readonly output_tokens: number;
+          readonly total_tokens: number;
+          readonly cost_nanos: number;
+        }
+      >(
+        `SELECT
+           COALESCE(SUM(CASE WHEN status IN ('reconciled', 'provider_overrun') THEN 1 ELSE 0 END), 0) AS reconciled_count,
+           COALESCE(SUM(CASE WHEN status = 'held_unknown' THEN 1 ELSE 0 END), 0) AS held_unknown_count,
+           COALESCE(SUM(CASE WHEN status IN ('reconciled', 'provider_overrun') THEN COALESCE(actual_input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
+           COALESCE(SUM(CASE WHEN status IN ('reconciled', 'provider_overrun') THEN COALESCE(actual_output_tokens, 0) ELSE 0 END), 0) AS output_tokens,
+           COALESCE(SUM(CASE WHEN status IN ('reconciled', 'provider_overrun') THEN COALESCE(actual_tokens, 0) ELSE 0 END), 0) AS total_tokens,
+           COALESCE(SUM(CASE WHEN status IN ('reconciled', 'provider_overrun') THEN COALESCE(actual_cost_nanos, 0) ELSE 0 END), 0) AS cost_nanos
+         FROM execution_admission_reservations
+         WHERE run_id = ?`,
+      )
+      .get(runId);
+    if (row === undefined) {
+      return {
+        reconciledCount: 0,
+        heldUnknownCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      };
+    }
+    return {
+      reconciledCount: row.reconciled_count,
+      heldUnknownCount: row.held_unknown_count,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      totalTokens: row.total_tokens,
+      costUsd: nanosToUsd(row.cost_nanos),
+    };
   }
 
   listAllocations(
