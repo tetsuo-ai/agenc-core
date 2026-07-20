@@ -377,13 +377,30 @@ export async function runAdmittedToolCall(
       if (effect !== undefined && !acknowledgementStarted && !acknowledged) {
         acknowledgementStarted = true;
         if (dispatched && category !== "idempotent") {
-          appendEffectUnknownOutcome(
-            params.session,
-            effect,
-            dispatch.context.signal.aborted
-              ? "tool_cancelled_after_dispatch"
-              : "tool_failed_after_dispatch_without_acknowledgement",
-          );
+          // A tool-reported timeout (ToolTimeoutError.reason === "timeout")
+          // is a DETERMINATE failure — the tool explicitly says it did not
+          // complete. Recording it as an unknown outcome instead poisons the
+          // whole session behind the M4 operator-review gate for a routine
+          // 30s wait (observed: a slow write_stdin wait blocked every later
+          // side-effecting call). Structural check — no import of the heavy
+          // tools/execution chain.
+          const isToolTimeout =
+            error instanceof Error &&
+            (error as { readonly reason?: unknown }).reason === "timeout";
+          if (isToolTimeout) {
+            appendEffectResult(params.session, effect, {
+              outcome: "failed",
+              evidence: errorEvidence(error),
+            });
+          } else {
+            appendEffectUnknownOutcome(
+              params.session,
+              effect,
+              dispatch.context.signal.aborted
+                ? "tool_cancelled_after_dispatch"
+                : "tool_failed_after_dispatch_without_acknowledgement",
+            );
+          }
         } else {
           appendEffectResult(params.session, effect, {
             outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",

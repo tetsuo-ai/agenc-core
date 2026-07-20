@@ -45,6 +45,7 @@ import {
 import { authCommands } from "./auth.js";
 import { xaiAuthCommands } from "./xai-auth.js";
 import { effortCommand } from "./effort.js";
+import { resolveCommand } from "./resolve.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -159,6 +160,7 @@ export function buildDefaultRegistry(
     modelCommand,
     providerCommand,
     effortCommand,
+    resolveCommand,
     permissionsCommand,
     planCommand,
     agentsCommand,

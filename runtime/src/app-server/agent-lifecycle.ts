@@ -8,6 +8,9 @@
  */
 
 import { AsyncLock } from "../utils/async-lock.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
+import { resolveDurableEffectReview } from "../state/effect-review.js";
+import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
 import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
@@ -56,6 +59,8 @@ import type {
   SessionTranscriptResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
+  SessionResolveToolCallParams,
+  SessionResolveToolCallResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
   SessionFileRewindParams,
@@ -1621,6 +1626,76 @@ export class AgenCDaemonAgentManager {
    * which signals the agent's AbortController and cascades to
    * descendant subagents.
    */
+  async resolveSessionToolCall(
+    params: SessionResolveToolCallParams,
+  ): Promise<SessionResolveToolCallResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.resolveToolCall requires a daemon session manager",
+      );
+    }
+    const session = await this.#sessionManager.getSession(params.sessionId);
+    if (session === null || !isActiveSession(session)) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session not found or closed: ${params.sessionId}`,
+      );
+    }
+    // Operator review of unknown-outcome effects through the LIVE session —
+    // the CLI path (`agenc state resolve-tool-call`) cannot append while the
+    // daemon holds the rollout lock, so the TUI /resolve goes through here.
+    // Same-process appends pass the process-level lock.
+    if (session.cwd === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `AgenC daemon session has no working directory: ${params.sessionId}`,
+      );
+    }
+    const driver = openStateDatabases({ cwd: session.cwd });
+    try {
+      const reviewedAt = new Date().toISOString();
+      const reviewedBy = params.reviewer?.trim() || "tui_operator";
+      const candidates =
+        params.toolCallId !== undefined
+          ? [
+              {
+                sessionId: params.sessionId,
+                toolCallId: params.toolCallId,
+                toolName: "",
+                startedAt: "",
+              },
+            ]
+          : [...listUnresolvedUnknownOutcomeEffects(driver, params.sessionId)];
+      const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
+      for (const effect of candidates) {
+        const outcome = resolveDurableEffectReview(driver, {
+          sessionId: params.sessionId,
+          toolCallId: effect.toolCallId,
+          reviewedAt,
+          reviewedBy,
+          resolution: "human_verified",
+        });
+        if (outcome.kind === "resolved") {
+          resolved.push({
+            toolCallId: effect.toolCallId,
+            toolName: effect.toolName,
+            ...(outcome.durable && "eventId" in outcome && typeof outcome.eventId === "string"
+              ? { eventId: outcome.eventId }
+              : {}),
+          });
+        }
+      }
+      const remaining = listUnresolvedUnknownOutcomeEffects(
+        driver,
+        params.sessionId,
+      ).length;
+      return { sessionId: params.sessionId, resolved, remaining };
+    } finally {
+      driver.close();
+    }
+  }
+
   async cancelSessionTurn(
     params: SessionCancelTurnParams,
   ): Promise<SessionCancelTurnResult> {

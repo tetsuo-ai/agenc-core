@@ -1958,6 +1958,46 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }, 10_000);
     return () => clearInterval(interval);
   }, [isLoading, props.session, addNotification, permissionRequests.length, elicitation.prompt, transcript.inProgressToolUseIDs, hasActiveLocalAgents]);
+  // M4 unknown-outcome gate visibility: when a tool result reports the
+  // session blocked by an unresolved unknown-outcome effect, the block
+  // otherwise only reaches the agent as a tool error — the user just watches
+  // the agent go quiet ("se calló el proceso"). Surface it as an immediate
+  // notification with the /resolve hint, once per blocking effect.
+  const lastGateNotifiedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const messages = transcript.messages as readonly {
+      type?: string;
+      message?: { content?: unknown };
+    }[];
+    const textOf = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (Array.isArray(content)) {
+        return content
+          .map((block) =>
+            block !== null && typeof block === "object" && "text" in block
+              ? String((block as { text?: unknown }).text ?? "")
+              : "",
+          )
+          .join("\n");
+      }
+      return "";
+    };
+    for (let i = messages.length - 1; i >= 0 && i > messages.length - 6; i -= 1) {
+      const text = textOf(messages[i]?.message?.content);
+      const match = text.match(/unresolved unknown-outcome effect\(s\) \[([^\]]+)\]/);
+      if (match === null) continue;
+      const blocking = match[1]!;
+      if (lastGateNotifiedRef.current === blocking) return;
+      lastGateNotifiedRef.current = blocking;
+      addNotification({
+        key: "unknown-outcome-gate",
+        text: `Session blocked by an unknown tool outcome (${blocking}) — side-effecting tools are gated until you review it. Run /resolve to lift the gate.`,
+        priority: "immediate",
+        timeoutMs: 15000,
+      });
+      return;
+    }
+  }, [transcript.messages, addNotification]);
   const queuedCommands = useCommandQueue();
   const queueDrainActiveRef = useRef(false);
   const [, setQueueDrainTick] = useState(0);

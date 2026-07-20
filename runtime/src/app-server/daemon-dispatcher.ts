@@ -94,6 +94,7 @@ import {
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionCancelTurnParams,
+  type SessionResolveToolCallParams,
   type SessionClearParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerByNameParams,
@@ -220,6 +221,7 @@ function buildServerCapabilities(
     "session.snapshot": hasMethod(agentManager, "snapshotSession"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
+    "session.resolveToolCall": hasMethod(agentManager, "resolveSessionToolCall"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
@@ -319,6 +321,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "approveTool"
     | "attachAgent"
     | "cancelSessionTurn"
+    | "resolveSessionToolCall"
     | "cancelTool"
     | "createAgent"
     | "denyTool"
@@ -403,6 +406,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "approveTool"
     | "attachAgent"
     | "cancelSessionTurn"
+    | "resolveSessionToolCall"
     | "cancelTool"
     | "createAgent"
     | "denyTool"
@@ -780,6 +784,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.cancelSessionTurn(
             validateSessionCancelTurnParams(params),
+          ),
+        );
+      case "session.resolveToolCall":
+        return successResponse(
+          id,
+          await this.#agentManager.resolveSessionToolCall(
+            validateSessionResolveToolCallParams(params),
           ),
         );
       case "session.mcp.addServer":
@@ -2050,6 +2061,17 @@ function validateSessionCancelTurnParams(
   });
   validateRequiredString(validated, "session.cancelTurn", "sessionId");
   return validated as SessionCancelTurnParams;
+}
+
+function validateSessionResolveToolCallParams(
+  params: JsonObject,
+): SessionResolveToolCallParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.resolveToolCall",
+    stringFields: ["sessionId", "toolCallId", "reviewer"],
+  });
+  validateRequiredString(validated, "session.resolveToolCall", "sessionId");
+  return validated as SessionResolveToolCallParams;
 }
 
 function validateSessionMcpAddServerParams(

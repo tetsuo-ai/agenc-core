@@ -2760,6 +2760,10 @@ type TuiSessionShape = {
   emitPhaseEvent?: (event: PhaseEvent) => void;
   cancelActiveTurn?: (reason?: string) => Promise<void>;
   clearDaemonSession?: () => Promise<void>;
+  resolveDaemonToolCall?: (params: {
+    readonly toolCallId?: string;
+    readonly reviewer?: string;
+  }) => Promise<unknown>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
   partialCompactFromMessage?: (params: {
     readonly messageOrdinal: number;
@@ -3028,6 +3032,27 @@ async function createDeferredDaemonPromptTuiSession(params: {
       if (liveSession !== null) {
         await (liveSession as TuiSessionShape).clearDaemonSession?.();
       }
+    },
+    // Same forwarder for /resolve: the command must reach the live daemon's
+    // session.resolveToolCall RPC. The deferred session attaches LAZILY on
+    // the first real turn, so before that there is nothing to resolve —
+    // report a clean empty result instead of throwing.
+    resolveDaemonToolCall: async (params: {
+      readonly toolCallId?: string;
+      readonly reviewer?: string;
+    }) => {
+      if (liveSession === null) {
+        return {
+          sessionId: "pending",
+          resolved: [],
+          remaining: 0,
+        };
+      }
+      const target = liveSession as TuiSessionShape;
+      if (typeof target.resolveDaemonToolCall !== "function") {
+        throw new Error("daemon session does not support tool-call resolution");
+      }
+      return target.resolveDaemonToolCall(params);
     },
     cancelActiveTurn: async (reason) => {
       if (liveSession !== null) {

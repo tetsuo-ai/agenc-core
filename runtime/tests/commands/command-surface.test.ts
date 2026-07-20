@@ -40,6 +40,7 @@ const MINIMAL_NAMES = [
   "model",
   "provider",
   "effort",
+  "resolve",
   "permissions",
   "plan",
   "agents",

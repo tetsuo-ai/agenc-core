@@ -581,11 +581,20 @@ function validateCanonicalIdentities(
       prior !== undefined &&
       (prior.sequence !== row.event_seq || prior.payloadJson !== row.payload_json)
     ) {
-      throw invalidIdentityEvent(
-        row,
-        runId,
-        "event ID has conflicting content",
-      );
+      // Legacy rollouts predate durable event identities — synthetic ids like
+      // "system" recur across DISTINCT events. A payload conflict on an event
+      // WITHOUT a sequence is the old format, not corruption: both entries are
+      // valid journal content, so dedupe identical copies and keep the rest.
+      // Only sequenced identities fail closed. Matches the admission-recovery
+      // and effect-review validators.
+      if (row.event_seq !== null) {
+        throw invalidIdentityEvent(
+          row,
+          runId,
+          "event ID has conflicting content",
+        );
+      }
+      continue;
     }
     byEventId.set(row.event_id, {
       sequence: row.event_seq,

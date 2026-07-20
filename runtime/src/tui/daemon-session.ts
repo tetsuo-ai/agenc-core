@@ -38,6 +38,7 @@ import type {
   SessionApplyConfigParams,
   SessionApplyConfigResult,
   SessionSnapshotResult,
+  SessionResolveToolCallResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
@@ -128,6 +129,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
+  resolveDaemonToolCall?(params: {
+    readonly toolCallId?: string;
+    readonly reviewer?: string;
+  }): Promise<SessionResolveToolCallResult>;
   getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
@@ -560,6 +565,17 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
+    resolveDaemonToolCall: async (params: {
+      readonly toolCallId?: string;
+      readonly reviewer?: string;
+    }) =>
+      client.request("session.resolveToolCall", {
+        sessionId,
+        ...(params.toolCallId !== undefined
+          ? { toolCallId: params.toolCallId }
+          : {}),
+        ...(params.reviewer !== undefined ? { reviewer: params.reviewer } : {}),
+      }),
     getDaemonSessionSnapshot: async () =>
       client.request("session.snapshot", { sessionId }),
     cancelActiveTurn: async (reason?: string) => {

@@ -62,6 +62,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.snapshot",
   "session.transcript",
   "session.cancelTurn",
+  "session.resolveToolCall",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -363,6 +364,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Interrupt the active turn for a daemon-owned session. Fires the agent's AbortController and signals run-turn to abort with reason='interrupted'.",
+  },
+  "session.resolveToolCall": {
+    method: "session.resolveToolCall",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Operator review of unknown-outcome tool effects (M4 gate): mark them resolved so the side-effecting mutation gate lifts. TUI /resolve uses this so the session does not have to be closed for the CLI path.",
   },
   "session.mcp.addServer": {
     method: "session.mcp.addServer",
@@ -957,6 +966,13 @@ export interface SessionTerminateParams extends JsonObject {
 
 export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
+}
+
+export interface SessionResolveToolCallParams extends JsonObject {
+  readonly sessionId: string;
+  /** When omitted, every pending unknown-outcome effect in the session is resolved. */
+  readonly toolCallId?: string;
+  readonly reviewer?: string;
 }
 
 export interface SessionSnapshotParams extends JsonObject {
@@ -1567,6 +1583,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.transcript", SessionTranscriptParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
+  | AgenCDaemonRequestWithParams<"session.resolveToolCall", SessionResolveToolCallParams>
   | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
@@ -2125,6 +2142,16 @@ export interface SessionClearResult extends JsonObject {
   readonly clearedAt: string;
 }
 
+export interface SessionResolveToolCallResult extends JsonObject {
+  readonly sessionId: string;
+  readonly resolved: readonly {
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly eventId?: string;
+  }[];
+  readonly remaining: number;
+}
+
 /**
  * Counters from the daemon-owned in-process session. The TUI bridge
  * cannot read these directly because it only holds a thin client-side
@@ -2432,6 +2459,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
+  readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
