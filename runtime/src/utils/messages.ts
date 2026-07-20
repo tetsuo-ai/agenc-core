@@ -5487,7 +5487,12 @@ export function isCompactBoundaryMessage(
  */
 export function findLastCompactBoundaryIndex<
   T extends Message | NormalizedMessage,
->(messages: T[]): number {
+>(messages: T[] | undefined | null): number {
+  // Tolerate transient undefined/null (a parent mid-reset can render one
+  // frame with no message array yet). Crashing here took down the whole
+  // TuiErrorBoundary subtree — the chat/input area vanished until the next
+  // remount (observed: chat clears after an agent reply, returns on typing).
+  if (!messages) return -1
   // Scan backwards to find the most recent compact boundary
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
@@ -5512,9 +5517,11 @@ export function findLastCompactBoundaryIndex<
  */
 export function getMessagesAfterCompactBoundary<
   T extends Message | NormalizedMessage,
->(messages: T[], options?: { includeSnipped?: boolean }): T[] {
+>(messages: T[] | undefined | null, options?: { includeSnipped?: boolean }): T[] {
   const boundaryIndex = findLastCompactBoundaryIndex(messages)
-  const sliced = boundaryIndex === -1 ? messages : messages.slice(boundaryIndex)
+  const sliced = (
+    boundaryIndex === -1 ? (messages ?? []) : messages!.slice(boundaryIndex)
+  ) as T[]
   if (!options?.includeSnipped && feature('HISTORY_SNIP')) {
     return projectSnippedView(sliced as Message[]) as T[]
   }

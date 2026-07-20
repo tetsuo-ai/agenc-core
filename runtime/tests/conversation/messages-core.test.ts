@@ -2560,6 +2560,16 @@ describe("message utility constructors and predicates", () => {
     ]);
   });
 
+  test("compact boundary helpers tolerate undefined/null message arrays", () => {
+    // A parent mid-reset can render one frame with no message array yet —
+    // crashing here took down whole TUI error-boundary subtrees (the chat
+    // and input areas vanished until the next remount).
+    expect(findLastCompactBoundaryIndex(undefined)).toBe(-1);
+    expect(findLastCompactBoundaryIndex(null)).toBe(-1);
+    expect(getMessagesAfterCompactBoundary(undefined)).toEqual([]);
+    expect(getMessagesAfterCompactBoundary(null)).toEqual([]);
+  });
+
   test("applies display predicates and tool-call counters", () => {
     const hiddenMeta = normalizeMessages([
       createUserMessage({ content: "meta", isMeta: true }),
