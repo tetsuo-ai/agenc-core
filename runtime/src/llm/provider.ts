@@ -56,6 +56,7 @@ import {
   forceRefreshXaiOauthCredentials,
   isXaiOauthBearer,
   readXaiOauthAccessToken,
+  xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
@@ -1454,11 +1455,26 @@ export function createProvider(
           refreshBearer: async () => {
             const refreshed = await forceRefreshXaiOauthCredentials();
             if (refreshed === undefined) {
+              // Honesty split: only claim the user is logged out when the
+              // stored grant is genuinely dead (quarantined terminal
+              // invalid_grant, or gone). A transient network/endpoint
+              // failure during refresh must not flap the TUI to
+              // "Not logged in" while the grant is still viable — the next
+              // 401/pre-flight retries the single-flight refresh.
+              if (xaiOauthRequiresRelogin()) {
+                return {
+                  kind: "exhausted",
+                  reason:
+                    "xAI OAuth session expired — run /grok-login to sign in again, " +
+                    "or set XAI_API_KEY to use API-key billing",
+                };
+              }
               return {
                 kind: "exhausted",
                 reason:
-                  "xAI OAuth refresh failed — run /grok-login to sign in again, " +
-                  "or set XAI_API_KEY to use API-key billing",
+                  "xAI OAuth token refresh temporarily failed (network or " +
+                  "provider error). Your sign-in is still valid; retrying — " +
+                  "no /grok-login needed",
               };
             }
             grokProvider.applyRefreshedBearer(refreshed.accessToken);

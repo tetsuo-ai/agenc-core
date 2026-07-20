@@ -137,7 +137,19 @@ export async function retryWithAuthRefresh<T>(
         bearer = outcome.bearer;
         continue;
       }
-      // skipped / exhausted → bubble the original 401 up.
+      if (outcome.kind === "exhausted") {
+        // Surface WHY recovery stopped: the raw 401/403 alone reads as
+        // "Forbidden" in the TUI, which users misread as "logged out"
+        // even when the refresh failure was transient. Preserve the
+        // original status for classifiers.
+        const wrapped = new Error(
+          `${error.message} (${outcome.reason})`,
+        ) as Error & { status?: number; cause?: unknown };
+        wrapped.status = error.status;
+        wrapped.cause = error;
+        throw wrapped;
+      }
+      // skipped → bubble the original 401 up.
       throw error;
     }
   }

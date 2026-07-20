@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 const credentialsModulePath = '../../src/utils/xaiOauthCredentials.js'
 
 let storedAccessToken: string | undefined
+let requiresRelogin = true
 const forceRefreshMock = vi.fn()
 
 async function importProviderModule() {
@@ -18,12 +19,14 @@ async function importProviderModule() {
     isXaiOauthBearer: (key: string | undefined) =>
       key !== undefined && key === storedAccessToken,
     forceRefreshXaiOauthCredentials: forceRefreshMock,
+    xaiOauthRequiresRelogin: () => requiresRelogin,
   }))
   return import('../../src/llm/provider.ts')
 }
 
 beforeEach(() => {
   storedAccessToken = undefined
+  requiresRelogin = true
   forceRefreshMock.mockReset()
 })
 
@@ -144,7 +147,34 @@ test('exhausted refresh reports a re-login hint instead of retrying', async () =
     previousError: Object.assign(new Error('401'), { status: 401 }),
   })
   expect(outcome.kind).toBe('exhausted')
-  expect(outcome.reason).toMatch(/grok-login/)
+  expect(outcome.reason).toMatch(/run \/grok-login/)
+  expect(outcome.reason).toMatch(/expired/)
+})
+
+test('transient refresh failure does not claim the user is logged out', async () => {
+  // The live failure this pins: a refresh that fails while the stored grant
+  // is still viable (network blip, endpoint 5xx, sibling-process race) used
+  // to surface "run /grok-login to sign in again" and flap the TUI to
+  // "Not logged in" mid-session. Honesty: only a dead grant may demand
+  // re-login.
+  storedAccessToken = 'oauth-bearer-1'
+  requiresRelogin = false
+  forceRefreshMock.mockResolvedValue(undefined)
+  const { createProvider } = await importProviderModule()
+
+  const provider = createProvider('grok', { model: 'grok-4.5' }) as unknown as {
+    authRefreshCallbacks?: {
+      refreshBearer: (ctx: unknown) => Promise<{ kind: string; reason?: string }>
+    }
+  }
+  const outcome = await provider.authRefreshCallbacks!.refreshBearer({
+    attempt: 1,
+    previousError: Object.assign(new Error('403'), { status: 403 }),
+  })
+  expect(outcome.kind).toBe('exhausted')
+  expect(outcome.reason).toMatch(/temporarily/)
+  expect(outcome.reason).toMatch(/still valid/)
+  expect(outcome.reason).not.toMatch(/sign in again/)
 })
 
 test('API-key mode keeps the no-refresh default callback', async () => {
