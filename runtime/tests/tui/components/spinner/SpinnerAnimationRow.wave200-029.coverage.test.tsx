@@ -59,7 +59,7 @@ describe('SpinnerAnimationRow coverage', () => {
       120,
     )
 
-    expect(activeTools).toContain('◐')
+    expect(activeTools).toContain('⣷')
     expect(activeTools).toContain('Working')
     expect(activeTools).toContain('indexing')
     expect(activeTools).toContain('31s')
@@ -124,7 +124,7 @@ describe('SpinnerAnimationRow coverage', () => {
       120,
     )
 
-    expect(foregroundedTeammate).toContain('◐')
+    expect(foregroundedTeammate).toContain('⣷')
     expect(foregroundedTeammate).toContain('(esc to interrupt Reviewer)')
     expect(foregroundedTeammate).not.toContain('9.1k tokens')
     expect(foregroundedTeammate).not.toContain('thinking')

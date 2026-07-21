@@ -9,6 +9,7 @@ import { Box, Text } from '../../ink.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
+import { SpiralDots } from './SpiralDots.js';
 import type { SpinnerMode } from './types.js';
 import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
@@ -411,7 +412,13 @@ export function SpinnerAnimationRow({
     <FullWidthRow>
       <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
         <Box flexWrap="wrap" height={1} width={2}>
-          <Text color={messageColor}>{statusGlyph(mode, hasActiveTools)}</Text>
+          {hasActiveTools || mode === 'tool-use' || mode === 'tool-input' ? (
+            // Live 9-dot spiral spinner (rotating ring + cycling color) instead
+            // of the old static half-painted ◐.
+            <SpiralDots />
+          ) : (
+            <Text color={messageColor}>{statusGlyph(mode, hasActiveTools)}</Text>
+          )}
         </Box>
         <Text color={messageColor}>{visibleMessage}</Text>
         {status}

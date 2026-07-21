@@ -94,7 +94,7 @@ describe("SpinnerAnimationRow coverage swarm row 189", () => {
       verbose: true,
     });
 
-    expect(withTokens).toContain("◐");
+    expect(withTokens).toContain("⣷");
     expect(withTokens).toContain("300 tokens");
 
     const withoutTokens = await renderRow({
