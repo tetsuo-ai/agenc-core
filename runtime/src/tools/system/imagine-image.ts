@@ -79,6 +79,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
+    // Image generation uses an internal 120s timeout (AbortSignal.timeout); the
+    // 30s default tool timeout could cut a slow generation just short. Give the
+    // harness backstop 2.5min so it always exceeds the tool's own timeout.
+    timeoutMs: 150_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: () => ({
       maxInputTokens: 0,
