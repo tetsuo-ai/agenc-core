@@ -136,6 +136,12 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
     isReadOnly: false,
     requiresApproval: true,
     concurrencyClass: { kind: "exclusive" },
+    // Video generation legitimately outlives the 30s default tool timeout: the
+    // internal poll alone waits up to 240s (pollTimeoutMs), plus the initial
+    // POST and the MP4 download. Give the harness backstop 5min so a healthy
+    // long generation isn't killed mid-poll; the tool's own internal timeouts
+    // still fire first with a clean error.
+    timeoutMs: 300_000,
     recoveryCategory: "side-effecting",
     admissionEstimate: () => ({
       maxInputTokens: 0,
