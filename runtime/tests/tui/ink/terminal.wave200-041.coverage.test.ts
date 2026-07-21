@@ -18,6 +18,7 @@ const TERMINAL_ENV_KEYS = [
   'KONSOLE_VERSION',
   'MSYSTEM',
   'NODE_ENV',
+  'PTYXIS_VERSION',
   'SESSIONNAME',
   'SSH_CLIENT',
   'SSH_CONNECTION',
@@ -202,6 +203,11 @@ describe('terminal capability detection', () => {
     expect(terminal.isSynchronizedOutputSupported()).toBe(false)
 
     resetTerminalEnv({ TERM_PROGRAM: 'Apple_Terminal', VTE_VERSION: '6799' })
+    expect(terminal.isSynchronizedOutputSupported()).toBe(false)
+
+    // Ptyxis reports a new VTE_VERSION but mishandles DEC 2026/DECSTBM, so it
+    // is opted out even though its VTE_VERSION would otherwise qualify.
+    resetTerminalEnv({ PTYXIS_VERSION: '50.1', VTE_VERSION: '8400' })
     expect(terminal.isSynchronizedOutputSupported()).toBe(false)
   })
 
