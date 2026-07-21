@@ -641,8 +641,16 @@ function DesignBottomLeftLabel({
     () => Object.values(tasks ?? {}).filter((task: any) => task?.type !== "local_bash" && (task?.status === "running" || task?.status === "pending")).length,
     [tasks],
   );
-  const swarmLabel = swarmMode ? (runningAgents > 0 ? ` · swarm ${runningAgents}` : " · swarm") : "";
-  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel}{swarmLabel} · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>;
+  const swarmBadgeText = ` SWARM${runningAgents > 0 ? ` ${runningAgents}` : ""} `;
+  return (
+    <>
+      <ThemedText color="text2" wrap="truncate-end">● {modeLabel}</ThemedText>
+      {swarmMode ? (
+        <ThemedText backgroundColor="agenc" color="ansi:white" bold wrap="truncate-end">{swarmBadgeText}</ThemedText>
+      ) : null}
+      <ThemedText color="text2" wrap="truncate-end"> · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>
+    </>
+  );
 }
 
 function DesignBottomRightLabel({

@@ -20,6 +20,7 @@ import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/Pro
 import type { PendingRequest } from "../permission-requests.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
+import ThemedText from "../components/design-system/ThemedText.js";
 import { PreviewSurface } from "./surfaces/PreviewSurface.js";
 import { isDangerousPermissionMode } from "./WorkbenchContextStrip.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
@@ -102,18 +103,16 @@ function ComposerContextRow({
       task?.type !== "local_bash" &&
       (task?.status === "running" || task?.status === "pending"),
   ).length;
-  const swarmLabel = swarmMode
-    ? ` · swarm${runningAgents > 0 ? ` ${runningAgents}` : ""}`
-    : "";
+  const swarmBadgeText = ` SWARM${runningAgents > 0 ? ` ${runningAgents}` : ""} `;
   return (
     <Box flexDirection="row" paddingX={1} height={1} overflowY="hidden">
       <Text color={mode === "plan" ? "planMode" : dangerous ? "warning" : "inactive"}>
         {modeLabel}
       </Text>
       {swarmMode ? (
-        <Text color="agenc" wrap="truncate-end">
-          {swarmLabel}
-        </Text>
+        <ThemedText backgroundColor="agenc" color="ansi:white" bold wrap="truncate-end">
+          {swarmBadgeText}
+        </ThemedText>
       ) : null}
       <Text color="inactive" wrap="truncate-end">
         {` · ${modelLabel}${contextPctLabel !== null ? ` · ${contextPctLabel}` : ""}`}
