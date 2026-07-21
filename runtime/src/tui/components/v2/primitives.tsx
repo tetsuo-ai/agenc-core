@@ -1441,8 +1441,14 @@ const APPROVAL_PREVIEW_LINE_CAP = 7
  * from the BOTTOM and the diff box renders ABOVE these rows, so the diff must be
  * shed BEFORE it can push the legend/confirm off the bottom edge — reserve all
  * of them up front.
+ *
+ * Picker rebuild: the action block is now the picker (3 option rows) + key
+ * hint, not the old one-line legend + confirm — the reservation must cover
+ * summary + facts + picker + hint or the popup body clip sheds the picker
+ * itself on tight slots (observed: a 40-line Write diff left the card with
+ * only `CONFIRMATION enter` in the facts row and no way to answer).
  */
-const APPROVAL_ESSENTIAL_BODY_ROWS = 5
+const APPROVAL_ESSENTIAL_BODY_ROWS = 6
 
 /**
  * Decide whether the approval popup can show its embedded `DiffInline` preview
@@ -1602,6 +1608,64 @@ export function ApprovalCard({
         <ThemedText color="text2" wrap="truncate-end">
           {approvalSummary}
         </ThemedText>
+        {requireTypedConfirmation ? (
+          <Box flexDirection="column" flexShrink={0}>
+            <ThemedText color="muted3" wrap="truncate-end">
+              type '{typedConfirmationTarget}' to approve · esc cancel
+            </ThemedText>
+            <Box flexDirection="row" gap={1}>
+              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
+                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+              </ThemedText>
+              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+            </Box>
+          </Box>
+        ) : (
+          // The action picker comes FIRST: the popup body clips from the
+          // bottom, so everything below this block (command, diff, facts,
+          // note) is the sheddable part — the answer rows never leave the
+          // card, same rule as the plan picker (observed live: a 40-line
+          // Write diff pushed the picker off the card entirely).
+          <ThemedBox
+            flexDirection="column"
+            flexShrink={0}
+            borderStyle="single"
+            borderLeft={true}
+            borderTop={false}
+            borderRight={false}
+            borderBottom={false}
+            borderColor="agenc"
+            paddingLeft={1}
+          >
+            {APPROVAL_ACTIONS.map((action, index) => {
+              const selected = index === (selectedIndex ?? 0)
+              const marker = selected ? '❯ ' : '  '
+              const rowText = `${marker}${index + 1}  ${action.label}`
+              const detailText = `  ${action.suffix}`
+              return (
+                <Box key={action.label}>
+                  {selected ? (
+                    <ThemedText color="agenc" bold={true}>
+                      {`${rowText}${detailText}`}
+                    </ThemedText>
+                  ) : (
+                    <ThemedText color="text2">
+                      {rowText}
+                      <ThemedText color="muted3">{detailText}</ThemedText>
+                    </ThemedText>
+                  )}
+                </Box>
+              )
+            })}
+          </ThemedBox>
+        )}
+        {!requireTypedConfirmation ? (
+          <Box marginTop={1} marginBottom={1} flexShrink={0}>
+            <ThemedText color="muted3" wrap="truncate-end">
+              1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+            </ThemedText>
+          </Box>
+        ) : null}
         {commandIsShell ? (
           // A real shell command (Run/Bash): show it behind the `$ ` prompt glyph.
           <ThemedText color="text2" wrap="truncate-end">
@@ -1660,62 +1724,6 @@ export function ApprovalCard({
           <ThemedText color="muted3" wrap="truncate-end">
             note · {note}
           </ThemedText>
-        ) : null}
-        {requireTypedConfirmation ? (
-          <Box flexDirection="column" flexShrink={0}>
-            <ThemedText color="muted3" wrap="truncate-end">
-              type '{typedConfirmationTarget}' to approve · esc cancel
-            </ThemedText>
-            <Box flexDirection="row" gap={1}>
-              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
-                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
-              </ThemedText>
-              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
-            </Box>
-          </Box>
-        ) : (
-          // The action picker: one row per choice, inline marker, highlighted
-          // selection — same structure as the plan/question pickers, replacing
-          // the old triple repetition ([1]… legend, ▸ confirm, summary line).
-          <ThemedBox
-            flexDirection="column"
-            flexShrink={0}
-            borderStyle="single"
-            borderLeft={true}
-            borderTop={false}
-            borderRight={false}
-            borderBottom={false}
-            borderColor="agenc"
-            paddingLeft={1}
-          >
-            {APPROVAL_ACTIONS.map((action, index) => {
-              const selected = index === (selectedIndex ?? 0)
-              const marker = selected ? '❯ ' : '  '
-              const rowText = `${marker}${index + 1}  ${action.label}`
-              const detailText = `  ${action.suffix}`
-              return (
-                <Box key={action.label}>
-                  {selected ? (
-                    <ThemedText color="agenc" bold={true}>
-                      {`${rowText}${detailText}`}
-                    </ThemedText>
-                  ) : (
-                    <ThemedText color="text2">
-                      {rowText}
-                      <ThemedText color="muted3">{detailText}</ThemedText>
-                    </ThemedText>
-                  )}
-                </Box>
-              )
-            })}
-          </ThemedBox>
-        )}
-        {!requireTypedConfirmation ? (
-          <Box marginTop={1} flexShrink={0}>
-            <ThemedText color="muted3" wrap="truncate-end">
-              1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
-            </ThemedText>
-          </Box>
         ) : null}
       </Box>
     </Popup>

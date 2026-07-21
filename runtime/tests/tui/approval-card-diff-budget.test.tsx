@@ -53,10 +53,11 @@ describe('approvalDiffPreviewBudget (BUG 1: never a header-only unterminated box
   })
 
   test('shows the preview with >=1 diff line once the full chrome fits', () => {
-    // The threshold: popupBodyRows = 11 leaves exactly room for the essential
-    // body + box chrome + one diff line. Whenever the preview is shown, at least
-    // one line is shown (never a header-only box).
-    for (let popupBodyRows = 11; popupBodyRows <= 40; popupBodyRows++) {
+    // The threshold: popupBodyRows = 12 leaves exactly room for the essential
+    // body (summary + facts + picker + hint, 6 rows) + box chrome + one diff
+    // line. Whenever the preview is shown, at least one line is shown (never
+    // a header-only box).
+    for (let popupBodyRows = 12; popupBodyRows <= 40; popupBodyRows++) {
       const budget = approvalDiffPreviewBudget(popupBodyRows, 153)
       expect(budget.showPreview).toBe(true)
       expect(budget.previewLineCap).toBeGreaterThanOrEqual(1)
@@ -64,16 +65,15 @@ describe('approvalDiffPreviewBudget (BUG 1: never a header-only unterminated box
   })
 
   test('REVERT-SENSITIVITY: the budget reserves the box header + continuation, not just borders', () => {
-    // The bug was gating on a budget (`>= 2` after reserving only 5 essential +
-    // 2 border = 7) that did NOT reserve the box header, its separator, or the
-    // continuation row — so at marginal heights the box either clipped after its
-    // header (unterminated) or pushed the [1]/[2]/[3] legend off the bottom. The
-    // corrected helper reserves all of it, so the preview is OMITTED below
-    // popupBodyRows = 11. Against the broken gate, popupBodyRows = 10 SHOWED the
-    // diff (and clipped the legend); now it is omitted.
+    // The bug was gating on a budget that did NOT reserve the box header, its
+    // separator, or the continuation row — so at marginal heights the box
+    // either clipped after its header (unterminated) or pushed the action off
+    // the bottom. The corrected helper reserves all of it plus the picker
+    // (6 essential rows), so the preview is OMITTED below popupBodyRows = 12.
     expect(approvalDiffPreviewBudget(10, 153).showPreview).toBe(false)
+    expect(approvalDiffPreviewBudget(11, 153).showPreview).toBe(false)
     // And at the first height where the full chrome fits, exactly one line.
-    expect(approvalDiffPreviewBudget(11, 153)).toEqual({
+    expect(approvalDiffPreviewBudget(12, 153)).toEqual({
       showPreview: true,
       previewLineCap: 1,
     })
