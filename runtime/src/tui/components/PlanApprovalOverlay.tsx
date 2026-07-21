@@ -127,32 +127,11 @@ export function PlanApprovalOverlay({
           <Text color="muted3">{`  saved · ${getDisplayPath(planFilePath)}`}</Text>
         ) : null}
       </Box>
-      <Box
-        flexDirection="column"
-        borderStyle="single"
-        borderLeft={true}
-        borderTop={false}
-        borderRight={false}
-        borderBottom={false}
-        borderColor="planMode"
-        paddingLeft={1}
-        {...(clamped ? { height: PLAN_PREVIEW_LINES, overflow: "hidden" as const } : {})}
-      >
-        {hasPlan ? (
-          <Markdown>{planContent as string}</Markdown>
-        ) : (
-          <Text color="muted3">(no plan content)</Text>
-        )}
-      </Box>
-      {hasPlan && planLineCount > PLAN_PREVIEW_LINES ? (
-        <Box>
-          <Text color="muted3">
-            {expanded
-              ? `ctrl+o collapse · ${planLineCount} lines`
-              : `first ${PLAN_PREVIEW_LINES} of ${planLineCount} lines · ctrl+o to expand`}
-          </Text>
-        </Box>
-      ) : null}
+      {/* Decision row FIRST: on a long transcript the plan preview would
+          push these options below the visible area, leaving the card with no
+          way to answer (the "plan approval looks broken" complaint). The
+          plan stays readable underneath and ctrl+o expands it — the choice
+          itself never leaves the screen. */}
       <Box marginTop={1}>
         <Text color="text2">would you like to proceed?</Text>
       </Box>
@@ -184,6 +163,33 @@ export function PlanApprovalOverlay({
           1·2·3 choose   ↑↓ move   ⏎ confirm   esc keep planning
         </Text>
       </Box>
+      <Box
+        flexDirection="column"
+        borderStyle="single"
+        borderLeft={true}
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor="planMode"
+        paddingLeft={1}
+        marginTop={1}
+        {...(clamped ? { height: PLAN_PREVIEW_LINES, overflow: "hidden" as const } : {})}
+      >
+        {hasPlan ? (
+          <Markdown>{planContent as string}</Markdown>
+        ) : (
+          <Text color="muted3">(no plan content)</Text>
+        )}
+      </Box>
+      {hasPlan && planLineCount > PLAN_PREVIEW_LINES ? (
+        <Box>
+          <Text color="muted3">
+            {expanded
+              ? `ctrl+o collapse · ${planLineCount} lines`
+              : `first ${PLAN_PREVIEW_LINES} of ${planLineCount} lines · ctrl+o to expand`}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }
