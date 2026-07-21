@@ -77,7 +77,8 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
       </AppStateProvider>,
       80,
     );
-    expect(out).toContain(getReducedMotionDot());
+    // SpiralDots pins to its first frame (⣷) under reduced motion.
+    expect(out).toContain("⣷");
     expect(out).toContain("Working");
   });
 
@@ -162,7 +163,7 @@ describe("title bar / body spinner glyph color agreement", () => {
       columns: 100,
       effortSuffix: "",
       foregroundedTeammate: undefined,
-      // hasActiveTools forces the static "◐" status glyph (statusGlyph()).
+      // hasActiveTools forces the static "⣷" status glyph (statusGlyph()).
       hasActiveTools: true,
       hasRunningTeammates: false,
       leaderIsIdle: false,
@@ -205,8 +206,8 @@ describe("title bar / body spinner glyph color agreement", () => {
       { columns: 100, color: true },
     );
 
-    const titleColor = colorBefore(titleAnsi, getReducedMotionDot());
-    const bodyColor = colorBefore(bodyAnsi, "◐");
+    const titleColor = colorBefore(titleAnsi, "⣷");
+    const bodyColor = colorBefore(bodyAnsi, "⣷");
 
     expect(titleColor).not.toBeNull();
     expect(bodyColor).not.toBeNull();

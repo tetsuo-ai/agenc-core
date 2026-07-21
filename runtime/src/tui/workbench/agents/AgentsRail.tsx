@@ -8,6 +8,7 @@ import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { isTerminalTaskStatus } from "../../../tasks/types.js";
 import { formatNumber } from "../../../utils/format.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { SpiralDots } from "../../components/spinner/SpiralDots.js";
 import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
 import { formatTaskElapsed } from "./activity.js";
 import { nonEmptyString as nonBlankString } from "../../../utils/stringUtils.js";
@@ -87,9 +88,6 @@ function SwarmPanel({
   readonly selectedId: string | null;
 }): React.ReactElement {
   const glyphs = selectAgenCTuiGlyphs();
-  // Frames advance on task-progress re-renders (tokens tick constantly while
-  // agents run), so indexing by wall-clock is enough — no dedicated clock.
-  const frame = glyphs.spinnerFrames[Math.floor(Date.now() / 150) % glyphs.spinnerFrames.length];
   const totalTools = tasks.reduce((sum, task) => sum + (task.progress?.toolUseCount ?? 0), 0);
   const totalTokens = tasks.reduce((sum, task) => sum + (task.progress?.tokenCount ?? 0), 0);
   const allTerminal = tasks.every((task) => isTerminalTaskStatus(task.status));
@@ -99,9 +97,6 @@ function SwarmPanel({
       {tasks.map((task: any, index: number) => {
         const terminal = isTerminalTaskStatus(task.status);
         const failed = task.status === "failed" || task.status === "killed";
-        const glyph = terminal
-          ? (failed ? glyphs.statusError : glyphs.statusSuccess)
-          : frame;
         const color = terminal ? (failed ? "error" : "success") : statusColor(task.status);
         const progress = task.progress ?? {};
         const activity =
@@ -114,7 +109,13 @@ function SwarmPanel({
           <Box key={task.id} flexDirection="column" marginTop={index === 0 ? 0 : 0}>
             <Text wrap="truncate-end">
               <Text dimColor>{String(index + 1).padStart(3, "0")} </Text>
-              <Text color={color}>{glyph} </Text>
+              {terminal ? (
+                <Text color={color}>{failed ? glyphs.statusError : glyphs.statusSuccess} </Text>
+              ) : (
+                // Live 9-dot spiral while the agent runs (real progress stats
+                // beside it come from task.progress).
+                <Text color={color}><SpiralDots /> </Text>
+              )}
               <Text color={selected ? "suggestion" : undefined}>{agentRowLabel(task)}</Text>
             </Text>
             <Text dimColor wrap="truncate-end">

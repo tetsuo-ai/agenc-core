@@ -123,7 +123,9 @@ export function WorkbenchLayout({
   const focusedPane = visibleWorkbenchPane(workbench);
   const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
   const explorerWidth = layoutSize === "wide" ? 30 : 26;
-  const agentsWidth = 30;
+  // Agents rail: 38 cols (was 30) — task rows were truncating hard at 30 and
+  // the rail had room to spare in wide layouts; explorer/chat keep theirs.
+  const agentsWidth = 38;
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
   // The Agents rail auto-hides only while the REVIEW rail is open and there
   // are no agent tasks to show: an empty "No background agents" column next

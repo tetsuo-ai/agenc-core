@@ -314,7 +314,7 @@ describe("Spinner rendering", () => {
   test("renders the compact static spinner glyph", async () => {
     const output = await renderToText(<Spinner />);
 
-    expect(output).toContain("◐");
+    expect(output).toContain("⣷");
   });
 
   test("routes brief-only mode to the brief spinner with background status", async () => {

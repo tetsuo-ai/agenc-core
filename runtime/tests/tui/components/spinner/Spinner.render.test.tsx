@@ -266,7 +266,7 @@ describe("Spinner render paths", () => {
     const rendered = await renderToText(<Spinner />);
 
     try {
-      expect(rendered.output()).toContain("◐");
+      expect(rendered.output()).toContain("⣷");
     } finally {
       await rendered.dispose();
     }

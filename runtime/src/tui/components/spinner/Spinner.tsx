@@ -1,6 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
+import { SpiralDots } from './SpiralDots.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -440,7 +441,7 @@ function _temp7(s: any) {
   return s.remoteConnectionStatus;
 }
 export function Spinner() {
-  return <Box flexWrap="wrap" height={1} width={2}><Text color="text">◐</Text></Box>;
+  return <Box flexWrap="wrap" height={1} width={2}><SpiralDots /></Box>;
 }
 function findNextPendingTask(tasks: Task[] | undefined): Task | undefined {
   if (!tasks) {
