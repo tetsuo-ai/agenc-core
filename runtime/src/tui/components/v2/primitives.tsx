@@ -1610,14 +1610,14 @@ export function ApprovalCard({
         </ThemedText>
         {requireTypedConfirmation ? (
           <Box flexDirection="column" flexShrink={0}>
-            <ThemedText color="muted3" wrap="truncate-end">
+            <ThemedText color="inactive" wrap="truncate-end">
               type '{typedConfirmationTarget}' to approve · esc cancel
             </ThemedText>
             <Box flexDirection="row" gap={1}>
               <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
                 {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
               </ThemedText>
-              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+              <ThemedText color="inactive">/ {typedConfirmationTarget}</ThemedText>
             </Box>
           </Box>
         ) : (
@@ -1651,7 +1651,7 @@ export function ApprovalCard({
                   ) : (
                     <ThemedText color="text2">
                       {rowText}
-                      <ThemedText color="muted3">{detailText}</ThemedText>
+                      <ThemedText color="inactive">{detailText}</ThemedText>
                     </ThemedText>
                   )}
                 </Box>
@@ -1661,7 +1661,7 @@ export function ApprovalCard({
         )}
         {!requireTypedConfirmation ? (
           <Box marginTop={1} marginBottom={1} flexShrink={0}>
-            <ThemedText color="muted3" wrap="truncate-end">
+            <ThemedText color="inactive" wrap="truncate-end">
               1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
             </ThemedText>
           </Box>
@@ -1709,7 +1709,7 @@ export function ApprovalCard({
                 width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
               >
                 <Box flexShrink={0}>
-                  <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
+                  <ThemedText color="inactive">{fact.label.toUpperCase()}</ThemedText>
                 </Box>
                 <Box flexShrink={1} minWidth={0}>
                   <ThemedText color={fact.color ?? 'text2'} wrap="truncate-middle">
@@ -1721,7 +1721,7 @@ export function ApprovalCard({
           </Box>
         ) : null}
         {showNote ? (
-          <ThemedText color="muted3" wrap="truncate-end">
+          <ThemedText color="inactive" wrap="truncate-end">
             note · {note}
           </ThemedText>
         ) : null}
