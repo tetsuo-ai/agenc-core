@@ -441,6 +441,50 @@ describe("registerAgentThreadTask", () => {
     expect(completed?.progress?.tokenCount).toBe(51000);
   });
 
+  it("emits an idle snapshot for a keep-alive worker between turns while the record stays running", async () => {
+    const lifecycle = new BackgroundTaskLifecycle();
+    const status = new FakeStatus();
+    const joined = deferred<RunAgentResult>();
+    const statuses: string[] = [];
+    const thread: AgentThreadTaskHandle = {
+      threadId: "agent-keepalive",
+      taskPrompt: "work",
+      live: {
+        abortController: new AbortController(),
+        status,
+      },
+      join: () => joined.promise,
+    };
+
+    registerAgentThreadTask(lifecycle, thread, {
+      // Disable the poller; drive snapshots through status transitions so the
+      // assertions are deterministic.
+      progressIntervalMs: 0,
+      onSnapshot: (snapshot) => {
+        statuses.push(snapshot.status);
+      },
+    });
+
+    // Active turn -> running snapshot and running record.
+    status.set({ status: "running", turnId: "turn-1", startedAtMs: 10 });
+    expect(statuses.at(-1)).toBe("running");
+    expect(lifecycle.get("agent-keepalive")?.status).toBe("running");
+
+    // Turn completes and the keep-alive worker waits for more work: the
+    // emitted snapshot is relabeled "idle" (so the panel renders
+    // done-between-turns) but the lifecycle record stays non-terminal
+    // "running" so close_agent/stop and a later assign_task turn still work.
+    status.set({ status: "idle", turnId: "turn-1", endedAtMs: 20 });
+    expect(statuses.at(-1)).toBe("idle");
+    expect(lifecycle.get("agent-keepalive")?.status).toBe("running");
+
+    // A follow-up turn (assign_task) re-marks running: snapshot returns to
+    // running and the record was never terminal, so the transition is allowed.
+    status.set({ status: "running", turnId: "turn-2", startedAtMs: 30 });
+    expect(statuses.at(-1)).toBe("running");
+    expect(lifecycle.get("agent-keepalive")?.status).toBe("running");
+  });
+
   it("starts AgentSummary for registered threads and writes progress summaries", async () => {
     vi.useFakeTimers();
     try {

@@ -7,7 +7,12 @@
  *
  * Final states for wait/list semantics: `completed`, `errored`, `shutdown`,
  * `not_found`.
- * Non-final: `pending_init`, `running`, `interrupted`.
+ * Non-final: `pending_init`, `running`, `idle`, `interrupted`.
+ *
+ * `idle` is a keep-alive worker between turns: alive and reusable, but not
+ * actively working. Like `completed`, it is reversible — `assign_task` moves
+ * the agent back to `running` for its next turn — but unlike `completed` it
+ * is not a wait/list terminal state, so watchers keep observing a live worker.
  *
  * A completed turn is reusable: `assign_task` may move the same live agent
  * from `completed` back to `running` for its next turn. Shutdown, errored, and
@@ -30,6 +35,14 @@ export type AgentStatus =
       readonly status: "running";
       readonly turnId: string;
       readonly startedAtMs: number;
+    }
+  | {
+      // Keep-alive worker that finished a turn and is waiting for more work.
+      // Non-final (like `running`) so wait/list semantics keep watching, and
+      // reversible so a later assign_task turn can mark it `running` again.
+      readonly status: "idle";
+      readonly turnId: string;
+      readonly endedAtMs: number;
     }
   | {
       readonly status: "completed";
@@ -55,6 +68,7 @@ export type AgentStatus =
 export type AgentStatusJson =
   | "pending_init"
   | "running"
+  | "idle"
   | "interrupted"
   | "shutdown"
   | "not_found"
@@ -177,6 +191,8 @@ export function toAgentStatusJson(
       return "pending_init";
     case "running":
       return "running";
+    case "idle":
+      return "idle";
     case "interrupted":
       return "interrupted";
     case "completed":
@@ -217,6 +233,10 @@ export class AgentStatusTracker {
 
   markRunning(turnId: string): void {
     this.set({ status: "running", turnId, startedAtMs: monotonicMs() });
+  }
+
+  markIdle(turnId: string): void {
+    this.set({ status: "idle", turnId, endedAtMs: monotonicMs() });
   }
 
   markCompleted(turnId: string, lastMessage?: string): void {

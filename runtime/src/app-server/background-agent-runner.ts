@@ -5016,6 +5016,7 @@ function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
     case "shutdown":
       return "stopped";
     case "interrupted":
+    case "idle":
       return "idle";
     case "errored":
       return "error";
@@ -5052,6 +5053,19 @@ function eventFromThreadStatus(
           ...(status.endedAtMs !== undefined
             ? { completedAt: status.endedAtMs }
             : {}),
+        },
+      };
+    case "idle":
+      // Keep-alive worker between turns: surface a turn_complete so the daemon
+      // flips the agent to idle/completed instead of leaving it "running"
+      // forever. The id must be unique per transition (the keep-alive turnId is
+      // constant across turns), so suffix the monotonic end timestamp.
+      return {
+        id: `idle-${status.turnId}-${status.endedAtMs}`,
+        type: "turn_complete",
+        payload: {
+          turnId: status.turnId,
+          completedAt: status.endedAtMs,
         },
       };
     case "errored":

@@ -68,6 +68,38 @@ describe("AgentStatusTracker", () => {
     expect(t.value.status).toBe("running");
   });
 
+  it("markIdle moves a keep-alive worker to idle between turns", () => {
+    const t = new AgentStatusTracker();
+    t.markRunning("turn-1");
+    t.markIdle("turn-1");
+    const s = t.value;
+    expect(s.status).toBe("idle");
+    if (s.status === "idle") expect(s.turnId).toBe("turn-1");
+  });
+
+  it("idle is non-final so wait/list keeps watching a live worker", () => {
+    expect(isFinal({ status: "idle", turnId: "turn-1", endedAtMs: 0 })).toBe(
+      false,
+    );
+  });
+
+  it("idle is reversible: a follow-up turn re-marks running", () => {
+    const t = new AgentStatusTracker();
+    t.markRunning("turn-1");
+    t.markIdle("turn-1");
+    expect(t.value.status).toBe("idle");
+    t.markRunning("turn-2");
+    expect(t.value).toMatchObject({ status: "running", turnId: "turn-2" });
+  });
+
+  it("idle can still reach a terminal state on shutdown", () => {
+    const t = new AgentStatusTracker();
+    t.markRunning("turn-1");
+    t.markIdle("turn-1");
+    t.markShutdown();
+    expect(t.value.status).toBe("shutdown");
+  });
+
   it("shutdown stays sticky and rejects further transitions", () => {
     const t = new AgentStatusTracker();
     t.markShutdown();

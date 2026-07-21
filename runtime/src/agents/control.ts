@@ -2149,6 +2149,7 @@ function completionStatusKey(status: AgentStatus): string {
     case "errored":
     case "interrupted":
     case "running":
+    case "idle":
       return `${status.status}:${status.turnId}`;
     case "shutdown":
       return `${status.status}:${status.endedAtMs}`;

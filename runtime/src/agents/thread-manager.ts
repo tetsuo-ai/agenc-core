@@ -86,6 +86,8 @@ function normalizeSessionStatus(status: SessionAgentStatus): AgentStatus {
       };
     case "running":
       return status;
+    case "idle":
+      return status;
     case "pending_init":
       return status;
     case "not_found":
