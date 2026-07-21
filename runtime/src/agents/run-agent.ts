@@ -1825,6 +1825,14 @@ function terminalResultForLiveAgent(live: LiveAgent): ChildRunTerminalResult {
         stopReason: "turn_completed",
         finalMessage: status.lastMessage ?? null,
       };
+    case "idle":
+      // Keep-alive worker whose run ended between turns: its last turn
+      // completed, so the terminal account is a completion.
+      return {
+        status: "completed",
+        stopReason: "turn_completed",
+        finalMessage: null,
+      };
     case "errored":
       return {
         status: "failed",
@@ -2289,6 +2297,11 @@ export async function* runAgent(
     let assistantText = "";
     let toolCallCount = 0;
     while (true) {
+      // Mark running at the top of every turn. The initial pre-loop markRunning
+      // covers turn one; keep-alive workers return here after an `idle` gap
+      // (turn_complete below) when a follow-up turn starts, so each iteration
+      // must re-assert `running` to flip the FSM idle -> running.
+      live.status.markRunning(turnId);
       let turnAssistantText = "";
       let turnUsage: LLMUsage | undefined;
       let stopReason:
@@ -2528,6 +2541,11 @@ export async function* runAgent(
         turnId,
         ...(assistantText ? { finalMessage: assistantText } : {}),
       };
+      // Mark the keep-alive worker idle while it waits for more work. `idle`
+      // is non-final and reversible (status.ts), so the worker stays alive for
+      // assign_task yet the fan-out rail stops showing it as actively
+      // "running" between turns. The next loop iteration re-marks `running`.
+      live.status.markIdle(turnId);
       const advanced = await waitForNextMailboxMessage(
         live.downInbox,
         merged.signal,

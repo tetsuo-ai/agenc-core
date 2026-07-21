@@ -18,7 +18,11 @@ import type {
 } from "../services/PromptSuggestion/runtime.js";
 import type { Message } from "../types/message.js";
 import type { BackgroundTaskSnapshot } from "./lifecycle.js";
-import { BackgroundTaskLifecycle } from "./lifecycle.js";
+import {
+  BackgroundTaskLifecycle,
+  isTerminalTaskStatus,
+  type BackgroundTaskStatus,
+} from "./lifecycle.js";
 import {
   startAgentSummarization,
   type AgentSummaryHandle,
@@ -170,8 +174,22 @@ export function registerAgentThreadTask(
     }
   };
   const notifySnapshot = (snapshot: BackgroundTaskSnapshot): BackgroundTaskSnapshot => {
-    opts.onSnapshot?.(snapshot);
-    return snapshot;
+    // Single choke point for every emitted snapshot (status subscription,
+    // progress timer, registration, join). A keep-alive worker between turns
+    // has FSM state `idle` but its lifecycle record stays non-terminal
+    // "running" (so close_agent/stop and a later assign_task turn still work).
+    // Relabel the emitted snapshot to "idle" here so the fan-out rail renders
+    // the worker as done-between-turns instead of spinning "running" forever —
+    // including the progress-timer snapshot that can land a tick after the
+    // idle transition. Terminal snapshots (completed/failed/killed) are never
+    // relabeled. collabStatusToTaskStatus maps "idle" -> "completed".
+    const relabeled =
+      thread.live.status.value.status === "idle" &&
+      !isTerminalTaskStatus(snapshot.status)
+        ? { ...snapshot, status: "idle" as BackgroundTaskStatus }
+        : snapshot;
+    opts.onSnapshot?.(relabeled);
+    return relabeled;
   };
   const task = notifySnapshot(lifecycle.register({
     id: threadId,
@@ -440,6 +458,11 @@ function mapAgentStatus(
       case "pending_init":
         return undefined;
       case "running":
+      case "idle":
+        // Both map to a non-terminal "running" record. When the FSM is `idle`
+        // (keep-alive between turns), notifySnapshot relabels the emitted
+        // snapshot to "idle" so the panel shows done-between-turns; the record
+        // itself stays "running" so the worker remains stoppable/reusable.
         return lifecycle.markRunning(taskId, { turnId: status.turnId });
       case "interrupted":
         return lifecycle.appendOutput(taskId, `\n[agent interrupted: ${status.reason}]\n`);
