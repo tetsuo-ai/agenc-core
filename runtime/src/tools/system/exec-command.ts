@@ -290,6 +290,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
+    // Long backstop so interactive hardware-approval flows (e.g. a Ledger
+    // device command that waits for a human to confirm on the signer) aren't
+    // killed at the 30s default. exec_command returns at yield_time_ms for
+    // normal commands, so this only matters when a long yield/timeout is set.
+    timeoutMs: 180_000,
     recoveryCategory: "side-effecting",
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
