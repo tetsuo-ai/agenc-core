@@ -73,6 +73,13 @@ export function isSynchronizedOutputSupported(): boolean {
   // broken atomicity by chunking. Skip to save 16 bytes/frame + parser work.
   if (process.env.TMUX) return false
 
+  // Ptyxis reports a new VTE_VERSION (>= 6800) but its DEC 2026 / DECSTBM
+  // handling renders the non-atomic intermediate scroll state — the chat
+  // visibly blanks and repaints on every scroll (e.g. when a task completes).
+  // The VTE_VERSION check below would wrongly enable sync output for it; the
+  // plain diff loop is correct (just a few more bytes), so opt ptyxis out.
+  if (process.env.PTYXIS_VERSION) return false
+
   const termProgram = process.env.TERM_PROGRAM
   const term = process.env.TERM
 
