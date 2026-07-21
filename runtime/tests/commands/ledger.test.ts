@@ -43,6 +43,18 @@ vi.mock("node:child_process", () => ({
     lastSpawn = { cmd, args };
     return fakeChild(nextResult);
   }),
+  // ledgerStatus.refreshLedgerStatus (fired by the command) reads via execFile;
+  // resolve to "no device" so it stays inert in tests.
+  execFile: vi.fn(
+    (
+      _cmd: string,
+      _args: readonly string[],
+      _opts: unknown,
+      cb: (err: Error | null, stdout: string) => void,
+    ) => {
+      cb(null, "");
+    },
+  ),
 }));
 
 function makeCtx(argsRaw: string) {

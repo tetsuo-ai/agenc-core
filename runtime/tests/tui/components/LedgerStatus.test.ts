@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { parseLedgerModel } from "../../../src/tui/components/LedgerStatus.js";
+import { parseLedgerModel } from "../../../src/services/Ledger/ledgerStatus.js";
 
 describe("parseLedgerModel", () => {
   test("extracts the model from a Nano S Plus lsusb line", () => {
