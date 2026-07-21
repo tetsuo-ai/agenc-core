@@ -28,6 +28,7 @@ import type { AttachmentTrackingState } from "../../session/attachment-state.js"
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import { agentListingDeltaProducer } from "./agent-listing-delta.js";
 import { autoModeProducer } from "./auto-mode.js";
+import { swarmModeProducer } from "./swarm-mode.js";
 import { criticalReminderProducer } from "./critical-reminder.js";
 import { dateChangeProducer } from "./date-change.js";
 import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
@@ -147,6 +148,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   planModeProducer,
   verifyPlanReminderProducer,
   autoModeProducer,
+  swarmModeProducer,
   //
   // Phase 3 — Mid-session deltas:
   deferredToolsDeltaProducer,
