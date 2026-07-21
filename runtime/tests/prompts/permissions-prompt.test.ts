@@ -154,6 +154,17 @@ describe("getPermissionsSection", () => {
     expect(out).toContain("Approval policy is currently never");
   });
 
+  test("bypassPermissions mode → appends the autonomy note so the agent does not pause for approval", () => {
+    const out = getPermissionsSection(ctxForMode("bypassPermissions"));
+    expect(out).not.toBeNull();
+    expect(out).toContain("pre-authorized every action");
+    expect(out).toContain("do not pause to ask for confirmation");
+    // Only bypass gets the autonomy note — other modes must not.
+    expect(getPermissionsSection(ctxForMode("default"))).not.toContain(
+      "pre-authorized every action",
+    );
+  });
+
   test("unsupported permission modes return null (auto, dontAsk, bubble)", () => {
     expect(getPermissionsSection(ctxForMode("auto"))).toBeNull();
     expect(getPermissionsSection(ctxForMode("dontAsk"))).toBeNull();

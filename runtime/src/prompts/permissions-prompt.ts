@@ -45,6 +45,19 @@ export const APPROVAL_POLICY_NEVER =
   "Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n";
 
 /**
+ * Bypass-only autonomy note. NOT part of the verbatim upstream `never.md` —
+ * kept separate so the ported constant stays byte-for-byte. Bypass mode means
+ * the user already pre-authorized every tool call, so the agent must not
+ * re-introduce interactive gates the mode waived: no confirmation prompts, no
+ * plan-approval pauses, no permission asks. Without this the model reads
+ * "approval policy: never" narrowly (only about `sandbox_permissions`) and
+ * still stops to ask the user before acting — the "yolo still prompts me"
+ * complaint.
+ */
+export const BYPASS_AUTONOMY_NOTE =
+  "Because the approval policy is never, the user has pre-authorized every action and is not present to answer prompts. Operate autonomously: do not pause to ask for confirmation, plan approval, or permission, and do not stop to wait for the user — proceed directly and drive the task to completion.";
+
+/**
  * Approval policy: unless trusted. Begins with one literal space character.
  */
 export const APPROVAL_POLICY_UNLESS_TRUSTED =
@@ -197,6 +210,8 @@ interface ModeBinding {
   readonly networkAccess: "enabled" | "restricted";
   /** Human-readable label for the section heading. */
   readonly label: string;
+  /** Optional extra guidance appended after the approval text (bypass only). */
+  readonly autonomyNote?: string;
 }
 
 const MODE_BINDINGS: Partial<Record<PermissionMode, ModeBinding>> = {
@@ -223,6 +238,7 @@ const MODE_BINDINGS: Partial<Record<PermissionMode, ModeBinding>> = {
     sandboxTemplate: SANDBOX_MODE_DANGER_FULL_ACCESS,
     networkAccess: "enabled",
     label: "bypassPermissions",
+    autonomyNote: BYPASS_AUTONOMY_NOTE,
   },
 };
 
@@ -278,5 +294,7 @@ export function getPermissionsSection(
   const approvalText = binding.approvalText.replace(/\n+$/, "");
 
   const heading = `# Permission Mode: ${binding.label}`;
-  return [heading, sandboxText, approvalText].join("\n\n");
+  return [heading, sandboxText, approvalText]
+    .concat(binding.autonomyNote !== undefined ? [binding.autonomyNote] : [])
+    .join("\n\n");
 }
