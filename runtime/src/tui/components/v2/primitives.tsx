@@ -1487,12 +1487,12 @@ export function ApprovalCard({
   commandIsShell = true,
   facts,
   note,
-  confirmLabel,
   diffPreview,
   requestId,
   requireTypedConfirmation = false,
   typedConfirmationValue = '',
   typedConfirmationTarget = 'yes',
+  selectedIndex,
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
@@ -1517,10 +1517,14 @@ export function ApprovalCard({
   readonly requireTypedConfirmation?: boolean
   readonly typedConfirmationValue?: string
   readonly typedConfirmationTarget?: string
+  /** Selected row of the action picker (0 approve-once, 1 session, 2 deny). */
+  readonly selectedIndex?: number
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
   const primaryFact = facts[0]?.value ?? title
-  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact} · ${command} · ${confirmLabel}`
+  // The action picker below owns the "1/2/3 + confirm" affordance — keep the
+  // summary line to identity only (no repeated confirm text, no `{}` inputs).
+  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
   // The approval popup is rendered into a fixed-height slot (the workbench
   // overlay row, or the modal context). Without a height cap the body grows
   // past the popup's own bottom border and bleeds onto the footer below it.
@@ -1603,12 +1607,13 @@ export function ApprovalCard({
           <ThemedText color="text2" wrap="truncate-end">
             $ {command}
           </ThemedText>
-        ) : showPreview ? null : (
+        ) : showPreview || command.trim().length === 0 || command.trim() === '{}' ? null : (
           // A non-shell input (a Write/Edit file_path). Never prefix it with the
           // `$ ` shell-prompt marker — it would misread as a runnable command.
           // When the embedded diff is shown its CREATE/EDIT header already names
           // the file, so this line is redundant and omitted (the `showPreview`
           // branch above); only surface the bare path when no diff is rendered.
+          // Empty/`{}` inputs (EnterPlanMode and friends) render no line at all.
           <ThemedText color="text2" wrap="truncate-end">
             {command}
           </ThemedText>
@@ -1657,23 +1662,71 @@ export function ApprovalCard({
           </ThemedText>
         ) : null}
         {requireTypedConfirmation ? (
-          <Box flexDirection="row" gap={1}>
-            <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
-              {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+          <Box flexDirection="column" flexShrink={0}>
+            <ThemedText color="muted3" wrap="truncate-end">
+              type '{typedConfirmationTarget}' to approve · esc cancel
             </ThemedText>
-            <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+            <Box flexDirection="row" gap={1}>
+              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
+                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+              </ThemedText>
+              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+            </Box>
           </Box>
         ) : (
-          <ThemedText color="muted3" wrap="truncate-end">[1] approve once · [2] approve for session · [3] deny</ThemedText>
+          // The action picker: one row per choice, inline marker, highlighted
+          // selection — same structure as the plan/question pickers, replacing
+          // the old triple repetition ([1]… legend, ▸ confirm, summary line).
+          <ThemedBox
+            flexDirection="column"
+            flexShrink={0}
+            borderStyle="single"
+            borderLeft={true}
+            borderTop={false}
+            borderRight={false}
+            borderBottom={false}
+            borderColor="agenc"
+            paddingLeft={1}
+          >
+            {APPROVAL_ACTIONS.map((action, index) => {
+              const selected = index === (selectedIndex ?? 0)
+              const marker = selected ? '❯ ' : '  '
+              const rowText = `${marker}${index + 1}  ${action.label}`
+              const detailText = `  ${action.suffix}`
+              return (
+                <Box key={action.label}>
+                  {selected ? (
+                    <ThemedText color="agenc" bold={true}>
+                      {`${rowText}${detailText}`}
+                    </ThemedText>
+                  ) : (
+                    <ThemedText color="text2">
+                      {rowText}
+                      <ThemedText color="muted3">{detailText}</ThemedText>
+                    </ThemedText>
+                  )}
+                </Box>
+              )
+            })}
+          </ThemedBox>
         )}
-        <Box flexDirection="row" gap={2}>
-          <ThemedText color="agenc" wrap="truncate-end">▸ {confirmLabel}</ThemedText>
-          <KeyHint k="esc" label="cancel" />
-        </Box>
+        {!requireTypedConfirmation ? (
+          <Box marginTop={1} flexShrink={0}>
+            <ThemedText color="muted3" wrap="truncate-end">
+              1·2·3 choose   ↑↓ move   ⏎ confirm   esc cancel{diffPreview !== undefined ? '   ctrl+w d full diff' : ''}
+            </ThemedText>
+          </Box>
+        ) : null}
       </Box>
     </Popup>
   )
 }
+
+const APPROVAL_ACTIONS: readonly { readonly label: string; readonly suffix: string }[] = [
+  { label: 'approve once', suffix: 'just this call' },
+  { label: 'approve for session', suffix: 'allow in this session' },
+  { label: 'deny', suffix: 'reject' },
+]
 
 export type PopupFooterItem = {
   readonly keyName: string

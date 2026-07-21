@@ -548,6 +548,7 @@ function AgenCApprovalOverlay({
     description: toolUseConfirm.description,
   });
   const [typed, setTyped] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
   useRegisterKeybindingContext("Confirmation");
   const approve = useCallback(() => {
     toolUseConfirm.onAllow(toolUseConfirm.input, []);
@@ -563,6 +564,21 @@ function AgenCApprovalOverlay({
     toolUseConfirm.onAbort();
   }, [toolUseConfirm]);
 
+  const confirmSelection = useCallback(
+    (index: number) => {
+      if (index === 0) {
+        approve();
+        return;
+      }
+      if (index === 1) {
+        approveForSession();
+        return;
+      }
+      reject();
+    },
+    [approve, approveForSession, reject],
+  );
+
   useKeybindings(
     {
       "confirm:yes": () => {
@@ -576,20 +592,38 @@ function AgenCApprovalOverlay({
   );
 
   useInput(
-    (input, _key, event) => {
+    (input, key, event) => {
       if (input === "1") {
         event.stopImmediatePropagation();
+        setSelectedIndex(0);
         approve();
         return;
       }
       if (input === "2") {
         event.stopImmediatePropagation();
+        setSelectedIndex(1);
         approveForSession();
         return;
       }
       if (input === "3") {
         event.stopImmediatePropagation();
+        setSelectedIndex(2);
         reject();
+        return;
+      }
+      if (key.upArrow) {
+        event.stopImmediatePropagation();
+        setSelectedIndex((index) => (index + 2) % 3);
+        return;
+      }
+      if (key.downArrow) {
+        event.stopImmediatePropagation();
+        setSelectedIndex((index) => (index + 1) % 3);
+        return;
+      }
+      if (key.return) {
+        event.stopImmediatePropagation();
+        confirmSelection(selectedIndex);
       }
     },
     { isActive: !destructive },
@@ -652,14 +686,10 @@ function AgenCApprovalOverlay({
         note={toolUseConfirm.description}
         {...(diffPreview !== undefined ? { diffPreview } : {})}
         requestId={request.id}
-        confirmLabel={
-          destructive
-            ? `type '${requiredWord}' to approve`
-            : "1/enter approve · 2 session · 3 deny"
-        }
         requireTypedConfirmation={destructive}
         typedConfirmationValue={typed}
         typedConfirmationTarget={requiredWord}
+        selectedIndex={selectedIndex}
       />
     </Box>
   );

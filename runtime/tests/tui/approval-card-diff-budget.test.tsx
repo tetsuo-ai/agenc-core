@@ -129,10 +129,13 @@ describe('ApprovalCard (BUG 1: embedded diff is complete or absent, never half-d
         expect(topCorners).toBe(2)
         expect(out).toMatch(/\+ line \d+ content/)
       }
-      // The primary action legend + confirm row are NEVER the thing clipped —
-      // at every height, whether or not the diff is shown.
-      expect(out).toContain('[1] approve once')
-      expect(out).toContain('▸ enter approve')
+      // The primary action picker (all three rows) is NEVER the thing
+      // clipped — at every height, whether or not the diff is shown. The key
+      // hint row below it is secondary: it yields to the diff preview first
+      // (the keys themselves always work), so it is not asserted here.
+      expect(out).toContain('approve once')
+      expect(out).toContain('approve for session')
+      expect(out).toContain('deny')
     })
   }
 })

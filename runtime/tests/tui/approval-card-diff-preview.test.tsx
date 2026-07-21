@@ -16,7 +16,7 @@ import { renderToString } from '../../src/utils/staticRender.js'
 // CRITICAL: this must NOT regress the height/overflow discipline that the
 // approval popup was recently repaired for. The preview is part of the existing
 // maxHeight + overflow:'hidden' budget and is the FIRST optional block shed when
-// the slot is tight — never the primary [1]/[2]/[3] action legend.
+// the slot is tight — never the primary action picker.
 
 // A realistic Edit diff: one changed line + one added line.
 function editPreview(): ApprovalDiffPreview {
@@ -115,11 +115,11 @@ describe('ApprovalCard diff preview (in-dialog change preview)', () => {
     expect(sigilRows.some((l) => l.includes('+'))).toBe(true)
   })
 
-  test('the diff preview does NOT push out the [1]/[2]/[3] action legend', async () => {
+  test('the diff preview does NOT push out the action picker', async () => {
     const out = await renderEditApproval(40)
-    expect(out).toContain('[1] approve once')
-    expect(out).toContain('[2] approve for session')
-    expect(out).toContain('[3] deny')
+    expect(out).toContain('approve once')
+    expect(out).toContain('approve for session')
+    expect(out).toContain('deny')
   })
 
   test('REGRESSION: the popup with a diff still fits its border (one top, one bottom)', async () => {
@@ -150,10 +150,10 @@ describe('ApprovalCard diff preview (in-dialog change preview)', () => {
 
   test('a tight slot DROPS the diff preview BEFORE the action legend', async () => {
     // At a tight height the diff preview (the largest optional block) is shed,
-    // but the primary [1]/[2]/[3] action legend survives.
+    // but the primary action picker survives.
     const tight = await renderEditApproval(16)
     expect(tight).not.toContain('DIFF')
-    expect(tight).toContain('[1] approve once')
+    expect(tight).toContain('approve once')
   })
 
   test('a long Write diff collapses its tail to a "… +N more" affordance row', async () => {
@@ -172,15 +172,15 @@ describe('ApprovalCard diff preview (in-dialog change preview)', () => {
     )
     expect(out).toContain('DIFF')
     expect(out).toMatch(/… \+\d+ more lines · ctrl\+w d for full diff/)
-    // The action legend still survives alongside the collapsed preview.
-    expect(out).toContain('[1] approve once')
+    // The action picker still survives alongside the collapsed preview.
+    expect(out).toContain('approve once')
   })
 
   test('a Bash approval shows NO diff preview (command-only card)', async () => {
     const out = await renderBashApproval()
     expect(out).not.toContain('DIFF')
     expect(out).toContain('rm -rf build')
-    expect(out).toContain('[1] approve once')
+    expect(out).toContain('approve once')
   })
 
   test('an Edit approval labels the inline diff EDIT (matching the transcript card)', async () => {
@@ -264,7 +264,7 @@ describe('ApprovalCard diff preview (in-dialog change preview)', () => {
     // its command + action legend (the pre-improvement behavior).
     expect(withoutPreview).not.toContain('DIFF')
     expect(withoutPreview).not.toContain('const c = 3')
-    expect(withoutPreview).toContain('[1] approve once')
+    expect(withoutPreview).toContain('approve once')
     // Guard: both still fit one closing bottom border (no overflow regression).
     expect(countLines(withPreview, (l) => l.includes('└'))).toBeGreaterThanOrEqual(1)
     expect(countLines(withoutPreview, (l) => l.includes('└'))).toBe(1)
