@@ -19,6 +19,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { refreshLedgerStatus } from "../services/Ledger/ledgerStatus.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -123,6 +124,9 @@ export const ledgerCommand: SlashCommand = {
   supportsNonInteractive: true,
   execute: async (ctx): Promise<SlashCommandResult> =>
     safeExecute(async () => {
+      // Engaging Ledger — refresh the bottom-bar connection indicator (this is
+      // the on-demand read; nothing polls in the background).
+      void refreshLedgerStatus();
       const args = ctx.argsRaw.split(/\s+/).filter((s) => s.length > 0);
 
       // Bare `/ledger` → show the session (per the skill's "session first"

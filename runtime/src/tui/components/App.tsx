@@ -97,6 +97,7 @@ import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 import { escapeXml, unescapeXml } from "../../utils/xml.js";
 import { Onboarding, type FirstRunOnboardingState, useFirstRunOnboardingController } from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
+import { refreshLedgerStatus } from "../../services/Ledger/ledgerStatus.js";
 import {
   completionPipelineOwnsPrompt,
   formatCompletionPipelineRows,
@@ -2145,6 +2146,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
     const hasAttachments = Object.keys(activePastedContents).length > 0;
     if (text_0.length === 0 && !hasAttachments) return;
+    // On-demand Ledger status read: mentioning "ledger" refreshes the bottom
+    // connection indicator (no background polling — this is the only read).
+    if (/\bledger\b/i.test(text_0)) void refreshLedgerStatus();
     // A submitted prompt means "back to the conversation": if a center
     // surface (preview/buffer/diff/etc.) is open, close it so the chat owns
     // the center pane again. A dirty BUFFER blocks the switch through the
