@@ -115,11 +115,10 @@ export function PlanApprovalOverlay({
   const planLineCount = hasPlan
     ? (planContent as string).split("\n").length
     : 0;
-  const clamped = hasPlan && !expanded && planLineCount > PLAN_PREVIEW_LINES;
 
   return (
     <Box flexDirection="column" gap={0}>
-      <Box>
+      <Box flexShrink={0}>
         <Text color="planMode" bold={true}>
           plan ready for review
         </Text>
@@ -132,39 +131,61 @@ export function PlanApprovalOverlay({
           way to answer (the "plan approval looks broken" complaint). The
           plan stays readable underneath and ctrl+o expands it — the choice
           itself never leaves the screen. */}
-      <Box marginTop={1}>
-        <Text color="text2">would you like to proceed?</Text>
+      <Box marginTop={1} marginBottom={1} flexShrink={0}>
+        <Text color="text2" bold={true}>
+          would you like to proceed?
+        </Text>
       </Box>
-      <Box flexDirection="column">
+      {/* Same picker structure as AskUserQuestionOverlay (the reviewed,
+          approved picker): one single Text per row with the marker inline —
+          two sibling Texts inside a row Box lost the selected row entirely
+          on live renders. */}
+      <Box
+        flexDirection="column"
+        flexShrink={0}
+        borderStyle="single"
+        borderLeft={true}
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor="planMode"
+        paddingLeft={1}
+      >
         {OPTIONS.map((option, index) => {
           const selected = index === selectedIndex;
-          const number = index + 1;
-          if (selected) {
-            return (
-              <Box key={option.label}>
-                <Text color="planMode" bold={true}>
-                  {`❯ ${number}  ${option.label}`}
-                </Text>
-                <Text color="muted3">{`  ${option.suffix}`}</Text>
-              </Box>
-            );
-          }
+          const marker = selected ? "❯ " : "  ";
+          const rowText = `${marker}${index + 1}  ${option.label}`;
+          const detailText = `  ${option.suffix}`;
           return (
             <Box key={option.label}>
-              <Text color="muted3">
-                {`   ${number}  ${option.label}  ${option.suffix}`}
-              </Text>
+              {selected ? (
+                // Single string, no nested Text: a nested recolor inside a
+                // bold parent swallowed the whole row on live renders (the
+                // selected option painted blank).
+                <Text color="planMode" bold={true}>
+                  {`${rowText}${detailText}`}
+                </Text>
+              ) : (
+                <Text color="text2">
+                  {rowText}
+                  <Text color="muted3">{detailText}</Text>
+                </Text>
+              )}
             </Box>
           );
         })}
       </Box>
-      <Box marginTop={1}>
+      <Box marginTop={1} flexShrink={0}>
         <Text color="muted3">
           1·2·3 choose   ↑↓ move   ⏎ confirm   esc keep planning
         </Text>
       </Box>
+      {/* The plan is the flexible section: with little vertical room Yoga
+          shrinks THIS box (never the fixed options above — shrinking them
+          hid rows). maxHeight keeps a tall plan clamped; ctrl+o expands. */}
       <Box
         flexDirection="column"
+        flexShrink={1}
         borderStyle="single"
         borderLeft={true}
         borderTop={false}
@@ -173,7 +194,8 @@ export function PlanApprovalOverlay({
         borderColor="planMode"
         paddingLeft={1}
         marginTop={1}
-        {...(clamped ? { height: PLAN_PREVIEW_LINES, overflow: "hidden" as const } : {})}
+        maxHeight={expanded ? undefined : PLAN_PREVIEW_LINES}
+        overflow="hidden"
       >
         {hasPlan ? (
           <Markdown>{planContent as string}</Markdown>
