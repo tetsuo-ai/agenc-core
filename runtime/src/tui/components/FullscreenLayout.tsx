@@ -26,6 +26,7 @@ import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
 import ThemedText from './design-system/ThemedText.js';
+import { LedgerStatus } from './LedgerStatus.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
@@ -658,7 +659,12 @@ function DesignBottomRightLabel({
 }: {
   readonly spend: string;
 }): React.ReactNode {
-  return <ThemedText color="text2" wrap="truncate-end">spend {spend}</ThemedText>;
+  return (
+    <>
+      <LedgerStatus />
+      <ThemedText color="text2" wrap="truncate-end"> spend {spend}</ThemedText>
+    </>
+  );
 }
 
 function DesignPlanModeBanner(): React.ReactNode {
