@@ -715,6 +715,13 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      swarmMode: z
+        .boolean()
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Persisted swarm mode: fan out divisible work to parallel sub-agents by default.',
+        ),
       advisorModel: z
         .string()
         .optional()

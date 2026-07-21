@@ -78,6 +78,9 @@ export function applySettingsChange(
     const prevEffort = prev.settings.effortLevel
     const newEffort = authoritySettings.effortLevel
     const effortChanged = prevEffort !== newEffort
+    const prevSwarm = prev.settings.swarmMode
+    const newSwarm = authoritySettings.swarmMode
+    const swarmChanged = prevSwarm !== newSwarm
 
     return {
       ...prev,
@@ -90,6 +93,12 @@ export function applySettingsChange(
       // be true and we'd wipe a session-scoped value held in effortValue.
       ...(effortChanged && newEffort !== undefined
         ? { effortValue: newEffort }
+        : {}),
+      // swarmMode follows the same settings → AppState channel as effortValue:
+      // /swarm writes the disk key, this mirrors it into top-level AppState for
+      // the status bar and the prompt attachment to read.
+      ...(swarmChanged && newSwarm !== undefined
+        ? { swarmMode: newSwarm }
         : {}),
     }
   })

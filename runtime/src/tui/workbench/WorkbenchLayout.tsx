@@ -92,11 +92,29 @@ function ComposerContextRow({
   const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
   const modeLabel = permissionModeShortTitle(mode).toLowerCase();
   const dangerous = isDangerousPermissionMode(mode);
+  // Swarm indicator next to the mode (like yolo): visible only while swarm
+  // mode is on (/swarm), carrying the live running-agent count from AppState.
+  const swarmMode =
+    useAppStateMaybeOutsideOfProvider((state) => state.swarmMode) === true;
+  const tasks = useAppStateMaybeOutsideOfProvider((state) => state.tasks) ?? {};
+  const runningAgents = Object.values(tasks).filter(
+    (task: any) =>
+      task?.type !== "local_bash" &&
+      (task?.status === "running" || task?.status === "pending"),
+  ).length;
+  const swarmLabel = swarmMode
+    ? ` · swarm${runningAgents > 0 ? ` ${runningAgents}` : ""}`
+    : "";
   return (
     <Box flexDirection="row" paddingX={1} height={1} overflowY="hidden">
       <Text color={mode === "plan" ? "planMode" : dangerous ? "warning" : "inactive"}>
         {modeLabel}
       </Text>
+      {swarmMode ? (
+        <Text color="agenc" wrap="truncate-end">
+          {swarmLabel}
+        </Text>
+      ) : null}
       <Text color="inactive" wrap="truncate-end">
         {` · ${modelLabel}${contextPctLabel !== null ? ` · ${contextPctLabel}` : ""}`}
       </Text>

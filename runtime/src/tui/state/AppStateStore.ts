@@ -379,6 +379,10 @@ export type AppState = DeepImmutable<{
   advisorModel?: string
   // Effort value
   effortValue?: EffortValue
+  // Swarm mode: when on, the agent is nudged to fan out divisible work to
+  // parallel sub-agents by default (see the /swarm command and the
+  // swarm-mode prompt attachment). Spawns still require approval per policy.
+  swarmMode?: boolean
 }
 
 export type AppStateStore = Store<AppState>
@@ -494,6 +498,7 @@ export function getDefaultAppState(): AppState {
     authVersion: 0,
     initialMessage: null,
     effortValue: undefined,
+    swarmMode: false,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

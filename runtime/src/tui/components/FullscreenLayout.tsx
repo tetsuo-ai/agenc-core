@@ -630,7 +630,19 @@ function DesignBottomLeftLabel({
   readonly modelLabel: string;
 }): React.ReactNode {
   const modeLabel = permissionModeFooterChrome(mode).label;
-  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel} · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>;
+  // Swarm indicator sits next to the mode (like yolo): visible only while
+  // swarm mode is on; carries the live running-agent count from AppState.
+  // Read from AppState (the appStateBridge /swarm writes through), with the
+  // provider-safe hook so the label also renders without AppStateProvider.
+  const swarmMode =
+    useAppStateMaybeOutsideOfProvider((state) => state.swarmMode) === true;
+  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
+  const runningAgents = React.useMemo(
+    () => Object.values(tasks ?? {}).filter((task: any) => task?.type !== "local_bash" && (task?.status === "running" || task?.status === "pending")).length,
+    [tasks],
+  );
+  const swarmLabel = swarmMode ? (runningAgents > 0 ? ` · swarm ${runningAgents}` : " · swarm") : "";
+  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel}{swarmLabel} · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>;
 }
 
 function DesignBottomRightLabel({
