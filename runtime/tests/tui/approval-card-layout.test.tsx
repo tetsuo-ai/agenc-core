@@ -107,11 +107,11 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     expect(offenders).toEqual([])
   })
 
-  test('(C) the action legend [1]/[2]/[3] is present and survives a tight slot', async () => {
+  test('(C) the action picker is present and survives a tight slot', async () => {
     const generous = await renderWriteApproval(40)
-    expect(generous).toContain('[1] approve once')
-    expect(generous).toContain('[2] approve for session')
-    expect(generous).toContain('[3] deny')
+    expect(generous).toContain('approve once')
+    expect(generous).toContain('approve for session')
+    expect(generous).toContain('deny')
     // The footer holds only real affordances — there is no `e` handler, so the
     // old `[e] edit command` hint (a dead key) was deliberately removed.
     expect(generous).not.toContain('[e] edit command')
@@ -119,7 +119,7 @@ describe('ApprovalCard layout (tool-approval popup)', () => {
     // The action legend is the primary action and is gated to stay visible
     // even when the slot is too tight to show the secondary facts/note rows.
     const tight = await renderWriteApproval(16)
-    expect(tight).toContain('[1] approve once')
+    expect(tight).toContain('approve once')
   })
 
   test('(A) a non-bash tool is never relabeled as bash', async () => {

@@ -1,23 +1,17 @@
 import React from "react";
 
-import { Box, Text } from "../../ink.js";
 import { useKeybinding } from "../../keybindings/useKeybinding.js";
 import type { PendingRequest } from "../../permission-requests.js";
 import { useWorkbenchDispatch } from "../state.js";
-import { classifyApprovalRisk } from "../../../permissions/risk.js";
-import { approvalInputText } from "./inputText.js";
-import { EXIT_PLAN_MODE_TOOL_NAME } from "../../../tools/ExitPlanModeTool/constants.js";
-import { ASK_USER_QUESTION_TOOL_NAME } from "../../../tools/ask-user-question/tool.js";
 
-// Tools with their own full approval UI (plan review card, question picker)
-// must NOT also get this hint row: both render above the same overlay area
-// and stomp each other (observed: "risk low - press d…" line printed over
-// the plan-review card, fusing with its text into "reviewall").
-const HINTLESS_TOOL_NAMES: ReadonlySet<string> = new Set([
-  EXIT_PLAN_MODE_TOOL_NAME,
-  ASK_USER_QUESTION_TOOL_NAME,
-]);
-
+/**
+ * Headless opt-in for full diff review: registers the `ctrl+w d` (openDiff)
+ * keybinding while an approval is pending and renders NOTHING. The approval
+ * card itself now prints the `ctrl+w d full diff` hint, so this bridge no
+ * longer paints a line of its own — it used to render a duplicate
+ * "risk X - press d…" row that fused with the card below into "reviewall".
+ * Kept mounted (B3.5 parity): diff review stays opt-in, never auto-focused.
+ */
 export function ApprovalSurfaceBridge({
   request,
 }: {
@@ -34,21 +28,5 @@ export function ApprovalSurfaceBridge({
     { context: "Confirmation", isActive: request !== undefined },
   );
 
-  if (!request) return null;
-  if (HINTLESS_TOOL_NAMES.has(request.ctx.toolName)) return null;
-  const risk = classifyApprovalRisk({
-    request,
-    description: request.description,
-    command: approvalInputText(request.input),
-  });
-  return (
-    <Box flexDirection="column">
-      <Text color={risk === "destructive" ? "error" : risk === "medium" ? "warning" : "text2"} wrap="truncate-end">
-        Approval pending: {request.description}
-      </Text>
-      <Text dimColor wrap="truncate-end">
-        risk {risk} - press d or ctrl+w d for full diff review
-      </Text>
-    </Box>
-  );
+  return null;
 }

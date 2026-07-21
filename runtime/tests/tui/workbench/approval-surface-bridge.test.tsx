@@ -25,7 +25,7 @@ import { ApprovalSurfaceBridge } from "../../../src/tui/workbench/approvals/Appr
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 describe("ApprovalSurfaceBridge", () => {
-  it("classifies destructive approval risk from request input commands", async () => {
+  it("renders nothing (headless): the card owns the visible hint now", async () => {
     const request = pendingRequest({
       id: "approval-1",
       description: "Run shell command",
@@ -40,8 +40,15 @@ describe("ApprovalSurfaceBridge", () => {
       80,
     );
 
-    expect(output).toContain("Approval pending: Run shell command");
-    expect(output).toContain("risk destructive");
+    // The bridge used to paint a duplicate "risk X - press d…" row that fused
+    // with the approval card below ("reviewall"). It must stay invisible.
+    expect(output).not.toContain("Approval pending:")
+    expect(output).not.toContain("risk destructive")
+    // …while STILL registering the opt-in openDiff keybinding for it.
+    expect(keybindingHarness).toMatchObject({
+      action: "workbench:openDiff",
+      options: { context: "Confirmation", isActive: true },
+    })
   });
 
   it("classifies destructive approval risk from split command arguments", async () => {
@@ -59,8 +66,11 @@ describe("ApprovalSurfaceBridge", () => {
       80,
     );
 
-    expect(output).toContain("Approval pending: Run shell command");
-    expect(output).toContain("risk destructive");
+    expect(output).not.toContain("Approval pending:")
+    expect(keybindingHarness).toMatchObject({
+      action: "workbench:openDiff",
+      options: { context: "Confirmation", isActive: true },
+    })
   });
 
   it("classifies destructive approval risk from structured command arguments", async () => {
@@ -78,8 +88,11 @@ describe("ApprovalSurfaceBridge", () => {
       80,
     );
 
-    expect(output).toContain("Approval pending: Run shell command");
-    expect(output).toContain("risk destructive");
+    expect(output).not.toContain("Approval pending:")
+    expect(keybindingHarness).toMatchObject({
+      action: "workbench:openDiff",
+      options: { context: "Confirmation", isActive: true },
+    })
   });
 
   it("opens the diff surface for the active approval request", async () => {

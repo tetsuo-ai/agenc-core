@@ -302,7 +302,7 @@ describe("permission request overlay coverage", () => {
       await sleep();
 
       expect(stripAnsi(extractLastFrame(output())).replace(/\s+/gu, "")).toContain(
-        "2session",
+        "approveforsession",
       );
       stdin.write("2");
       await sleep();
