@@ -67,6 +67,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
     requiresApproval: true,
     concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
+    // Long backstop so polling a session that's waiting on human hardware
+    // approval (e.g. a Ledger signer confirming on-device) isn't killed at the
+    // 30s default before the human finishes. Normal polls return at
+    // yield_time_ms, so this only affects long interactive waits.
+    timeoutMs: 300_000,
     recoveryCategory: "side-effecting",
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
