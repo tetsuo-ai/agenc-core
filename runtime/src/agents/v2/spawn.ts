@@ -62,7 +62,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 - The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
-- Omit \`fork_turns\` to inherit the full parent conversation. Use \`fork_turns: "none"\` for a clean fork, \`fork_turns: "all"\` for an explicit full-history fork, or a positive integer string such as \`"3"\` for the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
+- Omit \`fork_turns\` for a clean fork: the spawned agent starts fresh with ONLY your task as its context, so make the \`message\` fully self-contained (background, goal, constraints, relevant file paths/snippets) — it has NOT seen this conversation. This is the default and the cheap path for an N-agent fan-out. Use \`fork_turns: "all"\` only when the subtask genuinely needs the full parent conversation, or a positive integer string such as \`"3"\` for just the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
@@ -112,11 +112,15 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
 }
 
 function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
-  if (value === undefined) return { kind: "full_history" };
+  // Default (omitted/empty): clean fork — the child starts fresh with only the
+  // task directive, NOT the full parent conversation. This keeps an N-agent
+  // fan-out at O(N × task) tokens instead of O(N × parentContext), and leaves
+  // role/model/effort overrides available. `all` opts back into full history.
+  if (value === undefined) return undefined;
   const raw = value;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed.length === 0) return { kind: "full_history" };
+    if (trimmed.length === 0) return undefined;
     if (trimmed.toLowerCase() === "none") return undefined;
     if (trimmed.toLowerCase() === "all") return { kind: "full_history" };
     const parsed = Number.parseInt(trimmed, 10);

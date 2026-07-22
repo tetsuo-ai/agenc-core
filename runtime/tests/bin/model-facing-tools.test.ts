@@ -2530,18 +2530,18 @@ describe("model-facing tools", () => {
       "Full-history forked agents inherit",
     );
 
-    const defaultFullHistoryWithOverride = await spawnAgent.execute({
+    // Clean fork by default: overrides are now allowed (no inherit error).
+    const defaultCleanForkAllowsOverride = await spawnAgent.execute({
       message: "inspect",
       task_name: "task_1",
       reasoning_effort: "xhigh",
     });
-    expect(defaultFullHistoryWithOverride.isError).toBe(true);
-    expect(JSON.parse(defaultFullHistoryWithOverride.content).error).toContain(
+    expect(defaultCleanForkAllowsOverride.content).not.toContain(
       "Full-history forked agents inherit",
     );
   });
 
-  it("uses a full-history fork by default for plain spawn_agent calls", async () => {
+  it("uses a clean fork by default for plain spawn_agent calls", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -2587,9 +2587,10 @@ describe("model-facing tools", () => {
         runInBackground: true,
         // todo-106: collab workers stay alive for later assign_task
         keepAlive: true,
-        forkMode: { kind: "full_history" },
       }),
     );
+    // Clean fork by default: no full-history forkMode is passed.
+    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
   });
 
   it("normalizes common hyphenated spawn_agent task names", async () => {
@@ -2636,7 +2637,6 @@ describe("model-facing tools", () => {
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
         agentName: "bug_review",
-        forkMode: { kind: "full_history" },
       }),
     );
   });
