@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.8.2**; embedding SDK
+Version in tree: **runtime / launcher 0.8.3**; embedding SDK
 **0.2.0**. Default provider **grok**; fresh-config session model **grok-4.5**
 (same as provider-map / managed-OpenRouter paid defaults — see [providers.md](reference/providers.md)).
 
@@ -80,6 +80,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.8.3.md](releases/0.8.3.md) | AgenC 0.8.3: production React — fixes the long-session TUI heap OOM (dev-mode PerformanceMeasure leak) |
 | [releases/0.8.2.md](releases/0.8.2.md) | AgenC 0.8.2: /ledger command + Ledger TUI indicator, /swarm mode, approval cards rebuilt as real pickers, ptyxis flicker fix |
 | [releases/0.8.1.md](releases/0.8.1.md) | AgenC 0.8.1: OAuth refresh race, honest usage/rate, long-session hardening (schema v16), M5 review adoption |
 | [releases/0.8.0.md](releases/0.8.0.md) | AgenC 0.8.0: the verified-change workflow (agenc run start), grok streaming resilience, picker redesign |
@@ -112,7 +113,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.8.2) |
+| [`../README.md`](../README.md) | Product README (0.8.3) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
