@@ -42,6 +42,7 @@ const MINIMAL_NAMES = [
   "effort",
   "resolve",
   "swarm",
+  "ledger",
   "permissions",
   "plan",
   "agents",

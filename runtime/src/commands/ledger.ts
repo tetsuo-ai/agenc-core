@@ -119,7 +119,7 @@ const USAGE = [
 export const ledgerCommand: SlashCommand = {
   name: "ledger",
   description:
-    "Ledger wallet via wallet-cli — balances, operations, send/swap/receive, earn. /ledger session to start",
+    "Ledger wallet via wallet-cli — balances, send/swap/receive, earn",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx): Promise<SlashCommandResult> =>

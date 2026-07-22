@@ -53,7 +53,7 @@ function setSwarmMode(ctx: SlashCommandContext, on: boolean): void {
 
 export const swarmCommand: SlashCommand = {
   name: "swarm",
-  description: "Fan out divisible work to parallel sub-agents — /swarm on to activate, /swarm off to stop",
+  description: "Fan out work to parallel sub-agents — /swarm on|off",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) =>
