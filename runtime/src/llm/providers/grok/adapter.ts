@@ -108,6 +108,16 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  * (summary indexes are small integers from the provider).
  */
 const RAW_REASONING_SUMMARY_INDEX_OFFSET = 10_000;
+
+/**
+ * Default inter-chunk idle tolerance for STREAMS (chatStream) when no
+ * provider timeout is configured. Distinct from DEFAULT_TIMEOUT_MS (120s,
+ * request-open): xAI emits nothing at all while generating function-call
+ * arguments, and 120s of tolerance kills healthy streams generating large
+ * files, forcing full-regeneration retry loops that never converge. An
+ * explicitly configured `timeout_ms` still wins.
+ */
+const STREAM_SILENT_GENERATION_TIMEOUT_MS = 300_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
@@ -794,6 +804,15 @@ export class GrokProvider implements LLMProvider {
   >();
   private readonly toolChars: number;
   private readonly configuredTimeoutMs: number | undefined;
+  /**
+   * xAI buffers function-call argument generation server-side: measured 51s
+   * of ZERO bytes (no SSE keepalives) for a ~250-line file (2026-07-22).
+   * A healthy stream is indistinguishable from a stall during that window
+   * at every layer the client can observe, so the session watchdog must
+   * tolerate silence at least as long as the largest plausible argument
+   * payload. 5 minutes ≈ ~1500 generated lines.
+   */
+  readonly suggestedStreamIdleTimeoutMs = STREAM_SILENT_GENERATION_TIMEOUT_MS;
 
   constructor(config: GrokProviderConfig) {
     this.configuredTimeoutMs = config.timeoutMs;
@@ -1273,10 +1292,21 @@ export class GrokProvider implements LLMProvider {
       stream: true,
     };
     const compactionDiagnostics = plan.compactionDiagnostics;
-    const streamTimeout = resolveRequestTimeoutMs(
+    const resolvedStreamTimeout = resolveRequestTimeoutMs(
       this.configuredTimeoutMs,
       options?.timeoutMs,
     );
+    // Streams get a larger idle default than request-open: the inter-chunk
+    // wait must survive xAI's silent server-side function-call argument
+    // generation (see STREAM_SILENT_GENERATION_TIMEOUT_MS). Explicit
+    // provider config / call overrides are respected unchanged.
+    const streamTimeout =
+      resolvedStreamTimeout.source === "provider_default"
+        ? {
+            ...resolvedStreamTimeout,
+            timeoutMs: STREAM_SILENT_GENERATION_TIMEOUT_MS,
+          }
+        : resolvedStreamTimeout;
     // The resolved timeout is inter-chunk idle time, not a total-stream
     // deadline. A healthy stream that keeps producing chunks must never be
     // torn down by elapsed wall-clock time alone: long reasoning turns

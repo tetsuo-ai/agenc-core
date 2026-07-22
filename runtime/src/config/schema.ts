@@ -968,7 +968,14 @@ export function defaultConfig(): AgenCConfig {
       "pyproject.toml",
     ]) as readonly string[],
     project_doc_max_bytes: 32_768,
-    stream_watchdog_timeout_ms: 30_000,
+    // xAI generates function-call arguments server-side with ZERO bytes on
+    // the wire (no SSE keepalives — measured 51s of total silence for a
+    // ~250-line file, 2026-07-22). Any watchdog window shorter than the
+    // largest plausible argument generation kills healthy streams and forces
+    // full-regeneration reconnect loops. 5 minutes tolerates ~1500-line
+    // files; stall detection degrades gracefully (true disconnects still
+    // usually surface as socket errors immediately).
+    stream_watchdog_timeout_ms: 300_000,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` or AGENC_MAX_TURNS.

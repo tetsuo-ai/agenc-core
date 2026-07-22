@@ -42,6 +42,7 @@ import type {
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
   installStreamWatchdog,
+  resolveSessionStreamIdleTimeoutMs,
   STREAM_IDLE_ABORT_REASON,
 } from "../llm/stream-watchdog.js";
 import {
@@ -846,9 +847,39 @@ export async function streamModel(
   }
 
   // I-11 watchdog installed BEFORE the stream begins so a stall at
-  // first-byte also trips.
+  // first-byte also trips. Idle tolerance resolves env >
+  // `stream_watchdog_timeout_ms` config > provider suggestion > default:
+  // providers with silent server-side generation phases (grok buffers
+  // whole function-call argument payloads with zero bytes on the wire)
+  // declare a multi-minute tolerance, because during those phases a
+  // healthy stream is indistinguishable from a stall and killing it
+  // forces a full-regeneration retry loop that never converges.
+  const configuredWatchdogMs = (() => {
+    const services = session.services as {
+      configStore?: { current?: () => { stream_watchdog_timeout_ms?: number } };
+    };
+    try {
+      const value = services.configStore?.current?.()?.stream_watchdog_timeout_ms;
+      return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
   const watchdog = installStreamWatchdog({
     abortController: scoped,
+    timeoutMs: resolveSessionStreamIdleTimeoutMs({
+      ...(configuredWatchdogMs !== undefined
+        ? { configuredMs: configuredWatchdogMs }
+        : {}),
+      ...(session.services.provider.suggestedStreamIdleTimeoutMs !== undefined
+        ? {
+            providerSuggestedMs:
+              session.services.provider.suggestedStreamIdleTimeoutMs,
+          }
+        : {}),
+    }),
     onFired: (info) => {
       session.emit({
         id: session.nextInternalSubId(),

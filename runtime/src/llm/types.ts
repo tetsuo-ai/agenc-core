@@ -889,6 +889,15 @@ export interface LLMProviderSessionForkOptions {
  */
 export interface LLMProvider {
   readonly name: string;
+  /**
+   * Longest wire silence this provider's healthy streams are known to
+   * produce, for the session-level stream watchdog. xAI generates
+   * function-call arguments entirely server-side with zero bytes on the
+   * wire (no SSE keepalives), so grok declares a multi-minute tolerance;
+   * providers that stream continuously leave this unset and get the
+   * default. Env/config overrides win over this suggestion.
+   */
+  readonly suggestedStreamIdleTimeoutMs?: number;
   chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse>;
   chatStream(
     messages: LLMMessage[],

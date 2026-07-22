@@ -37,12 +37,58 @@ import { monotonicMs } from "./_deps/monotonic.js";
  */
 const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 90_000;
 
-export function resolveStreamIdleTimeoutMs(): number {
+export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
   const raw = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-  if (!raw) return STREAM_IDLE_TIMEOUT_MS_DEFAULT;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0) return STREAM_IDLE_TIMEOUT_MS_DEFAULT;
-  return n;
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  // `preferredMs` carries config (`stream_watchdog_timeout_ms`) or a
+  // provider-declared tolerance (e.g. grok's silent tool-argument
+  // generation). Env wins over both for operator escape-hatch parity.
+  if (
+    preferredMs !== undefined &&
+    Number.isFinite(preferredMs) &&
+    preferredMs > 0
+  ) {
+    return Math.trunc(preferredMs);
+  }
+  return STREAM_IDLE_TIMEOUT_MS_DEFAULT;
+}
+
+/**
+ * Session-level idle-timeout resolution: env (unconditional operator
+ * escape hatch) > effective preference > 90s default, where the effective
+ * preference applies the provider suggestion as a FLOOR over the
+ * `stream_watchdog_timeout_ms` config value. Providers with silent
+ * server-side generation phases (xAI emits zero bytes — not even SSE
+ * keepalives — while generating function-call arguments; 51s measured for
+ * a ~250-line file) declare a tolerance below which any window is
+ * guaranteed to kill healthy streams, so shorter configured values
+ * (e.g. the stale 30s scaffold default in old config.toml files) must not
+ * win over it.
+ */
+export function resolveSessionStreamIdleTimeoutMs(input: {
+  readonly configuredMs?: number;
+  readonly providerSuggestedMs?: number;
+}): number {
+  const configured =
+    input.configuredMs !== undefined &&
+    Number.isFinite(input.configuredMs) &&
+    input.configuredMs > 0
+      ? input.configuredMs
+      : undefined;
+  const suggested =
+    input.providerSuggestedMs !== undefined &&
+    Number.isFinite(input.providerSuggestedMs) &&
+    input.providerSuggestedMs > 0
+      ? input.providerSuggestedMs
+      : undefined;
+  const preferred =
+    suggested !== undefined
+      ? Math.max(configured ?? 0, suggested)
+      : configured;
+  return resolveStreamIdleTimeoutMs(preferred);
 }
 
 /**
