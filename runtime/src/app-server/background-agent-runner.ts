@@ -4450,6 +4450,56 @@ export function daemonEventFromUnboundSessionEvent(event: {
       payload,
     };
   }
+  // Per-stream provider usage. Emitted via `session.emit` from
+  // `phases/stream-model.ts` (T6 #119) and persisted to the rollout, but
+  // never bridged live — so a daemon-attached TUI had no usage source at
+  // all: its synthesized assistant messages carry zero usage and the
+  // workbench ctx% read 0 for the whole session. Forward the payload
+  // verbatim; the TUI reducer derives `latestUsage` from it.
+  if (type === "token_count" && isJsonObject(payload)) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
+  }
+  // Streaming tool-argument events (input_json_delta family). Same live
+  // bridge gap as the thinking events below: providers that stream tool
+  // arguments (grok function_call_arguments deltas, Messages-API
+  // input_json_delta) emit these through stream-model, and the TUI needs
+  // them for in-flight tool rendering, the spinner's cumulative token
+  // estimate, and stream-liveness accounting.
+  if (
+    type === "tool_input_block_start" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.index === "number"
+  ) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
+  }
+  if (
+    type === "tool_input_delta" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.index === "number" &&
+    typeof payload.partialJson === "string"
+  ) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
+  }
   // Extended-thinking + reasoning-summary events. These are emitted via
   // `session.emit` from `phases/stream-model.ts` and persisted to the
   // rollout, but the live notification path needs an explicit bridge:

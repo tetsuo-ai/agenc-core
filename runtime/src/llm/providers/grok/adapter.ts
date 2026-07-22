@@ -100,6 +100,14 @@ import {
 
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+/**
+ * Streamed raw reasoning (`response.reasoning_text.delta`) rides the
+ * reasoningSummaryDelta chunk path under its own index space so a raw
+ * reasoning block can never merge into a genuine summary block's buffer
+ * (summary indexes are small integers from the provider).
+ */
+const RAW_REASONING_SUMMARY_INDEX_OFFSET = 10_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
@@ -1296,6 +1304,10 @@ export class GrokProvider implements LLMProvider {
       // Per-summary-index buffers for streamed reasoning summaries. xAI may
       // emit multiple summary blocks in one turn; each lands at its own index.
       const reasoningSummaryBuffers = new Map<number, string>();
+      // item.id → call_id for streamed function-call items, so
+      // function_call_arguments.delta events (which reference item_id) can be
+      // forwarded under the call_id the tool-input session events key on.
+      const functionCallItemIds = new Map<string, string>();
       let streamIterator: AsyncIterator<any> | null = null;
       let responseTracePayload: Record<string, unknown> | undefined;
       let streamResponseMeta: ProviderResponseTraceMeta | undefined;
@@ -1478,6 +1490,94 @@ export class GrokProvider implements LLMProvider {
           continue;
         }
 
+        if (event.type === "response.reasoning_text.delta") {
+          // Raw reasoning deltas (grok models that stream chain-of-thought
+          // directly rather than as summaries). Ride the same
+          // reasoningSummaryDelta path so the thinking pipeline renders them
+          // AND the turn-level stream watchdog sees activity — before this
+          // handler these events were dropped, so a long pure-reasoning
+          // phase starved the 90s session watchdog and killed healthy
+          // streams. Raw reasoning gets its own index space so it can never
+          // merge into a real summary block's buffer.
+          const delta = String(event.delta ?? "");
+          const rawIndex =
+            RAW_REASONING_SUMMARY_INDEX_OFFSET +
+            (typeof event.content_index === "number" ? event.content_index : 0);
+          if (delta.length > 0) {
+            const previous = reasoningSummaryBuffers.get(rawIndex) ?? "";
+            reasoningSummaryBuffers.set(rawIndex, previous + delta);
+            onChunk({
+              content: "",
+              done: false,
+              reasoningSummaryDelta: { delta, summaryIndex: rawIndex },
+            });
+          }
+          continue;
+        }
+
+        if (event.type === "response.output_item.added") {
+          // Streamed function-call items announce themselves here before
+          // their arguments arrive. Emit toolInputBlockStart so the TUI can
+          // render the in-flight tool call (and the watchdog sees activity).
+          const item =
+            event.item && typeof event.item === "object"
+              ? (event.item as Record<string, unknown>)
+              : undefined;
+          if (item && item.type === "function_call") {
+            const itemId = typeof item.id === "string" ? item.id : "";
+            const callId =
+              typeof item.call_id === "string" && item.call_id.length > 0
+                ? item.call_id
+                : itemId;
+            if (itemId.length > 0) functionCallItemIds.set(itemId, callId);
+            const index =
+              typeof event.output_index === "number" ? event.output_index : 0;
+            onChunk({
+              content: "",
+              done: false,
+              toolInputBlockStart: {
+                callId,
+                index,
+                contentBlock: {
+                  type: "tool_use",
+                  id: callId,
+                  name: typeof item.name === "string" ? item.name : "",
+                  input: {},
+                },
+              },
+            });
+          } else {
+            onChunk({ content: "", done: false });
+          }
+          continue;
+        }
+
+        if (event.type === "response.function_call_arguments.delta") {
+          // Tool-argument streaming. These were previously dropped entirely:
+          // a model spending minutes streaming one big Write call produced
+          // zero LLMStreamChunks, so the session-level stream watchdog fired
+          // stream_idle at 90s and tore down a healthy stream (reconnect
+          // loop), and the spinner's token estimate never moved.
+          const delta = String(event.delta ?? "");
+          const itemId = typeof event.item_id === "string" ? event.item_id : "";
+          const index =
+            typeof event.output_index === "number" ? event.output_index : 0;
+          onChunk({
+            content: "",
+            done: false,
+            ...(delta.length > 0
+              ? {
+                  toolInputDelta: {
+                    callId: functionCallItemIds.get(itemId) ?? itemId,
+                    index,
+                    partialJson: delta,
+                  },
+                }
+              : {}),
+          });
+          continue;
+        }
+
         if (event.type === "response.output_item.done") {
           const { toolCall, issue } = this.toToolCall(event.item);
           if (toolCall) {
@@ -1596,6 +1696,14 @@ export class GrokProvider implements LLMProvider {
             new LLMProviderError(this.name, "Provider returned status failed");
           break;
         }
+
+        // Liveness backstop: EVERY provider event — including types this
+        // adapter does not (yet) map — must reach onChunk so the
+        // turn-level stream watchdog counts the stream as alive. Silent
+        // fallthrough is how healthy streams got killed as stream_idle:
+        // the provider-level idle timer re-arms per event, but the session
+        // watchdog only sees LLMStreamChunks.
+        onChunk({ content: "", done: false });
       }
 
       if (!receivedTerminalEvent && finishReason === "stop") {

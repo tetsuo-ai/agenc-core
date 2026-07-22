@@ -1770,7 +1770,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const mainLoopModelSetting = useAppState(state => state.mainLoopModel);
   const contextPctLabel = useMemo(() => {
     const messages = transcriptMessagesRef.current as any[];
-    const usage = getCurrentUsage(messages);
+    // Daemon-bridge transcripts synthesize assistant messages with zero
+    // usage (and a synthetic model getTokenUsage skips), so the message walk
+    // finds nothing there — prefer the bridge's latest token_count usage and
+    // fall back to the message walk for embedded/local transcripts.
+    const usage = transcript.latestUsage ?? getCurrentUsage(messages);
     if (!usage) return null;
     const runtimeModel = getRuntimeMainLoopModel({
       permissionMode: toolPermissionContext.mode,
@@ -1780,7 +1784,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const windowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
     const { used } = calculateContextPercentages(usage, windowSize);
     return used === null ? null : `ctx ${used}%`;
-  }, [lastAssistantMessageId, mainLoopModelSetting, toolPermissionContext.mode]);
+  }, [lastAssistantMessageId, transcript.latestUsage, mainLoopModelSetting, toolPermissionContext.mode]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback((next: string) => {
@@ -2943,9 +2947,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     responseLengthRef.current = 0;
   }
   wasStreamingRef.current = isLoading;
-  // Keep responseLengthRef in sync with the streaming buffer so the spinner's
-  // token-counter shows current progress.
-  responseLengthRef.current = (transcript.streamingText?.length ?? 0) + (transcript.streamingThinking?.thinking?.length ?? 0);
+  // Keep responseLengthRef in sync with the CUMULATIVE per-turn streamed
+  // chars (visible text + thinking + tool-argument JSON). The old live-buffer
+  // snapshot reset on every message/thinking block while the tok/s
+  // denominator spanned the whole turn, so the displayed rate collapsed to
+  // single digits on tool-heavy grok turns.
+  responseLengthRef.current = transcript.turnStreamedChars;
   const streamMode: SpinnerMode =
     inProgressToolCount > 0
       ? "tool-use"

@@ -74,6 +74,29 @@ export interface AdaptedTranscript {
         readonly kind: "thinking" | "reasoning_summary";
       }
     | null;
+  /**
+   * Cumulative streamed characters for the CURRENT turn: visible text +
+   * thinking/reasoning deltas + tool-argument JSON deltas. Unlike the live
+   * buffers above, this never resets mid-turn (buffers reset per
+   * message/thinking block, which made the spinner's chars/4 token estimate
+   * collapse repeatedly and read out absurd tok/s averages). Resets on
+   * `turn_start`.
+   */
+  readonly turnStreamedChars: number;
+  /**
+   * Most recent provider-reported usage from a `token_count` event, in the
+   * assistant-message usage-block shape the context-percentage derivation
+   * consumes. Daemon-bridge transcripts synthesize assistant messages with
+   * zero usage (and a synthetic model that getTokenUsage skips), so without
+   * this the workbench ctx% reads 0 forever. `null` until the first
+   * token_count of the session.
+   */
+  readonly latestUsage: {
+    readonly input_tokens: number;
+    readonly output_tokens: number;
+    readonly cache_creation_input_tokens: number;
+    readonly cache_read_input_tokens: number;
+  } | null;
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -1724,6 +1747,8 @@ export function adaptTranscriptEvents(
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
   let realtimeStreamingText = "";
+  let turnStreamedChars = 0;
+  let latestUsage: AdaptedTranscript["latestUsage"] = null;
   let streamingThinking:
     | {
         thinking: string;
@@ -1817,6 +1842,7 @@ export function adaptTranscriptEvents(
       case "turn_started":
         isStreaming = true;
         streamingText = "";
+        turnStreamedChars = 0;
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
         // Clear streaming tool state when a new turn boundary arrives. Any
@@ -1933,11 +1959,13 @@ export function adaptTranscriptEvents(
       case "assistant_text":
         if (typeof payload.content === "string") {
           streamingText += payload.content;
+          turnStreamedChars += payload.content.length;
         }
         break;
       case "agent_message_delta":
         if (typeof payload.delta === "string") {
           streamingText += payload.delta;
+          turnStreamedChars += payload.delta.length;
         }
         break;
       case "assistant_thinking_block_start": {
@@ -1961,6 +1989,7 @@ export function adaptTranscriptEvents(
         const delta =
           typeof payload.delta === "string" ? payload.delta : "";
         if (delta.length === 0) break;
+        turnStreamedChars += delta.length;
         const kind: "thinking" | "reasoning_summary" =
           payload.kind === "reasoning_summary" ? "reasoning_summary" : "thinking";
         if (streamingThinking === null) {
@@ -2212,6 +2241,7 @@ export function adaptTranscriptEvents(
               ? payload.partial_json
               : null;
         if (partialJson === null) break;
+        turnStreamedChars += partialJson.length;
         const slot = streamingToolUses.findIndex(
           (entry) => entry.index === indexCandidate,
         );
@@ -2306,6 +2336,14 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage("Context compacted", "info", nextUuid()));
         break;
       case "token_count":
+        latestUsage = {
+          input_tokens: nonNegativeInteger(payload.promptTokens),
+          output_tokens: nonNegativeInteger(payload.completionTokens),
+          cache_creation_input_tokens: nonNegativeInteger(
+            payload.cacheCreationInputTokens,
+          ),
+          cache_read_input_tokens: nonNegativeInteger(payload.cachedInputTokens),
+        };
         out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info", nextUuid()));
         break;
       case "protocol_claim":
@@ -2673,6 +2711,8 @@ export function adaptTranscriptEvents(
     currentTurnId,
     streamingToolUses,
     streamingThinking,
+    turnStreamedChars,
+    latestUsage,
   };
 }
 
