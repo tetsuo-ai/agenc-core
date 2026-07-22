@@ -1835,6 +1835,28 @@ export function adaptTranscriptEvents(
         const replacement = (payload as HistoryReplacedEvent["payload"]).messages;
         if (Array.isArray(replacement)) {
           out.push(...(replacement as readonly RuntimeTranscriptMessage[]));
+          // Re-derive toolNames from the replayed messages. The renderer
+          // builds its tool set from toolNames (createTuiTools), and a
+          // replayed transcript delivers tool_use blocks as ready-made
+          // messages with NO tool_call_started events — clearing toolNames
+          // above without rescanning left every resumed session rendering
+          // "Tool use unavailable" for tools it only used before the resume
+          // (spawn_agent/close_agent in resumed swarm sessions).
+          for (const message of replacement as readonly any[]) {
+            const content = message?.message?.content;
+            if (!Array.isArray(content)) continue;
+            for (const block of content) {
+              if (
+                block !== null &&
+                typeof block === "object" &&
+                block.type === "tool_use" &&
+                typeof block.name === "string" &&
+                block.name.trim().length > 0
+              ) {
+                toolNames.add(block.name);
+              }
+            }
+          }
         }
         break;
       }
