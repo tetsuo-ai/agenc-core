@@ -129,6 +129,16 @@ import type { ThreadManager } from "./thread-manager.js";
  */
 const DEFAULT_MAX_AGENT_DEPTH = 1;
 
+/**
+ * How long a keep-alive collab worker may sit `idle` between turns before the
+ * control plane reclaims it as abandoned (frees its registry slot). Generous
+ * enough to cover realistic assign_task reuse windows; any follow-up turn
+ * flips the worker back to `running` and resets the clock.
+ */
+const IDLE_KEEPALIVE_GRACE_MS = 10 * 60_000;
+/** Cadence of the abandoned keep-alive worker sweep. */
+const IDLE_KEEPALIVE_REAP_INTERVAL_MS = 60_000;
+
 function asPositiveIntegerDepth(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     return undefined;
@@ -322,6 +332,7 @@ export class AgentControl {
    *  and subtree cascade, since we have no state-db in-tree yet). */
   private readonly parentOf = new Map<ThreadId, ThreadId>();
   private threadManager: ThreadManager | undefined;
+  private idleReapTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
@@ -335,6 +346,35 @@ export class AgentControl {
     this.maxDepth =
       opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
+    this.startIdleKeepaliveReaper();
+  }
+
+  /**
+   * Reclaim abandoned keep-alive workers so they don't exhaust the 32-slot
+   * registry cap. A keep-alive collab worker parks in `idle` between turns
+   * waiting for `assign_task`, holding its registry slot; if the model never
+   * reuses or closes it, the slot leaks. Every interval, shut down spawned
+   * (non-root) workers that have been idle past IDLE_KEEPALIVE_GRACE_MS with
+   * no follow-up turn — a worker reused within the window goes back to
+   * `running` and is never reaped. The root/main agent (depth 0) is never
+   * reaped.
+   */
+  private startIdleKeepaliveReaper(): void {
+    this.idleReapTimer = setInterval(() => {
+      const now = performance.now();
+      const toReap: ThreadId[] = [];
+      for (const agent of this.live.values()) {
+        const status = agent.status.value;
+        if (status.status !== "idle") continue;
+        if (depthOfAgentPath(agent.agentPath) <= 0) continue;
+        if (now - status.endedAtMs < IDLE_KEEPALIVE_GRACE_MS) continue;
+        toReap.push(agent.agentId);
+      }
+      for (const threadId of toReap) {
+        void this.shutdown(threadId, "idle_keepalive_reap").catch(() => {});
+      }
+    }, IDLE_KEEPALIVE_REAP_INTERVAL_MS);
+    this.idleReapTimer.unref?.();
   }
 
   bindThreadManager(threadManager: ThreadManager): void {

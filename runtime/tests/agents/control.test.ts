@@ -140,6 +140,45 @@ describe("AgentControl", () => {
     expect(live.metadata.agentPath).toBe("/root/task_3");
   });
 
+  it("reaps a keep-alive worker idle past the grace and frees its registry slot", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = stubSession();
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const live = await control.spawn({ parentPath: "/root" });
+      expect(registry.activeCount).toBe(1);
+      // Worker finishes a turn and parks idle (keep-alive between turns).
+      live.status.markRunning("turn-1");
+      live.status.markIdle("turn-1");
+      // Advance past the 10min grace + one 60s reaper interval.
+      await vi.advanceTimersByTimeAsync(10 * 60_000 + 60_000 + 1_000);
+      expect(live.status.value.status).toBe("shutdown");
+      expect(registry.activeCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not reap a keep-alive worker that went back to running", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = stubSession();
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const live = await control.spawn({ parentPath: "/root" });
+      live.status.markRunning("turn-1");
+      live.status.markIdle("turn-1");
+      // Reused before the grace elapses: flips back to running.
+      live.status.markRunning("turn-2");
+      await vi.advanceTimersByTimeAsync(10 * 60_000 + 60_000 + 1_000);
+      expect(live.status.value.status).toBe("running");
+      expect(registry.activeCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("I-1: depth beyond cap is rejected", async () => {
     // maxDepth=2 means depth=2 is accepted and depth=3 rejects.
     const session = stubSession();
