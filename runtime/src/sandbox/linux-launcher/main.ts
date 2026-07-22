@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { runLinuxSandboxEntrypoint } from "./lib.js";
+/**
+ * Order-proof process entry for the Linux sandbox launcher. No static
+ * imports allowed — see `src/bin/agenc.ts` for the full rationale (NODE_ENV
+ * must be set before any shared chunk can load an external dev/prod
+ * dual-build package).
+ */
+process.env.NODE_ENV ??= "production";
 
-const result = await runLinuxSandboxEntrypoint(process.argv.slice(2), {
-  onStderr(line) {
-    process.stderr.write(`${line}\n`);
-  },
-});
-process.exit(result.exitCode);
+await import("./main-impl.js");

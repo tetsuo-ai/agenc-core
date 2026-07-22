@@ -24,7 +24,7 @@ import {
   type AgenCConfigCliOptions,
   type AgenCConfigCliIo,
 } from "./config-cli.js";
-import { main } from "./agenc.js";
+import { main } from "./agenc-main.js";
 
 function createIo(): AgenCConfigCliIo & {
   readonly stdoutText: () => string;

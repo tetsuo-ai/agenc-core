@@ -80,7 +80,7 @@ async function withMain(args: readonly string[]): Promise<{
   });
 
   try {
-    const { main } = await import("./agenc.js");
+    const { main } = await import("./agenc-main.js");
     return {
       code: await main(),
       stderr: stderrChunks.join(""),

@@ -4,7 +4,7 @@ import {
   formatCliHelpText,
   formatCliHelpTopicText,
   main,
-} from "./agenc.js";
+} from "./agenc-main.js";
 import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,

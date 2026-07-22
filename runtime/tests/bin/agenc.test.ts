@@ -47,7 +47,7 @@ import {
   shouldLoadMcpCliConfig,
   validateAgencHome,
   type ConfigReloadLatch,
-} from "./agenc.js";
+} from "./agenc-main.js";
 import { ConfigStore } from "../config/store.js";
 import {
   AmbiguousModelError,

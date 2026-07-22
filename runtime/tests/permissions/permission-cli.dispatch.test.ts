@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { main } from "../bin/agenc.js";
+import { main } from "../bin/agenc-main.js";
 
 describe("agenc permissions top-level dispatch", () => {
   const originalArgv = [...process.argv];

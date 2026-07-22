@@ -9,8 +9,10 @@ function defineConfig<T>(config: T): T {
 const entry = [
   'src/index.ts',
   'src/bin/agenc.ts',
+  'src/bin/agenc-main.ts',
   'src/bin/tui-trust-prompt.tsx',
   'src/sandbox/linux-launcher/main.ts',
+  'src/sandbox/linux-launcher/main-impl.ts',
   'src/tui/main.tsx',
   'src/tui/pending-resume.ts',
 ];

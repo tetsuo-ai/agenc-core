@@ -1,3 +1,4 @@
+import "../bootstrap/node-env.js";
 import React, { useCallback } from "react";
 
 import { TrustDialog } from "../permissions/trust/TrustDialog.js";

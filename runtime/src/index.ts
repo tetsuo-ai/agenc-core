@@ -8,6 +8,7 @@
  * @packageDocumentation
  */
 
+import "./bootstrap/node-env.js";
 export { VERSION } from "./version.js";
 
 export * from "./eval-contract/index.js";

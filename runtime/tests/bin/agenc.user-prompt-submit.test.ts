@@ -9,7 +9,7 @@ import {
   __installTuiSessionContractForTest,
   oneShotCLI,
   type PreparedTurnRuntimeInputs,
-} from "./agenc.js";
+} from "./agenc-main.js";
 import { defaultConfig } from "../config/schema.js";
 import {
   resolveProjectTrustRootSync,

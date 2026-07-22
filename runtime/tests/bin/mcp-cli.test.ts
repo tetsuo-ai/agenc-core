@@ -228,7 +228,7 @@ function runAgencMainForMcpServe(): Promise<{
   );
   const script = [
     "process.argv = [process.execPath, '/opt/agenc/bin/agenc.js', 'mcp', 'serve', '--transport', 'stdio'];",
-    "const { main } = await import('./src/bin/agenc.ts');",
+    "const { main } = await import('./src/bin/agenc-main.ts');",
     "process.exit(await main());",
   ].join("\n");
   const child = spawn(process.execPath, [

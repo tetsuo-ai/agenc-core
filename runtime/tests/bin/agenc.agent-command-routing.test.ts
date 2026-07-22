@@ -40,7 +40,7 @@ describe("agent command routing", () => {
     ]);
     agentCliMocks.runAgenCAgentCli.mockResolvedValue(0);
     try {
-      const { main } = await import("./agenc.js");
+      const { main } = await import("./agenc-main.js");
 
       await expect(main()).resolves.toBe(0);
 
@@ -66,7 +66,7 @@ describe("agent command routing", () => {
     ]);
     agentCliMocks.runAgenCAgentCli.mockResolvedValue(0);
     try {
-      const { main } = await import("./agenc.js");
+      const { main } = await import("./agenc-main.js");
 
       await expect(main()).resolves.toBe(0);
 
@@ -87,7 +87,7 @@ describe("agent command routing", () => {
   });
 
   it("overrides AGENC_WORKSPACE for attach bootstrap cwd", async () => {
-    const { envForAttachBootstrap } = await import("./agenc.js");
+    const { envForAttachBootstrap } = await import("./agenc-main.js");
 
     expect(
       envForAttachBootstrap(

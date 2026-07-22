@@ -1,6 +1,6 @@
 /** Fresh-process daemon entrypoint for M4 socket/SDK acceptance tests. */
 
-import { main } from "../../../src/bin/agenc.js";
+import { main } from "../../../src/bin/agenc-main.js";
 
 try {
   process.exitCode = await main();

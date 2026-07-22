@@ -1,3 +1,4 @@
+import "../bootstrap/node-env.js";
 import { onExit } from "signal-exit";
 
 import { render as renderInk } from "./ink.js";

@@ -25,7 +25,7 @@ import {
   __setActiveInkUnmountForTest,
   installSignalHandlers,
   type ConfigReloadLatch,
-} from "./agenc.js";
+} from "./agenc-main.js";
 
 function makeHandles() {
   const bootTUI = vi.fn(async (_args: BootTUIArgs) => 0);
