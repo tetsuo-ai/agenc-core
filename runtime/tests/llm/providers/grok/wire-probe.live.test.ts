@@ -100,7 +100,7 @@ describe.runIf(RUN)("grok-4.5 wire gap probe (LIVE)", () => {
     { timeout: 360_000 },
     async () => {
       const stats = await probe(
-        "Call write_file exactly once to create lexer.c: a complete ~200-line " +
+        `Call write_file exactly once to create lexer.c: a complete ~${process.env.GROK_WIRE_PROBE_LINES ?? "200"}-line ` +
           "C99 POSIX shell lexer with operator recognition, word splitting, " +
           "and quote handling. Put the ENTIRE file content in the content " +
           "argument. Do not explain anything.",
