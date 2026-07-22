@@ -35,6 +35,7 @@ const LIVE_TEST_FILES = [
   'tests/live/imagine-video-e2e.live.test.ts',
   'tests/live/xsearch-retry.live.test.ts',
   'tests/llm/provider.integration.test.ts',
+  'tests/llm/providers/grok/wire-probe.live.test.ts',
   'tests/transaction-guard/devnet-live.e2e.test.ts',
 ] as const;
 
