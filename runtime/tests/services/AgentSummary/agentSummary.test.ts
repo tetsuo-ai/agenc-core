@@ -273,15 +273,23 @@ describe("AgentSummary service", () => {
       });
     const updateAgentSummary = vi.fn();
 
+    let transcriptCall = 0;
     startAgentSummarization({
       taskId: "task-1",
       agentId: "agent-1",
       cacheSafeParams: cacheSafeParams(),
-      getAgentTranscript: vi.fn().mockResolvedValue(transcript([
-        userMessage("u1", "one"),
-        assistantMessage("a1", "two"),
-        userMessage("u2", "three"),
-      ])),
+      // Grow the transcript on every poll so each tick has new content to
+      // summarize (the sweep skips a poll when nothing new was produced).
+      getAgentTranscript: vi.fn().mockImplementation(async () => {
+        transcriptCall += 1;
+        return transcript([
+          userMessage("u1", "one"),
+          assistantMessage("a1", "two"),
+          ...Array.from({ length: transcriptCall }, (_, i) =>
+            userMessage(`u${i + 2}`, `m${i}`),
+          ),
+        ]);
+      }),
       updateAgentSummary,
       runForkedAgent,
       createUserMessage,
@@ -313,15 +321,23 @@ describe("AgentSummary service", () => {
         return { messages: [textAssistant("second", "Writing tests")], totalUsage: {} };
       });
 
+    let transcriptCall = 0;
     startAgentSummarization({
       taskId: "task-1",
       agentId: "agent-1",
       cacheSafeParams: cacheSafeParams(),
-      getAgentTranscript: vi.fn().mockResolvedValue(transcript([
-        userMessage("u1", "one"),
-        assistantMessage("a1", "two"),
-        userMessage("u2", "three"),
-      ])),
+      // Grow the transcript on every poll so each tick has new content to
+      // summarize (the sweep skips a poll when nothing new was produced).
+      getAgentTranscript: vi.fn().mockImplementation(async () => {
+        transcriptCall += 1;
+        return transcript([
+          userMessage("u1", "one"),
+          assistantMessage("a1", "two"),
+          ...Array.from({ length: transcriptCall }, (_, i) =>
+            userMessage(`u${i + 2}`, `m${i}`),
+          ),
+        ]);
+      }),
       updateAgentSummary: vi.fn(),
       runForkedAgent,
       createUserMessage,
@@ -342,6 +358,35 @@ describe("AgentSummary service", () => {
     expect(controllers).toHaveLength(2);
     expect(controllers[1]).not.toBe(controllers[0]);
     expect(controllers[1]!.signal.aborted).toBe(false);
+  });
+
+  it("skips a poll when no new messages were produced since the last summary", async () => {
+    const runForkedAgent = vi.fn().mockResolvedValue({
+      messages: [textAssistant("s", "summary")],
+      totalUsage: {},
+    });
+    startAgentSummarization({
+      taskId: "task-1",
+      agentId: "agent-1",
+      cacheSafeParams: cacheSafeParams(),
+      // Fixed transcript: never grows, so only the first poll has new content;
+      // later polls must be skipped instead of re-forking the same transcript.
+      getAgentTranscript: vi.fn().mockResolvedValue(transcript([
+        userMessage("u1", "one"),
+        assistantMessage("a1", "two"),
+        userMessage("u2", "three"),
+      ])),
+      updateAgentSummary: vi.fn(),
+      runForkedAgent,
+      createUserMessage,
+      intervalMs: 10,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(runForkedAgent).toHaveBeenCalledTimes(1);
   });
 
   it("stop is idempotent, aborts in-flight work, suppresses abort logs, and ignores late results", async () => {

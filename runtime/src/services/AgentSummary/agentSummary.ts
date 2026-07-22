@@ -29,7 +29,7 @@ import {
   runForkedAgent as defaultRunForkedAgent,
 } from "../PromptSuggestion/runtime.js";
 
-export const SUMMARY_INTERVAL_MS = 30_000;
+export const SUMMARY_INTERVAL_MS = 120_000;
 
 /**
  * Adapter across the deliberate PromptSuggestion decoupling boundary. The fork
@@ -223,6 +223,11 @@ export function startAgentSummarization(
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   let previousSummary: string | null = null;
+  // Message count at the last successful summary. Lets the periodic sweep skip
+  // a redundant LLM call when nothing new was produced since — the common case
+  // for a keep-alive worker sitting idle between turns, where re-summarizing
+  // the same transcript just burns tokens and an admission slot.
+  let lastSummarizedMessageCount = 0;
 
   function scheduleNext(): void {
     if (stopped) return;
@@ -242,6 +247,15 @@ export function startAgentSummarization(
       if (!transcript || transcript.messages.length < 3) {
         options.logDebug?.(
           `Skipping agent summary for ${options.taskId}: not enough messages (${transcript?.messages.length ?? 0})`,
+        );
+        return;
+      }
+      // No new messages since the last summary — nothing to condense. This is
+      // what stops an idle keep-alive worker from re-forking its whole
+      // transcript into an LLM call every interval.
+      if (transcript.messages.length <= lastSummarizedMessageCount) {
+        options.logDebug?.(
+          `Skipping agent summary for ${options.taskId}: no new messages since last summary`,
         );
         return;
       }
@@ -269,6 +283,7 @@ export function startAgentSummarization(
       const summaryText = extractAssistantSummaryText(result);
       if (!summaryText) return;
       previousSummary = summaryText;
+      lastSummarizedMessageCount = transcript.messages.length;
       options.updateAgentSummary(options.taskId, summaryText);
     } catch (error) {
       if (!stopped) options.logError?.(error);
