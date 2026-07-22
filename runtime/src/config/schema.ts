@@ -973,9 +973,11 @@ export function defaultConfig(): AgenCConfig {
     // ~250-line file, 2026-07-22). Any watchdog window shorter than the
     // largest plausible argument generation kills healthy streams and forces
     // full-regeneration reconnect loops. 5 minutes tolerates ~1500-line
-    // files; stall detection degrades gracefully (true disconnects still
-    // usually surface as socket errors immediately).
-    stream_watchdog_timeout_ms: 300_000,
+    // files. 600s matches xAI's documented per-chunk idle default
+    // (build/enterprise docs; proxy guidance is >=10 minutes). Stall
+    // detection degrades gracefully (true disconnects still usually
+    // surface as socket errors immediately).
+    stream_watchdog_timeout_ms: 600_000,
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` or AGENC_MAX_TURNS.

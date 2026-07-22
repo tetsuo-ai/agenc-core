@@ -117,7 +117,7 @@ const RAW_REASONING_SUMMARY_INDEX_OFFSET = 10_000;
  * files, forcing full-regeneration retry loops that never converge. An
  * explicitly configured `timeout_ms` still wins.
  */
-const STREAM_SILENT_GENERATION_TIMEOUT_MS = 300_000;
+const STREAM_SILENT_GENERATION_TIMEOUT_MS = 600_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
@@ -810,7 +810,10 @@ export class GrokProvider implements LLMProvider {
    * A healthy stream is indistinguishable from a stall during that window
    * at every layer the client can observe, so the session watchdog must
    * tolerate silence at least as long as the largest plausible argument
-   * payload. 5 minutes ≈ ~1500 generated lines.
+   * payload. 600s matches xAI's OWN documented per-chunk idle default
+ * (docs: build/enterprise — "per-chunk idle timeout defaults to 600
+ * seconds", proxy guidance ≥10 minutes; docs/tools/function-calling
+ * WARNING confirms whole-in-one-chunk function calls by design).
    */
   readonly suggestedStreamIdleTimeoutMs = STREAM_SILENT_GENERATION_TIMEOUT_MS;
 
