@@ -1975,7 +1975,13 @@ function buildChildSession(
                 sessionId: params.live.agentId,
                 parentRunId:
                   params.parent.services.executionAdmission.scope.runId,
-                parentScopeId: params.parent.conversationId,
+                // Give each spawned child its OWN admission parent-scope (its
+                // agentId) instead of sharing the parent's single bucket. A
+                // shared scope capped the whole fan-out at `parent: 4`
+                // concurrent streams regardless of swarm size; per-child scopes
+                // let N workers actually run in parallel, bounded by the
+                // provider/workspace/global limits (the real backstop).
+                parentScopeId: params.live.agentId,
               }),
           }
         : {}),

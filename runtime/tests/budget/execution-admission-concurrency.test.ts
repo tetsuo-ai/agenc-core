@@ -213,6 +213,41 @@ describe("execution admission concurrency dimensions", () => {
     );
   });
 
+  it("admits per-child parent scopes in parallel (own bucket, not a shared parent bucket)", async () => {
+    // Swarm fix: each spawned child binds its OWN parentScopeId (its agentId),
+    // so siblings do not compete for one shared `parent` bucket. With
+    // parent: 1, two children with distinct scopes are both admitted in
+    // parallel — the same limit that serialized a shared scope above.
+    const kernel = createKernel("parent");
+    const first = bind(kernel, {
+      cwd: firstCwd,
+      runId: "child-a",
+      sessionId: "child-a",
+      parentScopeId: "child-a",
+    });
+    const second = bind(kernel, {
+      cwd: firstCwd,
+      runId: "child-b",
+      sessionId: "child-b",
+      parentScopeId: "child-b",
+    });
+    const firstLease = await acquire(first, "provider-a");
+    const secondLease = await acquire(second, "provider-a");
+    expect(kernel.activeCount).toBe(2);
+    expect(kernel.queuedCount).toBe(0);
+    first.reconcile(firstLease.reservation.reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    second.reconcile(secondLease.reservation.reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    expect(kernel.activeCount).toBe(0);
+  });
+
   it("enforces the provider limit across workspaces", async () => {
     const kernel = createKernel("provider");
     await expectSerialized(
