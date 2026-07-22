@@ -2599,7 +2599,12 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain(
       "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=2, cancel=0",
     );
-    expect(restoredConversationIds).toEqual(["run-restart", "run-other"]);
+    // Recovery enumerates project state DBs alphabetically by projectDir, so
+    // relative order depends on where the checkout and the temp cwd live.
+    expect([...restoredConversationIds].sort()).toEqual([
+      "run-other",
+      "run-restart",
+    ]);
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
