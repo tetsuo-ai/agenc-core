@@ -17,11 +17,11 @@ class Agenc < Formula
   sha256 "REPLACE_WITH_RELEASE_ASSET_SHA256"
   license "MIT"
 
-  # AgenC 0.8.1 is the deliberately narrow Node 25.9.0 compatibility bridge.
+  # AgenC 0.8.2 is the deliberately narrow Node 25.9.0 compatibility bridge.
   # Homebrew/core does not retain a node@25 formula, so publishing an enabled
   # formula would silently select an unsupported ABI. Re-enable only after the
   # runtime release contract moves to a supported Node line with bottles.
-  disable! date: "2026-07-19", because: "AgenC 0.8.1 requires unavailable Node 25.9.0"
+  disable! date: "2026-07-19", because: "AgenC 0.8.2 requires unavailable Node 25.9.0"
 
   depends_on "ripgrep"
 
