@@ -4450,6 +4450,26 @@ export function daemonEventFromUnboundSessionEvent(event: {
       payload,
     };
   }
+  // Assistant message-complete boundaries. `agent_message` is emitted per
+  // completed assistant message segment (run-turn) and persisted to the
+  // rollout, but the live wire only carried `agent_message_delta` — so a
+  // daemon-attached TUI accumulated the deltas of CONSECUTIVE messages
+  // into one streaming buffer with no separator ("…subagents.No M1-named
+  // files…"). The reducer's agent_message case is what closes a segment
+  // (pushes the completed row, clears the buffer); forward it live.
+  if (
+    type === "agent_message" &&
+    isJsonObject(payload) &&
+    typeof payload.message === "string"
+  ) {
+    return {
+      id,
+      eventId,
+      ...(sequence !== undefined ? { sequence } : {}),
+      type,
+      payload,
+    };
+  }
   // Per-stream provider usage. Emitted via `session.emit` from
   // `phases/stream-model.ts` (T6 #119) and persisted to the rollout, but
   // never bridged live — so a daemon-attached TUI had no usage source at

@@ -73,6 +73,24 @@ describe("daemon live bridge for usage and tool-input events", () => {
     });
   });
 
+  it("forwards agent_message so the TUI sees message-segment boundaries", () => {
+    // Without this, consecutive assistant messages' deltas concatenate into
+    // one streaming buffer with no separator ("…subagents.No M1-named…").
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      id: "am-1",
+      seq: 12,
+      msg: {
+        type: "agent_message",
+        payload: { message: "I'll fan the work out across subagents." },
+      },
+    });
+    expect(daemonEvent).toMatchObject({
+      type: "agent_message",
+      sequence: 12,
+      payload: { message: "I'll fan the work out across subagents." },
+    });
+  });
+
   it("still drops malformed tool_input payloads", () => {
     expect(
       daemonEventFromUnboundSessionEvent({
