@@ -969,20 +969,46 @@ function sendSubagentNotificationToParent(params: {
   }
 }
 
+const followupTurnTimersByParent = new WeakMap<
+  Session,
+  ReturnType<typeof setTimeout>
+>();
+
+/**
+ * Short window over which near-simultaneous subagent completions are coalesced
+ * into a single parent follow-up turn. `drainPendingInputMessages` reads the
+ * whole mailbox in one go, so one turn handles every completion that notified
+ * within the window.
+ */
+const PARENT_FOLLOWUP_COALESCE_MS = 200;
+
 function requestParentFollowupTurn(params: {
   readonly live: LiveAgent;
   readonly parent: Session;
 }): void {
-  void params.parent.submit("", { displayUserMessage: null }).catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message === "Session submit hook is not installed") return;
-    emitWarning(
-      params.parent.eventLog,
-      params.parent.nextInternalSubId(),
-      "subagent_followup_turn_failed",
-      `subagent ${params.live.agentPath} could not start parent follow-up turn: ${message}`,
-    );
-  });
+  const parent = params.parent;
+  // Coalesce bursts of subagent completions into ONE parent turn. Each
+  // completion notifies the parent's mailbox and then requests a follow-up
+  // turn; without coalescing, N near-simultaneous completions queue N
+  // sequential parent turns through submitQueue, each replaying the full
+  // parent context. Defer the submit by a short window so clustered
+  // completions drain together in a single turn.
+  if (followupTurnTimersByParent.has(parent)) return;
+  const timer = setTimeout(() => {
+    followupTurnTimersByParent.delete(parent);
+    void parent.submit("", { displayUserMessage: null }).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message === "Session submit hook is not installed") return;
+      emitWarning(
+        parent.eventLog,
+        parent.nextInternalSubId(),
+        "subagent_followup_turn_failed",
+        `subagent ${params.live.agentPath} could not start parent follow-up turn: ${message}`,
+      );
+    });
+  }, PARENT_FOLLOWUP_COALESCE_MS);
+  timer.unref?.();
+  followupTurnTimersByParent.set(parent, timer);
 }
 
 function parentAgentPathFor(agentPath: string): string {
