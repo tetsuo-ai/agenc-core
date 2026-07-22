@@ -2777,6 +2777,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect(output).toContain("agenc");
       expect(output).toContain("Preflight");
       expect(output).not.toContain("messages:0");
+      expect(output).not.toContain("Not logged in · Run /login");
     } finally {
       fetchSpy.mockRestore();
       rmSync(agencHome, { recursive: true, force: true });
