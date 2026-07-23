@@ -2182,6 +2182,13 @@ export function adaptTranscriptEvents(
         // `pushToolResult` already no-ops when the callId is not open,
         // so the matching `tool_call_completed` row drops naturally.
         if (COLLAB_V2_TOOL_NAMES.has(toolName)) {
+          // Suppress the generic row, but the renderer's tool set must
+          // still learn the name: replayed transcripts and streaming
+          // tool-use cells render collab calls through the same
+          // parseToolUse path, and a name missing from toolNames renders
+          // as a "Tool use unavailable" card (the resumed-swarm-session
+          // spawn_agent/close_agent cards).
+          toolNames.add(toolName);
           suppressedToolResults.add(callId);
           break;
         }
@@ -2216,6 +2223,17 @@ export function adaptTranscriptEvents(
                   typeof payload.toolName === "string" ? payload.toolName : "tool",
                 input: {},
               } as StreamingToolUse["contentBlock"]);
+        // The streaming cell renders through parseToolUse like any row, so
+        // the block's tool name must be in the renderer tool set — this is
+        // the path that resurrected "Tool use unavailable" cards on resume
+        // once tool_input_block_start started replaying (0.8.4 grok
+        // tool-streaming).
+        if (
+          typeof contentBlock.name === "string" &&
+          contentBlock.name.trim().length > 0
+        ) {
+          toolNames.add(contentBlock.name);
+        }
         // De-dupe on (index, contentBlock.id): if the same block_start fires
         // twice (e.g. retried stream), reuse the existing slot rather than
         // appending a duplicate that would confuse the Messages filter.

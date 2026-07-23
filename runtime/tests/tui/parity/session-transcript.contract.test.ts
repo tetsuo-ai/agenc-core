@@ -290,7 +290,12 @@ describe("tool-call correlation contract", () => {
     ]);
 
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
-    expect([...transcript.toolNames]).toEqual([]);
+    // The suppressed raw call must not produce a duplicate ROW — but its
+    // NAME must still register so the renderer can resolve replayed
+    // spawn_agent tool_use blocks (the resumed-swarm "Tool use
+    // unavailable" cards). Name registration is display-metadata, not a
+    // row.
+    expect(transcript.toolNames.has("spawn_agent")).toBe(true);
     expect(transcript.messages).toMatchObject([
       { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);
