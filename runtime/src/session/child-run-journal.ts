@@ -3,6 +3,7 @@
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import { readProviderIdentity } from "../llm/provider.js";
 import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
+import type { SubagentTurnOutcomeEvent } from "./event-log.js";
 import { RolloutStore } from "./rollout-store.js";
 import type { Session } from "./session.js";
 
@@ -27,6 +28,11 @@ export interface RecordUnconstructedChildRunTerminalOptions {
   readonly modelProvider: string;
   readonly originator: string;
   readonly result: ChildRunTerminalResult;
+  /**
+   * Correlated task outcome for a run that failed before Session construction.
+   * When present, it is fsync-committed immediately before run_terminal.
+   */
+  readonly taskOutcome?: SubagentTurnOutcomeEvent;
 }
 
 /**
@@ -75,7 +81,7 @@ export function recordUnconstructedChildRunTerminal(
       model: options.model,
       modelProvider: options.modelProvider,
     });
-    const lastSequenceBeforeTerminal = store
+    let lastSequenceBeforeTerminal = store
       .readAll()
       .filter((item) => item.type === "event_msg")
       .map((item) => item.payload.seq)
@@ -85,6 +91,28 @@ export function recordUnconstructedChildRunTerminal(
       )
       .reduce((highest, sequence) => Math.max(highest, sequence), 0);
     const epoch = store.runEpoch;
+    if (options.taskOutcome !== undefined) {
+      const outcomeEventId = `subagent-turn-outcome:${options.childRunId}:${epoch}:${options.taskOutcome.turnId}`;
+      const outcomeSequence = lastSequenceBeforeTerminal + 1;
+      const outcomeCommitted = store.append(
+        {
+          eventId: outcomeEventId,
+          id: outcomeEventId,
+          seq: outcomeSequence,
+          msg: {
+            type: "subagent_turn_outcome",
+            payload: options.taskOutcome,
+          },
+        },
+        { durable: true },
+      );
+      if (!outcomeCommitted) {
+        throw new Error(
+          `unconstructed child task outcome ${outcomeEventId} was not fsync-committed`,
+        );
+      }
+      lastSequenceBeforeTerminal = outcomeSequence;
+    }
     const eventId = `run-terminal:${options.childRunId}:${epoch}`;
     const committed = store.append(
       {

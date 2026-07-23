@@ -34,6 +34,10 @@
  * along with their tracking state.
  */
 export interface AttachmentTrackingState {
+  /** Number of `/swarm` routing receipts emitted in this session. */
+  swarmRoutingDecisionCount: number;
+  /** Exact turn ID for the most recently emitted `/swarm` routing receipt. */
+  lastSwarmRoutingTurnId?: string;
   /** Last local-calendar-date the date_change attachment fired for. */
   lastEmittedDate?: string;
   /** Hash of the deferred-tools set last announced. */
@@ -158,6 +162,7 @@ export function getAttachmentTrackingState(
   let state = sessionAttachmentState.get(sessionKey);
   if (state === undefined) {
     state = {
+      swarmRoutingDecisionCount: 0,
       needsPlanModeExitAttachment: false,
       needsAutoModeExitAttachment: false,
       hasExitedPlanModeInSession: false,

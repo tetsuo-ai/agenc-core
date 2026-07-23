@@ -23,6 +23,7 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
@@ -47,7 +48,7 @@ import {
   userImageInputsToContentParts,
 } from "../prompts/attachments/user-image-input.js";
 import type { PhaseEvent } from "../phases/events.js";
-import { Session } from "../session/session.js";
+import { Session, type IdleInputAdmission } from "../session/session.js";
 import {
   AUTONOMOUS_SUBMIT_SOURCE,
   AutonomousKeepaliveScheduler,
@@ -2754,6 +2755,12 @@ type TuiSessionShape = {
     opts?: { readonly displayUserMessage?: string | null },
   ) => Promise<void>;
   enqueueIdleInput?: (input: unknown) => number;
+  enqueueIdleInputBatch?: (inputs: readonly unknown[]) => number;
+  enqueueIdleInputBatchOwned?: (
+    inputs: readonly unknown[],
+  ) => IdleInputAdmission;
+  rollbackIdleInputAdmission?: (token: string) => boolean;
+  commitIdleInputAdmission?: (token: string) => boolean;
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
   emit?: (event: unknown) => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
@@ -2853,6 +2860,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -2874,10 +2882,141 @@ async function createDeferredDaemonPromptTuiSession(params: {
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
-  let queuedInputs: MessageContentBlock[] = [];
+  const MAX_DEFERRED_QUEUED_INPUTS = 512;
+  const MAX_DEFERRED_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
+  const queuedInputs: MessageContentBlock[] = [];
   let queuedInputCount = 0;
+  let queuedInputBytes = 0;
+  let nextQueuedInputSequence = 0;
+  let inFlightQueuedBlocks: ReadonlySet<MessageContentBlock> | null = null;
+  const idleInputAdmissions = new Map<
+    string,
+    {
+      readonly blocks: readonly MessageContentBlock[];
+      readonly inputCount: number;
+      readonly bytes: number;
+    }
+  >();
+  const liveInputAdmissions = new Map<
+    string,
+    | {
+        readonly state: "pending";
+        readonly origin: TuiSessionShape;
+        readonly originToken: string;
+      }
+    | {
+        readonly state: "settled";
+        readonly rollbackResult: boolean;
+      }
+  >();
   const subscribers = new Set<(event: unknown) => void>();
   const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
+
+  const queuedBlocksBytes = (
+    blocks: readonly MessageContentBlock[],
+  ): number => {
+    try {
+      return Buffer.byteLength(JSON.stringify(blocks), "utf8");
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  };
+
+  const admitQueuedInputs = (
+    inputs: readonly unknown[],
+    owned: boolean,
+  ): IdleInputAdmission => {
+    if (inFlightQueuedBlocks !== null) {
+      throw new Error(
+        "Deferred session startup is in progress; queued input was not accepted.",
+      );
+    }
+    const batches = inputs
+      .map((input) => messageContentBlocksFromUnknown(input))
+      .filter((blocks) => blocks.length > 0);
+    const blocks = batches.flat();
+    const inputCount = batches.length;
+    const bytes = queuedBlocksBytes(blocks);
+    if (
+      queuedInputCount + inputCount > MAX_DEFERRED_QUEUED_INPUTS ||
+      queuedInputBytes + bytes > MAX_DEFERRED_QUEUED_INPUT_BYTES ||
+      (owned &&
+        inputCount > 0 &&
+        idleInputAdmissions.size >= MAX_DEFERRED_QUEUED_INPUTS)
+    ) {
+      throw new Error(
+        "Session mailbox is full; queued input was not accepted.",
+      );
+    }
+    const firstSequence =
+      inputCount === 0 ? 0 : nextQueuedInputSequence + 1;
+    nextQueuedInputSequence += inputCount;
+    const lastSequence =
+      inputCount === 0 ? 0 : nextQueuedInputSequence;
+    queuedInputs.push(...blocks);
+    queuedInputCount += inputCount;
+    queuedInputBytes += bytes;
+    const token =
+      inputCount === 0
+        ? "deferred-idle:empty"
+        : `deferred-idle:${randomUUID()}`;
+    if (owned && inputCount > 0) {
+      idleInputAdmissions.set(token, {
+        blocks,
+        inputCount,
+        bytes,
+      });
+    }
+    return {
+      token,
+      firstSequence,
+      lastSequence,
+      count: inputCount,
+    };
+  };
+
+  const rollbackQueuedInputAdmission = (token: string): boolean => {
+    if (token === "deferred-idle:empty") return true;
+    const admission = idleInputAdmissions.get(token);
+    if (admission === undefined) return false;
+    if (
+      inFlightQueuedBlocks !== null &&
+      admission.blocks.some((block) => inFlightQueuedBlocks?.has(block))
+    ) {
+      return false;
+    }
+    const indexes = admission.blocks.map((block) =>
+      queuedInputs.indexOf(block),
+    );
+    if (
+      indexes.some((index) => index < 0) ||
+      new Set(indexes).size !== indexes.length
+    ) {
+      idleInputAdmissions.delete(token);
+      return false;
+    }
+    for (const index of [...indexes].sort((left, right) => right - left)) {
+      queuedInputs.splice(index, 1);
+    }
+    queuedInputCount -= admission.inputCount;
+    queuedInputBytes -= admission.bytes;
+    idleInputAdmissions.delete(token);
+    return true;
+  };
+
+  const commitQueuedInputAdmission = (token: string): boolean => {
+    if (token === "deferred-idle:empty") return true;
+    const admission = idleInputAdmissions.get(token);
+    if (admission === undefined) return false;
+    if (
+      inFlightQueuedBlocks !== null &&
+      admission.blocks.some((block) => inFlightQueuedBlocks?.has(block))
+    ) {
+      return false;
+    }
+    idleInputAdmissions.delete(token);
+    return true;
+  };
 
   const detachLiveSession = async (): Promise<void> => {
     for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
@@ -2897,25 +3036,43 @@ async function createDeferredDaemonPromptTuiSession(params: {
     if (liveSession !== null) return liveSession;
     if (liveSessionPromise !== null) return liveSessionPromise;
     liveSessionPromise = (async () => {
-      const preparedFirstMessage =
-        firstMessage.length > 0
-          ? await prepareDaemonTuiPrompt({
-              message: firstMessage,
-              configStore: params.configStore,
-              agencHome: params.agencHome,
-              cwd: params.cwd,
-              env: params.env,
-              stderr: process.stderr,
-            })
-          : firstMessage;
-      if (preparedFirstMessage === null) return null;
+      const submittedQueuedInputs = [...queuedInputs];
+      const submittedInputCount = queuedInputCount;
+      const submittedInputBytes = queuedInputBytes;
+      inFlightQueuedBlocks = new Set(submittedQueuedInputs);
+      let preparedFirstMessage: string | null;
+      try {
+        preparedFirstMessage =
+          firstMessage.length > 0
+            ? await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
+                message: firstMessage,
+                configStore: params.configStore,
+                agencHome: params.agencHome,
+                cwd: params.cwd,
+                env: params.env,
+                stderr: process.stderr,
+              })
+            : firstMessage;
+      } catch (error) {
+        inFlightQueuedBlocks = null;
+        throw error;
+      }
+      if (preparedFirstMessage === null) {
+        inFlightQueuedBlocks = null;
+        throw new Error(
+          "Prompt preparation did not produce a model submission; pending input was not consumed.",
+        );
+      }
       const content: MessageContentBlock[] = [
-        ...queuedInputs,
+        ...submittedQueuedInputs,
         ...(preparedFirstMessage.length > 0
           ? [{ type: "text" as const, text: preparedFirstMessage }]
           : []),
       ];
-      if (content.length === 0) return null;
+      if (content.length === 0) {
+        inFlightQueuedBlocks = null;
+        return null;
+      }
       const prompt =
         preparedFirstMessage.trim().length > 0
           ? preparedFirstMessage
@@ -2983,8 +3140,25 @@ async function createDeferredDaemonPromptTuiSession(params: {
             stderr: process.stderr,
           },
         );
-        queuedInputs = [];
-        queuedInputCount = 0;
+        const submittedIndexes = submittedQueuedInputs.map((block) =>
+          queuedInputs.indexOf(block),
+        );
+        if (
+          submittedIndexes.some((index) => index < 0) ||
+          new Set(submittedIndexes).size !== submittedIndexes.length
+        ) {
+          throw new Error(
+            "Deferred queued-input ownership changed during session startup.",
+          );
+        }
+        for (const index of [...submittedIndexes].sort(
+          (left, right) => right - left,
+        )) {
+          queuedInputs.splice(index, 1);
+        }
+        queuedInputCount -= submittedInputCount;
+        queuedInputBytes -= submittedInputBytes;
+        inFlightQueuedBlocks = null;
         for (const subscriber of subscribers) {
           const unsubscribe = liveSession.subscribeToEvents?.(subscriber);
           if (unsubscribe !== undefined) {
@@ -2993,6 +3167,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         }
         return liveSession;
       } catch (error) {
+        inFlightQueuedBlocks = null;
         if (startedAgentId !== null) {
           await stopDaemonAgentBestEffort({
             deps: params.deps,
@@ -3282,8 +3457,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
       // user-message row whenever both emits fired with different ids,
       // because the transcript reducer's dedup keys on `event.id`.
       if (liveSession !== null) {
+        const submissionSession = liveSession;
         try {
-          await liveSession.submit?.(message, opts);
+          await submissionSession.submit?.(message, opts);
           return;
         } catch (error) {
           if (
@@ -3292,7 +3468,42 @@ async function createDeferredDaemonPromptTuiSession(params: {
           ) {
             throw error;
           }
+          const ownedInputTokens = [...liveInputAdmissions.entries()].filter(
+            (
+              entry,
+            ): entry is [
+              string,
+              {
+                readonly state: "pending";
+                readonly origin: TuiSessionShape;
+                readonly originToken: string;
+              },
+            ] =>
+              entry[1].state === "pending" &&
+              entry[1].origin === submissionSession,
+          );
+          for (const [token, admission] of ownedInputTokens) {
+            const rollbackResult =
+              admission.origin.rollbackIdleInputAdmission?.(
+                admission.originToken,
+              ) ?? false;
+            // Retain only the tiny terminal result for App's imminent
+            // rollback call. Do not pin a detached wrapper (and its bounded
+            // queued content) if a caller abandons the proxy token.
+            liveInputAdmissions.set(token, {
+              state: "settled",
+              rollbackResult,
+            });
+          }
           await detachLiveSession();
+          if (ownedInputTokens.length > 0) {
+            // The failed live session re-queues its owned blocks before
+            // surfacing AGENT_NOT_FOUND. We already rolled back that exact
+            // bundle and released the origin; reject so App can consume the
+            // saved terminal result and restore the composer. Retrying only
+            // `message` against a fresh agent would silently drop context.
+            throw error;
+          }
         }
       }
       const firstMessage = isLocalSlashCommandInput(message)
@@ -3313,10 +3524,111 @@ async function createDeferredDaemonPromptTuiSession(params: {
       if (liveSession !== null) {
         return liveSession.enqueueIdleInput?.(input) ?? 0;
       }
-      const blocks = messageContentBlocksFromUnknown(input);
-      queuedInputs.push(...blocks);
-      queuedInputCount += blocks.length;
-      return queuedInputCount;
+      try {
+        return admitQueuedInputs([input], false).lastSequence;
+      } catch {
+        return -1;
+      }
+    },
+    enqueueIdleInputBatch: (inputs) => {
+      if (liveSession !== null) {
+        const batch = liveSession.enqueueIdleInputBatch;
+        if (typeof batch === "function") {
+          return batch.call(liveSession, inputs);
+        }
+        let sequence = 0;
+        for (const input of inputs) {
+          sequence = liveSession.enqueueIdleInput?.(input) ?? sequence;
+        }
+        return sequence;
+      }
+      try {
+        return admitQueuedInputs(inputs, false).lastSequence;
+      } catch {
+        return -1;
+      }
+    },
+    enqueueIdleInputBatchOwned: (inputs) => {
+      if (liveSession !== null) {
+        // App submits one owned bundle at a time. Retaining more than one
+        // proxy could pin multiple detached 16-MiB origin queues after
+        // repeated daemon loss, so fail closed until the current token is
+        // committed or rolled back.
+        if (liveInputAdmissions.size > 0) {
+          throw new Error(
+            "A queued-input submission is already pending.",
+          );
+        }
+        const origin = liveSession;
+        const owned = liveSession.enqueueIdleInputBatchOwned;
+        if (typeof owned !== "function") {
+          throw new Error(
+            "This session cannot safely own queued input for submission.",
+          );
+        }
+        const admission = owned.call(origin, inputs);
+        if (admission.count === 0) {
+          return {
+            ...admission,
+            token: "deferred-live:empty",
+          };
+        }
+        const token = `deferred-live:${randomUUID()}`;
+        liveInputAdmissions.set(token, {
+          state: "pending",
+          origin,
+          originToken: admission.token,
+        });
+        return { ...admission, token };
+      }
+      return admitQueuedInputs(inputs, true);
+    },
+    rollbackIdleInputAdmission: (token) => {
+      if (
+        token === "deferred-idle:empty" ||
+        token.startsWith("deferred-idle:")
+      ) {
+        return rollbackQueuedInputAdmission(token);
+      }
+      if (token === "deferred-live:empty") return true;
+      const admission = liveInputAdmissions.get(token);
+      if (admission !== undefined) {
+        const rolledBack =
+          admission.state === "settled"
+            ? admission.rollbackResult
+            : (admission.origin.rollbackIdleInputAdmission?.(
+                admission.originToken,
+              ) ?? false);
+        liveInputAdmissions.delete(token);
+        return rolledBack;
+      }
+      if (token.startsWith("deferred-live:")) return false;
+      return liveSession?.rollbackIdleInputAdmission?.(token) ?? false;
+    },
+    commitIdleInputAdmission: (token) => {
+      if (
+        token === "deferred-idle:empty" ||
+        token.startsWith("deferred-idle:")
+      ) {
+        return commitQueuedInputAdmission(token);
+      }
+      if (token === "deferred-live:empty") return true;
+      const admission = liveInputAdmissions.get(token);
+      if (admission !== undefined) {
+        const committed =
+          admission.state === "settled"
+            ? false
+            : (admission.origin.commitIdleInputAdmission?.(
+                admission.originToken,
+              ) ?? false);
+        // A successful daemon submit consumes its internal admission before
+        // App commits the outer transaction, so `false` can mean "already
+        // consumed." The outer proxy has completed either way.
+        liveInputAdmissions.delete(token);
+        return committed;
+      }
+      if (token.startsWith("deferred-live:")) return false;
+      return liveSession?.commitIdleInputAdmission?.(token) ?? false;
     },
     emitPhaseEvent: (event) => {
       emitLocalTuiPhaseEvent(liveSession, subscribers, event);
@@ -3352,6 +3664,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
     session,
     close: async () => {
       await detachLiveSession();
+      idleInputAdmissions.clear();
+      liveInputAdmissions.clear();
     },
   };
 }
@@ -3443,6 +3757,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly stderr: Pick<NodeJS.WriteStream, "write">;
+    readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   },
 ): Session {
   const originalSubmit = session.submit?.bind(session);
@@ -3467,11 +3782,15 @@ function wrapDaemonTuiSessionWithPromptPreparation<
           })
         : { kind: "prompt" as const, content: message };
       if (nextMessage.kind === "handled") return;
-      const prepared = await prepareDaemonTuiPrompt({
+      const prepared = await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
         message: nextMessage.content,
         ...params,
       });
-      if (prepared === null) return;
+      if (prepared === null) {
+        throw new Error(
+          "Prompt preparation did not produce a model submission; pending input was not consumed.",
+        );
+      }
       await originalSubmit(prepared, opts);
     },
     subscribeToEvents: ((cb: (event: unknown) => void) => {
@@ -3496,6 +3815,10 @@ function wrapDaemonTuiSessionWithPromptPreparation<
   };
   return wrapped;
 }
+
+/** Test-only handle for prompt-preparation rejection and ownership regressions. */
+export const __wrapDaemonTuiSessionWithPromptPreparationForTest =
+  wrapDaemonTuiSessionWithPromptPreparation;
 
 type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 

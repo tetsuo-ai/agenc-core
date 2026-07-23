@@ -5,6 +5,7 @@
  * input and streamed session events through the daemon protocol.
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -54,6 +55,7 @@ import type {
   RequestUserInputResponse,
 } from "../elicitation/types.js";
 import type { PhaseEvent } from "../phases/events.js";
+import type { IdleInputAdmission } from "../session/session.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import { takePlanApprovalChoice } from "./plan-approval-choice.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
@@ -73,6 +75,9 @@ import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
+
+const MAX_DAEMON_QUEUED_INPUTS = 512;
+const MAX_DAEMON_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
 
 let nextRealtimeTranscriptEventSequence = 0;
 
@@ -170,6 +175,12 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput?(input: unknown): number;
+  enqueueIdleInputBatch?(inputs: readonly unknown[]): number;
+  enqueueIdleInputBatchOwned?(
+    inputs: readonly unknown[],
+  ): IdleInputAdmission;
+  rollbackIdleInputAdmission?(token: string): boolean;
+  commitIdleInputAdmission?(token: string): boolean;
   listMcpClients?(): readonly unknown[];
   listMcpTools?(): readonly unknown[];
 }
@@ -180,6 +191,10 @@ export type AgenCDaemonBackedTuiSession<
   Session,
   | "conversationId"
   | "enqueueIdleInput"
+  | "enqueueIdleInputBatch"
+  | "enqueueIdleInputBatchOwned"
+  | "rollbackIdleInputAdmission"
+  | "commitIdleInputAdmission"
   | "getInitialTranscriptEvents"
   | "submit"
   | "subscribeToEvents"
@@ -192,6 +207,12 @@ export type AgenCDaemonBackedTuiSession<
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput(input: unknown): number;
+  enqueueIdleInputBatch(inputs: readonly unknown[]): number;
+  enqueueIdleInputBatchOwned(
+    inputs: readonly unknown[],
+  ): IdleInputAdmission;
+  rollbackIdleInputAdmission(token: string): boolean;
+  commitIdleInputAdmission(token: string): boolean;
   readonly realtime: AgenCRealtimeTuiControls;
   respondToUserInput(
     requestId: RequestId,
@@ -389,6 +410,18 @@ export function createDaemonTuiSession<
   const REPLAY_BACKLOG_LIMIT = 500;
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let queuedInputCount = 0;
+  let queuedInputBytes = 0;
+  let inFlightInputCount = 0;
+  let inFlightInputBytes = 0;
+  let nextQueuedInputSequence = 0;
+  const idleInputAdmissions = new Map<
+    string,
+    {
+      readonly blocks: readonly MessageContentBlock[];
+      readonly inputCount: number;
+      readonly bytes: number;
+    }
+  >();
   let unsubscribeDaemonEvents: (() => void) | null = null;
   const markDaemonActivityActive = (event: unknown): void => {
     const payload = (event as { readonly payload?: unknown }).payload;
@@ -490,6 +523,78 @@ export function createDaemonTuiSession<
       sessionId,
     );
   }
+  const admitQueuedInputs = (
+    inputs: readonly unknown[],
+    owned: boolean,
+  ): IdleInputAdmission => {
+    const batches = inputs
+      .map((input) => queuedInputBlocks(input))
+      .filter((blocks) => blocks.length > 0);
+    const blocks = batches.flat();
+    const inputCount = batches.length;
+    const bytes = queuedInputBlocksBytes(blocks);
+    if (
+      queuedInputCount + inFlightInputCount + inputCount >
+        MAX_DAEMON_QUEUED_INPUTS ||
+      queuedInputBytes + inFlightInputBytes + bytes >
+        MAX_DAEMON_QUEUED_INPUT_BYTES
+    ) {
+      throw new Error(
+        "Session mailbox is full; queued input was not accepted.",
+      );
+    }
+    const firstSequence =
+      inputCount === 0 ? 0 : nextQueuedInputSequence + 1;
+    nextQueuedInputSequence += inputCount;
+    const lastSequence =
+      inputCount === 0 ? 0 : nextQueuedInputSequence;
+    queuedInputs.push(...blocks);
+    queuedInputCount += inputCount;
+    queuedInputBytes += bytes;
+    const token =
+      inputCount === 0 ? "daemon-idle:empty" : `daemon-idle:${randomUUID()}`;
+    if (owned && inputCount > 0) {
+      idleInputAdmissions.set(token, {
+        blocks,
+        inputCount,
+        bytes,
+      });
+    }
+    return {
+      token,
+      firstSequence,
+      lastSequence,
+      count: inputCount,
+    };
+  };
+  const rollbackQueuedInputAdmission = (token: string): boolean => {
+    if (token === "daemon-idle:empty") return true;
+    const admission = idleInputAdmissions.get(token);
+    if (admission === undefined) return false;
+    const claimedIndexes = new Set<number>();
+    const indexes = admission.blocks.map((block) => {
+      const index = queuedInputs.findIndex(
+        (candidate, candidateIndex) =>
+          candidate === block && !claimedIndexes.has(candidateIndex),
+      );
+      if (index >= 0) claimedIndexes.add(index);
+      return index;
+    });
+    if (indexes.some((index) => index < 0)) {
+      idleInputAdmissions.delete(token);
+      return false;
+    }
+    for (const index of [...indexes].sort((left, right) => right - left)) {
+      queuedInputs.splice(index, 1);
+    }
+    queuedInputCount = Math.max(
+      0,
+      queuedInputCount - admission.inputCount,
+    );
+    queuedInputBytes = Math.max(0, queuedInputBytes - admission.bytes);
+    idleInputAdmissions.delete(token);
+    return true;
+  };
   return {
     ...baseSession,
     conversationId,
@@ -501,8 +606,13 @@ export function createDaemonTuiSession<
     },
     submit: async (message, opts) => {
       const queued = queuedInputs.splice(0);
+      const submittedInputCount = queuedInputCount;
+      const submittedInputBytes = queuedInputBytes;
       queuedInputCount = 0;
+      queuedInputBytes = 0;
       if (queued.length === 0 && message.length === 0) return;
+      inFlightInputCount += submittedInputCount;
+      inFlightInputBytes += submittedInputBytes;
       const streamId = `${clientId}:${Date.now()}`;
       activeTurnSnapshot = { turnId: streamId };
       const content =
@@ -523,6 +633,12 @@ export function createDaemonTuiSession<
             : {}),
           streamId,
         } satisfies MessageStreamParams);
+        const submitted = new Set(queued);
+        for (const [token, admission] of idleInputAdmissions) {
+          if (admission.blocks.every((block) => submitted.has(block))) {
+            idleInputAdmissions.delete(token);
+          }
+        }
       } catch (error) {
         // gaphunt3 #16: message.stream can reject on a transient/dropped daemon
         // socket (the same failure cancelTurn/setPendingProviderSwitch
@@ -533,19 +649,44 @@ export function createDaemonTuiSession<
         // submit re-sends them, preserving at-least-once delivery.
         if (queued.length > 0) {
           queuedInputs.unshift(...queued);
-          queuedInputCount = queued.length;
+          queuedInputCount += submittedInputCount;
+          queuedInputBytes += submittedInputBytes;
         }
         activeTurnSnapshot = null;
         throw error;
+      } finally {
+        inFlightInputCount = Math.max(
+          0,
+          inFlightInputCount - submittedInputCount,
+        );
+        inFlightInputBytes = Math.max(
+          0,
+          inFlightInputBytes - submittedInputBytes,
+        );
       }
     },
     enqueueIdleInput: (input) => {
-      const blocks = queuedInputBlocks(input);
-      if (blocks.length > 0) {
-        queuedInputs.push(...blocks);
-        queuedInputCount += 1;
+      try {
+        void admitQueuedInputs([input], false);
+        return queuedInputCount;
+      } catch {
+        return -1;
       }
-      return queuedInputCount;
+    },
+    enqueueIdleInputBatch: (inputs) => {
+      try {
+        void admitQueuedInputs(inputs, false);
+        return queuedInputCount;
+      } catch {
+        return -1;
+      }
+    },
+    enqueueIdleInputBatchOwned: (inputs) =>
+      admitQueuedInputs(inputs, true),
+    rollbackIdleInputAdmission: rollbackQueuedInputAdmission,
+    commitIdleInputAdmission: (token) => {
+      if (token === "daemon-idle:empty") return true;
+      return idleInputAdmissions.delete(token);
     },
     respondToUserInput: async (requestId, response) =>
       client.request("elicitation.respond", {
@@ -838,6 +979,16 @@ function queuedInputBlocks(input: unknown): MessageContentBlock[] {
   if (typeof input === "string") return [{ type: "text", text: input }];
   if (!isJsonObject(input)) return [];
   return messageContentBlocks(input.content);
+}
+
+function queuedInputBlocksBytes(
+  blocks: readonly MessageContentBlock[],
+): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(blocks), "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 function messageContentBlocks(

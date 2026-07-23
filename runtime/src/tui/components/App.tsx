@@ -124,6 +124,8 @@ export type McpFieldParseResult = {
 type LiveSubmitOptions = {
   readonly fromQueue?: boolean;
   readonly pastedContentsOverride?: Record<number, any>;
+  readonly rethrowSubmitError?: boolean;
+  readonly requireModelSubmission?: boolean;
 };
 
 function isMainThreadRunnableCommand(command: QueuedCommand): boolean {
@@ -1238,12 +1240,12 @@ function _temp3() {}
 function _temp2(s) {
   return s.toolPermissionContext;
 }
-function useInitialSubmit(session, submit, initialPrompt, initialUserMessages) {
-  const $ = _c(6);
+function useInitialSubmit(session, submit, initialPrompt, initialUserMessages, onError) {
+  const $ = _c(7);
   const submitted = useRef(false);
   let t0;
   let t1;
-  if ($[0] !== initialPrompt || $[1] !== initialUserMessages || $[2] !== session || $[3] !== submit) {
+  if ($[0] !== initialPrompt || $[1] !== initialUserMessages || $[2] !== onError || $[3] !== session || $[4] !== submit) {
     t0 = () => {
       if (submitted.current) {
         return;
@@ -1254,32 +1256,71 @@ function useInitialSubmit(session, submit, initialPrompt, initialUserMessages) {
         return;
       }
       submitted.current = true;
-      for (const message of startupMessages) {
-        session.enqueueIdleInput?.(message);
+      let admissionToken: string | null = null;
+      try {
+        if (startupMessages.length > 0) {
+          if (typeof session.enqueueIdleInputBatchOwned === "function") {
+            const admission =
+              session.enqueueIdleInputBatchOwned(startupMessages);
+            admissionToken = admission.token;
+          } else {
+            const sequence =
+              typeof session.enqueueIdleInputBatch === "function"
+                ? session.enqueueIdleInputBatch(startupMessages)
+                : startupMessages.reduce(
+                    (_sequence, message) =>
+                      session.enqueueIdleInput?.(message) ?? _sequence,
+                    0,
+                  );
+            if (sequence < 0) {
+              throw new Error(
+                "Session mailbox is full; startup input was not submitted.",
+              );
+            }
+          }
+        }
+      } catch (error) {
+        submitted.current = false;
+        onError(
+          error instanceof Error
+            ? error.message
+            : "Session mailbox is full; startup input was not submitted.",
+        );
+        return;
       }
-      if (hasPrompt) {
-        submit(initialPrompt).catch(_temp4);
-      } else {
-        session.submit?.("", {
-          displayUserMessage: null
-        }).catch(_temp5);
-      }
+      const pendingSubmit = hasPrompt
+        ? submit(initialPrompt, {
+            rethrowSubmitError: true,
+            requireModelSubmission: true,
+          })
+        : (session.submit?.("", {
+            displayUserMessage: null
+          }) ?? Promise.resolve());
+      void pendingSubmit.then(() => {
+        if (admissionToken !== null) {
+          session.commitIdleInputAdmission?.(admissionToken);
+        }
+      }).catch((error) => {
+        if (admissionToken !== null) {
+          session.rollbackIdleInputAdmission?.(admissionToken);
+        }
+        onError(error instanceof Error ? error.message : String(error));
+      });
     };
-    t1 = [initialPrompt, initialUserMessages, session, submit];
+    t1 = [initialPrompt, initialUserMessages, onError, session, submit];
     $[0] = initialPrompt;
     $[1] = initialUserMessages;
-    $[2] = session;
-    $[3] = submit;
-    $[4] = t0;
-    $[5] = t1;
+    $[2] = onError;
+    $[3] = session;
+    $[4] = submit;
+    $[5] = t0;
+    $[6] = t1;
   } else {
-    t0 = $[4];
-    t1 = $[5];
+    t0 = $[5];
+    t1 = $[6];
   }
   useEffect(t0, t1);
 }
-function _temp5() {}
-function _temp4() {}
 type McpSurfaceSnapshot = {
   readonly clients: readonly MCPServerConnection[];
   readonly tools: readonly unknown[];
@@ -2170,6 +2211,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       text_0.startsWith("$") && text_0.length > 1
         ? parseDollarSkillCommand(text_0)
         : null;
+    const rejectNonModelSubmission = (): void => {
+      if (options?.requireModelSubmission) {
+        throw new Error(
+          "The initial prompt did not start a model turn; startup context was rolled back.",
+        );
+      }
+    };
     if (
       !options?.fromQueue &&
       parsedSlashCommand !== null &&
@@ -2181,6 +2229,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       });
       setInput("");
       setPastedContents({});
+      rejectNonModelSubmission();
       return;
     }
     if (!options?.fromQueue && effectiveInputBusyRef.current) {
@@ -2201,6 +2250,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         } catch {
         }
       }
+      rejectNonModelSubmission();
       return;
     }
     // Clear any pending transient status overlay (e.g. a slash-command
@@ -2245,13 +2295,34 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // best-effort: history persistence must not block submit
       }
     }
-    if (hasAttachments) {
-      const attachmentsMessage = pastedContentsToLLMMessage(activePastedContents);
-      if (attachmentsMessage !== null) {
-        props.session.enqueueIdleInput?.(attachmentsMessage);
+    const attachmentsMessage = hasAttachments
+      ? pastedContentsToLLMMessage(activePastedContents)
+      : null;
+    const admitPendingInputs = (inputs: readonly LLMMessage[]): string | null => {
+      if (inputs.length === 0) return null;
+      if (typeof props.session.enqueueIdleInputBatchOwned === "function") {
+        return props.session.enqueueIdleInputBatchOwned(inputs).token;
       }
-    }
-    setPastedContents({});
+      if (typeof props.session.enqueueIdleInputBatch === "function") {
+        const sequence = props.session.enqueueIdleInputBatch(inputs);
+        if (sequence < 0) {
+          throw new Error(
+            "Session mailbox is full; pending input was not submitted.",
+          );
+        }
+        return null;
+      }
+      for (const pendingInput of inputs) {
+        const sequence =
+          props.session.enqueueIdleInput?.(pendingInput) ?? 0;
+        if (sequence < 0) {
+          throw new Error(
+            "Session mailbox is full; pending input was not submitted.",
+          );
+        }
+      }
+      return null;
+    };
     // Slash-command interception. The daemon-backed TUI does not have
     // any server-side slash-command dispatch — every / input would
     // otherwise be forwarded to the model as plain text and the model
@@ -2279,6 +2350,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         slashPromptCommand.userInvocable !== false &&
         isCommandEnabled(slashPromptCommand)
       ) {
+        let inputsAdmitted = false;
+        let admissionToken: string | null = null;
         try {
           const loaded = await loadDollarSkillCommandForTurn(
             {
@@ -2292,10 +2365,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               new AbortController(),
             ) as PromptInputContext,
           );
-          props.session.enqueueIdleInput?.(loaded.metadata);
-          props.session.enqueueIdleInput?.({ content: loaded.blocks });
+          const pendingInputs = [
+            ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
+            loaded.metadata,
+            { content: loaded.blocks },
+          ];
+          admissionToken = admitPendingInputs(pendingInputs);
+          inputsAdmitted = true;
+          setPastedContents({});
           startPendingSubmission();
           await submitToSession("", { displayUserMessage: text_0 });
+          if (admissionToken !== null) {
+            props.session.commitIdleInputAdmission?.(admissionToken);
+          }
         } catch (err_slash_prompt) {
           const message_slash_prompt =
             err_slash_prompt instanceof Error
@@ -2303,6 +2385,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               : String(err_slash_prompt);
           showTransientResult(message_slash_prompt, { display: "error" });
           setPendingSubmission(false);
+          const rolledBack =
+            admissionToken !== null &&
+            props.session.rollbackIdleInputAdmission?.(admissionToken) ===
+              true;
+          if (!inputsAdmitted || rolledBack) {
+            setInput(value);
+            setPastedContents(activePastedContents);
+          }
+          if (options?.rethrowSubmitError) throw err_slash_prompt;
         }
         return;
       }
@@ -2424,9 +2515,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           if (!dispatched_0.forwardedToModel) {
             setPendingSubmission(false);
           }
+          rejectNonModelSubmission();
           return;
         }
       } catch (err) {
+        if (options?.requireModelSubmission) throw err;
         // Fall through to the model on dispatch errors so the user
         // doesn't lose their input.
       }
@@ -2434,6 +2527,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (parsedDollarSkill !== null) {
       const command = findCommand(parsedDollarSkill.commandName, commands as unknown as Command[]);
       if (isDollarSkillCommand(command)) {
+        let inputsAdmitted = false;
+        let admissionToken: string | null = null;
         try {
           const loaded = await loadDollarSkillCommandForTurn(
             parsedDollarSkill,
@@ -2444,16 +2539,34 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               new AbortController(),
             ) as PromptInputContext,
           );
-          props.session.enqueueIdleInput?.(loaded.metadata);
-          props.session.enqueueIdleInput?.({ content: loaded.blocks });
+          const pendingInputs = [
+            ...(attachmentsMessage !== null ? [attachmentsMessage] : []),
+            loaded.metadata,
+            { content: loaded.blocks },
+          ];
+          admissionToken = admitPendingInputs(pendingInputs);
+          inputsAdmitted = true;
+          setPastedContents({});
           startPendingSubmission();
           await submitToSession("", { displayUserMessage: text_0 });
+          if (admissionToken !== null) {
+            props.session.commitIdleInputAdmission?.(admissionToken);
+          }
         } catch (err_1) {
           const message_0 = err_1 instanceof Error ? err_1.message : String(err_1);
           showTransientResult(message_0, {
             display: "error"
           });
           setPendingSubmission(false);
+          const rolledBack =
+            admissionToken !== null &&
+            props.session.rollbackIdleInputAdmission?.(admissionToken) ===
+              true;
+          if (!inputsAdmitted || rolledBack) {
+            setInput(value);
+            setPastedContents(activePastedContents);
+          }
+          if (options?.rethrowSubmitError) throw err_1;
         }
         return;
       }
@@ -2462,18 +2575,29 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           display: "error"
         });
         setPendingSubmission(false);
+        rejectNonModelSubmission();
         return;
       }
       showTransientResult(`Unknown skill: $${parsedDollarSkill.commandName}\nUse /skills to list skills or /skills new ${parsedDollarSkill.commandName} to create one.`, {
         display: "error"
       });
       setPendingSubmission(false);
+      rejectNonModelSubmission();
       return;
     }
     if (parsedSlashCommand !== null) {
       startPendingSubmission();
     }
+    let attachmentAdmitted = attachmentsMessage === null;
+    let attachmentAdmissionToken: string | null = null;
     try {
+      if (attachmentsMessage !== null) {
+        attachmentAdmissionToken = admitPendingInputs([
+          attachmentsMessage,
+        ]);
+        attachmentAdmitted = true;
+      }
+      setPastedContents({});
       // Pass `value` as displayUserMessage so the daemon emits the
       // user-message transcript event with the user's raw typed text,
       // not the model-facing expanded payload. Without this the
@@ -2482,6 +2606,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // background-agent-runner.installDaemonTurnDriverHooks that
       // suppresses the run-turn duplicate emit.
       await submitToSession(value, { displayUserMessage: value });
+      if (attachmentAdmissionToken !== null) {
+        props.session.commitIdleInputAdmission?.(
+          attachmentAdmissionToken,
+        );
+      }
     } catch (err_1) {
       // Same defense as submitPromptToModel above: a daemon JSON-RPC
       // error response (e.g. "AgenC daemon agent not running:
@@ -2498,6 +2627,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // pending-submission spinner so the UI doesn't lie about
       // waiting for a turn that will never start.
       setPendingSubmission(false);
+      const rolledBack =
+        attachmentAdmissionToken !== null &&
+        props.session.rollbackIdleInputAdmission?.(
+          attachmentAdmissionToken,
+        ) === true;
+      if (!attachmentAdmitted || rolledBack) {
+        setInput(value);
+        setPastedContents(activePastedContents);
+      }
+      if (options?.rethrowSubmitError) throw err_1;
     }
   }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession, workbenchEnabled, workbenchState.activeSurfaceMode, setAppState]);
   // When the daemon shows any sign of activity, drop the optimistic
@@ -2565,7 +2704,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }, 1_000);
     return () => clearInterval(interval);
   }, [pendingSubmission, addNotification]);
-  useInitialSubmit(props.session, submit, props.initialPrompt, props.initialUserMessages);
+  const notifyInitialSubmitError = useCallback((message: string) => {
+    showTransientResult(message, { display: "error" });
+  }, [showTransientResult]);
+  useInitialSubmit(
+    props.session,
+    submit,
+    props.initialPrompt,
+    props.initialUserMessages,
+    notifyInitialSubmitError,
+  );
   // O-1 (onboarding-plan-2026-07): guaranteed first magic. When the first-run
   // wizard completes IN THIS SESSION and the user brought no prompt of their
   // own, run one starter turn for them — the first reply is a certainty, not

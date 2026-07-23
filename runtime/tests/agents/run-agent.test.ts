@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 /**
  * runAgent + initMcpForAgent — driver tests.
  *
@@ -27,10 +28,12 @@ import {
   buildFilteredRegistry,
   drainChildMailboxForTesting,
   initMcpForAgent,
+  MAX_PARENT_RECEIPT_FIELD_BYTES,
   MCP_INIT_TIMEOUT_MS,
   mergeRoleDisallowlist,
   resolveThreadSpawnDisabledTools,
   runAgent,
+  setParentNotificationOutboxLimitsForTesting,
   TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
   type RunAgentProgressEvent,
   type RunAgentResult,
@@ -54,6 +57,8 @@ import {
   SandboxExecutionBroker,
   readSandboxExecutionBroker,
 } from "../sandbox/execution-broker.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   disposeSandboxExecutionBroker,
   isSandboxExecutionBrokerDisposed,
@@ -96,6 +101,7 @@ import {
   withSignedAllowedRoots,
 } from "../tools/system/filesystem.js";
 import { signSessionId } from "../agents/_deps/filesystem-args.js";
+import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { createApplyPatchTool } from "../tools/apply-patch/tool.js";
 import { cloneFileStateCache } from "../utils/fileStateCache.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
@@ -297,6 +303,33 @@ async function collectRun(
     }
     events.push(step.value);
   }
+}
+
+async function nextProgressEvent<Kind extends RunAgentProgressEvent["kind"]>(
+  iter: AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void>,
+  kind: Kind,
+): Promise<Extract<RunAgentProgressEvent, { readonly kind: Kind }>> {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const step = await iter.next();
+    if (step.done) {
+      throw new Error(`agent run ended before emitting ${kind}`);
+    }
+    if (step.value.kind === kind) {
+      return step.value as Extract<
+        RunAgentProgressEvent,
+        { readonly kind: Kind }
+      >;
+    }
+  }
+}
+
+async function stopKeepAliveRun(
+  iter: AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void>,
+  signal: AbortController,
+): Promise<RunAgentResult> {
+  if (!signal.signal.aborted) signal.abort("test cleanup");
+  return (await collectRun(iter)).result;
 }
 
 async function spawnLive(session: Session, roleName?: string) {
@@ -526,12 +559,28 @@ function mkNamedRegistry(names: readonly string[]): ToolRegistry {
   };
 }
 
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function makeWorktreeEvidenceRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), "agenc-receipt-worktree-"));
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.email", "tests@example.com");
+  git(repo, "config", "user.name", "Tests");
+  writeFileSync(join(repo, "README.md"), "base\n", "utf8");
+  git(repo, "add", "README.md");
+  git(repo, "commit", "-m", "base");
+  return repo;
+}
+
 beforeEach(() => {
   _resetAgentRolesForTesting();
   _resetNicknamePoolForTesting();
 });
 
 afterEach(() => {
+  setParentNotificationOutboxLimitsForTesting();
   _resetAgentRolesForTesting();
   _resetNicknamePoolForTesting();
   vi.useRealTimers();
@@ -667,7 +716,7 @@ describe("runAgent", () => {
         sandboxExecutionBroker: parentBroker,
       },
     });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
 
     try {
       const { result } = await collectRun(
@@ -771,7 +820,7 @@ describe("runAgent", () => {
         },
       },
     });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     // Force the child constructor's trust-domain assertion to fail after the
     // forked LSP participant has registered on its broker.
     (
@@ -845,7 +894,7 @@ describe("runAgent", () => {
     const session = makeStubSession({
       services: { provider, registry, mcpManager: parentMcpManager },
     });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     live.downInbox.send({
       author: "/root",
       recipient: live.agentPath,
@@ -923,7 +972,7 @@ describe("runAgent", () => {
         },
       },
     });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     let summaryProvider: LLMProvider | undefined;
 
     const { result } = await collectRun(
@@ -1012,9 +1061,10 @@ describe("runAgent", () => {
       triggerTurn: true,
       metadata: { kind: "subagent_notification" },
     });
-    expect(parentMessages[0]!.content).toBe(
-      `<subagent_notification>\n{"agent_path":"${live.agentPath}","status":{"completed":"hello world"}}\n</subagent_notification>`,
+    expect(parentMessages[0]!.content).toContain(
+      `"receipt":{"lifecycle":"turn","outcome":"completed"`,
     );
+    expect(parentMessages[0]!.content).toContain('"message":"hello world"');
 
     expect(events.some((e) => e.kind === "run_complete")).toBe(true);
     expect(events.some((e) => e.kind === "status")).toBe(true);
@@ -1181,6 +1231,7 @@ describe("runAgent", () => {
         parent: session as unknown as Parameters<typeof runAgent>[0]["parent"],
         initialMessages: [{ role: "user", content: "go" }],
         taskPrompt: "go",
+        taskId: "cancelled-task",
       }),
     );
 
@@ -1189,6 +1240,14 @@ describe("runAgent", () => {
     expect(live.status.value.status).toBe("interrupted");
     expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
     expect(events.some((event) => event.kind === "run_complete")).toBe(false);
+    const receipt = session.mailbox
+      .drain()
+      .find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({
+      outcome: "interrupted",
+      taskId: "cancelled-task",
+    });
+    expect(receipt?.content).toContain('"outcome":"interrupted"');
   });
 
   it("removes the external abort listener after completion", async () => {
@@ -1562,6 +1621,7 @@ describe("runAgent", () => {
         parent: session,
         initialMessages: [{ role: "user", content: "go" }],
         taskPrompt: "go",
+        taskId: "max-turns-task",
         maxTurns: 1,
       }),
     );
@@ -1572,9 +1632,17 @@ describe("runAgent", () => {
       "subagent exceeded maxTurns (1)",
     );
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    const receipt = session.mailbox
+      .drain()
+      .find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({
+      outcome: "errored",
+      taskId: "max-turns-task",
+    });
+    expect(receipt?.content).toContain('"outcome":"errored"');
   });
 
-  it("drains triggerTurn messages from the child downInbox into a follow-up turn", async () => {
+  it("does not reuse a non-keep-alive worker for queued follow-up input", async () => {
     const provider = makeProvider([
       { content: "first turn" },
       { content: "second turn" },
@@ -1600,15 +1668,884 @@ describe("runAgent", () => {
       }),
     );
 
-    expect(provider.chatStream).toHaveBeenCalledTimes(2);
-    const secondCall = (provider.chatStream as ReturnType<typeof vi.fn>).mock
-      .calls[1]![0] as LLMMessage[];
-    expect(secondCall.at(-1)).toEqual({
-      role: "user",
-      content: "follow up",
-    });
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe("completed");
-    expect(result.finalMessage).toBe("second turn");
+    expect(result.finalMessage).toBe("first turn");
+  });
+
+  it("publishes a completed result for each keep-alive turn before idling", async () => {
+    const provider = makeProvider([{ content: "first result" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "go" }],
+      taskPrompt: "go",
+      keepAlive: true,
+    });
+
+    try {
+      const completed = await nextProgressEvent(iter, "turn_complete");
+
+      expect(completed.finalMessage).toBe("first result");
+      const notifications = session.mailbox.drain();
+      expect(notifications).toEqual([
+        expect.objectContaining({
+          author: live.agentPath,
+          recipient: "/root",
+          direction: "up",
+          triggerTurn: true,
+          content: expect.stringContaining(
+            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}"}`,
+          ),
+          metadata: expect.objectContaining({
+            kind: "subagent_notification",
+            projectionId: `${live.agentId}:${completed.turnId}:completed`,
+            lifecycle: "turn",
+            turnId: completed.turnId,
+            toolCallCount: 0,
+          }),
+        }),
+      ]);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("fsyncs one correlated child outcome before projecting its one parent receipt", async () => {
+    const provider = makeProvider([{ content: "durable result" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const order: string[] = [];
+    const childOutcomes: unknown[] = [];
+    let unsubscribeChild: (() => void) | undefined;
+    const originalParentSend = session.mailbox.send.bind(session.mailbox);
+    (
+      session.mailbox as typeof session.mailbox & {
+        send: typeof session.mailbox.send;
+      }
+    ).send = (message) => {
+      if (message.metadata?.kind === "subagent_notification") {
+        order.push("parent_receipt");
+      }
+      return originalParentSend(message);
+    };
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "do durable work" }],
+        taskPrompt: "do durable work",
+        taskId: "durable-task",
+        onCacheSafeParams: (captured) => {
+          const child = (
+            captured as unknown as {
+              toolUseContext: { admissionSession: Session };
+            }
+          ).toolUseContext.admissionSession;
+          unsubscribeChild ??= child.eventLog.subscribe((event) => {
+            if (event.msg.type !== "subagent_turn_outcome") return;
+            order.push("durable_outcome");
+            childOutcomes.push(event.msg.payload);
+          });
+        },
+      }),
+    );
+    unsubscribeChild?.();
+
+    expect(result.outcome).toBe("completed");
+    expect(order).toEqual(["durable_outcome", "parent_receipt"]);
+    expect(childOutcomes).toEqual([
+      expect.objectContaining({
+        taskId: "durable-task",
+        outcome: "completed",
+        toolCallCount: 0,
+      }),
+    ]);
+    expect(
+      session.mailbox
+        .drain()
+        .filter((message) => message.metadata?.lifecycle === "turn"),
+    ).toHaveLength(1);
+  });
+
+  it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
+    const hugeReason = `provider_boom:${"x".repeat(
+      MAX_PARENT_RECEIPT_FIELD_BYTES * 4,
+    )}`;
+    const provider: LLMProvider = {
+      name: "fake",
+      chat: vi.fn(),
+      chatStream: vi.fn().mockRejectedValue(new Error(hugeReason)),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const durableReasons: string[] = [];
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "fail verbosely" }],
+        taskPrompt: "fail verbosely",
+        onCacheSafeParams: (captured) => {
+          const child = (
+            captured as unknown as {
+              toolUseContext: { admissionSession: Session };
+            }
+          ).toolUseContext.admissionSession;
+          child.eventLog.subscribe((event) => {
+            if (event.msg.type !== "subagent_turn_outcome") return;
+            if (event.msg.payload.reason !== undefined) {
+              durableReasons.push(event.msg.payload.reason);
+            }
+          });
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("errored");
+    expect(durableReasons).toHaveLength(1);
+    expect(durableReasons[0]).toContain(hugeReason);
+    const receipt = session.mailbox
+      .drain()
+      .find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt).toBeDefined();
+    const projectedReason = String(receipt?.metadata?.reason ?? "");
+    expect(Buffer.byteLength(projectedReason, "utf8")).toBeLessThanOrEqual(
+      MAX_PARENT_RECEIPT_FIELD_BYTES,
+    );
+    expect(projectedReason).toContain("[parent projection truncated");
+    expect(receipt?.content).toContain("[parent projection truncated");
+  });
+
+  it("retains an outbox head across thrown sends and eventually projects it once", async () => {
+    const provider = makeProvider([{ content: "retry result" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const originalSend = session.mailbox.send.bind(session.mailbox);
+    let receiptAttempts = 0;
+    session.mailbox.send = (message) => {
+      if (message.metadata?.kind === "subagent_notification") {
+        receiptAttempts += 1;
+        if (receiptAttempts <= 2) {
+          throw new Error(`transient parent send ${receiptAttempts}`);
+        }
+      }
+      return originalSend(message);
+    };
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "retry projection" }],
+        taskPrompt: "retry projection",
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    await vi.waitFor(() => expect(receiptAttempts).toBeGreaterThanOrEqual(3), {
+      timeout: 1_000,
+    });
+    const receipts = session.mailbox
+      .drain()
+      .filter((message) => message.metadata?.lifecycle === "turn");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.metadata?.projectionId).toBe(
+      `${live.agentId}:${String(receipts[0]?.metadata?.turnId)}:completed`,
+    );
+  });
+
+  it("turns outbox saturation into explicit worker backpressure after the durable outcome", async () => {
+    setParentNotificationOutboxLimitsForTesting({ depth: 0, bytes: 0 });
+    const provider = makeProvider([{ content: "durable but unprojected" }]);
+    const session = makeStubSession({ services: { provider } });
+    const warningCauses: string[] = [];
+    session.eventLog.subscribe((event) => {
+      if (event.msg.type === "warning") {
+        warningCauses.push(event.msg.payload.cause);
+      }
+    });
+    const originalSend = session.mailbox.send.bind(session.mailbox);
+    session.mailbox.send = (message) =>
+      message.metadata?.kind === "subagent_notification"
+        ? -1
+        : originalSend(message);
+    const { live } = await spawnLive(session);
+    const durableOutcomes: unknown[] = [];
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "complete durably" }],
+        taskPrompt: "complete durably",
+        onCacheSafeParams: (captured) => {
+          const child = (
+            captured as unknown as {
+              toolUseContext: { admissionSession: Session };
+            }
+          ).toolUseContext.admissionSession;
+          child.eventLog.subscribe((event) => {
+            if (event.msg.type === "subagent_turn_outcome") {
+              durableOutcomes.push(event.msg.payload);
+            }
+          });
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("completed");
+    expect(durableOutcomes).toEqual([
+      expect.objectContaining({
+        outcome: "completed",
+        message: "durable but unprojected",
+      }),
+    ]);
+    expect(
+      session.mailbox
+        .drain()
+        .filter((message) => message.metadata?.lifecycle === "turn"),
+    ).toHaveLength(0);
+    expect(warningCauses).toContain("subagent_notification_outbox_full");
+    expect(live.status.value.status).toBe("errored");
+    if (live.status.value.status === "errored") {
+      expect(live.status.value.error).toContain("parent projection failed");
+    }
+  });
+
+  it("retries a transient parent follow-up submit while its receipt remains queued", async () => {
+    vi.useFakeTimers();
+    const provider = makeProvider([{ content: "follow-up result" }]);
+    const session = makeStubSession({ services: { provider } });
+    let submitAttempt = 0;
+    const submit = vi.fn(async () => {
+      submitAttempt += 1;
+      if (submitAttempt === 1) {
+        throw new Error("transient submit failure");
+      }
+      session.drainPendingInputMessages();
+    });
+    session.installTurnDriverHooks({ submit });
+    const { live } = await spawnLive(session);
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "schedule follow-up" }],
+        taskPrompt: "schedule follow-up",
+      }),
+    );
+    expect(result.outcome).toBe("completed");
+    expect(session.mailbox.hasPending()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(session.mailbox.hasPending()).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(session.mailbox.hasPending()).toBe(false);
+  });
+
+  it("durably NACKs an accepted assignment that teardown prevents from starting", async () => {
+    const provider = makeProvider([{ content: "initial result" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const childOutcomes: unknown[] = [];
+    let unsubscribeChild: (() => void) | undefined;
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+      onCacheSafeParams: (captured) => {
+        const child = (
+          captured as unknown as {
+            toolUseContext: { admissionSession: Session };
+          }
+        ).toolUseContext.admissionSession;
+        unsubscribeChild ??= child.eventLog.subscribe((event) => {
+          if (event.msg.type === "subagent_turn_outcome") {
+            childOutcomes.push(event.msg.payload);
+          }
+        });
+      },
+    });
+
+    await nextProgressEvent(iter, "turn_complete");
+    session.mailbox.drain();
+    const parked = iter.next();
+    await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+    const accepted = control.assignTask(live.agentId, {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "never start this",
+      taskId: "nack-task",
+    });
+    live.abortController.abort("teardown");
+    await parked;
+    await collectRun(iter);
+    unsubscribeChild?.();
+
+    const notifications = session.mailbox
+      .drain()
+      .filter((message) => message.metadata?.lifecycle === "turn");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.metadata).toMatchObject({
+      outcome: "nack",
+      taskId: "nack-task",
+      turnId: accepted.turnId,
+      reason: "worker_teardown_before_start",
+    });
+    expect(notifications[0]?.content).toContain('"outcome":"nack"');
+    expect(childOutcomes).toContainEqual(
+      expect.objectContaining({
+        taskId: "nack-task",
+        turnId: accepted.turnId,
+        outcome: "nack",
+        reason: "worker_teardown_before_start",
+      }),
+    );
+  });
+
+  it("fails the worker closed and releases admission when receipt durability fails", async () => {
+    const provider = makeProvider([
+      { content: "initial result" },
+      { content: "unprojectable result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    let childSession: Session | undefined;
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+      onCacheSafeParams: (captured) => {
+        childSession = (
+          captured as unknown as {
+            toolUseContext: { admissionSession: Session };
+          }
+        ).toolUseContext.admissionSession;
+      },
+    });
+
+    await nextProgressEvent(iter, "turn_complete");
+    session.mailbox.drain();
+    const parked = iter.next();
+    await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+    expect(childSession).toBeDefined();
+    const originalEmit = childSession!.emit.bind(childSession);
+    const emitSpy = vi
+      .spyOn(childSession!, "emit")
+      .mockImplementation((event, opts) => {
+        if (event.msg.type === "subagent_turn_outcome") {
+          throw new Error("fsync failed");
+        }
+        return originalEmit(event, opts);
+      });
+    control.assignTask(live.agentId, {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "second task",
+      taskId: "durability-failure-task",
+    });
+    await parked;
+    const errorEvent = await nextProgressEvent(iter, "run_error");
+    const result = (await collectRun(iter)).result;
+    emitSpy.mockRestore();
+
+    expect(errorEvent).toMatchObject({
+      taskId: "durability-failure-task",
+      error: expect.stringContaining("task receipt durability failed"),
+    });
+    expect(result.outcome).toBe("errored");
+    expect(live.status.value.status).toBe("errored");
+    expect(live.assignment).toBeUndefined();
+    expect(
+      session.mailbox
+        .drain()
+        .filter(
+          (message) => message.metadata?.taskId === "durability-failure-task",
+        ),
+    ).toEqual([]);
+  });
+
+  it("rolls clean worktree baselines without mutating the first immutable receipt", async () => {
+    const repo = makeWorktreeEvidenceRepo();
+    try {
+      const baseCommit = git(repo, "rev-parse", "HEAD");
+      const baseProvider = makeProvider([
+        { content: "first committed result" },
+        { content: "second committed result" },
+      ]);
+      let commitIndex = 0;
+      const provider: LLMProvider = {
+        ...baseProvider,
+        chatStream: vi.fn(async (...args) => {
+          commitIndex += 1;
+          const filename = `result-${commitIndex}.txt`;
+          writeFileSync(
+            join(repo, filename),
+            `result ${commitIndex}\n`,
+            "utf8",
+          );
+          git(repo, "add", filename);
+          git(repo, "commit", "-m", `task result ${commitIndex}`);
+          return baseProvider.chatStream(...args);
+        }),
+      };
+      const session = makeStubSession({
+        sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+        services: {
+          provider,
+          sandboxExecutionBroker: explicitDangerBroker.forkForCwd(repo),
+        },
+      });
+      const { control, live } = await spawnLive(session);
+      const iter = runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "commit first result" }],
+        taskPrompt: "commit first result",
+        taskId: "commit-task-1",
+        keepAlive: true,
+        worktree: {
+          path: repo,
+          branch: "main",
+          gitRoot: repo,
+          created: false,
+        },
+        worktreeBaseCommit: baseCommit,
+      });
+
+      const firstTurn = await nextProgressEvent(iter, "turn_complete");
+      const firstHead = git(repo, "rev-parse", "HEAD");
+      const firstReceipt = session.mailbox
+        .drain()
+        .find((message) => message.metadata?.lifecycle === "turn");
+      const firstReceiptContent = firstReceipt?.content ?? "";
+      expect(firstTurn.worktreeEvidence).toMatchObject({
+        state: "committed_clean",
+        baseCommit,
+        headCommit: firstHead,
+        integrationRef: firstHead,
+      });
+      expect(firstReceiptContent).toContain(`"integration_ref":"${firstHead}"`);
+
+      const secondPromise = nextProgressEvent(iter, "turn_complete");
+      await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "commit second result",
+        taskId: "commit-task-2",
+      });
+      const secondTurn = await secondPromise;
+      const secondHead = git(repo, "rev-parse", "HEAD");
+      const secondReceipt = session.mailbox
+        .drain()
+        .find((message) => message.metadata?.lifecycle === "turn");
+
+      expect(secondHead).not.toBe(firstHead);
+      expect(secondTurn.worktreeEvidence).toMatchObject({
+        state: "committed_clean",
+        baseCommit: firstHead,
+        headCommit: secondHead,
+        integrationRef: secondHead,
+      });
+      expect(secondReceipt?.content).toContain(
+        `"integration_ref":"${secondHead}"`,
+      );
+      expect(firstReceiptContent).toContain(firstHead);
+      expect(firstReceiptContent).not.toContain(secondHead);
+      await stopKeepAliveRun(iter, live.abortController);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed after dirty worktree evidence and rejects worker reuse", async () => {
+    const repo = makeWorktreeEvidenceRepo();
+    try {
+      const baseCommit = git(repo, "rev-parse", "HEAD");
+      const baseProvider = makeProvider([{ content: "dirty result" }]);
+      const provider: LLMProvider = {
+        ...baseProvider,
+        chatStream: vi.fn(async (...args) => {
+          writeFileSync(join(repo, "uncommitted.txt"), "dirty\n", "utf8");
+          return baseProvider.chatStream(...args);
+        }),
+      };
+      const session = makeStubSession({
+        sessionConfiguration: mkSessionConfiguration({ cwd: repo }),
+        services: {
+          provider,
+          sandboxExecutionBroker: explicitDangerBroker.forkForCwd(repo),
+        },
+      });
+      const { control, live } = await spawnLive(session);
+
+      const { events, result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "write result" }],
+          taskPrompt: "write result",
+          taskId: "dirty-task",
+          keepAlive: true,
+          worktree: {
+            path: repo,
+            branch: "main",
+            gitRoot: repo,
+            created: false,
+          },
+          worktreeBaseCommit: baseCommit,
+        }),
+      );
+
+      expect(result.outcome).toBe("completed");
+      expect(live.status.value.status).toBe("completed");
+      const completed = events.find((event) => event.kind === "turn_complete");
+      expect(completed?.worktreeEvidence).toMatchObject({
+        state: "dirty_uncommitted",
+        baseCommit,
+      });
+      const receipt = session.mailbox
+        .drain()
+        .find((message) => message.metadata?.lifecycle === "turn");
+      expect(receipt?.metadata?.worktreeEvidence).toMatchObject({
+        state: "dirty_uncommitted",
+      });
+      expect(receipt?.content).not.toContain("integration_ref");
+      expect(() =>
+        control.assignTask(live.agentId, {
+          author: "/root",
+          recipient: live.agentPath,
+          content: "unsafe reuse",
+          taskId: "unsafe-task",
+        }),
+      ).toThrow("not an idle reusable worker");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a parent permission downgrade to a keep-alive child's next turn", async () => {
+    const provider = makeProvider([
+      { content: "first result" },
+      { content: "second result" },
+    ]);
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const session = makeStubSession({
+      services: { provider, permissionModeRegistry },
+    });
+    const { control, live } = await spawnLive(session);
+    let childSession: Session | undefined;
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+      onCacheSafeParams: (params) => {
+        childSession = (
+          params as unknown as {
+            toolUseContext: { admissionSession: Session };
+          }
+        ).toolUseContext.admissionSession;
+      },
+    });
+
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      expect(childSession).toBeDefined();
+      expect(childSession!.permissionModeRegistry.current().mode).toBe(
+        "bypassPermissions",
+      );
+
+      await permissionModeRegistry.update(
+        createEmptyToolPermissionContext({ mode: "default" }),
+      );
+      const secondTurn = nextProgressEvent(iter, "turn_complete");
+      await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "continue under downgraded permissions",
+        taskId: "permission-downgrade-task",
+      });
+
+      await secondTurn;
+      expect(childSession!.permissionModeRegistry.current().mode).toBe(
+        "default",
+      );
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("wakes a keep-alive worker with exactly the assigned input and a fresh turn id", async () => {
+    const provider = makeProvider([
+      { content: "first result" },
+      { content: "second result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+    });
+
+    try {
+      const first = await nextProgressEvent(iter, "turn_complete");
+      session.mailbox.drain();
+      const secondPromise = nextProgressEvent(iter, "turn_complete");
+      await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "second task",
+        taskId: "task-2",
+      });
+
+      const second = await secondPromise;
+      expect(second.turnId).not.toBe(first.turnId);
+      expect(second.taskId).toBe("task-2");
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+      const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>)
+        .mock.calls[1]![0] as LLMMessage[];
+      expect(secondMessages.at(-1)).toEqual({
+        role: "user",
+        content: "second task",
+      });
+      const notifications = session.mailbox.drain();
+      expect(notifications).toEqual([
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            kind: "subagent_notification",
+            lifecycle: "turn",
+            taskId: "task-2",
+            turnId: second.turnId,
+          }),
+        }),
+      ]);
+      expect(notifications[0]?.content).toContain('"task_id":"task-2"');
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("queues passive context without starting a turn and folds it into the next assignment", async () => {
+    const provider = makeProvider([
+      { content: "first result" },
+      { content: "context-aware result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+    });
+
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const nextTurn = nextProgressEvent(iter, "turn_complete");
+      await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+      live.downInbox.send({
+        author: "/root",
+        recipient: live.agentPath,
+        content: "context note",
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "inter_agent_communication" },
+      });
+      expect(live.downInbox.size).toBe(1);
+      expect(provider.chatStream).toHaveBeenCalledTimes(1);
+
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "do the next task",
+        taskId: "queued-task",
+      });
+
+      const completed = await nextTurn;
+      expect(completed.taskId).toBe("queued-task");
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+      const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>)
+        .mock.calls[1]![0] as LLMMessage[];
+      expect(secondMessages.at(-1)).toEqual({
+        role: "user",
+        content: "context note\n\ndo the next task",
+      });
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("rejects a second assignment until the accepted task reaches a receipt", async () => {
+    const provider = makeProvider([
+      { content: "initial result" },
+      { content: "first queued result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+    });
+
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      session.mailbox.drain();
+      const firstQueuedPromise = nextProgressEvent(iter, "turn_complete");
+      await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "first queued task",
+        taskId: "queued-1",
+      });
+      expect(() =>
+        control.assignTask(live.agentId, {
+          author: "/root",
+          recipient: live.agentPath,
+          content: "second queued task",
+          taskId: "queued-2",
+        }),
+      ).toThrow("outstanding assignment");
+
+      const firstQueued = await firstQueuedPromise;
+      const firstReceipt = session.mailbox.drain();
+
+      expect(firstQueued).toMatchObject({
+        taskId: "queued-1",
+        finalMessage: "first queued result",
+      });
+      expect(firstReceipt[0]?.metadata).toMatchObject({
+        lifecycle: "turn",
+        taskId: "queued-1",
+        turnId: firstQueued.turnId,
+      });
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+      const calls = (provider.chatStream as ReturnType<typeof vi.fn>).mock
+        .calls;
+      expect((calls[1]![0] as LLMMessage[]).at(-1)).toEqual({
+        role: "user",
+        content: "first queued task",
+      });
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("starts a fresh timeout budget after a keep-alive worker has idled", async () => {
+    vi.useFakeTimers();
+    const provider = makeProvider([
+      { content: "first result" },
+      { content: "late assignment result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+      timeoutMs: 1_000,
+    });
+
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const nextTurn = nextProgressEvent(iter, "turn_complete");
+      expect(live.status.value.status).toBe("idle");
+      await vi.advanceTimersByTimeAsync(10_000);
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "late assignment",
+        taskId: "late-task",
+      });
+
+      const completed = await nextTurn;
+      expect(completed.finalMessage).toBe("late assignment result");
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not lose an assignment admitted synchronously on the idle transition", async () => {
+    const provider = makeProvider([
+      { content: "first result" },
+      { content: "gap result" },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    let assigned = false;
+    const unsubscribe = live.status.subscribe((status) => {
+      if (status.status === "idle" && !assigned) {
+        assigned = true;
+        control.assignTask(live.agentId, {
+          author: "/root",
+          recipient: live.agentPath,
+          content: "assignment in the drain/wait gap",
+          taskId: "idle-transition-task",
+        });
+      }
+    });
+
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "initial task" }],
+      taskPrompt: "initial task",
+      keepAlive: true,
+    });
+    let nextTurn:
+      | Promise<
+          Extract<RunAgentProgressEvent, { readonly kind: "turn_complete" }>
+        >
+      | undefined;
+
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      nextTurn = nextProgressEvent(iter, "turn_complete");
+      expect((await nextTurn).finalMessage).toBe("gap result");
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      if (!live.abortController.signal.aborted) {
+        live.abortController.abort("test cleanup");
+      }
+      await nextTurn?.catch(() => undefined);
+      await collectRun(iter);
+    }
   });
 
   it("surfaces a refresh_mcp_servers control message from the child downInbox", async () => {

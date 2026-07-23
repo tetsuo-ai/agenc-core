@@ -52,9 +52,9 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [reference/config.md](reference/config.md) | `config.toml` sections, env overrides, `agenc config` |
 | [reference/daemon.md](reference/daemon.md) | Daemon process model, socket auth, lifecycle |
 | [reference/providers.md](reference/providers.md) | Built-in providers, defaults, API key envs |
-| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry: names, aliases, purpose |
+| [reference/slash-commands.md](reference/slash-commands.md) | TUI slash registry, including exact `/swarm` status/on/off semantics |
 | [reference/autonomy.md](reference/autonomy.md) | Budget + heartbeat + cron delivery + hooks HTTP |
-| [reference/agents.md](reference/agents.md) | Background agents + multi-agent v2 tools |
+| [reference/agents.md](reference/agents.md) | Background agents, multi-agent v2 lifecycle/admission, correlated outcomes, and worktree evidence |
 | [reference/memory.md](reference/memory.md) | Persona, AGENC.md, auto-memory paths, privacy |
 | [reference/mcp.md](reference/mcp.md) | MCP client and server |
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces |
@@ -74,6 +74,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, failure semantics, and research |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
+| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Advisory adaptive routing vs enforced admission, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
 ## Releases

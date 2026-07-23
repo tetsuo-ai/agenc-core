@@ -1,16 +1,16 @@
 {
   "contractName": "agent-surface-contract",
   "sourceCommit": "966932124c243aab71719c269d79305844f35814",
-  "contractSha256": "97688945f87db7b407f36c787ba24a81d9d75c9533c03a63afe1cd8dfb42d03b",
-  "reviewer": "manual-contract-reviewer",
-  "reviewedAt": "2026-06-14T19:54:12Z",
+  "contractSha256": "5fdf86cc83fa1f0ae025fcc578e7bf140c8ab139829eabb06bdf8727b5fbaf10",
+  "reviewer": "independent-parity-auditor",
+  "reviewedAt": "2026-07-23T05:33:14Z",
   "verdict": "APPROVED",
   "missingRows": [],
   "missingInventory": [],
   "missingCrossCutting": [],
   "issues": [],
   "evidence": {
-    "sourceRootScanned": "/home/tetsuo/git/codex/codex-rs",
+    "sourceLedgerValidation": "PASS: frozen source ledger metadata validated; source checkout verification skipped",
     "targetRootScanned": "/home/tetsuo/git/AgenC/agenc-core",
     "rowsAudited": [
       "control-registry-roles",
@@ -20,10 +20,21 @@
       "tui-agent-workbench-e2e"
     ],
     "testsExecuted": [
-      "npm run check:agent-surface-contract"
+      "npm run check:agent-surface-contract",
+      "jq empty parity/agent-surface-contract.reviews/control-registry-roles.json parity/agent-surface-contract.reviews/run-loop-thread-mailbox.json parity/agent-surface-contract.reviews/daemon-agent-lifecycle.json parity/agent-surface-contract.reviews/task-tool-bridge.json parity/agent-surface-contract.reviews/tui-agent-workbench-e2e.json parity/agent-surface-contract.reviews/_contract.json",
+      "npm run check:agent-surface-contract:reviewed -- --no-run-commands"
     ],
     "commandResults": [
-      "PASS: agent-surface-contract: ok"
+      "PASS: frozen source ledger metadata validated; source checkout verification skipped",
+      "PASS: control-registry-roles — 5 test files, 154 tests",
+      "PASS: run-loop-thread-mailbox — 7 test files, 149 tests",
+      "PASS: daemon-agent-lifecycle — 4 test files, 196 tests",
+      "PASS: task-tool-bridge — 16 test files, 331 tests",
+      "PASS: tui-agent-workbench-e2e — 11 test files, 201 tests",
+      "PASS: TUI E2E scenario 03-subagent-completion",
+      "PASS: TUI E2E scenario 23-slash-agents",
+      "PASS: all six review artifacts parse as JSON",
+      "PASS: reviewed agent-surface contract checker with command execution disabled"
     ],
     "reviewFiles": [
       "parity/agent-surface-contract.reviews/control-registry-roles.json",
@@ -33,8 +44,9 @@
       "parity/agent-surface-contract.reviews/tui-agent-workbench-e2e.json"
     ],
     "matrixEvidence": [
-      "The unreviewed contract checker verified source hashes against sourceCommit 966932124c243aab71719c269d79305844f35814, required target files, required test files, non-empty behaviors/edge cases/tests/commands, and every row command.",
-      "Every row verdict has no missing behaviors, no missing edge cases, and no open issues."
+      "The unreviewed contract checker validated the frozen source ledger metadata, required target and test inventory, non-empty row behaviors and edge cases, and all reported row commands; source checkout verification was skipped.",
+      "An independent parity audit matched every row's behavior and edge-case arrays exactly to the current matrix and found no missing behavior, inventory, cross-cutting coverage, or open issue.",
+      "Adaptive AgenC swarm routing remains explicitly outside this frozen upstream-parity matrix and is documented separately."
     ]
   }
 }

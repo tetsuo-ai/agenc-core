@@ -13,7 +13,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   STALE_WORKTREE_AGE_MS,
+  captureWorktreeTurnEvidence as captureWorktreeTurnEvidenceUnbound,
   cleanupStaleAgentWorktrees as cleanupStaleAgentWorktreesUnbound,
+  deriveAgentWorktreeSlug,
   findGitRoot,
   getOrCreateWorktree as getOrCreateWorktreeUnbound,
   hasWorktreeChanges as hasWorktreeChangesUnbound,
@@ -49,6 +51,16 @@ const hasWorktreeChanges = (
     "sandboxExecutionBroker"
   >,
 ) => hasWorktreeChangesUnbound({
+  ...opts,
+  sandboxExecutionBroker: explicitDangerBroker,
+});
+
+const captureWorktreeTurnEvidence = (
+  opts: Omit<
+    Parameters<typeof captureWorktreeTurnEvidenceUnbound>[0],
+    "sandboxExecutionBroker"
+  >,
+) => captureWorktreeTurnEvidenceUnbound({
   ...opts,
   sandboxExecutionBroker: explicitDangerBroker,
 });
@@ -129,6 +141,45 @@ describe("validateWorktreeSlug", () => {
   it("rejects shell-metacharacters", () => {
     expect(() => validateWorktreeSlug("a b")).toThrow();
     expect(() => validateWorktreeSlug("a|b")).toThrow();
+  });
+
+  it("derives stable valid slugs from the session, agent path, and spawn", () => {
+    const first = deriveAgentWorktreeSlug({
+      sessionId: "conversation-a",
+      agentPath: "/root/parent_a/shared_writer",
+      spawnId: "spawn-a",
+    });
+    expect(first).toBe(
+      deriveAgentWorktreeSlug({
+        sessionId: "conversation-a",
+        agentPath: "/root/parent_a/shared_writer",
+        spawnId: "spawn-a",
+      }),
+    );
+    expect(first).not.toBe(
+      deriveAgentWorktreeSlug({
+        sessionId: "conversation-a",
+        agentPath: "/root/parent_b/shared_writer",
+        spawnId: "spawn-a",
+      }),
+    );
+    expect(first).not.toBe(
+      deriveAgentWorktreeSlug({
+        sessionId: "conversation-b",
+        agentPath: "/root/parent_a/shared_writer",
+        spawnId: "spawn-a",
+      }),
+    );
+    expect(first).not.toBe(
+      deriveAgentWorktreeSlug({
+        sessionId: "conversation-a",
+        agentPath: "/root/parent_a/shared_writer",
+        spawnId: "spawn-b",
+      }),
+    );
+    expect(first).toMatch(/^shared_writer-[a-f0-9]{32}$/u);
+    expect(first.length).toBeLessThanOrEqual(64);
+    expect(() => validateWorktreeSlug(first)).not.toThrow();
   });
 });
 
@@ -325,6 +376,380 @@ describe("hasWorktreeChanges", () => {
         baseCommit: "not-a-commit",
       }),
     ).rejects.toThrow(/git rev-list failed/i);
+  });
+});
+
+describe("captureWorktreeTurnEvidence", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "agenc-worktree-evidence-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("reports an unchanged clean worktree without an integration ref", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-unchanged",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "unchanged_clean",
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+      headCommit: baseCommit,
+      clean: true,
+      baseIsAncestor: true,
+    });
+    expect("integrationRef" in evidence).toBe(false);
+    if (evidence.state !== "unverifiable") {
+      expect(evidence.treeHash).toMatch(/^[0-9a-f]{40,64}$/);
+    }
+  });
+
+  it("offers only a clean descendant commit as the immutable integration ref", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-committed",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    writeFileSync(join(handle.path, "README.md"), "changed\n");
+    execFileSync("git", ["add", "README.md"], { cwd: handle.path });
+    execFileSync("git", ["commit", "-m", "agent change"], {
+      cwd: handle.path,
+    });
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+    });
+
+    expect(evidence.state).toBe("committed_clean");
+    if (evidence.state !== "committed_clean") {
+      throw new Error(`unexpected evidence: ${JSON.stringify(evidence)}`);
+    }
+    expect(evidence.headCommit).not.toBe(baseCommit);
+    expect(evidence.integrationRef).toBe(evidence.headCommit);
+    expect(evidence.treeHash).toBe(
+      execFileSync(
+        "git",
+        ["rev-parse", `${evidence.headCommit}^{tree}`],
+        { cwd: handle.path, encoding: "utf8" },
+      ).trim(),
+    );
+  });
+
+  it("fails closed when porcelain status changes during evidence capture", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-status-moved",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    writeFileSync(join(handle.path, "README.md"), "committed output\n");
+    execFileSync("git", ["add", "README.md"], { cwd: handle.path });
+    execFileSync("git", ["commit", "-m", "agent output"], {
+      cwd: handle.path,
+    });
+
+    let headReadCount = 0;
+    const mutationBroker = {
+      prepareSpawn: (
+        surface: Parameters<typeof explicitDangerBroker.prepareSpawn>[0],
+        command: Parameters<typeof explicitDangerBroker.prepareSpawn>[1],
+      ) => {
+        if (
+          command.program === "git" &&
+          command.args.includes("rev-parse") &&
+          command.args.includes("HEAD^{commit}")
+        ) {
+          headReadCount += 1;
+          if (headReadCount === 2) {
+            writeFileSync(
+              join(handle.path, "arrived-during-capture.txt"),
+              "late output\n",
+            );
+          }
+        }
+        return explicitDangerBroker.prepareSpawn(surface, command);
+      },
+    } as unknown as typeof explicitDangerBroker;
+
+    const evidence = await captureWorktreeTurnEvidenceUnbound({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+      sandboxExecutionBroker: mutationBroker,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "unverifiable",
+      error: "worktree status changed while evidence was captured",
+    });
+    expect("integrationRef" in evidence).toBe(false);
+  });
+
+  it("ignores replacement objects when binding evidence to an immutable commit", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-replaced-object",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+
+    writeFileSync(join(handle.path, "README.md"), "real agent output\n");
+    execFileSync("git", ["add", "README.md"], { cwd: handle.path });
+    execFileSync("git", ["commit", "-m", "real agent change"], {
+      cwd: handle.path,
+    });
+    const headCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    const realTreeHash = execFileSync(
+      "git",
+      ["--no-replace-objects", "rev-parse", `${headCommit}^{tree}`],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+
+    writeFileSync(join(repo, "README.md"), "replacement output\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "replacement change"], {
+      cwd: repo,
+    });
+    const replacementCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: repo, encoding: "utf8" },
+    ).trim();
+    execFileSync("git", ["replace", headCommit, replacementCommit], {
+      cwd: repo,
+    });
+
+    // Materialize the replacement tree while leaving the branch ref at the
+    // original immutable commit. A replacement-aware evidence reader would
+    // now report a clean worktree but bind the wrong tree to `headCommit`.
+    execFileSync("git", ["reset", "--hard", headCommit], {
+      cwd: handle.path,
+    });
+    expect(
+      execFileSync("git", ["status", "--porcelain"], {
+        cwd: handle.path,
+        encoding: "utf8",
+      }),
+    ).toBe("");
+    expect(
+      execFileSync("git", ["rev-parse", `${headCommit}^{tree}`], {
+        cwd: handle.path,
+        encoding: "utf8",
+      }).trim(),
+    ).not.toBe(realTreeHash);
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "dirty_uncommitted",
+      headCommit,
+      treeHash: realTreeHash,
+      clean: false,
+      baseIsAncestor: true,
+    });
+    expect("integrationRef" in evidence).toBe(false);
+  });
+
+  it("retains committed hashes but withholds integration for dirty output", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-dirty",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    writeFileSync(join(handle.path, "untracked.txt"), "turn output\n");
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "dirty_uncommitted",
+      headCommit: baseCommit,
+      clean: false,
+      baseIsAncestor: true,
+    });
+    expect("integrationRef" in evidence).toBe(false);
+  });
+
+  it("classifies a non-descendant HEAD as diverged even when it is clean", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-diverged",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    const treeHash = execFileSync(
+      "git",
+      ["rev-parse", `${baseCommit}^{tree}`],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+    const unrelatedCommit = execFileSync(
+      "git",
+      ["commit-tree", treeHash],
+      {
+        cwd: repo,
+        encoding: "utf8",
+        input: "unrelated root\n",
+      },
+    ).trim();
+    execFileSync("git", ["reset", "--hard", unrelatedCommit], {
+      cwd: handle.path,
+    });
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "diverged",
+      headCommit: unrelatedCommit,
+      treeHash,
+      clean: true,
+      baseIsAncestor: false,
+    });
+    expect("integrationRef" in evidence).toBe(false);
+  });
+
+  it("fails closed with a sanitized error when the base is not immutable", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-unverifiable",
+    });
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      baseCommit: "HEAD\n\u001b[31m",
+    });
+
+    expect(evidence).toEqual({
+      state: "unverifiable",
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: handle.gitRoot,
+      },
+      error: "base commit is not a full Git object id",
+    });
+    expect("integrationRef" in evidence).toBe(false);
+  });
+
+  it("fails closed when the locator claims a different repository", async () => {
+    const repo = join(tmpRoot, "repo");
+    const wrongRepo = join(tmpRoot, "wrong-repo");
+    initRepo(repo);
+    initRepo(wrongRepo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-mismatched-root",
+    });
+    const baseCommit = execFileSync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: handle.path, encoding: "utf8" },
+    ).trim();
+
+    const evidence = await captureWorktreeTurnEvidence({
+      locator: {
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: wrongRepo,
+      },
+      baseCommit,
+    });
+
+    expect(evidence).toMatchObject({
+      state: "unverifiable",
+      error: "worktree locator does not match its canonical Git root",
+    });
+    expect("integrationRef" in evidence).toBe(false);
   });
 });
 

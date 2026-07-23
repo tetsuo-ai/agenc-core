@@ -1,13 +1,14 @@
 {
   "rowId": "daemon-agent-lifecycle",
   "contractName": "agent-surface-contract",
-  "reviewer": "manual-row-reviewer",
-  "reviewedAt": "2026-06-14T19:54:12Z",
+  "reviewer": "independent-parity-auditor",
+  "reviewedAt": "2026-07-23T05:33:14Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
-      "starts daemon-backed agents with durable thread id, run id, prompt, cwd, sandbox, permission mode, and model context",
+      "starts daemon-backed agents with a durable thread id, run id, initial prompt, cwd, sandbox, permission mode, and model context",
       "streams lifecycle, transcript, tool, status, and usage events to daemon clients in stable JSON-RPC shapes",
+      "projects correlated task, turn, tool-call count, worktree, and worktree-evidence fields from agent progress into daemon events",
       "keeps active-turn state and completion snapshots coherent across start, message, cancel, close, and reconnect paths",
       "maps runtime failures to daemon protocol errors without crashing the daemon process",
       "persists enough status and transcript data for CLI and TUI reattachment"
@@ -16,16 +17,18 @@
   },
   "edgeCaseCoverage": {
     "edgeCasesAudited": [
-      "invalid agent.create params fail validation before any runner starts",
-      "cancellation during active turns produces terminal state and does not reopen later chunks",
-      "completed agents remain listable and log-readable without resurrecting a live runner",
-      "daemon restart/recovered session paths preserve durable status and reject stale messages",
-      "malformed tool-call payloads are surfaced as structured errors"
+      "starting an agent with invalid request params returns a protocol validation error before any runner starts",
+      "a cancellation during an active provider turn emits a terminal status and prevents later chunks from reopening the run",
+      "a reconnect after completion can list the agent and fetch its final transcript without resurrecting a live runner",
+      "a daemon restart during an idle agent session preserves durable status and rejects stale active-turn messages",
+      "tool-call events with malformed JSON arguments are surfaced as structured errors instead of process crashes",
+      "a progress update with worktree evidence preserves every correlation field in the emitted daemon event"
     ],
     "missingEdgeCases": []
   },
   "issues": [],
   "evidence": {
+    "sourceLedgerValidation": "PASS: frozen source ledger metadata validated; source checkout verification skipped",
     "filesRead": [
       "parity/agent-surface-contract.json",
       "runtime/src/app-server/agent-lifecycle.ts",
@@ -37,16 +40,17 @@
       "runtime/tests/app-server/daemon-dispatcher.contract.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
+      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/app-server/agent-lifecycle.contract.test.ts tests/app-server/background-agent-runner.contract.test.ts tests/app-server/agent-cli.contract.test.ts tests/app-server/daemon-dispatcher.contract.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 4 test files passed, 136 tests passed"
+      "PASS: 4 test files passed, 196 tests passed"
     ],
     "implementationEvidence": [
-      "AgenCAgentLifecycleManager owns agent.create/message/stop/list/log/attach state transitions, rollback, snapshot refresh, terminal-status persistence, and recovered-agent handling.",
-      "AgenCDelegateBackgroundAgentRunner maps managed thread status and progress events into daemon agent snapshots and JSON-RPC event payloads.",
-      "agent-cli wraps JSON-RPC initialize, request.cancel, reconnect/re-attach, and transcript/list/stop commands with bounded request timeouts and connection state.",
-      "Contract tests cover persisted rollout logs, session routing, agent.create startup, stop/cleanup, malformed params, JSON-RPC dispatcher routes, reconnect, and terminal runner snapshots."
+      "AgenCAgentLifecycleManager owns agent.create, message, stop, list, log, attach, reconnect, rollback, and terminal snapshot transitions.",
+      "AgenCDelegateBackgroundAgentRunner maps managed-thread state and progress into daemon snapshots and stable JSON-RPC event payloads.",
+      "The turn-complete progress projection preserves turnId, taskId, toolCallCount, worktree locators, immutable worktree evidence, and the final message.",
+      "A direct regression invokes the production eventFromProgress turn-complete branch and fails if any correlation or worktree field is omitted.",
+      "The daemon contract suite covers durable rollout delivery, validation, cancellation, reconnect, recovered state, malformed events, and terminal snapshots."
     ]
   }
 }

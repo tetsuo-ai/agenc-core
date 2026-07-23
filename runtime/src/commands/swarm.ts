@@ -1,16 +1,14 @@
 /**
  * /swarm — toggle swarm mode.
  *
- * Swarm mode declares intent: while it is on, the agent is nudged (via the
- * swarm-mode prompt attachment) to fan out divisible work to parallel
- * sub-agents by default instead of grinding sequentially. It changes the
- * model's guidance, NOT the permission policy — spawn_agent/multi-agent
- * calls are side-effecting and still require approval per the active
- * permission mode (yolo/bypass auto-approves them like everything else).
+ * Swarm mode enables conservative per-turn routing guidance. The runtime
+ * creates a model-facing audit receipt and recommends one agent unless it
+ * finds positive evidence of independent work; parallel guidance recommends
+ * no more than four workers.
  *
- * /swarm          → toggle on/off
+ * /swarm          → show status
  * /swarm on|off   → set explicitly
- * /swarm status   → show mode + live agent count from AppState.tasks
+ * /swarm status   → show mode + active/idle agent counts from AppState.tasks
  */
 
 import {
@@ -31,16 +29,21 @@ function readSwarmMode(ctx: SlashCommandContext): boolean {
   return state?.swarmMode === true;
 }
 
-function liveAgentCount(ctx: SlashCommandContext): number {
+function agentCounts(ctx: SlashCommandContext): {
+  readonly active: number;
+  readonly idle: number;
+} {
   const state = ctx.appState?.getAppState?.() as
     | { tasks?: Record<string, { status?: string; type?: string }> }
     | undefined;
   const tasks = Object.values(state?.tasks ?? {});
-  return tasks.filter(
-    (task) =>
-      task.type !== "local_bash" &&
-      (task.status === "running" || task.status === "pending"),
-  ).length;
+  const agents = tasks.filter((task) => task.type === "local_agent");
+  return {
+    active: agents.filter(
+      (task) => task.status === "running" || task.status === "pending",
+    ).length,
+    idle: agents.filter((task) => task.status === "idle").length,
+  };
 }
 
 function setSwarmMode(ctx: SlashCommandContext, on: boolean): void {
@@ -53,23 +56,23 @@ function setSwarmMode(ctx: SlashCommandContext, on: boolean): void {
 
 export const swarmCommand: SlashCommand = {
   name: "swarm",
-  description: "Fan out work to parallel sub-agents — /swarm on|off",
+  description: "Enable adaptive multi-agent guidance — /swarm on|off",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) =>
     safeExecute(async () => {
       const arg = ctx.argsRaw.trim().toLowerCase();
-      const running = liveAgentCount(ctx);
+      const agents = agentCounts(ctx);
 
       if (arg === "status" || arg === "") {
         const on = readSwarmMode(ctx);
         const persisted = getSettingsForSource("userSettings")?.swarmMode;
         const lines = [
           `swarm mode: ${on ? "ON" : "off"}${persisted !== undefined ? ` (${persisted ? "saved on" : "saved off"})` : ""}`,
-          `live agents: ${running}`,
+          `agents: ${agents.active} active, ${agents.idle} idle/reusable`,
           on
-            ? "Divisible work fans out to parallel sub-agents by default (spawns still follow approval policy)."
-            : "Use /swarm on to fan out divisible work to parallel sub-agents by default.",
+            ? "Adaptive guidance is active: sequential by default, with 2–4 workers recommended only for independent work."
+            : "Use /swarm on for conservative adaptive routing guidance.",
         ];
         return { kind: "text", text: lines.join("\n") };
       }
@@ -78,7 +81,7 @@ export const swarmCommand: SlashCommand = {
         setSwarmMode(ctx, true);
         return {
           kind: "text",
-          text: "swarm mode ON — divisible work fans out to parallel sub-agents by default (spawns still follow approval policy).",
+          text: "swarm mode ON — adaptive guidance is sequential by default and recommends no more than four workers for independent fan-out (spawns still follow approval policy).",
         };
       }
       if (arg === "off") {

@@ -18,6 +18,7 @@ import type { Session } from "../session/session.js";
 interface SpawnRecord {
   readonly agentName: string;
   readonly taskPrompt: string;
+  readonly worktreeSlug?: string;
 }
 
 function fakeDelegate(opts: {
@@ -26,10 +27,20 @@ function fakeDelegate(opts: {
   readonly spawns: SpawnRecord[];
 }) {
   let counter = 0;
-  return vi.fn(async (delegateOpts: { agentName?: string; taskPrompt: string }) => {
+  return vi.fn(async (delegateOpts: {
+    agentName?: string;
+    taskPrompt: string;
+    worktreeSlug?: string;
+  }) => {
     const agentName = delegateOpts.agentName ?? `agent-${counter}`;
     counter += 1;
-    opts.spawns.push({ agentName, taskPrompt: delegateOpts.taskPrompt });
+    opts.spawns.push({
+      agentName,
+      taskPrompt: delegateOpts.taskPrompt,
+      ...(delegateOpts.worktreeSlug !== undefined
+        ? { worktreeSlug: delegateOpts.worktreeSlug }
+        : {}),
+    });
     const threadId = `thread-${agentName}`;
     const fails = opts.failing?.has(agentName) === true;
     return {
@@ -208,5 +219,44 @@ describe("runAgentWorkflow", () => {
       outcome: "errored",
       error: "no slots",
     });
+  });
+
+  it("scopes isolated step worktrees by session and full agent path", async () => {
+    const spawns: SpawnRecord[] = [];
+    const delegateFn = fakeDelegate({ spawns, finalMessages: {} });
+    const isolatedStep: WorkflowStepSpec = {
+      id: "shared_writer",
+      message: "write the change",
+      isolation: "worktree",
+    };
+
+    await runAgentWorkflow({
+      session,
+      parentPath: "/root/parent_a",
+      control,
+      registry,
+      steps: [isolatedStep],
+      lifecycle: new BackgroundTaskLifecycle(),
+      delegateFn: delegateFn as never,
+    });
+    await runAgentWorkflow({
+      session: {
+        conversationId: "conv-wf-other",
+      } as unknown as Session,
+      parentPath: "/root/parent_b",
+      control,
+      registry,
+      steps: [isolatedStep],
+      lifecycle: new BackgroundTaskLifecycle(),
+      delegateFn: delegateFn as never,
+    });
+
+    expect(spawns[0]?.worktreeSlug).toMatch(
+      /^shared_writer-[a-f0-9]{32}$/u,
+    );
+    expect(spawns[1]?.worktreeSlug).toMatch(
+      /^shared_writer-[a-f0-9]{32}$/u,
+    );
+    expect(spawns[0]?.worktreeSlug).not.toBe(spawns[1]?.worktreeSlug);
   });
 });

@@ -32,10 +32,13 @@
  *
  * @module
  */
+import { randomUUID } from "node:crypto";
+
 import { delegate, type IsolationMode } from "./delegate.js";
 import type { AgentControl } from "./control.js";
-import type { AgentRegistry } from "./registry.js";
+import { joinAgentPath, type AgentRegistry } from "./registry.js";
 import type { AgentThread } from "./thread.js";
+import { deriveAgentWorktreeSlug } from "./worktree.js";
 import type { Session } from "../session/session.js";
 import {
   backgroundTaskLifecycle,
@@ -188,6 +191,7 @@ export async function runAgentWorkflow(
   const delegateFn = opts.delegateFn ?? delegate;
   const lifecycle = opts.lifecycle ?? backgroundTaskLifecycle;
   const parentPath = opts.parentPath ?? "/root";
+  const workflowSpawnEpoch = randomUUID();
 
   const groupMembers = new Map<string, string[]>();
   for (const step of opts.steps) {
@@ -212,18 +216,27 @@ export async function runAgentWorkflow(
       return { id: step.id, outcome: "skipped", final_message: "", error: "upstream step did not complete" };
     }
     const message = renderTemplate(step.message, results, groupMembers);
+    const agentName = step.task_name ?? step.id;
+    const agentPath = joinAgentPath(parentPath, agentName);
     const outcome = await delegateFn({
       parent: opts.session,
       parentPath,
       control: opts.control,
       registry: opts.registry,
       taskPrompt: message,
-      agentName: step.task_name ?? step.id,
+      agentName,
       runInBackground: true,
       ...(step.agent_type !== undefined ? { role: step.agent_type } : {}),
       ...(step.model !== undefined ? { model: step.model } : {}),
       ...(step.isolation !== undefined && step.isolation !== "none"
-        ? { isolation: step.isolation, worktreeSlug: step.task_name ?? step.id }
+        ? {
+            isolation: step.isolation,
+            worktreeSlug: deriveAgentWorktreeSlug({
+              sessionId: opts.session.conversationId,
+              agentPath,
+              spawnId: `${workflowSpawnEpoch}:${step.id}`,
+            }),
+          }
         : {}),
       forkMode: undefined,
     });

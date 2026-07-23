@@ -11,7 +11,11 @@ import {
   toAgentStatusJson,
   type AgentStatus,
 } from "../status.js";
-import { SESSION_ID_ARG } from "../_deps/filesystem-args.js";
+import {
+  SESSION_ID_ARG,
+  SESSION_ID_SIG_ARG,
+  verifySessionId,
+} from "../_deps/filesystem-args.js";
 import type { Session } from "../../session/session.js";
 import type { AgentRoleWorkspace } from "../role.js";
 import type {
@@ -109,6 +113,7 @@ export function strictArgs(
     ...opts.allowed,
     "__callId",
     SESSION_ID_ARG,
+    SESSION_ID_SIG_ARG,
   ]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) {
@@ -148,24 +153,60 @@ export function currentAgentContext(
   session: Session,
   args: Record<string, unknown>,
   opts: MultiAgentV2Options,
-): CurrentAgentContext {
+): CurrentAgentContext | ToolResult {
+  const hasSessionId = Object.hasOwn(args, SESSION_ID_ARG);
+  const hasSessionIdSignature = Object.hasOwn(args, SESSION_ID_SIG_ARG);
+  if (!hasSessionId && !hasSessionIdSignature) {
+    return {
+      threadId: session.conversationId,
+      agentPath: ROOT_AGENT_PATH,
+    };
+  }
+  if (!hasSessionId || !hasSessionIdSignature) {
+    return invalidRuntimeIdentity("identity_pair_incomplete");
+  }
+
+  const verifiedSessionId = verifySessionId(
+    args[SESSION_ID_ARG],
+    args[SESSION_ID_SIG_ARG],
+  );
+  if (verifiedSessionId === undefined) {
+    return invalidRuntimeIdentity("identity_signature_invalid");
+  }
+  if (verifiedSessionId === session.conversationId) {
+    return {
+      threadId: session.conversationId,
+      agentPath: ROOT_AGENT_PATH,
+    };
+  }
+
   const { control } = opts.ensureAgentControl(session);
-  const injectedSessionId = stringValue(args[SESSION_ID_ARG]);
-  if (injectedSessionId) {
-    const live = control.getLive(injectedSessionId);
-    if (live) {
-      return {
-        threadId: live.agentId,
-        agentPath: live.agentPath,
-        agentNickname: live.nickname,
-        agentRole: live.role.name,
-      };
-    }
+  const live = control.getLive(verifiedSessionId);
+  if (live === undefined) {
+    return invalidRuntimeIdentity("identity_not_live");
   }
   return {
-    threadId: session.conversationId,
-    agentPath: ROOT_AGENT_PATH,
+    threadId: live.agentId,
+    agentPath: live.agentPath,
+    agentNickname: live.nickname,
+    agentRole: live.role.name,
   };
+}
+
+export function isCurrentAgentContextError(
+  value: CurrentAgentContext | ToolResult,
+): value is ToolResult {
+  return "content" in value;
+}
+
+function invalidRuntimeIdentity(reason: string): ToolResult {
+  return json(
+    {
+      error: "invalid-runtime-identity",
+      reason,
+    },
+    true,
+  );
 }
 
 export function resolveAgentId(

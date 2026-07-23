@@ -36,7 +36,12 @@ import { emitError, emitWarning } from "../session/event-log.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
-import { Mailbox, MailboxClosedError } from "./mailbox.js";
+import {
+  Mailbox,
+  MailboxCapacityError,
+  MailboxClosedError,
+  isMailboxSendAccepted,
+} from "./mailbox.js";
 import {
   AgentIdExistsError,
   AgentPathExistsError,
@@ -138,6 +143,8 @@ const DEFAULT_MAX_AGENT_DEPTH = 1;
 const IDLE_KEEPALIVE_GRACE_MS = 10 * 60_000;
 /** Cadence of the abandoned keep-alive worker sweep. */
 const IDLE_KEEPALIVE_REAP_INTERVAL_MS = 60_000;
+const ROOT_FOLLOWUP_RETRY_BASE_MS = 100;
+const ROOT_FOLLOWUP_RETRY_MAX_MS = 5_000;
 
 function asPositiveIntegerDepth(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
@@ -220,6 +227,40 @@ export class AgentReferenceUnresolvedError extends Error {
   }
 }
 
+export type AgentAssignmentRejectionCode =
+  | "self_target"
+  | "sender_not_ancestor"
+  | "worker_not_idle"
+  | "assignment_outstanding"
+  | "mailbox_backpressure";
+
+export class AgentAssignmentRejectedError extends Error {
+  constructor(
+    public readonly code: AgentAssignmentRejectionCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentAssignmentRejectedError";
+  }
+}
+
+export interface AgentAssignmentAdmission {
+  readonly taskId: string;
+  readonly turnId: string;
+  readonly author: AgentPath;
+  readonly acceptedAtMs: number;
+  state: "accepted" | "running";
+}
+
+export function isStrictAgentPathAncestor(
+  ancestor: string,
+  descendant: string,
+): boolean {
+  if (ancestor === descendant) return false;
+  const prefix = ancestor === ROOT_AGENT_PATH ? "/root/" : `${ancestor}/`;
+  return descendant.startsWith(prefix);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Fork-mode + spawn option types (reference runtime `SpawnAgentForkMode` /
 // `SpawnAgentOptions`; `control.rs:46-55`).
@@ -287,6 +328,20 @@ export interface LiveAgent {
   readonly memoryEntries: AgentMemoryEntry[];
   /** Cumulative child token usage. */
   readonly tokenUsage: AgentTokenUsage;
+  /**
+   * A control-plane assignment accepted while this reusable worker was idle.
+   * The admission is installed synchronously with mailbox projection so a
+   * second assignment cannot race the worker's idle→running transition.
+   */
+  assignment?: AgentAssignmentAdmission;
+  /**
+   * Durable receipt provenance. The completion watcher suppresses a legacy
+   * generic terminal only when this exact outcome already represented it.
+   */
+  lastTaskReceipt?: {
+    readonly turnId: string;
+    readonly outcome: "completed" | "errored" | "interrupted" | "nack";
+  };
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
   /** Local rollout path for the live child session once initialized. */
@@ -333,6 +388,10 @@ export class AgentControl {
   private readonly parentOf = new Map<ThreadId, ThreadId>();
   private threadManager: ThreadManager | undefined;
   private idleReapTimer: ReturnType<typeof setInterval> | undefined;
+  private rootFollowupInFlight = false;
+  private rootFollowupRequested = false;
+  private rootFollowupRetryAttempt = 0;
+  private rootFollowupRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
@@ -986,7 +1045,7 @@ export class AgentControl {
     }
     const agent = this.requireLive(threadId);
     try {
-      agent.downInbox.send({
+      const delivery = agent.downInbox.send({
         author: agent.agentPath,
         recipient: agent.agentPath,
         content: input,
@@ -994,6 +1053,9 @@ export class AgentControl {
         direction: "down",
         metadata: { kind: "user_input" },
       });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
     } catch (err) {
       if (err instanceof MailboxClosedError) {
         throw new ThreadNotFoundError(threadId);
@@ -1011,9 +1073,8 @@ export class AgentControl {
       return;
     }
     const agent = this.requireLive(threadId);
-    agent.messages.length = 0;
     try {
-      agent.downInbox.send({
+      const delivery = agent.downInbox.send({
         author: agent.agentPath,
         recipient: agent.agentPath,
         content: "",
@@ -1021,12 +1082,16 @@ export class AgentControl {
         direction: "down",
         metadata: { kind: "history_clear" },
       });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
     } catch (err) {
       if (err instanceof MailboxClosedError) {
         throw new ThreadNotFoundError(threadId);
       }
       throw err;
     }
+    agent.messages.length = 0;
   }
 
   /**
@@ -1040,7 +1105,7 @@ export class AgentControl {
     }
     const agent = this.requireLive(threadId);
     try {
-      agent.downInbox.send({
+      const delivery = agent.downInbox.send({
         author: agent.agentPath,
         recipient: agent.agentPath,
         content: message,
@@ -1048,12 +1113,100 @@ export class AgentControl {
         direction: "down",
         metadata: { kind: "append_message" },
       });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
     } catch (err) {
       if (err instanceof MailboxClosedError) {
         throw new ThreadNotFoundError(threadId);
       }
       throw err;
     }
+  }
+
+  /**
+   * Admit exactly one correlated task for an idle reusable worker.
+   *
+   * This method deliberately performs every admission check and installs the
+   * outstanding-assignment marker synchronously, before mailbox projection.
+   * JavaScript's run-to-completion semantics therefore make the idle check and
+   * reservation atomic with respect to competing assign_task calls.
+   */
+  assignTask(
+    threadId: ThreadId,
+    assignment: {
+      readonly author: AgentPath;
+      readonly recipient: AgentPath;
+      readonly content: string;
+      readonly taskId: string;
+    },
+  ): { readonly taskId: string; readonly turnId: string } {
+    const agent = this.requireLive(threadId);
+    if (
+      assignment.author === assignment.recipient ||
+      assignment.author === agent.agentPath
+    ) {
+      throw new AgentAssignmentRejectedError(
+        "self_target",
+        "an agent cannot assign a task to itself",
+      );
+    }
+    if (!isStrictAgentPathAncestor(assignment.author, agent.agentPath)) {
+      throw new AgentAssignmentRejectedError(
+        "sender_not_ancestor",
+        `task sender ${assignment.author} must be a strict ancestor of ${agent.agentPath}`,
+      );
+    }
+    if (agent.assignment !== undefined) {
+      throw new AgentAssignmentRejectedError(
+        "assignment_outstanding",
+        `agent ${agent.agentPath} already has an outstanding assignment`,
+      );
+    }
+    if (agent.status.value.status !== "idle") {
+      throw new AgentAssignmentRejectedError(
+        "worker_not_idle",
+        `agent ${agent.agentPath} is not an idle reusable worker`,
+      );
+    }
+
+    const admission: AgentAssignmentAdmission = {
+      taskId: assignment.taskId,
+      turnId: crypto.randomUUID(),
+      author: assignment.author,
+      acceptedAtMs: Date.now(),
+      state: "accepted",
+    };
+    agent.assignment = admission;
+    try {
+      const delivery = agent.downInbox.send({
+        author: assignment.author,
+        recipient: agent.agentPath,
+        content: assignment.content,
+        triggerTurn: true,
+        direction: "down",
+        metadata: {
+          kind: "inter_agent_communication",
+          deliveryMode: "trigger_turn",
+          taskId: admission.taskId,
+          turnId: admission.turnId,
+        },
+      });
+      if (delivery === "dropped") {
+        throw new AgentAssignmentRejectedError(
+          "mailbox_backpressure",
+          `agent ${agent.agentPath} mailbox cannot safely accept the assignment trigger`,
+        );
+      }
+    } catch (error) {
+      if (agent.assignment === admission) agent.assignment = undefined;
+      if (error instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw error;
+    }
+    this.registry.updateLastTaskMessage(threadId, assignment.content);
+    return { taskId: admission.taskId, turnId: admission.turnId };
   }
 
   /**
@@ -1068,6 +1221,7 @@ export class AgentControl {
       readonly recipient: string;
       readonly content: string;
       readonly triggerTurn: boolean;
+      readonly metadata?: Readonly<Record<string, unknown>>;
     },
   ): Promise<void> {
     if (this.threadManager?.hasThread(threadId)) {
@@ -1079,14 +1233,20 @@ export class AgentControl {
       return;
     }
     if (this.rootThreadId !== undefined && threadId === this.rootThreadId) {
-      this.session.mailbox.send({
+      const deliverySequence = this.session.mailbox.send({
         author: communication.author,
         recipient: communication.recipient,
         content: communication.content,
         triggerTurn: communication.triggerTurn,
         direction: "up",
-        metadata: { kind: "inter_agent_communication" },
+        metadata: {
+          ...(communication.metadata ?? {}),
+          kind: "inter_agent_communication",
+        },
       });
+      if (!isMailboxSendAccepted(deliverySequence)) {
+        throw new MailboxCapacityError(threadId);
+      }
       if (communication.triggerTurn) {
         this.requestRootFollowupTurn(communication.author);
       }
@@ -1094,14 +1254,20 @@ export class AgentControl {
     }
     const agent = this.requireLive(threadId);
     try {
-      agent.downInbox.send({
+      const delivery = agent.downInbox.send({
         author: communication.author,
         recipient: communication.recipient,
         content: communication.content,
         triggerTurn: communication.triggerTurn,
         direction: "down",
-        metadata: { kind: "inter_agent_communication" },
+        metadata: {
+          ...(communication.metadata ?? {}),
+          kind: "inter_agent_communication",
+        },
       });
+      if (delivery === "dropped") {
+        throw new MailboxCapacityError(agent.downInbox.threadId);
+      }
     } catch (err) {
       if (err instanceof MailboxClosedError) {
         throw new ThreadNotFoundError(threadId);
@@ -1743,7 +1909,7 @@ export class AgentControl {
       if (statusKey === lastNotifiedStatusKey) continue;
       lastNotifiedStatusKey = statusKey;
       await this.sendCompletionNotification(child, parentId, status);
-      if (status.status !== "completed") return;
+      return;
     }
   }
 
@@ -1752,6 +1918,16 @@ export class AgentControl {
     parentId: ThreadId,
     final: AgentStatus,
   ): Promise<void> {
+    const receipt = child.lastTaskReceipt;
+    const representedByReceipt =
+      (final.status === "completed" || final.status === "errored") &&
+      receipt !== undefined &&
+      receipt.turnId === final.turnId &&
+      ((final.status === "completed" && receipt.outcome === "completed") ||
+        (final.status === "errored" && receipt.outcome === "errored"));
+    if (representedByReceipt) {
+      return;
+    }
     const message = formatSubagentNotification({
       agentPath: child.agentPath,
       status: final,
@@ -1848,17 +2024,69 @@ export class AgentControl {
       }
     ).submit;
     if (typeof submit !== "function") return;
+    if (this.rootFollowupRetryTimer !== undefined) {
+      clearTimeout(this.rootFollowupRetryTimer);
+      this.rootFollowupRetryTimer = undefined;
+    }
+    if (this.rootFollowupInFlight) {
+      this.rootFollowupRequested = true;
+      return;
+    }
+    this.rootFollowupInFlight = true;
+    let retryableFailure = false;
     void submit
       .call(this.session, "", { displayUserMessage: null })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         if (message === "Session submit hook is not installed") return;
+        retryableFailure = true;
         emitWarning(
           this.session.eventLog,
           this.session.nextInternalSubId(),
           "subagent_followup_turn_failed",
           `subagent ${author} could not start root follow-up turn: ${message}`,
         );
+      })
+      .finally(() => {
+        this.rootFollowupInFlight = false;
+        if (!retryableFailure) {
+          this.rootFollowupRetryAttempt = 0;
+        }
+        const deferredMailboxProbe = (
+          this.session as unknown as {
+            hasDeferredAgentMailboxMessages?: () => boolean;
+          }
+        ).hasDeferredAgentMailboxMessages;
+        const hasDeferredMailboxProjection =
+          typeof deferredMailboxProbe === "function" &&
+          deferredMailboxProbe.call(this.session);
+        const retryAcceptedMailboxTrigger =
+          retryableFailure &&
+          this.session.mailbox.hasPendingTriggerTurn();
+        if (
+          !this.rootFollowupRequested &&
+          !hasDeferredMailboxProjection &&
+          !retryAcceptedMailboxTrigger
+        ) {
+          return;
+        }
+        this.rootFollowupRequested = false;
+        if (retryableFailure) {
+          const delayMs = Math.min(
+            ROOT_FOLLOWUP_RETRY_MAX_MS,
+            ROOT_FOLLOWUP_RETRY_BASE_MS *
+              2 ** Math.min(this.rootFollowupRetryAttempt, 6),
+          );
+          this.rootFollowupRetryAttempt += 1;
+          this.rootFollowupRetryTimer = setTimeout(() => {
+            this.rootFollowupRetryTimer = undefined;
+            if (this.session.abortController?.signal.aborted) return;
+            this.requestRootFollowupTurn(author);
+          }, delayMs);
+          this.rootFollowupRetryTimer.unref?.();
+          return;
+        }
+        this.requestRootFollowupTurn(author);
       });
   }
 

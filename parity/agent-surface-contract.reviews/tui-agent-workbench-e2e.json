@@ -1,8 +1,8 @@
 {
   "rowId": "tui-agent-workbench-e2e",
   "contractName": "agent-surface-contract",
-  "reviewer": "manual-row-reviewer",
-  "reviewedAt": "2026-06-14T19:54:12Z",
+  "reviewer": "independent-parity-auditor",
+  "reviewedAt": "2026-07-23T05:33:14Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -10,25 +10,31 @@
       "keeps slash-command agent menus and workbench agent surfaces mutually exclusive for input ownership",
       "maps daemon agent lifecycle events into stable task rows and workbench rail entries",
       "survives late daemon completion messages after the main prompt has returned",
-      "renders startup auth notices without throwing when provider credential helpers report missing keys",
+      "renders startup auth notices without throwing when provider credential helpers report no Anthropic or AgenC account key",
       "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios",
-      "preserves first-seen agent navigation order while keeping completed agents selectable"
+      "preserves first-seen agent navigation order while keeping completed agents selectable",
+      "preserves exact root-input ownership across local, deferred-daemon, and live-daemon paths with bounded admission and origin-bound rollback"
     ],
     "missingBehaviors": []
   },
   "edgeCaseCoverage": {
     "edgeCasesAudited": [
-      "late daemon completion messages do not crash the TUI",
-      "slash agents menu owns input while open and hides the main prompt marker",
-      "credential lookup failures map to missing-key state instead of thrown startup notices",
-      "agent surface empty state and stale tail read failures do not crash or show wrong task content",
-      "completed agents remain selectable and rail navigation wraps without status/time resorting",
-      "collab task synchronization keeps row identity stable across running and completed statuses"
+      "a daemon completion message arriving after the prompt is visible does not crash the TUI",
+      "the slash agents menu owns input while open and does not leave the main prompt marker visible",
+      "CI startup without Anthropic or AgenC account credentials maps auth lookup failures to a missing-key state instead of throwing",
+      "startup status-notice filtering ignores throwing auth key lookups and keeps other notices renderable",
+      "an agent with no transcript renders an empty state instead of throwing during surface selection",
+      "a completed agent remains selectable in the rail after active streaming stops",
+      "rapid task-state synchronization batches keep row identity stable across running and completed statuses",
+      "agent rail next and previous navigation wraps through completed agents without resorting by status or start time",
+      "first-start, attach, and pre-consumption preparation failures restore only the exact owned input while daemon-gone live proxies avoid text-only retry duplication",
+      "deferred input rejects atomically at 512 entries or 16 MiB of serialized retained content and does not advance ownership sequence on rejection"
     ],
     "missingEdgeCases": []
   },
   "issues": [],
   "evidence": {
+    "sourceLedgerValidation": "PASS: frozen source ledger metadata validated; source checkout verification skipped",
     "filesRead": [
       "parity/agent-surface-contract.json",
       "runtime/src/tui/workbench/surfaces/AgentSurface.tsx",
@@ -37,6 +43,10 @@
       "runtime/src/tui/hooks/useTasksV2.ts",
       "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
       "runtime/src/tui/state/collabAgentTaskSync.ts",
+      "runtime/src/tui/components/App.tsx",
+      "runtime/src/tui/daemon-session.ts",
+      "runtime/src/tui/session-types.ts",
+      "runtime/src/bin/agenc-main.ts",
       "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
       "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs",
       "runtime/tests/tui/workbench/agent-surface.test.tsx",
@@ -46,21 +56,27 @@
       "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
       "runtime/tests/tui/hooks/useTasksV2.test.tsx",
       "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
-      "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+      "runtime/tests/tui/state/collabAgentTaskSync.test.ts",
+      "runtime/tests/tui/components/App.render.test.tsx",
+      "runtime/tests/tui/daemon-session.contract.test.ts",
+      "runtime/tests/bin/agenc.deferred-input.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
+      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts tests/tui/components/App.render.test.tsx tests/tui/daemon-session.contract.test.ts tests/bin/agenc.deferred-input.test.ts --reporter=dot",
       "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
     ],
     "commandResults": [
-      "PASS: 8 test files passed, 69 tests passed",
-      "PASS: package build and filtered TUI e2e scenarios 03-subagent-completion and 23-slash-agents"
+      "PASS: 11 test files passed, 201 tests passed",
+      "PASS: runtime build completed",
+      "PASS: TUI E2E scenario 03-subagent-completion",
+      "PASS: TUI E2E scenario 23-slash-agents"
     ],
     "implementationEvidence": [
-      "AgentSurface resolves stale selections to the first observed agent, renders empty state safely, gates transcript entry to locally viewable agent task types, and preserves visible tail content across transient read failures.",
-      "AgentsRail orders active/background tasks, resolves stale selections, wraps next/previous navigation, and keeps completed agents selectable without re-sorting by status or start time.",
-      "collabAgentTaskSync maps collab spawn/status/interaction and background status events into stable local task patches.",
-      "The /agents e2e scenario asserts menu input ownership, and the subagent completion e2e scenario lingers after the prompt to catch late daemon completion crashes."
+      "AgentSurface and AgentsRail preserve stable selection, empty-state safety, first-seen ordering, and completed-agent navigation while daemon task synchronization retains stable row identity.",
+      "App admits startup, attachment, and skill context as owned batches, commits only after model submission, and restores UI input only when exact rollback proves pre-consumption.",
+      "The live daemon session and deferred agenc-main adapter enforce 512-record and 16-MiB retained-content bounds, account for in-flight input, and bind rollback to the exact origin session.",
+      "First-start and attach failures exclude rolled-back context from retry, while daemon-gone live proxies never retry the text portion without its context bundle.",
+      "The subagent-completion E2E lingers after prompt return to catch late daemon crashes, and the slash-agents E2E verifies exclusive input ownership."
     ]
   }
 }

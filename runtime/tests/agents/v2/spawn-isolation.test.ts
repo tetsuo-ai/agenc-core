@@ -9,6 +9,7 @@ import { delegate } from "../delegate.js";
 import type { MultiAgentV2Options } from "./common.js";
 import type { Session } from "../../session/session.js";
 import { createAgentRoleWorkspace } from "../role.js";
+import { signSessionId } from "../_deps/filesystem-args.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
 
@@ -18,12 +19,22 @@ interface FakeSchema {
   readonly properties: Record<string, Record<string, unknown>>;
 }
 
-function fakeThread(withWorktree: boolean): unknown {
+function fakeThread(
+  withWorktree: boolean,
+  opts: {
+    readonly threadId?: string;
+    readonly agentPath?: string;
+    readonly worktreeSlug?: string;
+  } = {},
+): unknown {
+  const threadId = opts.threadId ?? "thread-x";
+  const agentPath = opts.agentPath ?? "/root/writer_a";
+  const worktreeSlug = opts.worktreeSlug ?? "writer_a";
   return {
-    threadId: "thread-x",
+    threadId,
     live: {
-      agentId: "thread-x",
-      agentPath: "/root/writer_a",
+      agentId: threadId,
+      agentPath,
       nickname: "wt",
       role: { name: "default" },
       status: { value: "running", watch: () => () => {} },
@@ -31,8 +42,8 @@ function fakeThread(withWorktree: boolean): unknown {
     ...(withWorktree
       ? {
           worktree: {
-            path: "/repo/.agenc-worktrees/writer_a",
-            branch: "agent/writer_a",
+            path: `/repo/.agenc-worktrees/${worktreeSlug}`,
+            branch: `worktree-${worktreeSlug}`,
             gitRoot: "/repo",
             created: true,
           },
@@ -40,7 +51,7 @@ function fakeThread(withWorktree: boolean): unknown {
       : {}),
     onStatusChange: () => () => {},
     join: async () => ({
-      threadId: "thread-x",
+      threadId,
       durationMs: 1,
       outcome: "completed",
     }),
@@ -70,7 +81,10 @@ function makeSession(): Session {
   } as unknown as Session;
 }
 
-function makeOptions(session: Session): MultiAgentV2Options {
+function makeOptions(
+  session: Session,
+  liveById: Readonly<Record<string, unknown>> = {},
+): MultiAgentV2Options {
   return {
     getSession: () => session,
     workspace: ROLE_WORKSPACE,
@@ -78,7 +92,7 @@ function makeOptions(session: Session): MultiAgentV2Options {
       control: {
         roleWorkspace: ROLE_WORKSPACE,
         assertRoleWorkspace: () => {},
-        getLive: () => undefined,
+        getLive: (id: string) => liveById[id],
       },
       registry: {},
     }),
@@ -100,32 +114,165 @@ describe("spawn_agent isolation", () => {
     );
   });
 
-  it("passes isolation + worktreeSlug (task_name) through to delegate", async () => {
+  it("passes a session/path/spawn-scoped worktree slug through to delegate", async () => {
     const session = makeSession();
     const tool = createSpawnAgentTool(makeOptions(session));
-    mockDelegate.mockResolvedValueOnce({
-      kind: "async_launched",
-      thread: fakeThread(true) as never,
+    mockDelegate.mockImplementationOnce(async (delegateOpts) => {
+      const worktreeSlug = delegateOpts.worktreeSlug;
+      return {
+        kind: "async_launched",
+        thread: fakeThread(true, {
+          ...(worktreeSlug !== undefined ? { worktreeSlug } : {}),
+        }) as never,
+      };
     });
     const result = await tool.execute({
       message: "write the parser",
       task_name: "writer_a",
       fork_turns: "none",
       isolation: "worktree",
+      __callId: "spawn-writer-a",
     });
-    expect(mockDelegate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        isolation: "worktree",
-        worktreeSlug: "writer_a",
-      }),
+    const delegateOpts = mockDelegate.mock.calls[0]?.[0];
+    expect(delegateOpts).toEqual(
+      expect.objectContaining({ isolation: "worktree" }),
     );
+    const worktreeSlug = delegateOpts?.worktreeSlug;
+    expect(worktreeSlug).toMatch(/^writer_a-[a-f0-9]{32}$/u);
+    expect(worktreeSlug?.length).toBeLessThanOrEqual(64);
     const payload = JSON.parse(String(result.content)) as Record<
       string,
       unknown
     >;
     expect(payload.isolation).toBe("worktree");
-    expect(payload.worktree_path).toBe("/repo/.agenc-worktrees/writer_a");
-    expect(payload.worktree_branch).toBe("agent/writer_a");
+    expect(payload.worktree_path).toBe(
+      `/repo/.agenc-worktrees/${worktreeSlug}`,
+    );
+    expect(payload.worktree_branch).toBe(`worktree-${worktreeSlug}`);
+  });
+
+  it("gives nested parents with the same child name distinct worktree paths and branches", async () => {
+    const session = makeSession();
+    const liveById = {
+      "parent-a": {
+        agentId: "parent-a",
+        agentPath: "/root/parent_a",
+        nickname: "parent-a",
+        role: { name: "default" },
+      },
+      "parent-b": {
+        agentId: "parent-b",
+        agentPath: "/root/parent_b",
+        nickname: "parent-b",
+        role: { name: "default" },
+      },
+    };
+    const tool = createSpawnAgentTool(makeOptions(session, liveById));
+    let threadCounter = 0;
+    mockDelegate.mockImplementation(async (delegateOpts) => {
+      threadCounter += 1;
+      const worktreeSlug = delegateOpts.worktreeSlug;
+      return {
+        kind: "async_launched",
+        thread: fakeThread(true, {
+          threadId: `thread-${threadCounter}`,
+          agentPath: `${delegateOpts.parentPath}/shared_writer`,
+          ...(worktreeSlug !== undefined ? { worktreeSlug } : {}),
+        }) as never,
+      };
+    });
+
+    const first = await tool.execute({
+      message: "write from parent A",
+      task_name: "shared_writer",
+      isolation: "worktree",
+      __agencSessionId: "parent-a",
+      __agencSessionIdSig: signSessionId("parent-a"),
+      __callId: "shared-spawn-epoch",
+    });
+    const second = await tool.execute({
+      message: "write from parent B",
+      task_name: "shared_writer",
+      isolation: "worktree",
+      __agencSessionId: "parent-b",
+      __agencSessionIdSig: signSessionId("parent-b"),
+      __callId: "shared-spawn-epoch",
+    });
+
+    const firstOpts = mockDelegate.mock.calls[0]?.[0];
+    const secondOpts = mockDelegate.mock.calls[1]?.[0];
+    expect(firstOpts?.parentPath).toBe("/root/parent_a");
+    expect(secondOpts?.parentPath).toBe("/root/parent_b");
+    expect(firstOpts?.worktreeSlug).not.toBe(secondOpts?.worktreeSlug);
+    expect(firstOpts?.worktreeSlug).toMatch(
+      /^shared_writer-[a-f0-9]{32}$/u,
+    );
+    expect(secondOpts?.worktreeSlug).toMatch(
+      /^shared_writer-[a-f0-9]{32}$/u,
+    );
+
+    const firstPayload = JSON.parse(String(first.content)) as Record<
+      string,
+      unknown
+    >;
+    const secondPayload = JSON.parse(String(second.content)) as Record<
+      string,
+      unknown
+    >;
+    expect(firstPayload.worktree_path).not.toBe(secondPayload.worktree_path);
+    expect(firstPayload.worktree_branch).not.toBe(
+      secondPayload.worktree_branch,
+    );
+  });
+
+  it("gives a later logical respawn at the same path a fresh worktree", async () => {
+    const session = makeSession();
+    const tool = createSpawnAgentTool(makeOptions(session));
+    let threadCounter = 0;
+    mockDelegate.mockImplementation(async (delegateOpts) => {
+      threadCounter += 1;
+      const worktreeSlug = delegateOpts.worktreeSlug;
+      return {
+        kind: "async_launched",
+        thread: fakeThread(true, {
+          threadId: `respawn-thread-${threadCounter}`,
+          agentPath: "/root/shared_writer",
+          ...(worktreeSlug !== undefined ? { worktreeSlug } : {}),
+        }) as never,
+      };
+    });
+
+    const first = await tool.execute({
+      message: "first logical worker",
+      task_name: "shared_writer",
+      isolation: "worktree",
+      __callId: "spawn-epoch-one",
+    });
+    const second = await tool.execute({
+      message: "replacement logical worker",
+      task_name: "shared_writer",
+      isolation: "worktree",
+      __callId: "spawn-epoch-two",
+    });
+
+    const firstOpts = mockDelegate.mock.calls[0]?.[0];
+    const secondOpts = mockDelegate.mock.calls[1]?.[0];
+    expect(firstOpts?.parentPath).toBe("/root");
+    expect(secondOpts?.parentPath).toBe("/root");
+    expect(firstOpts?.worktreeSlug).not.toBe(secondOpts?.worktreeSlug);
+
+    const firstPayload = JSON.parse(String(first.content)) as Record<
+      string,
+      unknown
+    >;
+    const secondPayload = JSON.parse(String(second.content)) as Record<
+      string,
+      unknown
+    >;
+    expect(firstPayload.worktree_path).not.toBe(secondPayload.worktree_path);
+    expect(firstPayload.worktree_branch).not.toBe(
+      secondPayload.worktree_branch,
+    );
   });
 
   it("omits isolation from delegate opts when not requested", async () => {

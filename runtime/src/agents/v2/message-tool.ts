@@ -5,6 +5,7 @@ import {
   currentAgentContext,
   emit,
   getSessionOrError,
+  isCurrentAgentContextError,
   json,
   receiverMetadataFor,
   resolveAgentId,
@@ -13,6 +14,9 @@ import {
 } from "./common.js";
 
 export type MessageDeliveryMode = "queue_only" | "trigger_turn";
+
+export const MAX_INTER_AGENT_MESSAGE_CHARACTERS = 65_536;
+export const MAX_INTER_AGENT_MESSAGE_BYTES = 65_536;
 
 export async function handleMessageStringTool(
   args: Record<string, unknown>,
@@ -27,10 +31,22 @@ export async function handleMessageStringTool(
   if (message.trim().length === 0) {
     return json({ error: "Empty message can't be sent to an agent" }, true);
   }
+  if (
+    message.length > MAX_INTER_AGENT_MESSAGE_CHARACTERS ||
+    Buffer.byteLength(message, "utf8") > MAX_INTER_AGENT_MESSAGE_BYTES
+  ) {
+    return json(
+      {
+        error: `message exceeds the ${MAX_INTER_AGENT_MESSAGE_BYTES}-byte inter-agent limit`,
+      },
+      true,
+    );
+  }
   const sessionOrError = getSessionOrError(opts);
   if (!("conversationId" in sessionOrError)) return sessionOrError;
   const { control } = opts.ensureAgentControl(sessionOrError);
   const current = currentAgentContext(sessionOrError, args, opts);
+  if (isCurrentAgentContextError(current)) return current;
   let agentId: ThreadId;
   try {
     agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
@@ -39,6 +55,9 @@ export async function handleMessageStringTool(
       { error: error instanceof Error ? error.message : String(error) },
       true,
     );
+  }
+  if (agentId === current.threadId) {
+    return json({ error: "an agent cannot message itself" }, true);
   }
   if (mode === "trigger_turn" && agentId === sessionOrError.conversationId) {
     return json({ error: "Tasks can't be assigned to the root agent" }, true);
@@ -60,13 +79,27 @@ export async function handleMessageStringTool(
     },
   });
   let deliveryError: unknown;
+  let acceptedTask:
+    { readonly taskId: string; readonly turnId: string } | undefined;
   try {
-    await control.sendInterAgentCommunication(agentId, {
-      author: current.agentPath,
-      recipient: receiverAgentPath,
-      content: message,
-      triggerTurn: mode === "trigger_turn",
-    });
+    if (mode === "trigger_turn") {
+      acceptedTask = control.assignTask(agentId, {
+        author: current.agentPath,
+        recipient: receiverAgentPath,
+        content: message,
+        taskId: callId,
+      });
+    } else {
+      await control.sendInterAgentCommunication(agentId, {
+        author: current.agentPath,
+        recipient: receiverAgentPath,
+        content: message,
+        triggerTurn: false,
+        metadata: {
+          deliveryMode: mode,
+        },
+      });
+    }
   } catch (error) {
     deliveryError = error;
   }
@@ -98,5 +131,11 @@ export async function handleMessageStringTool(
     mode: mode === "trigger_turn" ? "assign_task" : "send_message",
     target: receiverAgentPath,
     status,
+    ...(acceptedTask !== undefined
+      ? {
+          task_id: acceptedTask.taskId,
+          turn_id: acceptedTask.turnId,
+        }
+      : {}),
   });
 }
