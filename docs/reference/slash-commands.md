@@ -50,6 +50,7 @@ Order matches `buildDefaultRegistry`.
 | `/compact` | | Compact the current conversation |
 | `/context` | `ctx` | Show current context usage |
 | `/coordinator` | `fleet` | Show or toggle coordinator (orchestrator) mode |
+| `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/diff` | | Show uncommitted changes (`git diff HEAD` + untracked) |
 | `/claim` | | Protocol: claim an open marketplace task (gated by `[protocol]`) |
 | `/delegate` | | Protocol: delegate a task step (owner-gated; often stub) |
@@ -62,8 +63,35 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by the registry
 (`help`, `status`, `auth`, `xai-auth`, `cost`, `model`, `provider`,
 `permissions`, `plan`, `agent-management`, `tasks`, `todos`, `config`, `hooks`,
 `skills`, `mcp`, `remote`, `plugins`, `memory/slash`, `resume`, `rewind`, `init`,
-`output-style`, `clear`, `session-compact`, `coordinator`, `diff`, `protocol`,
+`output-style`, `clear`, `session-compact`, `coordinator`, `swarm`, `diff`, `protocol`,
 `exit`). Related how-to: [grok-oauth.md](../grok-oauth.md).
+
+---
+
+## `/swarm`
+
+| Invocation | Effect |
+| --- | --- |
+| `/swarm` or `/swarm status` | Show the effective and saved mode plus active and idle/reusable local-agent counts |
+| `/swarm on` | Persist swarm mode and enable root-turn adaptive guidance |
+| `/swarm off` | Persist swarm mode off |
+
+The no-argument form reports status; it does not toggle. The status count
+classifies `local_agent` tasks in `pending`/`running` as active and `idle` as
+reusable.
+
+When enabled, the next eligible root turn receives one conservative
+model-facing routing reminder. Sequential remains the default; independent
+work may receive a recommendation for two workers or a ceiling of four.
+Synthetic/mailbox follow-up turns coordinate existing receipts instead of
+recursively spawning replacements.
+
+This is guidance, not execution. `/swarm on` does not spawn agents, force the
+recommended count, create worktrees, approve tools, or bypass permission,
+sandbox, capacity, admission, or budget controls. Turning it off does not
+disable explicit use of the multi-agent tools. Full routing, receipt, and
+integration semantics:
+[swarm-orchestration.md](../design/swarm-orchestration.md).
 
 ---
 

@@ -88,12 +88,15 @@ function initRepo(): string {
 
 function gatedRun(): {
   release: () => void;
-  impl: () => AsyncGenerator<never, {
-    threadId: string;
-    durationMs: number;
-    outcome: "completed";
-    finalMessage: string;
-  }>;
+  impl: () => AsyncGenerator<
+    never,
+    {
+      threadId: string;
+      durationMs: number;
+      outcome: "completed";
+      finalMessage: string;
+    }
+  >;
 } {
   let releaseFn: () => void = () => {};
   const gate = new Promise<void>((resolveGate) => {
@@ -187,6 +190,58 @@ describe("delegate worktree isolation (real git)", () => {
     }
   });
 
+  it("threads the immutable turn-start SHA even when the worker advances HEAD", async () => {
+    const repo = initRepo();
+    try {
+      const firstSha = git(repo, "rev-parse", "HEAD").trim();
+      let capturedBase: string | undefined;
+      let workerHead: string | undefined;
+      mockRunAgent.mockImplementationOnce((params) =>
+        (async function* () {
+          capturedBase = params.worktreeBaseCommit;
+          const worktreePath = params.worktree?.path;
+          if (worktreePath === undefined) throw new Error("missing worktree");
+          writeFileSync(join(worktreePath, "result.txt"), "result\n", "utf8");
+          git(worktreePath, "add", "result.txt");
+          git(worktreePath, "commit", "-m", "agent result");
+          workerHead = git(worktreePath, "rev-parse", "HEAD").trim();
+          return {
+            threadId: params.live.agentId,
+            durationMs: 1,
+            outcome: "completed" as const,
+            finalMessage: "done",
+          };
+        })(),
+      );
+      const control = {
+        spawn: vi
+          .fn()
+          .mockResolvedValue(makeLive("thread-sha", "/root/agent_sha")),
+        shutdown: vi.fn(async () => {}),
+        markThreadSpawnEdgeClosed: vi.fn(async () => {}),
+        resumeAgentFromRollout: vi.fn(),
+      };
+
+      const outcome = await delegate({
+        parent: makeParentSession(repo) as never,
+        parentPath: "/root",
+        control: control as never,
+        registry: {} as never,
+        taskPrompt: "commit the result",
+        isolation: "worktree",
+        worktreeSlug: "agent_sha",
+        forceSynchronous: true,
+      });
+
+      expect(outcome.kind).toBe("sync_completed");
+      expect(capturedBase).toBe(firstSha);
+      expect(workerHead).toMatch(/^[0-9a-f]{40}$/);
+      expect(workerHead).not.toBe(firstSha);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("rejects worktree isolation outside a git repository", async () => {
     const plainDir = mkdtempSync(join(tmpdir(), "agenc-wt-plain-"));
     try {
@@ -211,6 +266,57 @@ describe("delegate worktree isolation (real git)", () => {
       expect(control.spawn).not.toHaveBeenCalled();
     } finally {
       rmSync(plainDir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures the resumed base without deleting pre-existing retained work", async () => {
+    const repo = initRepo();
+    try {
+      const worktreePath = join(repo, ".agenc-worktrees", "agent_resume");
+      git(repo, "worktree", "add", "-b", "worktree-agent_resume", worktreePath);
+      writeFileSync(join(worktreePath, "agent.txt"), "already committed\n");
+      git(worktreePath, "add", "agent.txt");
+      git(worktreePath, "commit", "-m", "existing agent work");
+      expect(git(worktreePath, "rev-parse", "HEAD").trim()).not.toBe(
+        git(repo, "rev-parse", "HEAD").trim(),
+      );
+
+      const gate = gatedRun();
+      mockRunAgent.mockImplementationOnce(gate.impl);
+      const control = {
+        spawn: vi
+          .fn()
+          .mockResolvedValue(makeLive("thread-resume", "/root/agent_resume")),
+        shutdown: vi.fn(async () => {}),
+        markThreadSpawnEdgeClosed: vi.fn(async () => {}),
+        resumeAgentFromRollout: vi.fn(),
+      };
+
+      const outcome = await delegate({
+        parent: makeParentSession(repo) as never,
+        parentPath: "/root",
+        control: control as never,
+        registry: {} as never,
+        taskPrompt: "inspect without changes",
+        isolation: "worktree",
+        worktreeSlug: "agent_resume",
+      });
+      if (outcome.kind !== "async_launched") {
+        throw new Error(`unexpected outcome: ${JSON.stringify(outcome)}`);
+      }
+
+      gate.release();
+      await outcome.thread.join();
+
+      // A turn-relative base must not erase commits retained before this
+      // invocation. Resumed worktrees require an explicit later cleanup even
+      // when the current turn itself is a no-op.
+      expect(existsSync(worktreePath)).toBe(true);
+      expect(git(worktreePath, "show", "HEAD:agent.txt").trim()).toBe(
+        "already committed",
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

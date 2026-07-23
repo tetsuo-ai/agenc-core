@@ -1,8 +1,8 @@
 {
   "rowId": "run-loop-thread-mailbox",
   "contractName": "agent-surface-contract",
-  "reviewer": "manual-row-reviewer",
-  "reviewedAt": "2026-06-14T19:54:12Z",
+  "reviewer": "independent-parity-auditor",
+  "reviewedAt": "2026-07-23T05:33:14Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -10,46 +10,52 @@
       "runs the child provider turn loop through the same tool dispatch and rollout path as a normal session",
       "forwards child messages, tool calls, tool results, usage, completion, and error events to the parent mailbox",
       "drains parent-to-child trigger-turn messages between keep-alive turns without losing ordering",
-      "terminates cleanly on completion, provider error, max-turn exhaustion, mailbox close, or abort"
+      "terminates cleanly on completion, provider error, max-turn exhaustion, mailbox close, or abort",
+      "admits root human input through exact opaque ownership tokens with bounded retained content and exact pre-consumption rollback"
     ],
     "missingBehaviors": []
   },
   "edgeCaseCoverage": {
     "edgeCasesAudited": [
-      "follow-up trigger while idle starts another keep-alive turn on the same live child",
-      "provider rejection records run_error and terminal errored status",
-      "abort while provider stream is pending resolves the run as interrupted or aborted",
-      "silent mode suppresses parent mailbox notifications and child rollout writes",
-      "maxTurns one reports deterministic max-turn exhaustion after the first assistant response"
+      "a follow-up trigger arriving while the child is idle starts the next turn on the same live child",
+      "a provider rejection records run_error and final errored status without leaving the child mailbox open",
+      "an abort while the provider stream is pending interrupts the child run and resolves the caller promise",
+      "silent mode suppresses parent notifications while preserving the canonical child rollout and final result",
+      "maxTurns equal to one reports a deterministic max-turn error after the first child assistant response",
+      "an input rejected before model consumption rolls back only its exact admission while consumed or indeterminate input is never duplicated"
     ],
     "missingEdgeCases": []
   },
   "issues": [],
   "evidence": {
+    "sourceLedgerValidation": "PASS: frozen source ledger metadata validated; source checkout verification skipped",
     "filesRead": [
       "parity/agent-surface-contract.json",
       "runtime/src/agents/run-agent.ts",
       "runtime/src/agents/mailbox.ts",
       "runtime/src/agents/thread.ts",
       "runtime/src/agents/thread-manager.ts",
+      "runtime/src/session/session.ts",
       "runtime/tests/agents/run-agent.test.ts",
       "runtime/tests/agents/run-agent-mailbox.test.ts",
       "runtime/tests/agents/mailbox.test.ts",
       "runtime/tests/agents/thread-manager.test.ts",
       "runtime/tests/agents/thread.test.ts",
-      "runtime/tests/agents/thread-rollout-truncation.test.ts"
+      "runtime/tests/agents/thread-rollout-truncation.test.ts",
+      "runtime/tests/session/idle-input.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts --reporter=dot"
+      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts tests/session/idle-input.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 6 test files passed, 84 tests passed"
+      "PASS: 7 test files passed, 149 tests passed"
     ],
     "implementationEvidence": [
-      "runAgent builds child runtime context from parent services, fork messages, role policy, provider override, worktree roots, and abort signals before calling the standard model turn path.",
-      "Mailbox preserves triggerTurn flags, ordered drain semantics, closed mailbox behavior, and wait-for-update semantics needed by keep-alive children.",
-      "AgentThread.fork and AgentThread.spawn route through dispatchSpawn with explicit fork mode differences.",
-      "ThreadManager routes inter-agent communication, trigger turns, interrupts, and live-agent registration against the same live handle graph used by AgentControl."
+      "runAgent builds child runtime context from parent services, fork messages, role policy, provider selection, worktree coordinates, and abort signals before entering the standard model turn path.",
+      "The child mailbox enforces count and UTF-8 byte bounds, protects trigger traffic, preserves FIFO prefix processing, emits bounded omission markers, and wakes waiters while salvaging admitted traffic on close.",
+      "runAgent appends each correlated terminal task outcome to the canonical child journal before any bounded, deduplicated parent projection; projection backpressure is explicit and cannot erase the durable outcome.",
+      "Silent mode suppresses parent relays only and preserves the canonical child rollout.",
+      "Session-owned idle-input admissions use opaque tokens over exact sequence identities, admit protected batches atomically, and roll back only records that remain unconsumed."
     ]
   }
 }

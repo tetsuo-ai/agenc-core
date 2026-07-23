@@ -15,7 +15,10 @@ import {
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
-import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
+import {
+  _clearAgentControlCacheForTesting,
+  _setAgentControlForTesting,
+} from "./delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
@@ -36,6 +39,8 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
   SESSION_ID_ARG,
+  SESSION_ID_SIG_ARG,
+  signSessionId,
 } from "../tools/system/filesystem.js";
 import {
   _resetAgentRolesForTesting,
@@ -336,7 +341,7 @@ function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
 
 function installDeterministicPublicWebFetchDns(): void {
   __setLiveWebFetchDnsAllLookupForTests((_hostname, callback) => {
-    callback(null, [{ address: '192.0.2.1', family: 4 }]);
+    callback(null, [{ address: "192.0.2.1", family: 4 }]);
   });
 }
 
@@ -411,7 +416,9 @@ describe("model-facing tools", () => {
     // followup_task was a dormant deferred alias of assign_task — deleted.
     expect(allNames).not.toContain("followup_task");
 
-    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    const visibleNames = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
 
     // Exactly one visible elicitation tool: AskUserQuestion is canonical;
     // request_user_input is registered but deferred + hidden.
@@ -476,11 +483,13 @@ describe("model-facing tools", () => {
     expect(
       (
         registry.tools.find((tool) => tool.name === "spawn_agent")
-          ?.inputSchema as {
-          properties?: Record<string, { description?: string }>;
-        } | undefined
+          ?.inputSchema as
+          | {
+              properties?: Record<string, { description?: string }>;
+            }
+          | undefined
       )?.properties?.fork_turns?.description,
-    ).toContain("Defaults to `all`");
+    ).toContain("default clean fork");
     expect(
       registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
     ).toMatchObject({
@@ -550,7 +559,9 @@ describe("model-facing tools", () => {
     const lsp = registry.tools.find((tool) => tool.name === "LSP")!;
     expect(lsp.metadata?.deferred).toBe(false);
     expect(lsp.isReadOnly).toBe(true);
-    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    const visibleNames = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
     expect(visibleNames).toContain("LSP");
 
     // The description must let the model calibrate trust per operation:
@@ -584,7 +595,9 @@ describe("model-facing tools", () => {
       (tool) => tool.name === "StructuredOutput",
     );
     expect(structuredOutput?.metadata?.deferred).toBe(false);
-    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    const visibleNames = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
     expect(visibleNames).toContain("StructuredOutput");
 
     // The advertised tool is schema-bound, not the passthrough.
@@ -618,7 +631,9 @@ describe("model-facing tools", () => {
     expect(registry.tools.map((tool) => tool.name)).toContain(
       "StructuredOutput",
     );
-    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    const visibleNames = registry
+      .toLLMTools()
+      .map((tool) => tool.function.name);
     expect(visibleNames).not.toContain("StructuredOutput");
   });
 
@@ -734,17 +749,21 @@ describe("model-facing tools", () => {
         files: [
           {
             uri: a,
-            diagnostics: [{
-              message: "a diag",
-              severity: "Error",
-            }],
+            diagnostics: [
+              {
+                message: "a diag",
+                severity: "Error",
+              },
+            ],
           },
           {
             uri: b,
-            diagnostics: [{
-              message: "b diag",
-              severity: "Warning",
-            }],
+            diagnostics: [
+              {
+                message: "b diag",
+                severity: "Warning",
+              },
+            ],
           },
         ],
       });
@@ -764,7 +783,9 @@ describe("model-facing tools", () => {
         { message: "a diag", severity: "Error" },
       ]);
       expect(
-        checkForLSPDiagnostics()[0]!.files.map((file) => file.uri).sort(),
+        checkForLSPDiagnostics()[0]!
+          .files.map((file) => file.uri)
+          .sort(),
       ).toEqual([a, b]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -848,10 +869,9 @@ describe("model-facing tools", () => {
           })
         ).content,
       );
-      expect(references.references.map((entry: { line: number }) => entry.line)).toEqual([
-        1,
-        4,
-      ]);
+      expect(
+        references.references.map((entry: { line: number }) => entry.line),
+      ).toEqual([1, 4]);
 
       const symbols = JSON.parse(
         (
@@ -1133,10 +1153,12 @@ describe("model-facing tools", () => {
         files: [
           {
             uri: file,
-            diagnostics: [{
-              message: "Type 'string' is not assignable to type 'number'.",
-              severity: "Error",
-            }],
+            diagnostics: [
+              {
+                message: "Type 'string' is not assignable to type 'number'.",
+                severity: "Error",
+              },
+            ],
           },
         ],
       });
@@ -1156,10 +1178,12 @@ describe("model-facing tools", () => {
       expect(payload).toMatchObject({
         file_path: file,
         server: "ts",
-        diagnostics: [{
-          message: "Type 'string' is not assignable to type 'number'.",
-          severity: "Error",
-        }],
+        diagnostics: [
+          {
+            message: "Type 'string' is not assignable to type 'number'.",
+            severity: "Error",
+          },
+        ],
         note: "Pending language-server diagnostics were returned.",
       });
     } finally {
@@ -1387,7 +1411,7 @@ describe("model-facing tools", () => {
     const html =
       "<!doctype html><html><head><title>x</title><style>body{}</style></head><body>" +
       "<h1>Hello</h1>" +
-      "<p>This is a <strong>test</strong> with a <a href=\"/docs\">link</a>.</p>" +
+      '<p>This is a <strong>test</strong> with a <a href="/docs">link</a>.</p>' +
       "<ul><li>one</li><li>two</li></ul>" +
       "<script>alert('x')</script>" +
       "</body></html>";
@@ -1397,7 +1421,9 @@ describe("model-facing tools", () => {
       url: "https://agenc.tech/docs",
       headers: {
         get: (name: string) =>
-          name.toLowerCase() === "content-type" ? "Text/HTML; charset=utf-8" : null,
+          name.toLowerCase() === "content-type"
+            ? "Text/HTML; charset=utf-8"
+            : null,
       },
       text: async () => html,
     });
@@ -1657,7 +1683,9 @@ describe("model-facing tools", () => {
       });
       globalThis.fetch = vi
         .fn()
-        .mockResolvedValue(privateRedirect.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValue(
+          privateRedirect.response,
+        ) as unknown as typeof globalThis.fetch;
       const privateResult = await byName.get("web_fetch")!.execute({
         url: "https://agenc.tech/start",
       });
@@ -1672,7 +1700,9 @@ describe("model-facing tools", () => {
       });
       globalThis.fetch = vi
         .fn()
-        .mockResolvedValue(downgradeRedirect.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValue(
+          downgradeRedirect.response,
+        ) as unknown as typeof globalThis.fetch;
       const downgradeResult = await byName.get("web_fetch")!.execute({
         url: "https://agenc.tech/start",
       });
@@ -1687,12 +1717,16 @@ describe("model-facing tools", () => {
       });
       globalThis.fetch = vi
         .fn()
-        .mockResolvedValue(crossHostRedirect.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValue(
+          crossHostRedirect.response,
+        ) as unknown as typeof globalThis.fetch;
       const crossHostResult = await byName.get("web_fetch")!.execute({
         url: "https://agenc.tech/start",
       });
       expect(crossHostResult.isError).toBe(true);
-      expect(JSON.parse(crossHostResult.content).error).toContain("changes host");
+      expect(JSON.parse(crossHostResult.content).error).toContain(
+        "changes host",
+      );
       expect(globalThis.fetch).toHaveBeenCalledOnce();
 
       const safeRedirect = fetchResponse({
@@ -1708,7 +1742,9 @@ describe("model-facing tools", () => {
       globalThis.fetch = vi
         .fn()
         .mockResolvedValueOnce(safeRedirect.response)
-        .mockResolvedValueOnce(finalResponse.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValueOnce(
+          finalResponse.response,
+        ) as unknown as typeof globalThis.fetch;
       const safeResult = await byName.get("web_fetch")!.execute({
         url: "https://github.com/modelcontextprotocol",
       });
@@ -1728,7 +1764,9 @@ describe("model-facing tools", () => {
       });
       globalThis.fetch = vi
         .fn()
-        .mockResolvedValueOnce(outOfScopeRedirect.response) as unknown as typeof globalThis.fetch;
+        .mockResolvedValueOnce(
+          outOfScopeRedirect.response,
+        ) as unknown as typeof globalThis.fetch;
       const outOfScopeResult = await byName.get("web_fetch")!.execute({
         url: "https://github.com/modelcontextprotocol",
       });
@@ -1755,7 +1793,9 @@ describe("model-facing tools", () => {
         url: "https://agenc.tech/r0",
       });
       expect(limitResult.isError).toBe(true);
-      expect(JSON.parse(limitResult.content).error).toContain("too many redirects");
+      expect(JSON.parse(limitResult.content).error).toContain(
+        "too many redirects",
+      );
       expect(globalThis.fetch).toHaveBeenCalledTimes(6);
       expect(redirectChain[5]!.cancel).toHaveBeenCalledOnce();
     } finally {
@@ -1831,7 +1871,9 @@ describe("model-facing tools", () => {
     );
     expect(blockedAddress).toMatchObject({
       behavior: "deny",
-      message: expect.stringContaining("private, loopback, or link-local address"),
+      message: expect.stringContaining(
+        "private, loopback, or link-local address",
+      ),
     });
 
     const blockedLoopback = await tool!.checkPermissions?.(
@@ -1853,7 +1895,9 @@ describe("model-facing tools", () => {
       );
       expect(blockedLocalhost).toMatchObject({
         behavior: "deny",
-        message: expect.stringContaining("private, loopback, or link-local address"),
+        message: expect.stringContaining(
+          "private, loopback, or link-local address",
+        ),
       });
     }
 
@@ -1869,7 +1913,9 @@ describe("model-facing tools", () => {
       );
       expect(blockedIpv6).toMatchObject({
         behavior: "deny",
-        message: expect.stringContaining("private, loopback, or link-local address"),
+        message: expect.stringContaining(
+          "private, loopback, or link-local address",
+        ),
       });
     }
 
@@ -1994,12 +2040,14 @@ describe("model-facing tools", () => {
         getSession: () => session,
         providerFactory: providerFactory as never,
       });
-      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
-        query: "current docs",
-        allowed_domains: ["agenc.tech", "localhost"],
-        blocked_domains: ["localhost"],
-        max_results: 1,
-      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({
+          query: "current docs",
+          allowed_domains: ["agenc.tech", "localhost"],
+          blocked_domains: ["localhost"],
+          max_results: 1,
+        });
 
       expect(result.isError).toBeUndefined();
       const parsed = JSON.parse(result.content);
@@ -2073,10 +2121,10 @@ describe("model-facing tools", () => {
       },
     };
     const nativeChat = vi.fn().mockResolvedValue(nativeResponse);
-    const providerFactory = vi.fn((
-      _provider: string,
-      _options: ProviderFactoryOptions,
-    ) => fakeProvider({}, nativeChat));
+    const providerFactory = vi.fn(
+      (_provider: string, _options: ProviderFactoryOptions) =>
+        fakeProvider({}, nativeChat),
+    );
     const fetchMock = vi.fn().mockResolvedValue({
       json: async () => ({
         RelatedTopics: [
@@ -2105,9 +2153,11 @@ describe("model-facing tools", () => {
         } as NodeJS.ProcessEnv,
         providerFactory: providerFactory as never,
       });
-      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
-        query: "source required",
-      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({
+          query: "source required",
+        });
 
       expect(nativeChat).toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2153,9 +2203,11 @@ describe("model-facing tools", () => {
         } as NodeJS.ProcessEnv,
         providerFactory: providerFactory as never,
       });
-      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
-        query: "fallback search",
-      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({
+          query: "fallback search",
+        });
 
       expect(providerFactory).not.toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2195,15 +2247,17 @@ describe("model-facing tools", () => {
           AGENC_WEB_SEARCH_ENDPOINT: "http://127.0.0.1/search",
         } as NodeJS.ProcessEnv,
       });
-      const result = await tools.find((tool) => tool.name === "WebSearch")!.execute({
-        query: "filtered search",
-        blocked_domains: ["127.0.0.1"],
-      });
+      const result = await tools
+        .find((tool) => tool.name === "WebSearch")!
+        .execute({
+          query: "filtered search",
+          blocked_domains: ["127.0.0.1"],
+        });
 
       const parsed = JSON.parse(result.content);
-      expect(parsed.results.map((entry: { url: string }) => entry.url)).toEqual([
-        "https://localhost/kept",
-      ]);
+      expect(parsed.results.map((entry: { url: string }) => entry.url)).toEqual(
+        ["https://localhost/kept"],
+      );
     } finally {
       globalThis.fetch = previousFetch;
     }
@@ -2276,9 +2330,11 @@ describe("model-facing tools", () => {
   it("loads skills through the Skill tool and records invocations", async () => {
     const recordInvokedSkill = vi.fn();
     const session = fakeSession();
-    (session.services.skillsManager as {
-      recordInvokedSkill?: typeof recordInvokedSkill;
-    }).recordInvokedSkill = recordInvokedSkill;
+    (
+      session.services.skillsManager as {
+        recordInvokedSkill?: typeof recordInvokedSkill;
+      }
+    ).recordInvokedSkill = recordInvokedSkill;
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -2302,9 +2358,11 @@ describe("model-facing tools", () => {
 
   it("frames repository skill content as guidance-only model context", async () => {
     const session = fakeSession();
-    (session.services.skillsManager as {
-      renderSkill?: (opts: { name: string }) => Promise<unknown>;
-    }).renderSkill = async () => ({
+    (
+      session.services.skillsManager as {
+        renderSkill?: (opts: { name: string }) => Promise<unknown>;
+      }
+    ).renderSkill = async () => ({
       skill: {
         name: "repo-skill",
         description: "Repository skill",
@@ -2328,9 +2386,9 @@ describe("model-facing tools", () => {
     expect(result.content.match(/<workspace_skill_guidance\b/gu)).toHaveLength(
       1,
     );
-    expect(
-      result.content.match(/<\/workspace_skill_guidance>/gu),
-    ).toHaveLength(1);
+    expect(result.content.match(/<\/workspace_skill_guidance>/gu)).toHaveLength(
+      1,
+    );
     expect(result.content).toContain('authority="guidance_only"');
     expect(result.content).toContain("<neutralized-repository-skill-tag>");
     expect(result.content).not.toContain("<system>");
@@ -2344,7 +2402,10 @@ describe("model-facing tools", () => {
     const legacyUserSkillRoot = ".codex"; // branding-scan: allow legacy user skill root compatibility
     try {
       await writeTestSkill(join(home, ".agents", "skills"), "shared-visible");
-      await writeTestSkill(join(home, legacyUserSkillRoot, "skills"), "legacy-visible");
+      await writeTestSkill(
+        join(home, legacyUserSkillRoot, "skills"),
+        "legacy-visible",
+      );
       const localServices = createLocalSkillsServices({
         agencHome,
         workspaceRoot,
@@ -2352,13 +2413,17 @@ describe("model-facing tools", () => {
       });
       const session = fakeSession();
       (session as { config?: unknown }).config = {};
-      (session.services as {
-        skillsManager: typeof localServices.skillsManager;
-        pluginsManager: typeof localServices.pluginsManager;
-      }).skillsManager = localServices.skillsManager;
-      (session.services as {
-        pluginsManager: typeof localServices.pluginsManager;
-      }).pluginsManager = localServices.pluginsManager;
+      (
+        session.services as {
+          skillsManager: typeof localServices.skillsManager;
+          pluginsManager: typeof localServices.pluginsManager;
+        }
+      ).skillsManager = localServices.skillsManager;
+      (
+        session.services as {
+          pluginsManager: typeof localServices.pluginsManager;
+        }
+      ).pluginsManager = localServices.pluginsManager;
 
       const slashSnapshot = await collectSkillsSnapshot(session);
       const tools = createModelFacingTools({
@@ -2375,7 +2440,9 @@ describe("model-facing tools", () => {
 
       const loaded = await skill.execute({ skill: "legacy-visible" });
       expect(loaded.isError).toBeUndefined();
-      expect(loaded.content).toContain("<command-name>legacy-visible</command-name>");
+      expect(loaded.content).toContain(
+        "<command-name>legacy-visible</command-name>",
+      );
       expect(loaded.content).toContain("Use legacy-visible.");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -2386,9 +2453,11 @@ describe("model-facing tools", () => {
 
   it("rejects model-disabled skills", async () => {
     const session = fakeSession();
-    (session.services.skillsManager as {
-      renderSkill?: (opts: { name: string }) => Promise<unknown>;
-    }).renderSkill = async () => ({
+    (
+      session.services.skillsManager as {
+        renderSkill?: (opts: { name: string }) => Promise<unknown>;
+      }
+    ).renderSkill = async () => ({
       skill: {
         name: "debug",
         path: "/skills/debug/SKILL.md",
@@ -2430,7 +2499,9 @@ describe("model-facing tools", () => {
       interrupt: true,
     });
     expect(send.isError).toBe(true);
-    expect(JSON.parse(send.content).error).toContain("unknown field `interrupt`");
+    expect(JSON.parse(send.content).error).toContain(
+      "unknown field `interrupt`",
+    );
 
     const assign = await byName.get("assign_task")!.execute({
       target: "/root/task_1",
@@ -2453,7 +2524,9 @@ describe("model-facing tools", () => {
 
     const missingTaskName = await spawnAgent.execute({ message: "inspect" });
     expect(missingTaskName.isError).toBe(true);
-    expect(JSON.parse(missingTaskName.content).error).toBe("task_name is required");
+    expect(JSON.parse(missingTaskName.content).error).toBe(
+      "task_name is required",
+    );
 
     const forkContext = await spawnAgent.execute({
       message: "inspect",
@@ -2572,10 +2645,12 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       getSession: () => session,
     });
-    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "review game.py",
-      task_name: "reviewer",
-    });
+    const result = await tools
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "review game.py",
+        task_name: "reviewer",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
@@ -2624,10 +2699,12 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       getSession: () => session,
     });
-    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "review game.py",
-      task_name: "bug-review",
-    });
+    const result = await tools
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "review game.py",
+        task_name: "bug-review",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(JSON.parse(result.content)).toEqual({
@@ -2672,11 +2749,13 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       getSession: () => session,
     });
-    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "continue context-heavy work",
-      task_name: "reviewer",
-      fork_turns: "all",
-    });
+    const result = await tools
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "continue context-heavy work",
+        task_name: "reviewer",
+        fork_turns: "all",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
@@ -2704,13 +2783,15 @@ describe("model-facing tools", () => {
       serviceTiers: [],
     };
     const session = fakeSession();
-    (session.services as unknown as {
-      modelsManager: {
-        tryListModels: () => readonly unknown[];
-        listModels: () => Promise<readonly unknown[]>;
-        getModelInfo: (model: string) => Promise<unknown>;
-      };
-    }).modelsManager = {
+    (
+      session.services as unknown as {
+        modelsManager: {
+          tryListModels: () => readonly unknown[];
+          listModels: () => Promise<readonly unknown[]>;
+          getModelInfo: (model: string) => Promise<unknown>;
+        };
+      }
+    ).modelsManager = {
       tryListModels: () => [supportedModelInfo, unsupportedModelInfo],
       listModels: async () => [supportedModelInfo, unsupportedModelInfo],
       getModelInfo: async (model: string) =>
@@ -2809,13 +2890,15 @@ describe("model-facing tools", () => {
       ],
     };
     const session = fakeSession();
-    (session.services as unknown as {
-      modelsManager: {
-        tryListModels: () => readonly unknown[];
-        listModels: () => Promise<readonly unknown[]>;
-        getModelInfo: (model: string) => Promise<unknown>;
-      };
-    }).modelsManager = {
+    (
+      session.services as unknown as {
+        modelsManager: {
+          tryListModels: () => readonly unknown[];
+          listModels: () => Promise<readonly unknown[]>;
+          getModelInfo: (model: string) => Promise<unknown>;
+        };
+      }
+    ).modelsManager = {
       tryListModels: () => [roleModelInfo, requestedModelInfo],
       listModels: async () => [roleModelInfo, requestedModelInfo],
       getModelInfo: async (model: string) =>
@@ -2860,15 +2943,17 @@ describe("model-facing tools", () => {
     const result = await createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
-    }).find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "inspect",
-      task_name: "priority_review",
-      agent_type: "priority-reviewer",
-      model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
-      reasoning_effort: "low",
-      service_tier: "standard",
-      fork_turns: "none",
-    });
+    })
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "inspect",
+        task_name: "priority_review",
+        agent_type: "priority-reviewer",
+        model: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+        reasoning_effort: "low",
+        service_tier: "standard",
+        fork_turns: "none",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
@@ -2894,13 +2979,15 @@ describe("model-facing tools", () => {
       ],
     };
     const session = fakeSession();
-    (session.services as unknown as {
-      modelsManager: {
-        tryListModels: () => readonly unknown[];
-        listModels: () => Promise<readonly unknown[]>;
-        getModelInfo: (model: string) => Promise<unknown>;
-      };
-    }).modelsManager = {
+    (
+      session.services as unknown as {
+        modelsManager: {
+          tryListModels: () => readonly unknown[];
+          listModels: () => Promise<readonly unknown[]>;
+          getModelInfo: (model: string) => Promise<unknown>;
+        };
+      }
+    ).modelsManager = {
       tryListModels: () => [roleModelInfo],
       listModels: async () => [roleModelInfo],
       getModelInfo: async () => roleModelInfo,
@@ -2909,23 +2996,24 @@ describe("model-facing tools", () => {
       name: "priority-reviewer",
       config: {
         description: "Review quickly.",
-        configToml: [
-          'model = "gpt-5.4"',
-          'service_tier = "priority"',
-        ].join("\n"),
+        configToml: ['model = "gpt-5.4"', 'service_tier = "priority"'].join(
+          "\n",
+        ),
       },
     });
 
     const result = await createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
-    }).find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "inspect",
-      task_name: "priority_review",
-      agent_type: "priority-reviewer",
-      service_tier: "turbo",
-      fork_turns: "none",
-    });
+    })
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "inspect",
+        task_name: "priority_review",
+        agent_type: "priority-reviewer",
+        service_tier: "turbo",
+        fork_turns: "none",
+      });
 
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toBe(
@@ -2964,12 +3052,14 @@ describe("model-facing tools", () => {
     const result = await createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
-    }).find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "continue context-heavy work",
-      task_name: "history_task",
-      fork_turns: "all",
-      service_tier: "priority",
-    });
+    })
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "continue context-heavy work",
+        task_name: "history_task",
+        fork_turns: "all",
+        service_tier: "priority",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
@@ -3011,13 +3101,15 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       getSession: () => session,
     });
-    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "review game.py",
-      task_name: "reviewer",
-      agent_type: "runner",
-      reasoning_effort: "xhigh",
-      fork_turns: "none",
-    });
+    const result = await tools
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "review game.py",
+        task_name: "reviewer",
+        agent_type: "runner",
+        reasoning_effort: "xhigh",
+        fork_turns: "none",
+      });
 
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
@@ -3045,7 +3137,9 @@ describe("model-facing tools", () => {
               depth: 1,
               nickname: "Deckard",
               role: { name: "worker" },
-              status: { value: { status: "running", turnId: "t", startedAtMs: 1 } },
+              status: {
+                value: { status: "running", turnId: "t", startedAtMs: 1 },
+              },
             }
           : undefined,
       ),
@@ -3080,7 +3174,8 @@ describe("model-facing tools", () => {
       }).find((tool) => tool.name === "spawn_agent")!;
 
       const result = await spawn.execute({
-        __agencSessionId: "child-1",
+        [SESSION_ID_ARG]: "child-1",
+        [SESSION_ID_SIG_ARG]: signSessionId("child-1"),
         message: "inspect",
         task_name: "grandchild",
         fork_turns: "none",
@@ -3241,11 +3336,13 @@ describe("model-facing tools", () => {
       workspaceRoot: process.cwd(),
       getSession: () => session,
     });
-    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-      message: "inspect visible task",
-      task_name: "visible_task",
-      fork_turns: "none",
-    });
+    const result = await tools
+      .find((tool) => tool.name === "spawn_agent")!
+      .execute({
+        message: "inspect visible task",
+        task_name: "visible_task",
+        fork_turns: "none",
+      });
 
     expect(result.isError).not.toBe(true);
     const task = (
@@ -3334,12 +3431,14 @@ describe("model-facing tools", () => {
         workspaceRoot,
         getSession: () => session,
       });
-      const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
-        message: "inspect",
-        task_name: "custom_task",
-        agent_type: "project-reviewer",
-        fork_turns: "none",
-      });
+      const result = await tools
+        .find((tool) => tool.name === "spawn_agent")!
+        .execute({
+          message: "inspect",
+          task_name: "custom_task",
+          agent_type: "project-reviewer",
+          fork_turns: "none",
+        });
 
       expect(result.isError).not.toBe(true);
       expect(delegateMock).toHaveBeenCalledWith(
@@ -3439,12 +3538,14 @@ describe("model-facing tools", () => {
         tools: ReturnType<typeof createModelFacingTools>,
         taskName: string,
       ) =>
-        tools.find((tool) => tool.name === "spawn_agent")!.execute({
-          message: "inspect",
-          task_name: taskName,
-          agent_type: "shared-reviewer",
-          fork_turns: "none",
-        });
+        tools
+          .find((tool) => tool.name === "spawn_agent")!
+          .execute({
+            message: "inspect",
+            task_name: taskName,
+            agent_type: "shared-reviewer",
+            fork_turns: "none",
+          });
 
       // Execution cwd is mutable (for example, when a worktree is entered),
       // but the session's role trust domain is immutable.
@@ -3609,6 +3710,31 @@ describe("model-facing tools", () => {
     );
   });
 
+  it("enforces the inter-agent byte cap when execute is called directly", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const send = tools.find((tool) => tool.name === "send_message")!;
+    const result = await send.execute({
+      target: "/root/task_1",
+      // 40k UTF-16 code units but 80k UTF-8 bytes: below maxLength,
+      // above the authoritative runtime byte bound.
+      message: "💥".repeat(20_000),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      error: "message exceeds the 65536-byte inter-agent limit",
+    });
+    expect(
+      (
+        send.inputSchema.properties?.message as
+          { readonly maxLength?: number } | undefined
+      )?.maxLength,
+    ).toBe(65_536);
+  });
+
   it("does not fall back to raw unresolved agent targets", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -3672,10 +3798,12 @@ describe("model-facing tools", () => {
         workspaceRoot: process.cwd(),
         getSession: () => session,
       });
-      const result = await tools.find((tool) => tool.name === "send_message")!.execute({
-        target: "/root/task_1",
-        message: "hello",
-      });
+      const result = await tools
+        .find((tool) => tool.name === "send_message")!
+        .execute({
+          target: "/root/task_1",
+          message: "hello",
+        });
 
       expect(result.isError).toBe(true);
       expect(JSON.parse(result.content).error).toBe(
@@ -3688,7 +3816,8 @@ describe("model-facing tools", () => {
         "collab_agent_interaction_end",
       ]);
       expect(
-        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload.status,
+        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload
+          .status,
       ).toEqual({ status: "shutdown" });
     } finally {
       _clearAgentControlCacheForTesting();
@@ -3781,7 +3910,8 @@ describe("model-facing tools", () => {
       drainPendingInputMessages: typeof drainPendingInputMessages;
     };
     sessionWithMailboxWait.waitForMailboxChange = waitForMailboxChange;
-    sessionWithMailboxWait.drainPendingInputMessages = drainPendingInputMessages;
+    sessionWithMailboxWait.drainPendingInputMessages =
+      drainPendingInputMessages;
     _setAgentControlForTesting(session, {
       control: {
         listAgents: vi.fn(() => []),
@@ -3848,17 +3978,36 @@ describe("model-facing tools", () => {
     expect(waitForMailboxChange).toHaveBeenCalledWith(10_000);
   });
 
+  it("wait_agent rejects the removed target filter instead of draining unrelated receipts", async () => {
+    const wait = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    }).find((tool) => tool.name === "wait_agent")!;
+
+    expect(wait.isReadOnly).toBe(false);
+    expect(
+      (wait.inputSchema as { properties?: Record<string, unknown> }).properties,
+    ).not.toHaveProperty("target");
+    const result = await wait.execute({ target: "/root/reviewer" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      "unknown field `target`",
+    );
+  });
+
   it("wait_agent uses configured default and max timeout bounds", async () => {
     const session = fakeSession();
-    (session as unknown as {
-      config: {
-        multiAgentV2: {
-          minWaitTimeoutMs: number;
-          defaultWaitTimeoutMs: number;
-          maxWaitTimeoutMs: number;
+    (
+      session as unknown as {
+        config: {
+          multiAgentV2: {
+            minWaitTimeoutMs: number;
+            defaultWaitTimeoutMs: number;
+            maxWaitTimeoutMs: number;
+          };
         };
-      };
-    }).config = {
+      }
+    ).config = {
       multiAgentV2: {
         minWaitTimeoutMs: 500,
         defaultWaitTimeoutMs: 1_250,
@@ -3889,7 +4038,9 @@ describe("model-facing tools", () => {
         "description" in wait.inputSchema.properties.timeout_ms
         ? wait.inputSchema.properties.timeout_ms.description
         : undefined,
-    ).toBe("Optional timeout in milliseconds. Defaults to 1250, min 500, max 2000.");
+    ).toBe(
+      "Optional timeout in milliseconds. Defaults to 1250, min 500, max 2000.",
+    );
   });
 
   it("wait_agent rejects fractional timeout_ms values", async () => {
@@ -3906,19 +4057,21 @@ describe("model-facing tools", () => {
     });
   });
 
-  it("assign_task accepts a completed live agent and triggers the next turn", async () => {
+  it("assign_task returns correlation for an idle reusable worker", async () => {
     const session = fakeSession();
     const emitted: unknown[] = [];
     (session as unknown as { emit: typeof session.emit }).emit = (event) => {
       emitted.push(event);
     };
-    const completedStatus = {
-      status: "completed" as const,
+    const idleStatus = {
+      status: "idle" as const,
       turnId: "turn-1",
       endedAtMs: 1,
-      lastMessage: "done",
     };
-    const sendInterAgentCommunication = vi.fn();
+    const assignTask = vi.fn(() => ({
+      taskId: "assign-call-1",
+      turnId: "assigned-turn-1",
+    }));
     const control = {
       registerSessionRoot: vi.fn(),
       getLive: vi.fn((threadId: string) =>
@@ -3928,7 +4081,7 @@ describe("model-facing tools", () => {
               agentPath: "/root/task_1",
               nickname: "TaskOne",
               role: { name: "worker" },
-              status: { value: completedStatus },
+              status: { value: idleStatus },
               metadata: {
                 agentId: "agent-1",
                 agentPath: "/root/task_1",
@@ -3945,8 +4098,8 @@ describe("model-facing tools", () => {
         agentRole: "worker",
       })),
       resolveAgentReference: vi.fn(() => "agent-1"),
-      sendInterAgentCommunication,
-      getStatus: vi.fn(async () => completedStatus),
+      assignTask,
+      getStatus: vi.fn(async () => idleStatus),
     };
     _setAgentControlForTesting(session, {
       control: control as never,
@@ -3961,17 +4114,20 @@ describe("model-facing tools", () => {
       const result = await assign.execute({
         target: "/root/task_1",
         message: "report now",
+        __callId: "assign-call-1",
       });
 
       expect(result.isError).toBeUndefined();
       expect(JSON.parse(String(result.content))).toMatchObject({
         ok: true,
+        task_id: "assign-call-1",
+        turn_id: "assigned-turn-1",
       });
-      expect(sendInterAgentCommunication).toHaveBeenCalledWith("agent-1", {
+      expect(assignTask).toHaveBeenCalledWith("agent-1", {
         author: "/root",
         recipient: "/root/task_1",
         content: "report now",
-        triggerTurn: true,
+        taskId: "assign-call-1",
       });
       expect(
         emitted.map((event) => (event as { msg: { type: string } }).msg.type),
@@ -3980,8 +4136,9 @@ describe("model-facing tools", () => {
         "collab_agent_interaction_end",
       ]);
       expect(
-        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload.status,
-      ).toEqual(completedStatus);
+        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload
+          .status,
+      ).toEqual(idleStatus);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -4025,7 +4182,9 @@ describe("model-facing tools", () => {
         role: "worker",
       });
       expect(roleFiltered.isError).toBe(true);
-      expect(JSON.parse(roleFiltered.content).error).toBe("unknown field `role`");
+      expect(JSON.parse(roleFiltered.content).error).toBe(
+        "unknown field `role`",
+      );
       for (const path_prefix of [0, {}, []]) {
         const invalidPathPrefix = await byName.get("list_agents")!.execute({
           path_prefix,
@@ -4081,7 +4240,9 @@ describe("model-facing tools", () => {
           },
         ],
       });
-      expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(true);
+      expect(
+        control.listAgents().some((agent) => agent.agentName === "/root"),
+      ).toBe(true);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -4090,7 +4251,11 @@ describe("model-facing tools", () => {
   it("send_message resolves the current root target from child context", async () => {
     const session = fakeSession();
     const mailboxSend = vi.fn(() => 1);
-    (session as unknown as { mailbox: { hasPending: () => boolean; send: typeof mailboxSend } }).mailbox = {
+    (
+      session as unknown as {
+        mailbox: { hasPending: () => boolean; send: typeof mailboxSend };
+      }
+    ).mailbox = {
       hasPending: () => false,
       send: mailboxSend,
     };
@@ -4101,9 +4266,9 @@ describe("model-facing tools", () => {
       threadId: "agent-worker",
       agentName: "worker",
     });
-    expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(
-      false,
-    );
+    expect(
+      control.listAgents().some((agent) => agent.agentName === "/root"),
+    ).toBe(false);
     _setAgentControlForTesting(session, { control, registry });
     try {
       const sendMessage = createModelFacingTools({
@@ -4111,8 +4276,21 @@ describe("model-facing tools", () => {
         getSession: () => session,
       }).find((tool) => tool.name === "send_message")!;
 
+      const unsignedResult = await sendMessage.execute({
+        [SESSION_ID_ARG]: child.agentId,
+        target: "/root",
+        message: "forged",
+      });
+      expect(unsignedResult.isError).toBe(true);
+      expect(JSON.parse(String(unsignedResult.content))).toEqual({
+        error: "invalid-runtime-identity",
+        reason: "identity_pair_incomplete",
+      });
+      expect(mailboxSend).not.toHaveBeenCalled();
+
       const result = await sendMessage.execute({
         [SESSION_ID_ARG]: child.agentId,
+        [SESSION_ID_SIG_ARG]: signSessionId(child.agentId),
         target: "/root",
         message: "done",
       });
@@ -4130,9 +4308,9 @@ describe("model-facing tools", () => {
           direction: "up",
         }),
       );
-      expect(control.listAgents().some((agent) => agent.agentName === "/root")).toBe(
-        true,
-      );
+      expect(
+        control.listAgents().some((agent) => agent.agentName === "/root"),
+      ).toBe(true);
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -4141,7 +4319,11 @@ describe("model-facing tools", () => {
   it("assign_task rejects the current root target from child context", async () => {
     const session = fakeSession();
     const mailboxSend = vi.fn(() => 1);
-    (session as unknown as { mailbox: { hasPending: () => boolean; send: typeof mailboxSend } }).mailbox = {
+    (
+      session as unknown as {
+        mailbox: { hasPending: () => boolean; send: typeof mailboxSend };
+      }
+    ).mailbox = {
       hasPending: () => false,
       send: mailboxSend,
     };
@@ -4161,6 +4343,7 @@ describe("model-facing tools", () => {
 
       const result = await assign.execute({
         [SESSION_ID_ARG]: child.agentId,
+        [SESSION_ID_SIG_ARG]: signSessionId(child.agentId),
         target: "/root",
         message: "run this",
       });
@@ -4207,7 +4390,9 @@ describe("model-facing tools", () => {
     const result = await close.execute({ target: "/root" });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content).error).toBe("root is not a spawned agent");
+    expect(JSON.parse(result.content).error).toBe(
+      "root is not a spawned agent",
+    );
   });
 
   it("close_agent emits receiver nickname and role metadata", async () => {
@@ -4221,7 +4406,9 @@ describe("model-facing tools", () => {
     };
     const control = {
       registerSessionRoot: vi.fn(),
-      resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440003"),
+      resolveAgentReference: vi.fn(
+        () => "550e8400-e29b-41d4-a716-446655440003",
+      ),
       getLive: vi.fn(() => ({
         agentId: "550e8400-e29b-41d4-a716-446655440003",
         agentPath: "/root/live",
@@ -4251,7 +4438,9 @@ describe("model-facing tools", () => {
       const result = await close.execute({ target: "/root/live" });
 
       expect(result.isError).toBeUndefined();
-      expect(JSON.parse(result.content)).toEqual({ previous_status: "running" });
+      expect(JSON.parse(result.content)).toEqual({
+        previous_status: "running",
+      });
       expect(emit.mock.calls.map((call) => call[0].msg.payload)).toEqual([
         expect.objectContaining({
           receiverAgentNickname: "Neuromancer",
@@ -4280,7 +4469,9 @@ describe("model-facing tools", () => {
     const unsubscribe = vi.fn();
     const control = {
       registerSessionRoot: vi.fn(),
-      resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440004"),
+      resolveAgentReference: vi.fn(
+        () => "550e8400-e29b-41d4-a716-446655440004",
+      ),
       getLive: vi.fn((threadId: string) =>
         threadId === "550e8400-e29b-41d4-a716-446655440004"
           ? {
@@ -4396,7 +4587,9 @@ describe("model-facing tools", () => {
   });
 
   it("requires a full NotebookRead before session-backed NotebookEdit", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-read-edit-ws-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-read-edit-ws-"),
+    );
     const sessionId = "notebook-read-edit-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -4446,7 +4639,9 @@ describe("model-facing tools", () => {
   });
 
   it("rejects session-backed NotebookEdit without a prior full read", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-no-read-ws-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-no-read-ws-"),
+    );
     const sessionId = "notebook-no-read-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -4480,7 +4675,9 @@ describe("model-facing tools", () => {
   });
 
   it("rejects NotebookEdit after a partial NotebookRead", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-partial-ws-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-partial-ws-"),
+    );
     const sessionId = "notebook-partial-read-session";
     try {
       const notebookPath = join(workspace, "demo.ipynb");
@@ -4636,20 +4833,24 @@ describe("model-facing tools", () => {
       });
 
       const updated = JSON.parse(await readFile(notebookPath, "utf8"));
-      expect(updated.cells.map((cell: Record<string, unknown>) => cell.source))
-        .toEqual([
-          "# Start",
-          "# Intro",
-          "print('after intro')",
-          "print('numeric')",
-        ]);
+      expect(
+        updated.cells.map((cell: Record<string, unknown>) => cell.source),
+      ).toEqual([
+        "# Start",
+        "# Intro",
+        "print('after intro')",
+        "print('numeric')",
+      ]);
       expect(updated.cells[2]).toMatchObject({
         cell_type: "code",
         execution_count: null,
         outputs: [],
       });
-      expect(updated.cells.some((cell: Record<string, unknown>) => cell.id === "tail"))
-        .toBe(false);
+      expect(
+        updated.cells.some(
+          (cell: Record<string, unknown>) => cell.id === "tail",
+        ),
+      ).toBe(false);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -4704,7 +4905,9 @@ describe("model-facing tools", () => {
       expect(result.content).toContain("Notebook:");
       expect(result.content).toContain("Cell 1 [markdown] id=intro");
       expect(result.content).toContain("Notebook body");
-      expect(result.content).toContain("Cell 2 [code] id=code-a execution_count=1");
+      expect(result.content).toContain(
+        "Cell 2 [code] id=code-a execution_count=1",
+      );
       expect(result.content).toContain("Output 1 [stream]:");
       expect(result.content).toContain("hi");
       expect(result.metadata).toMatchObject({
@@ -4718,7 +4921,9 @@ describe("model-facing tools", () => {
   });
 
   it("dispatches NotebookRead with a raw string notebook path", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-dispatch-ws-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-dispatch-ws-"),
+    );
     try {
       await writeFile(
         join(workspace, "demo.ipynb"),
@@ -4760,7 +4965,9 @@ describe("model-facing tools", () => {
   });
 
   it("dispatches NotebookEdit with a raw string notebook path", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-dispatch-ws-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-edit-dispatch-ws-"),
+    );
     try {
       await writeFile(
         join(workspace, "demo.ipynb"),
@@ -4835,8 +5042,12 @@ describe("model-facing tools", () => {
   });
 
   it("delegates NotebookEdit path permissions to Write", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-perm-ws-"));
-    const outside = await mkdtemp(join(tmpdir(), "agenc-notebook-edit-perm-out-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-edit-perm-ws-"),
+    );
+    const outside = await mkdtemp(
+      join(tmpdir(), "agenc-notebook-edit-perm-out-"),
+    );
     try {
       const notebookPath = join(workspace, "demo.ipynb");
       const outsidePath = join(outside, "demo.ipynb");
@@ -4883,7 +5094,9 @@ describe("model-facing tools", () => {
         behavior: "ask",
         blockedPath: outsidePath,
       });
-      await expect(readFile(outsidePath, "utf8")).resolves.toBe(outsideOriginal);
+      await expect(readFile(outsidePath, "utf8")).resolves.toBe(
+        outsideOriginal,
+      );
     } finally {
       await rm(workspace, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
@@ -5066,8 +5279,7 @@ describe("WebSearch real backends (task 4)", () => {
         .execute({ query: "brave" });
       const parsed = JSON.parse(result.content);
       const init = fetchMock.mock.calls[0]?.[1] as
-        | { headers?: Record<string, string> }
-        | undefined;
+        { headers?: Record<string, string> } | undefined;
       expect(init?.headers?.["X-Subscription-Token"]).toBe("brave-key");
       expect(parsed.results[0].url).toBe("https://brave.example");
     });

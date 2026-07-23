@@ -3,7 +3,10 @@ import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Event } from "../session/event-log.js";
 import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
-import type { SessionServices } from "../session/session.js";
+import type {
+  IdleInputAdmission,
+  SessionServices,
+} from "../session/session.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
@@ -180,6 +183,12 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput?(input: LLMMessage): number;
+  enqueueIdleInputBatch?(inputs: readonly LLMMessage[]): number;
+  enqueueIdleInputBatchOwned?(
+    inputs: readonly LLMMessage[],
+  ): IdleInputAdmission;
+  rollbackIdleInputAdmission?(token: string): boolean;
+  commitIdleInputAdmission?(token: string): boolean;
   /**
    * Interrupt the active turn (if any) for this session. Used by the
    * TUI's CancelRequestHandler when the user presses ESC. Daemon-backed
@@ -194,7 +203,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     event: Event | { readonly kind: string; readonly [key: string]: unknown },
   ): void;
   nextInternalSubId?(): string;
-  setDaemonPermissionMode?(mode: ToolPermissionContext["mode"]): Promise<unknown>;
+  setDaemonPermissionMode?(
+    mode: ToolPermissionContext["mode"],
+  ): Promise<unknown>;
   readonly sessionConfiguration?: {
     readonly cwd?: string;
     readonly collaborationMode?: { readonly model?: string };

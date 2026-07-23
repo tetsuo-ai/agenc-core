@@ -2639,9 +2639,14 @@ async function prepareSamplingRequestBoundary(
   const currentConfig = session.services.configStore?.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   const userInput = extractLastUserText(state.messagesForQuery);
+  const rootHumanTurn = session.currentRootHumanTurn();
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
+    turnProvenance: {
+      turnId: ctx.subId,
+      rootHumanTurn,
+    },
     userInput,
     loadedTools: builtTools(session, ctx),
     discoveredToolNames:

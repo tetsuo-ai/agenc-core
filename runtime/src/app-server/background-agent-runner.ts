@@ -588,7 +588,9 @@ function boundBufferedAgentEvents(
   runId?: string,
 ): BackgroundAgentDaemonEvent[] {
   const previousMarkers = events.filter(isBackgroundRunnerGapEvent);
-  const realEvents = events.filter((event) => !isBackgroundRunnerGapEvent(event));
+  const realEvents = events.filter(
+    (event) => !isBackgroundRunnerGapEvent(event),
+  );
   const retired =
     realEvents.length > MAX_BUFFERED_AGENT_EVENTS
       ? realEvents.splice(0, realEvents.length - MAX_BUFFERED_AGENT_EVENTS)
@@ -609,7 +611,9 @@ function boundBufferedAgentEvents(
   const previousCoordinatesUnknown = previousMarkers.some(
     (marker) => marker.payload?.coordinatesAvailable === false,
   );
-  const retiredSequences = retired.map((event) => positiveSequence(event.sequence));
+  const retiredSequences = retired.map((event) =>
+    positiveSequence(event.sequence),
+  );
   const firstRetiredSequence = retiredSequences[0];
   const allNewRetiredEventsSequenced = retiredSequences.every(
     (value) => value !== undefined,
@@ -682,8 +686,7 @@ function gapRunId(
   return markers
     .map((marker) => marker.payload?.runId)
     .find(
-      (value): value is string =>
-        typeof value === "string" && value.length > 0,
+      (value): value is string => typeof value === "string" && value.length > 0,
     );
 }
 
@@ -922,10 +925,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#pendingEvents.delete(managedThread.threadId);
       this.#pendingActiveToolCallIds.delete(managedThread.threadId);
       this.#active.set(managedThread.threadId, active);
-      this.#installDurableTerminalFinalizer(
-        active,
-        managedThread.threadId,
-      );
+      this.#installDurableTerminalFinalizer(active, managedThread.threadId);
       active.unsubscribeElicitationEvents =
         this.#installSessionEventLogBridge(active);
       this.#trackAgentStatus(active);
@@ -2261,7 +2261,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
    */
   async interruptAgentTurn(agentId: string, reason: string): Promise<boolean> {
     const active = this.#active.get(agentId);
-    if (active === undefined || !isInterruptibleActiveAgent(active)) return false;
+    if (active === undefined || !isInterruptibleActiveAgent(active))
+      return false;
     try {
       await active.bootstrap.session.abortAllTasks("interrupted");
     } catch {
@@ -2326,15 +2327,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     agentId: string,
   ): void {
-    const session = active.bootstrap.session as LocalRuntimeBootstrap["session"] & {
+    const session = active.bootstrap
+      .session as LocalRuntimeBootstrap["session"] & {
       onBeforeDurableClose?: (
         listener: () => void | Promise<void>,
       ) => () => void;
     };
     if (typeof session.onBeforeDurableClose !== "function") return;
     active.durableTerminalFinalizerInstalled = true;
-    active.unsubscribeDurableTerminalFinalizer =
-      session.onBeforeDurableClose(() => {
+    active.unsubscribeDurableTerminalFinalizer = session.onBeforeDurableClose(
+      () => {
         if (active.terminal !== undefined) return;
         if (this.#pendingToolDecisions.has(agentId)) {
           const error = new Error(
@@ -2357,7 +2359,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           active.terminalCommitError = error;
           throw error;
         }
-      });
+      },
+    );
   }
 
   #installSessionEventLogBridge(active: ActiveBackgroundAgent): () => void {
@@ -2547,11 +2550,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           );
           try {
             if (!active.durableTerminalFinalizerInstalled) {
-              commitDurableRunTerminal(
-                active,
-                agentId,
-                active.pendingTerminal,
-              );
+              commitDurableRunTerminal(active, agentId, active.pendingTerminal);
             }
           } catch {
             // A terminal transition is not advertised as M4-durable when its
@@ -2606,10 +2605,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
   ): Promise<void> {
     if (active.terminationNotified === true) return;
-    if (
-      active.canonicalEventBridgeInstalled &&
-      active.terminal === undefined
-    ) {
+    if (active.canonicalEventBridgeInstalled && active.terminal === undefined) {
       // Never project a legacy terminal status for a canonical run whose
       // durable terminal append failed. Startup recovery can project an append
       // that committed before a failpoint; otherwise the run stays honestly
@@ -4744,6 +4740,7 @@ function phaseEventToProgressEvent(
       return {
         kind: "turn_complete",
         turnId,
+        toolCallCount: 0,
         ...(event.content.length > 0 ? { finalMessage: event.content } : {}),
       };
     }
@@ -4832,24 +4829,22 @@ function commitDurableRunCancellationRequest(
   }
   const eventId = `run-cancel-request:${runId}:${active.runEpoch}`;
   const acceptCommitted = (): boolean => {
-    const matches = active.bootstrap.rolloutStore
-      .readAll()
-      .flatMap((item) => {
-        if (item.type !== "event_msg") return [];
-        const event = item.payload;
-        if (
-          event.eventId !== eventId &&
-          event.id !== eventId &&
-          !(
-            event.msg.type === "run_cancel_requested" &&
-            event.msg.payload.runId === runId &&
-            event.msg.payload.epoch === active.runEpoch
-          )
-        ) {
-          return [];
-        }
-        return [event];
-      });
+    const matches = active.bootstrap.rolloutStore.readAll().flatMap((item) => {
+      if (item.type !== "event_msg") return [];
+      const event = item.payload;
+      if (
+        event.eventId !== eventId &&
+        event.id !== eventId &&
+        !(
+          event.msg.type === "run_cancel_requested" &&
+          event.msg.payload.runId === runId &&
+          event.msg.payload.epoch === active.runEpoch
+        )
+      ) {
+        return [];
+      }
+      return [event];
+    });
     if (matches.length === 0) return false;
     if (matches.length !== 1) {
       throw new Error(
@@ -5188,6 +5183,10 @@ function eventFromProgress(
   agentId: string,
   progress: RunAgentProgressEvent,
 ): BackgroundAgentDaemonEvent | null {
+  const correlation = {
+    ...(progress.turnId !== undefined ? { turnId: progress.turnId } : {}),
+    ...(progress.taskId !== undefined ? { taskId: progress.taskId } : {}),
+  };
   switch (progress.kind) {
     case "status":
       return {
@@ -5196,6 +5195,7 @@ function eventFromProgress(
         payload: {
           cause: "background_agent_status",
           message: progress.text,
+          ...correlation,
         },
       };
     case "message": {
@@ -5213,6 +5213,7 @@ function eventFromProgress(
           payload: {
             message: progress.message.content,
             displayText: text,
+            ...correlation,
           },
         };
       }
@@ -5221,6 +5222,7 @@ function eventFromProgress(
         type: "agent_message",
         payload: {
           message: text,
+          ...correlation,
         },
       };
     }
@@ -5232,6 +5234,7 @@ function eventFromProgress(
           callId: progress.callId,
           toolName: progress.toolName,
           args: progress.arguments ?? "{}",
+          ...correlation,
           ...(isToolRecoveryCategory(progress.recoveryCategory)
             ? { recoveryCategory: progress.recoveryCategory }
             : {}),
@@ -5247,6 +5250,7 @@ function eventFromProgress(
           isError: progress.isError,
           metadata: {
             toolName: progress.toolName,
+            ...correlation,
           },
         },
       };
@@ -5260,6 +5264,7 @@ function eventFromProgress(
           status: "error",
           runStatus: "errored",
           message: progress.error,
+          ...correlation,
         },
       };
     case "run_interrupted":
@@ -5270,6 +5275,7 @@ function eventFromProgress(
           status: "stopped",
           runStatus: "stopped",
           message: progress.reason,
+          ...correlation,
         },
       };
     case "turn_interrupted":
@@ -5280,6 +5286,7 @@ function eventFromProgress(
           status: "idle",
           runStatus: "completed",
           turnId: progress.turnId,
+          ...(progress.taskId !== undefined ? { taskId: progress.taskId } : {}),
           message: progress.reason,
         },
       };
@@ -5295,6 +5302,7 @@ function eventFromProgress(
           ...(progress.finalMessage !== undefined
             ? { message: progress.finalMessage }
             : {}),
+          ...correlation,
         },
       };
     case "turn_complete":
@@ -5303,6 +5311,17 @@ function eventFromProgress(
         type: "turn_complete",
         payload: {
           turnId: progress.turnId,
+          ...(progress.taskId !== undefined ? { taskId: progress.taskId } : {}),
+          toolCallCount: progress.toolCallCount,
+          ...(progress.worktree !== undefined
+            ? { worktree: progress.worktree }
+            : {}),
+          ...(progress.worktreeEvidence !== undefined
+            ? {
+                worktreeEvidence:
+                  progress.worktreeEvidence as unknown as JsonObject,
+              }
+            : {}),
           ...(progress.finalMessage !== undefined
             ? { lastAgentMessage: progress.finalMessage }
             : {}),

@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+
+import { transformSync } from "esbuild";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -18,6 +22,57 @@ import {
 } from "../permissions/types.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { requestApproval } from "../tools/orchestrator.js";
+
+const backgroundAgentRunnerSourcePath = new URL(
+  "../../src/app-server/background-agent-runner.ts",
+  import.meta.url,
+);
+
+type TurnCompleteProgressProjection = (
+  agentId: string,
+  progress: {
+    readonly kind: "turn_complete";
+    readonly turnId: string;
+    readonly taskId?: string;
+    readonly toolCallCount: number;
+    readonly finalMessage?: string;
+    readonly worktree?: Readonly<Record<string, unknown>>;
+    readonly worktreeEvidence?: Readonly<Record<string, unknown>>;
+  },
+) => Readonly<Record<string, unknown>> | null;
+
+function loadTurnCompleteProgressProjection(): TurnCompleteProgressProjection {
+  const source = readFileSync(backgroundAgentRunnerSourcePath, "utf8");
+  const start = source.indexOf("function eventFromProgress(");
+  const end = source.indexOf("\nfunction messageText(", start);
+  if (start < 0 || end < 0) {
+    throw new Error("eventFromProgress source boundary was not found");
+  }
+  const internalSource = `${source.slice(start, end)}
+export { eventFromProgress };
+`;
+  const transformed = transformSync(internalSource, {
+    format: "cjs",
+    loader: "ts",
+    sourcefile: backgroundAgentRunnerSourcePath.pathname,
+    sourcemap: "inline",
+    target: "node25",
+  });
+  const module = { exports: {} as Record<string, unknown> };
+  vm.runInNewContext(
+    transformed.code,
+    {
+      exports: module.exports,
+      module,
+    },
+    { filename: backgroundAgentRunnerSourcePath.pathname },
+  );
+  const projection = module.exports.eventFromProgress;
+  if (typeof projection !== "function") {
+    throw new Error("eventFromProgress was not exported by the test harness");
+  }
+  return projection as TurnCompleteProgressProjection;
+}
 
 function makeStubConversationThreadManager(opts: {
   readonly threadId: string;
@@ -277,6 +332,47 @@ function makeTopLevelRunner(opts: {
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("projects correlated worktree completion evidence from run-agent progress", () => {
+    const worktree = {
+      path: "/repo/.agenc-worktrees/reviewer",
+      branch: "worktree-reviewer",
+      gitRoot: "/repo",
+    };
+    const worktreeEvidence = {
+      state: "committed_clean",
+      locator: worktree,
+      baseCommit: "a".repeat(40),
+      headCommit: "b".repeat(40),
+      treeHash: "c".repeat(40),
+      clean: true,
+      baseIsAncestor: true,
+      integrationRef: "b".repeat(40),
+    };
+
+    const event = loadTurnCompleteProgressProjection()("agent-reviewer", {
+      kind: "turn_complete",
+      turnId: "turn-reviewer",
+      taskId: "task-reviewer",
+      toolCallCount: 3,
+      finalMessage: "review complete",
+      worktree,
+      worktreeEvidence,
+    });
+
+    expect(JSON.parse(JSON.stringify(event))).toEqual({
+      id: "turn-complete-agent-reviewer-turn-reviewer",
+      type: "turn_complete",
+      payload: {
+        turnId: "turn-reviewer",
+        taskId: "task-reviewer",
+        toolCallCount: 3,
+        worktree,
+        worktreeEvidence,
+        lastAgentMessage: "review complete",
+      },
+    });
+  });
+
   it("carries the canonical rollout sequence into daemon notifications", () => {
     const daemonEvent = daemonEventFromUnboundSessionEvent({
       eventId: "journal-progress-sequenced",

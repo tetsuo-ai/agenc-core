@@ -7,7 +7,9 @@ import type { AgentThread } from "../thread.js";
 import {
   assertValidAgentName,
   depthOfAgentPath,
+  joinAgentPath,
 } from "../registry.js";
+import { deriveAgentWorktreeSlug } from "../worktree.js";
 import {
   assertAgentRoleWorkspaceMatches,
   formatRoleList,
@@ -33,6 +35,7 @@ import {
   emit,
   getSessionOrError,
   hideSpawnAgentMetadata,
+  isCurrentAgentContextError,
   json,
   localZeroAdmissionEstimate,
   strictArgs,
@@ -61,6 +64,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
+- For parallel code-edit subtasks, use \`isolation: "worktree"\`. Require the worker to commit its changes and report the commit, changed files, and verification it ran. Review and integrate one exact verified \`base_commit..integration_ref\` range at a time; never infer an integration target from a mutable worker branch or treat completion as merge approval. An intended deliverable under an ignored path must be explicitly unignored or force-added and committed.
 - The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
 - Omit \`fork_turns\` for a clean fork: the spawned agent starts fresh with ONLY your task as its context, so make the \`message\` fully self-contained (background, goal, constraints, relevant file paths/snippets) — it has NOT seen this conversation. This is the default and the cheap path for an N-agent fan-out. Use \`fork_turns: "all"\` only when the subtask genuinely needs the full parent conversation, or a positive integer string such as \`"3"\` for just the most recent turns. Full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
 
@@ -366,13 +370,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       fork_turns: {
         type: "string",
         description:
-          "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.",
+          "Optional number of turns to fork. Omit (or use `none`) for the default clean fork. Use `all` for full history, or a positive integer string such as `3` for only the most recent turns.",
       },
       isolation: {
         type: "string",
         enum: ["none", "worktree"],
         description:
-          "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from task_name), so parallel agents that WRITE files never clobber each other or your working tree. Requires the cwd to be inside a git repository. Unchanged worktrees are removed automatically when the agent closes; worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
+          "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from its session-scoped full agent identity and this spawn), so parallel agents that WRITE files never clobber each other or your working tree and a later logical respawn cannot inherit retained state. Requires the cwd to be inside a git repository. Unchanged newly created worktrees are removed automatically when the agent closes; worktrees resumed within the same logical spawn and worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
       },
     },
     required: ["message", "task_name"],
@@ -451,6 +455,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       );
     }
     const current = currentAgentContext(session, args, opts);
+    if (isCurrentAgentContextError(current)) return current;
     const rawRole = stringValue(args.agent_type);
     const role =
       rawRole !== undefined ? canonicalAgentRoleName(rawRole) : undefined;
@@ -487,7 +492,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
     if (isolation !== undefined && (!taskName || taskName.length === 0)) {
       return json(
-        { error: "worktree isolation requires a non-empty task_name (it names the worktree)" },
+        {
+          error:
+            "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
+        },
         true,
       );
     }
@@ -642,12 +650,22 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     let thread: AgentThread | undefined;
     try {
+      const childAgentPath = joinAgentPath(current.agentPath, taskName);
+      const worktreeSlug =
+        isolation !== undefined
+          ? deriveAgentWorktreeSlug({
+              sessionId: session.conversationId,
+              agentPath: childAgentPath,
+              spawnId: callId,
+            })
+          : undefined;
       const outcome = await delegate({
         parent: session,
         parentPath: current.agentPath,
         control,
         registry,
         taskPrompt: prompt,
+        taskId: callId,
         agentName: taskName,
         depthCap: depthOfAgentPath(current.agentPath) + 1,
         ...(forkMode !== undefined ? { forkMode } : {}),
@@ -664,7 +682,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           ? { serviceTier: serviceTierResult.serviceTier }
           : {}),
         ...(isolation !== undefined
-          ? { isolation, worktreeSlug: taskName }
+          ? { isolation, worktreeSlug }
           : {}),
       });
       if (outcome.kind === "rejected") {

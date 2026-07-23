@@ -5,7 +5,10 @@ import {
   toolMetadata,
   type MultiAgentV2Options,
 } from "./common.js";
-import { handleMessageStringTool } from "./message-tool.js";
+import {
+  handleMessageStringTool,
+  MAX_INTER_AGENT_MESSAGE_CHARACTERS,
+} from "./message-tool.js";
 
 export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
   return {
@@ -22,7 +25,10 @@ export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
       type: "object",
       properties: {
         target: { type: "string" },
-        message: { type: "string" },
+        message: {
+          type: "string",
+          maxLength: MAX_INTER_AGENT_MESSAGE_CHARACTERS,
+        },
       },
       required: ["target", "message"],
       additionalProperties: false,

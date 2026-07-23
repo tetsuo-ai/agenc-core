@@ -5,10 +5,13 @@ import {
   toolMetadata,
   type MultiAgentV2Options,
 } from "./common.js";
-import { handleMessageStringTool } from "./message-tool.js";
+import {
+  handleMessageStringTool,
+  MAX_INTER_AGENT_MESSAGE_CHARACTERS,
+} from "./message-tool.js";
 
 const TRIGGER_TURN_TASK_DESCRIPTION =
-  "Send a message to an existing non-root target agent and trigger a turn in that target. If the target is currently mid-turn, the message is queued and will be used to start the target's next turn, after the current turn completes.";
+  "Assign one correlated task to an existing non-root reusable worker. The sender must be a strict ancestor, the worker must be idle, and busy workers or workers with an outstanding assignment are rejected.";
 
 export function createTriggerTurnTaskTool(
   opts: MultiAgentV2Options,
@@ -30,7 +33,10 @@ export function createTriggerTurnTaskTool(
       type: "object",
       properties: {
         target: { type: "string" },
-        message: { type: "string" },
+        message: {
+          type: "string",
+          maxLength: MAX_INTER_AGENT_MESSAGE_CHARACTERS,
+        },
       },
       required: ["target", "message"],
       additionalProperties: false,

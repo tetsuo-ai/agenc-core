@@ -798,6 +798,7 @@ function createSession(opts: {
   readonly executionCwd?: string;
   readonly roleWorkspaceCwd?: string;
   readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
+  readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
 } = {}): AgenCBridgeSession {
   const modeSubscribers: Array<() => void> = [];
   const permissionContext = opts.permissionContext ?? PERMISSION_CONTEXT;
@@ -838,6 +839,9 @@ function createSession(opts: {
     subscribeToEvents: () => () => {},
     submit: async () => {},
     enqueueIdleInput: () => 1,
+    ...(opts.enqueueIdleInputBatch !== undefined
+      ? { enqueueIdleInputBatch: opts.enqueueIdleInputBatch }
+      : {}),
     rewindConversationToMessage: async () => ({
       ok: true,
       sessionId: "conversation-app-smoke",
@@ -1626,6 +1630,21 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         isInteractive={false}
       />,
       async ({ output }) => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (
+          promptProps.setPastedContents as (
+            next: Record<number, unknown>,
+          ) => void
+        )({
+          0: {
+            id: 0,
+            type: "image",
+            content: "base64-image",
+            mediaType: "image/png",
+            filename: "local-command.png",
+          },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
         const onSubmit = providerProbe.promptSubmits.at(-1);
         expect(onSubmit).toBeDefined();
 
@@ -1636,6 +1655,190 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(session.enqueueIdleInput).not.toHaveBeenCalled();
         expect(output()).toContain("Use /help");
         expect(output()).toContain("$skill-name");
+      },
+    );
+  });
+
+  test("rolls back an owned attachment when model submission rejects", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const rollbackIdleInputAdmission = vi.fn(() => true);
+    const commitIdleInputAdmission = vi.fn(() => true);
+    const session = {
+      ...createSession(),
+      enqueueIdleInputBatchOwned: vi.fn(() => ({
+        token: "owned-attachment",
+        firstSequence: 1,
+        lastSequence: 1,
+        count: 1,
+      })),
+      rollbackIdleInputAdmission,
+      commitIdleInputAdmission,
+      submit: vi.fn(async () => {
+        throw new Error("attachment submit rejected");
+      }),
+    } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (
+          promptProps.setPastedContents as (
+            next: Record<number, unknown>,
+          ) => void
+        )({
+          0: {
+            id: 0,
+            type: "image",
+            content: "base64-image",
+            mediaType: "image/png",
+            filename: "owned.png",
+          },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await providerProbe.promptSubmits.at(-1)!("inspect", helpers);
+
+        expect(rollbackIdleInputAdmission).toHaveBeenCalledWith(
+          "owned-attachment",
+        );
+        expect(commitIdleInputAdmission).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  test("atomically rejects startup input batches with a visible notification", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const enqueueIdleInputBatch = vi.fn(() => {
+      throw new Error(
+        "Session mailbox is full; startup input was not submitted.",
+      );
+    });
+    const session = {
+      ...createSession({ enqueueIdleInputBatch }),
+      submit: vi.fn(async () => {}),
+      enqueueIdleInput: vi.fn(() => 1),
+    } satisfies AgenCBridgeSession;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+        initialUserMessages={[
+          { role: "user", content: "first" },
+          { role: "user", content: "second" },
+        ]}
+      />,
+      async ({ output }) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(enqueueIdleInputBatch).toHaveBeenCalledWith([
+          { role: "user", content: "first" },
+          { role: "user", content: "second" },
+        ]);
+        expect(session.enqueueIdleInput).not.toHaveBeenCalled();
+        expect(session.submit).not.toHaveBeenCalled();
+        const visibleFrame = stripAnsi(
+          extractLastSynchronizedFrame(output()),
+        ).replace(/\s+/gu, "");
+        expect(visibleFrame).toContain(
+          "Sessionmailboxisfull;startupinputwasnotsubmitted.",
+        );
+      },
+    );
+  });
+
+  test("rolls back owned startup context when prompt submission rejects", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const enqueueIdleInputBatchOwned = vi.fn(() => ({
+      token: "owned-startup",
+      firstSequence: 1,
+      lastSequence: 1,
+      count: 1,
+    }));
+    const rollbackIdleInputAdmission = vi.fn(() => true);
+    const commitIdleInputAdmission = vi.fn(() => true);
+    const session = {
+      ...createSession(),
+      enqueueIdleInputBatchOwned,
+      rollbackIdleInputAdmission,
+      commitIdleInputAdmission,
+      submit: vi.fn(async () => {
+        throw new Error("startup submit rejected");
+      }),
+    } satisfies AgenCBridgeSession;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+        initialPrompt="start now"
+        initialUserMessages={[
+          { role: "user", content: "owned startup context" },
+        ]}
+      />,
+      async ({ output }) => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(rollbackIdleInputAdmission).toHaveBeenCalledWith(
+          "owned-startup",
+        );
+        expect(commitIdleInputAdmission).not.toHaveBeenCalled();
+        const visibleFrame = stripAnsi(
+          extractLastSynchronizedFrame(output()),
+        ).replace(/\s+/gu, "");
+        expect(visibleFrame).toContain("startupsubmitrejected");
+      },
+    );
+  });
+
+  test("rolls back owned startup context for a locally handled command", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    mockTuiCommandList.push({
+      name: "help",
+      type: "local",
+      load: vi.fn(),
+    });
+    const rollbackIdleInputAdmission = vi.fn(() => true);
+    const commitIdleInputAdmission = vi.fn(() => true);
+    const session = {
+      ...createSession(),
+      enqueueIdleInputBatchOwned: vi.fn(() => ({
+        token: "owned-local-startup",
+        firstSequence: 1,
+        lastSequence: 1,
+        count: 1,
+      })),
+      rollbackIdleInputAdmission,
+      commitIdleInputAdmission,
+      submit: vi.fn(async () => {}),
+    } satisfies AgenCBridgeSession;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+        initialPrompt="$help"
+        initialUserMessages={[
+          { role: "user", content: "must not leak" },
+        ]}
+      />,
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(session.submit).not.toHaveBeenCalled();
+        expect(rollbackIdleInputAdmission).toHaveBeenCalledWith(
+          "owned-local-startup",
+        );
+        expect(commitIdleInputAdmission).not.toHaveBeenCalled();
       },
     );
   });

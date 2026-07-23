@@ -1,8 +1,8 @@
 {
   "rowId": "control-registry-roles",
   "contractName": "agent-surface-contract",
-  "reviewer": "manual-row-reviewer",
-  "reviewedAt": "2026-06-14T19:54:12Z",
+  "reviewer": "independent-parity-auditor",
+  "reviewedAt": "2026-07-23T05:33:14Z",
   "verdict": "APPROVED",
   "behaviorCoverage": {
     "behaviorsAudited": [
@@ -11,22 +11,28 @@
       "enforces the default child depth cap while preserving configured per-session overrides",
       "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
       "normalizes final and nonfinal agent statuses consistently for list and TUI consumers",
-      "allows completed live agents to transition back to running for later follow-up turns while keeping errored, shutdown, and not_found irreversible",
+      "admits reusable-agent assignments only from idle, reserves at most one outstanding correlated task atomically, and keeps completed, errored, shutdown, and not_found terminal",
       "routes child terminal notifications through inter-agent communication for live and root parents, with a no-turn not_found fallback when the child handle is missing"
     ],
     "missingBehaviors": []
   },
   "edgeCaseCoverage": {
     "edgeCasesAudited": [
-      "concurrent and duplicate path reservations are guarded by SpawnReservation and AgentRegistry path ownership checks",
-      "depth cap, per-call cap, and resume depth rejection are covered by AgentControl tests",
-      "role nickname candidates, default role fallback, TOML role layers, and service-tier prompt formatting are covered by role and role-definition tests",
-      "interrupt-before-finalize, completion watcher repeat notifications, root mailbox delivery, and missing child fallback are covered by AgentControl tests"
+      "two concurrent spawns requesting the same agent path leave exactly one finalized registry entry",
+      "a child spawn at depth two is rejected when the session cap is one",
+      "a role with a configured nickname candidate list uses the first available path-safe candidate",
+      "a missing role name resolves to the default role and still applies role-level tool policy",
+      "a role TOML layer with model, reasoning, and service_tier exposes those locked settings in the spawn tool description",
+      "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status",
+      "a child completion whose parent is the root thread is delivered to the root session mailbox and requests a bounded coalesced follow-up turn",
+      "a child completion watcher treats completed as terminal and suppresses its generic notification when a correlated task receipt already owns that turn",
+      "a completion watcher for a missing child handle emits a not_found subagent notification to the parent without triggering a turn"
     ],
     "missingEdgeCases": []
   },
   "issues": [],
   "evidence": {
+    "sourceLedgerValidation": "PASS: frozen source ledger metadata validated; source checkout verification skipped",
     "filesRead": [
       "parity/agent-surface-contract.json",
       "runtime/src/agents/control.ts",
@@ -41,16 +47,16 @@
       "runtime/tests/agents/status.test.ts"
     ],
     "testsExecuted": [
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
+      "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/control.test.ts tests/agents/registry.test.ts tests/agents/role.test.ts tests/agents/role-definitions.test.ts tests/agents/status.test.ts --reporter=dot"
     ],
     "commandResults": [
-      "PASS: 5 test files passed, 119 tests passed"
+      "PASS: 5 test files passed, 154 tests passed"
     ],
     "implementationEvidence": [
-      "AgentControl.spawn reserves a registry slot, reserves or allocates the path, checks cancellation, finalizes metadata, and releases the reservation on failure.",
-      "AgentRegistry exposes SpawnReservation, reserveAgentPathForReservation, finalizeSpawnReservation, releaseReservedAgentPath, registerRootThread, allocateNickname, and path depth helpers.",
-      "AgentStatusTracker separates final states from irreversible states so completed agents can resume while errored, shutdown, and not_found remain terminal.",
-      "Role loading applies built-in and TOML role layers, runtime allow/deny policy hints, nickname candidates, model, reasoning, service tier, and agent_max_depth settings."
+      "AgentControl spawn admission reserves registry capacity and path ownership before exposing a live child, and releases both on failed finalization.",
+      "AgentControl.assignTask synchronously requires a strict ancestor, idle status, and no outstanding assignment; it installs correlated taskId and turnId values before mailbox delivery and rolls the reservation back when delivery fails.",
+      "AgentStatusTracker keeps idle nonfinal and reusable while completed, errored, shutdown, and not_found are final and irreversible.",
+      "Completion watching emits one terminal notification, suppresses the generic duplicate when the correlated task receipt represents that turn, and requests a bounded coalesced root follow-up after root delivery."
     ]
   }
 }

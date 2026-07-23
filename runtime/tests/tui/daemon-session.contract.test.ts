@@ -1382,6 +1382,81 @@ describe("AgenC TUI daemon session adapter", () => {
     });
   });
 
+  it("reserves in-flight capacity and exactly rolls back a failed owned admission", async () => {
+    const client = createClient();
+    const originalRequest = client.request.bind(client);
+    let rejectFirstStream: ((error: Error) => void) | undefined;
+    const firstStream = new Promise<never>((_resolve, reject) => {
+      rejectFirstStream = reject;
+    });
+    let streamAttempts = 0;
+    vi.spyOn(client, "request").mockImplementation(
+      (method, params, options) => {
+        if (method === "message.stream" && streamAttempts++ === 0) {
+          client.requests.push({
+            method,
+            params,
+            ...(options?.signal !== undefined
+              ? { signal: options.signal }
+              : {}),
+          });
+          return firstStream;
+        }
+        return originalRequest(method, params, options);
+      },
+    );
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const admission = session.enqueueIdleInputBatchOwned([
+      { role: "user", content: "owned attachment" },
+    ]);
+    const failedSubmit = session.submit("original prompt");
+
+    expect(
+      session.enqueueIdleInputBatch(
+        Array.from({ length: 512 }, (_value, index) => ({
+          role: "user",
+          content: `concurrent-${index}`,
+        })),
+      ),
+    ).toBe(-1);
+    rejectFirstStream?.(new Error("transient stream failure"));
+    await expect(failedSubmit).rejects.toThrow("transient stream failure");
+    expect(session.rollbackIdleInputAdmission(admission.token)).toBe(true);
+
+    await session.submit("unrelated prompt");
+    expect(client.requests.at(-1)).toMatchObject({
+      method: "message.stream",
+      params: {
+        content: "unrelated prompt",
+      },
+    });
+  });
+
+  it("rejects an oversized owned input batch atomically", () => {
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client: createClient(),
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    expect(() =>
+      session.enqueueIdleInputBatchOwned([
+        {
+          role: "user",
+          content: "x".repeat(17 * 1_024 * 1_024),
+        },
+      ]),
+    ).toThrow("queued input was not accepted");
+    expect(session.enqueueIdleInput({ role: "user", content: "safe" })).toBe(
+      1,
+    );
+  });
+
   it("bridges daemon permission requests back through tool decisions", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

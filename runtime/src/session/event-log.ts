@@ -120,9 +120,61 @@ export interface TurnStartedEvent {
 
 export interface TurnCompleteEvent {
   readonly turnId: string;
+  /** Agent-assignment correlation id, when this is a reusable worker turn. */
+  readonly taskId?: string;
+  readonly toolCallCount?: number;
+  readonly worktree?: {
+    readonly path: string;
+    readonly branch: string;
+    readonly gitRoot: string;
+  };
   readonly lastAgentMessage?: string;
   readonly completedAt?: number;
   readonly durationMs?: number;
+}
+
+/**
+ * Canonical, child-session-owned outcome for one correlated delegated task.
+ * The child journal fsyncs this record before the parent mailbox receives the
+ * corresponding receipt, so projection never outruns its durable source.
+ */
+export interface SubagentTurnOutcomeEvent {
+  readonly agentId: string;
+  readonly agentPath: string;
+  readonly turnId: string;
+  readonly taskId?: string;
+  readonly outcome: "completed" | "errored" | "interrupted" | "nack";
+  readonly toolCallCount: number;
+  readonly message?: string;
+  readonly reason?: string;
+  readonly worktreeEvidence?:
+    | {
+        readonly state: "unverifiable";
+        readonly locator: {
+          readonly path: string;
+          readonly branch: string;
+          readonly gitRoot: string;
+        };
+        readonly error: string;
+      }
+    | {
+        readonly state:
+          | "committed_clean"
+          | "unchanged_clean"
+          | "dirty_uncommitted"
+          | "diverged";
+        readonly locator: {
+          readonly path: string;
+          readonly branch: string;
+          readonly gitRoot: string;
+        };
+        readonly baseCommit: string;
+        readonly headCommit: string;
+        readonly treeHash: string;
+        readonly clean: boolean;
+        readonly baseIsAncestor: boolean;
+        readonly integrationRef?: string;
+      };
 }
 
 export interface TurnAbortedEvent {
@@ -951,6 +1003,10 @@ export type EventMsg =
       readonly type: "context_compacted";
       readonly payload: ContextCompactedEvent;
     }
+  | {
+      readonly type: "subagent_turn_outcome";
+      readonly payload: SubagentTurnOutcomeEvent;
+    }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | {
@@ -1195,6 +1251,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "mcp_elicitation_request",
     "mcp_elicitation_complete",
     "context_compacted",
+    "subagent_turn_outcome",
     "turn_complete",
     "turn_aborted",
     "turn_checkpoint",
@@ -1260,6 +1317,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "turn_aborted",
     "error",
     "context_compacted",
+    "subagent_turn_outcome",
     "protocol_claim",
     "protocol_settle",
     "protocol_slash",

@@ -31,16 +31,14 @@ describe("AgentStatusTracker", () => {
     if (s.status === "interrupted") expect(s.reason).toBe("parent_interrupt");
   });
 
-  it("allows a completed agent to start another turn", () => {
+  it("keeps completed terminal and rejects a later running transition", () => {
     const t = new AgentStatusTracker();
-    t.markCompleted("turn-1");
+    t.markCompleted("turn-1", "done");
     t.markRunning("turn-2");
-    expect(t.value).toMatchObject({ status: "running", turnId: "turn-2" });
-    t.markCompleted("turn-2", "done again");
     expect(t.value).toMatchObject({
       status: "completed",
-      turnId: "turn-2",
-      lastMessage: "done again",
+      turnId: "turn-1",
+      lastMessage: "done",
     });
   });
 
@@ -197,8 +195,6 @@ describe("agentStatusFromEvent (reference parity)", () => {
     expect(
       agentStatusFromEvent({ type: "agent_message", payload: {} }),
     ).toBeUndefined();
-    expect(
-      agentStatusFromEvent({ type: "tool_call_started" }),
-    ).toBeUndefined();
+    expect(agentStatusFromEvent({ type: "tool_call_started" })).toBeUndefined();
   });
 });

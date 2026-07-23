@@ -5,7 +5,11 @@ import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { responseItemToLlmMessage as responseItemToLlmHistoryMessage } from "../session/message-history-conversion.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
-import type { InterAgentCommunication } from "./mailbox.js";
+import {
+  isMailboxSendAccepted,
+  MailboxCapacityError,
+  type InterAgentCommunication,
+} from "./mailbox.js";
 import type { AgentStatus } from "./status.js";
 import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
@@ -22,7 +26,10 @@ export type ThreadManagerOp =
     }
   | {
       readonly type: "inter_agent_communication";
-      readonly communication: Omit<InterAgentCommunication, "seq" | "direction">;
+      readonly communication: Omit<
+        InterAgentCommunication,
+        "seq" | "direction"
+      >;
     }
   | { readonly type: "clear_conversation_history" }
   | { readonly type: "append_message"; readonly message: string }
@@ -150,7 +157,8 @@ export class AgenCThread implements ManagedThread {
     this.threadId = opts.threadId;
     this.kind = opts.kind;
     if (opts.agentPath !== undefined) this.agentPath = opts.agentPath;
-    if (opts.parentThreadId !== undefined) this.parentThreadId = opts.parentThreadId;
+    if (opts.parentThreadId !== undefined)
+      this.parentThreadId = opts.parentThreadId;
     if (opts.session !== undefined) this.session = opts.session;
     if (opts.live !== undefined) this.live = opts.live;
     this.statusSubject = new BehaviorSubject<AgentStatus>(this.readStatus());
@@ -246,10 +254,12 @@ export class ThreadManagerState {
   control: AgentControl | undefined;
   registry: AgentRegistry | undefined;
 
-  constructor(opts: {
-    readonly control?: AgentControl;
-    readonly registry?: AgentRegistry;
-  } = {}) {
+  constructor(
+    opts: {
+      readonly control?: AgentControl;
+      readonly registry?: AgentRegistry;
+    } = {},
+  ) {
     this.control = opts.control;
     this.registry = opts.registry;
   }
@@ -401,11 +411,11 @@ export class ThreadManager implements ThreadOperationManager {
     return { threadId: thread.threadId, thread };
   }
 
-  async spawnLiveAgent(
-    opts: SpawnManagedLiveAgentOptions,
-  ): Promise<LiveAgent> {
+  async spawnLiveAgent(opts: SpawnManagedLiveAgentOptions): Promise<LiveAgent> {
     if (!this.state.control) {
-      throw new Error("ThreadManager cannot spawn an agent before AgentControl is bound");
+      throw new Error(
+        "ThreadManager cannot spawn an agent before AgentControl is bound",
+      );
     }
     const live = await this.state.control.spawnLiveAgentForThreadManager(opts);
     const parentThreadId =
@@ -471,7 +481,9 @@ export class ThreadManager implements ThreadOperationManager {
     );
   }
 
-  async shutdownAllThreadsBounded(timeoutMs: number): Promise<ThreadShutdownReport> {
+  async shutdownAllThreadsBounded(
+    timeoutMs: number,
+  ): Promise<ThreadShutdownReport> {
     const entries = Array.from(this.state.threads.entries());
     const report: ThreadShutdownReport = {
       completed: [],
@@ -560,24 +572,39 @@ async function submitToSession(
       session.clearProviderResponseId();
       return session.conversationId;
     case "inter_agent_communication":
-      session.mailbox.send({
-        ...op.communication,
-        direction: "up",
-        metadata: { kind: "inter_agent_communication" },
-      });
+      if (
+        !isMailboxSendAccepted(
+          session.mailbox.send({
+            ...op.communication,
+            direction: "up",
+            metadata: {
+              ...(op.communication.metadata ?? {}),
+              kind: "inter_agent_communication",
+            },
+          }),
+        )
+      ) {
+        throw new MailboxCapacityError(session.conversationId);
+      }
       if (op.communication.triggerTurn) {
         await session.submit("", { displayUserMessage: null });
       }
       return session.conversationId;
     case "append_message":
-      session.mailbox.send({
-        author: ROOT_THREAD_AGENT_PATH,
-        recipient: ROOT_THREAD_AGENT_PATH,
-        content: op.message,
-        triggerTurn: false,
-        direction: "up",
-        metadata: { kind: "append_message" },
-      });
+      if (
+        !isMailboxSendAccepted(
+          session.mailbox.send({
+            author: ROOT_THREAD_AGENT_PATH,
+            recipient: ROOT_THREAD_AGENT_PATH,
+            content: op.message,
+            triggerTurn: false,
+            direction: "up",
+            metadata: { kind: "append_message" },
+          }),
+        )
+      ) {
+        throw new MailboxCapacityError(session.conversationId);
+      }
       return session.conversationId;
     case "interrupt":
       await session.abortAllTasks("interrupted");
@@ -599,7 +626,7 @@ async function submitToLiveAgent(
     case "user_input":
       {
         const content = userInputDisplayText(op.input);
-        live.downInbox.send({
+        const delivery = live.downInbox.send({
           author: live.agentPath,
           recipient: live.agentPath,
           content,
@@ -607,6 +634,9 @@ async function submitToLiveAgent(
           direction: "down",
           metadata: { kind: "user_input", inputContent: op.input },
         });
+        if (delivery === "dropped") {
+          throw new MailboxCapacityError(live.downInbox.threadId);
+        }
       }
       return live.agentId;
     case "clear_conversation_history":
@@ -621,21 +651,34 @@ async function submitToLiveAgent(
       });
       return live.agentId;
     case "inter_agent_communication":
-      live.downInbox.send({
-        ...op.communication,
-        direction: "down",
-        metadata: { kind: "inter_agent_communication" },
-      });
+      {
+        const delivery = live.downInbox.send({
+          ...op.communication,
+          direction: "down",
+          metadata: {
+            ...(op.communication.metadata ?? {}),
+            kind: "inter_agent_communication",
+          },
+        });
+        if (delivery === "dropped") {
+          throw new MailboxCapacityError(live.downInbox.threadId);
+        }
+      }
       return live.agentId;
     case "append_message":
-      live.downInbox.send({
-        author: live.agentPath,
-        recipient: live.agentPath,
-        content: op.message,
-        triggerTurn: false,
-        direction: "down",
-        metadata: { kind: "append_message" },
-      });
+      {
+        const delivery = live.downInbox.send({
+          author: live.agentPath,
+          recipient: live.agentPath,
+          content: op.message,
+          triggerTurn: false,
+          direction: "down",
+          metadata: { kind: "append_message" },
+        });
+        if (delivery === "dropped") {
+          throw new MailboxCapacityError(live.downInbox.threadId);
+        }
+      }
       return live.agentId;
     case "interrupt":
       if (!live.abortController.signal.aborted) {
@@ -658,19 +701,26 @@ async function submitToLiveAgent(
       // child session's MCP manager between turns (drainChildMailbox /
       // run-agent). Previously this was a silent no-op, leaving live
       // subagents on stale MCP config.
-      live.downInbox.send({
-        author: live.agentPath,
-        recipient: live.agentPath,
-        content: "",
-        triggerTurn: false,
-        direction: "down",
-        metadata: { kind: "mcp_refresh", mcpConfig: op.config },
-      });
+      {
+        const delivery = live.downInbox.send({
+          author: live.agentPath,
+          recipient: live.agentPath,
+          content: "",
+          triggerTurn: false,
+          direction: "down",
+          metadata: { kind: "mcp_refresh", mcpConfig: op.config },
+        });
+        if (delivery === "dropped") {
+          throw new MailboxCapacityError(live.downInbox.threadId);
+        }
+      }
       return live.agentId;
   }
 }
 
-function userInputDisplayText(input: string | readonly LLMContentPart[]): string {
+function userInputDisplayText(
+  input: string | readonly LLMContentPart[],
+): string {
   if (typeof input === "string") return input;
   return input
     .map((part) => {
@@ -690,9 +740,12 @@ async function shutdownWithTimeout(
     await Promise.race([
       thread.shutdown("thread_manager_shutdown"),
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          reject(new Error("shutdown timed out"));
-        }, Math.max(0, timeoutMs));
+        timeout = setTimeout(
+          () => {
+            reject(new Error("shutdown timed out"));
+          },
+          Math.max(0, timeoutMs),
+        );
       }),
     ]);
     return "completed";

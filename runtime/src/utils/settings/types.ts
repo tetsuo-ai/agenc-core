@@ -720,7 +720,7 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe(
-          'Persisted swarm mode: fan out divisible work to parallel sub-agents by default.',
+          'Persisted swarm mode: conservatively recommend up to four sub-agents for independent work.',
         ),
       advisorModel: z
         .string()

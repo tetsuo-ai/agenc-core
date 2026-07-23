@@ -294,10 +294,7 @@ export function createActiveTurnState(): ActiveTurnState {
   };
 }
 
-export function pushPendingInput(
-  state: ActiveTurnState,
-  input: unknown,
-): void {
+export function pushPendingInput(state: ActiveTurnState, input: unknown): void {
   state.pendingInput.push(input);
 }
 
@@ -322,9 +319,7 @@ export function acceptMailboxDeliveryForCurrentTurn(
   state.mailboxDeliveryPhase = "current_turn";
 }
 
-export function deferMailboxDeliveryToNextTurn(
-  state: ActiveTurnState,
-): void {
+export function deferMailboxDeliveryToNextTurn(state: ActiveTurnState): void {
   state.mailboxDeliveryPhase = "next_turn";
 }
 
@@ -517,6 +512,10 @@ export type SteerInputError =
       readonly kind: "active_turn_not_steerable";
       readonly turnKind: NonSteerableTurnKind;
     }
+  | {
+      readonly kind: "mailbox_backpressure";
+      readonly items: readonly unknown[];
+    }
   | { readonly kind: "empty_input" };
 
 /**
@@ -562,6 +561,11 @@ export function describeSteerInputError(err: SteerInputError): {
       return {
         message: `cannot steer a ${err.turnKind} turn`,
         code: "active_turn_not_steerable",
+      };
+    case "mailbox_backpressure":
+      return {
+        message: "session mailbox is full; input was not accepted",
+        code: "resource_exhausted",
       };
     case "empty_input":
       return { message: "input must not be empty", code: "bad_request" };

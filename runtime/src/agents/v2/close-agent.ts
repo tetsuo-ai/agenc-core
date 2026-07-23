@@ -5,6 +5,7 @@ import {
   currentAgentContext,
   emit,
   getSessionOrError,
+  isCurrentAgentContextError,
   json,
   localZeroAdmissionEstimate,
   receiverMetadataFor,
@@ -31,6 +32,7 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = opts.ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args, opts);
+    if (isCurrentAgentContextError(current)) return current;
     let agentId;
     try {
       agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);

@@ -59,6 +59,8 @@ export interface DelegateOpts {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
+  /** Correlation id for the initial task/assignment. */
+  readonly taskId?: string;
   readonly taskContent?: readonly LLMContentPart[];
   readonly role?: string;
   readonly agentName?: string;
@@ -91,7 +93,11 @@ export interface DelegateOpts {
 }
 
 export type DelegateOutcome =
-  | { readonly kind: "sync_completed"; readonly result: RunAgentResult; readonly thread: AgentThread }
+  | {
+      readonly kind: "sync_completed";
+      readonly result: RunAgentResult;
+      readonly thread: AgentThread;
+    }
   | { readonly kind: "async_launched"; readonly thread: AgentThread }
   | { readonly kind: "rejected"; readonly reason: string };
 
@@ -99,9 +105,7 @@ export type DelegateOutcome =
 // delegate — main entry
 // ─────────────────────────────────────────────────────────────────────
 
-export async function delegate(
-  opts: DelegateOpts,
-): Promise<DelegateOutcome> {
+export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   const isolation = opts.isolation ?? "none";
   const forkMode = opts.forkMode;
   const runInBackground = opts.runInBackground ?? true;
@@ -112,7 +116,7 @@ export async function delegate(
   ) {
     return {
       kind: "rejected",
-      reason: 'worktree isolation requires a non-empty worktreeSlug',
+      reason: "worktree isolation requires a non-empty worktreeSlug",
     };
   }
 
@@ -131,7 +135,8 @@ export async function delegate(
     if (!canonicalGitRoot) {
       return {
         kind: "rejected",
-        reason: "worktree isolation requested but cwd is not inside a git repository",
+        reason:
+          "worktree isolation requested but cwd is not inside a git repository",
       };
     }
     try {
@@ -148,7 +153,7 @@ export async function delegate(
         sandboxExecutionBroker: worktreeSandboxExecutionBroker,
       });
       baseCommit = await captureBaseCommit(
-        canonicalGitRoot,
+        worktree.path,
         worktreeSandboxExecutionBroker,
       );
     } catch (err) {
@@ -200,7 +205,9 @@ export async function delegate(
       ? { useProvidedParentMessages: true }
       : {}),
     taskPrompt: opts.taskPrompt,
-    ...(opts.taskContent !== undefined ? { taskContent: opts.taskContent } : {}),
+    ...(opts.taskContent !== undefined
+      ? { taskContent: opts.taskContent }
+      : {}),
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
   });
 
@@ -232,8 +239,10 @@ export async function delegate(
       parentPath: opts.parentPath,
       control: opts.control,
       taskPrompt: opts.taskPrompt,
+      ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
       initialMessages: fork.messages,
       ...(worktree !== undefined ? { worktree } : {}),
+      ...(baseCommit !== null ? { worktreeBaseCommit: baseCommit } : {}),
       ...(opts.toolAllowlist !== undefined
         ? { toolAllowlist: opts.toolAllowlist }
         : {}),
@@ -256,15 +265,16 @@ export async function delegate(
         ? { resumeManager: opts.resumeManager }
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
-      ...(opts.onProgress !== undefined
-        ? { onProgress: opts.onProgress }
-        : {}),
+      ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       onRoleProvenanceFailure: () => {
         preserveLiveAfterRoleProvenanceFailure = true;
       },
     });
 
-  if (!opts.forceSynchronous && (runInBackground || live.role.config.background)) {
+  if (
+    !opts.forceSynchronous &&
+    (runInBackground || live.role.config.background)
+  ) {
     // Async mode — fire-and-forget; caller sees the AgentThread handle.
     let thread!: AgentThread;
     const joinPromise = Promise.resolve().then(async () => {
@@ -374,8 +384,10 @@ async function runDelegateAgentLoop(opts: {
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
   readonly taskPrompt: string;
+  readonly taskId?: string;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
+  readonly worktreeBaseCommit?: string;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly childToolPolicy?: ChildToolPolicy;
   readonly maxTurns?: number;
@@ -400,7 +412,11 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         initialMessages: opts.initialMessages,
         taskPrompt: opts.taskPrompt,
+        ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
         ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
+        ...(opts.worktreeBaseCommit !== undefined
+          ? { worktreeBaseCommit: opts.worktreeBaseCommit }
+          : {}),
         ...(opts.toolAllowlist !== undefined
           ? { toolAllowlist: opts.toolAllowlist }
           : {}),
@@ -516,10 +532,7 @@ async function recoverLiveAgent(opts: {
     `resume subagent ${live.agentPath} after ${live.status.value.status}`,
   );
 
-  await opts.control.shutdown(
-    live.agentId,
-    "delegate_resume",
-  );
+  await opts.control.shutdown(live.agentId, "delegate_resume");
 
   try {
     const resumed = await opts.control.resumeAgentFromRollout({
@@ -611,26 +624,37 @@ async function teardown(opts: {
 
   // If we own a worktree, decide keep-vs-remove.
   if (opts.thread.worktree && opts.baseCommit) {
+    // A resumed worktree may contain commits retained from an earlier run.
+    // The turn-start base only distinguishes this turn's output; it does not
+    // prove the pre-existing worktree is safe to delete. Auto-cleanup is
+    // therefore restricted to worktrees created by this delegate invocation.
+    if (!opts.thread.worktree.created) {
+      emitWarning(
+        opts.parent.eventLog,
+        opts.parent.nextInternalSubId(),
+        "worktree_resumed_preserved",
+        `resumed worktree ${opts.thread.worktree.path} was preserved for explicit review`,
+      );
+      return;
+    }
     try {
       const changes = await hasWorktreeChanges({
         path: opts.thread.worktree.path,
         baseCommit: opts.baseCommit,
-        sandboxExecutionBroker:
-          requireChildWorktreeSandboxExecutionBroker(
-            opts.parent,
-            opts.thread.worktree.gitRoot,
-          ),
+        sandboxExecutionBroker: requireChildWorktreeSandboxExecutionBroker(
+          opts.parent,
+          opts.thread.worktree.gitRoot,
+        ),
       });
       if (!changes.hasCommits && !changes.isDirty) {
         await removeAgentWorktree({
           path: opts.thread.worktree.path,
           branch: opts.thread.worktree.branch,
           gitRoot: opts.thread.worktree.gitRoot,
-          sandboxExecutionBroker:
-            requireChildWorktreeSandboxExecutionBroker(
-              opts.parent,
-              opts.thread.worktree.gitRoot,
-            ),
+          sandboxExecutionBroker: requireChildWorktreeSandboxExecutionBroker(
+            opts.parent,
+            opts.thread.worktree.gitRoot,
+          ),
           onSparseCheckoutOrphaned: (detail) => {
             emitWarning(
               opts.parent.eventLog,

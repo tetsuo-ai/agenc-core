@@ -576,6 +576,11 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     ).hasPendingInput = () => false;
     (
       session as unknown as {
+        currentRootHumanTurn: () => null;
+      }
+    ).currentRootHumanTurn = () => null;
+    (
+      session as unknown as {
         bindProviderConversation: () => void;
       }
     ).bindProviderConversation = () => {};

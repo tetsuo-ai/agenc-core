@@ -58,6 +58,19 @@ export interface GetAttachmentsOptions {
    * canonical choice).
    */
   readonly sessionKey: object;
+  /**
+   * Exact turn identity plus the authoritative root-human turn currently
+   * bound to the session. The root turn can be absent or belong to another
+   * turn during synthetic/internal follow-ups; provenance-sensitive
+   * producers must require an exact ID match before consuming its text.
+   */
+  readonly turnProvenance?: {
+    readonly turnId: string;
+    readonly rootHumanTurn: {
+      readonly turnId: string;
+      readonly text: string;
+    } | null;
+  };
   /** Most recent user-channel message text, if any. */
   readonly userInput: string | null;
   /**

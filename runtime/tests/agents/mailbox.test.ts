@@ -4,6 +4,7 @@ import {
   MailboxClosedError,
   MAX_MAILBOX_BLOCK_MS,
   MAX_MAILBOX_DEPTH,
+  MAX_MAILBOX_TRIGGER_BYTES,
   isAgentExitedSentinel,
   type InterAgentCommunication,
 } from "./mailbox.js";
@@ -26,6 +27,12 @@ function makeMsg(
     direction: "down",
     ...overrides,
   };
+}
+
+function retainedEnvelopeBytes(
+  message: Omit<InterAgentCommunication, "seq">,
+): number {
+  return Buffer.byteLength(JSON.stringify(message), "utf8");
 }
 
 describe("Mailbox", () => {
@@ -83,6 +90,98 @@ describe("Mailbox", () => {
     expect(isAgentExitedSentinel(first[1])).toBe(true);
     const second = mb.drain();
     expect(second).toHaveLength(0);
+  });
+
+  it("close drains an accepted trigger overflow before the exit sentinel", () => {
+    const mb = new Mailbox({ threadId: "t1", maxDepth: 1 });
+    expect(mb.send(makeMsg({ content: "passive" }))).toBe("sent");
+    expect(mb.send(makeMsg({ content: "trigger", triggerTurn: true }))).toBe(
+      "sent",
+    );
+
+    mb.close("done");
+    const drained = mb.drain();
+    expect(
+      drained
+        .filter(
+          (item): item is InterAgentCommunication =>
+            !isAgentExitedSentinel(item),
+        )
+        .map((item) => item.content),
+    ).toEqual(["passive", "trigger"]);
+    expect(isAgentExitedSentinel(drained.at(-1)!)).toBe(true);
+  });
+
+  it("close drains an accepted passive overflow without silent loss", () => {
+    const mb = new Mailbox({ threadId: "t1", maxDepth: 1 });
+    expect(mb.send(makeMsg({ content: "passive-1" }))).toBe("sent");
+    expect(mb.send(makeMsg({ content: "passive-2" }))).toBe("sent");
+
+    mb.close("done");
+    const drained = mb.drainThroughFirstTrigger();
+    expect(
+      drained
+        .filter(
+          (item): item is InterAgentCommunication =>
+            !isAgentExitedSentinel(item),
+        )
+        .map((item) => item.content),
+    ).toEqual(["passive-1", "passive-2"]);
+    expect(isAgentExitedSentinel(drained.at(-1)!)).toBe(true);
+    expect(mb.passiveBytes).toBe(0);
+    expect(mb.droppedTotal).toBe(0);
+  });
+
+  it("close wakes sequence waiters so they can drain the exit sentinel", () => {
+    const mb = new Mailbox({ threadId: "t1" });
+    const observed: number[] = [];
+    const unsubscribe = mb.seqWatch.subscribe((seq) => observed.push(seq));
+
+    mb.close("done");
+
+    expect(observed).toEqual([0, 1]);
+    expect(isAgentExitedSentinel(mb.drain()[0])).toBe(true);
+    unsubscribe();
+  });
+
+  it("retains passive context in the bounded queue until the first trigger", () => {
+    const mb = new Mailbox({ threadId: "t1", maxDepth: 3 });
+    for (const content of ["context-1", "context-2"]) {
+      mb.send({
+        author: "/root/peer",
+        recipient: "/root/worker",
+        content,
+        triggerTurn: false,
+        direction: "down",
+      });
+    }
+
+    expect(mb.drainThroughFirstTrigger()).toEqual([]);
+    expect(mb.size).toBe(2);
+
+    mb.send({
+      author: "/root",
+      recipient: "/root/worker",
+      content: "assigned task",
+      triggerTurn: true,
+      direction: "down",
+    });
+    mb.send({
+      author: "/root/peer",
+      recipient: "/root/worker",
+      content: "future context",
+      triggerTurn: false,
+      direction: "down",
+    });
+
+    expect(
+      mb
+        .drainThroughFirstTrigger()
+        .map((item) => ("content" in item ? item.content : item.type)),
+    ).toEqual(["context-1", "context-2", "assigned task"]);
+    expect(
+      mb.drain().map((item) => ("content" in item ? item.content : item.type)),
+    ).toEqual(["future context"]);
   });
 
   it("throws MailboxClosedError on send after close", () => {
@@ -179,7 +278,13 @@ describe("Mailbox", () => {
         .drain()
         .filter((m): m is InterAgentCommunication => !isAgentExitedSentinel(m))
         .map((m) => m.content);
-      expect(drained).toEqual(["b", "c"]);
+      expect(drained).toEqual([
+        expect.stringContaining(
+          "mailbox_backpressure: omitted 1 passive message",
+        ),
+        "b",
+        "c",
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -227,5 +332,193 @@ describe("Mailbox", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("never evicts an accepted trigger under later passive and timer pressure", async () => {
+    vi.useFakeTimers();
+    try {
+      const mb = new Mailbox({ threadId: "worker", maxDepth: 2 });
+      mb.send(makeMsg({ content: "context-a" }));
+      mb.send(makeMsg({ content: "context-b" }));
+      expect(mb.send(makeMsg({ content: "task-1", triggerTurn: true }))).toBe(
+        "sent",
+      );
+      expect(mb.send(makeMsg({ content: "late-passive" }))).toBe("dropped");
+
+      vi.advanceTimersByTime(MAX_MAILBOX_BLOCK_MS);
+      await Promise.resolve();
+      const first = mb
+        .drainThroughFirstTrigger()
+        .filter(
+          (item): item is InterAgentCommunication =>
+            !isAgentExitedSentinel(item),
+        )
+        .map((item) => item.content);
+      expect(first.at(-1)).toBe("task-1");
+      expect(first).toContain("context-b");
+      expect(first).toContainEqual(
+        expect.stringContaining("omitted 1 passive message"),
+      );
+      expect(first).not.toContain("late-passive");
+
+      expect(mb.send(makeMsg({ content: "task-2", triggerTurn: true }))).toBe(
+        "sent",
+      );
+      const second = mb
+        .drainThroughFirstTrigger()
+        .filter(
+          (item): item is InterAgentCommunication =>
+            !isAgentExitedSentinel(item),
+        )
+        .map((item) => item.content);
+      expect(second).toEqual([
+        expect.stringContaining("omitted 1 passive message"),
+        "task-2",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a trigger synchronously when only protected triggers occupy capacity", () => {
+    const mb = new Mailbox({ threadId: "worker", maxDepth: 2 });
+    expect(mb.send(makeMsg({ content: "task-1", triggerTurn: true }))).toBe(
+      "sent",
+    );
+    expect(mb.send(makeMsg({ content: "task-2", triggerTurn: true }))).toBe(
+      "sent",
+    );
+    expect(mb.send(makeMsg({ content: "task-3", triggerTurn: true }))).toBe(
+      "dropped",
+    );
+    expect(
+      mb
+        .drain()
+        .filter(
+          (item): item is InterAgentCommunication =>
+            !isAgentExitedSentinel(item),
+        )
+        .map((item) => item.content),
+    ).toEqual(["task-1", "task-2"]);
+  });
+
+  it("bounds aggregate passive bytes and exposes deterministic omission provenance", () => {
+    const first = makeMsg({ content: "aaaa" });
+    const second = makeMsg({ content: "bbbb" });
+    const mb = new Mailbox({
+      threadId: "worker",
+      maxDepth: 10,
+      maxPassiveBytes:
+        retainedEnvelopeBytes(first) + retainedEnvelopeBytes(second),
+    });
+    expect(mb.send(first)).toBe("sent");
+    expect(mb.send(second)).toBe("sent");
+    expect(mb.passiveBytes).toBe(
+      retainedEnvelopeBytes(first) + retainedEnvelopeBytes(second),
+    );
+    expect(mb.send(makeMsg({ content: "cccc" }))).toBe("dropped");
+    expect(
+      mb.send(makeMsg({ content: "correlated-task", triggerTurn: true })),
+    ).toBe("sent");
+
+    const contents = mb
+      .drainThroughFirstTrigger()
+      .filter(
+        (item): item is InterAgentCommunication => !isAgentExitedSentinel(item),
+      )
+      .map((item) => item.content);
+    expect(contents).toEqual([
+      "aaaa",
+      "bbbb",
+      expect.stringContaining("omitted 1 passive message"),
+      "correlated-task",
+    ]);
+    expect(mb.passiveBytes).toBe(0);
+  });
+
+  it("snapshots passive byte accounting against post-send metadata mutation", () => {
+    const inputContent = [{ type: "text", text: "12345" }];
+    const message = makeMsg({
+      content: "display",
+      metadata: { inputContent },
+    });
+    const retainedBytes = retainedEnvelopeBytes(message);
+    const mb = new Mailbox({
+      threadId: "worker",
+      maxPassiveBytes: retainedBytes,
+    });
+    expect(mb.send(message)).toBe("sent");
+    expect(mb.passiveBytes).toBe(retainedBytes);
+    inputContent[0]!.text = "x".repeat(1_000);
+    const drained = mb.drain();
+    expect(drained).toHaveLength(1);
+    expect(
+      isAgentExitedSentinel(drained[0]!)
+        ? null
+        : drained[0]!.metadata?.inputContent,
+    ).toEqual([{ type: "text", text: "12345" }]);
+    expect(mb.passiveBytes).toBe(0);
+  });
+
+  it("rejects an oversized content-part trigger before it enters the mailbox", () => {
+    const mb = new Mailbox({ threadId: "worker" });
+    const inputContent = [
+      {
+        type: "image_url",
+        image_url: {
+          url: `data:image/png;base64,${"A".repeat(MAX_MAILBOX_TRIGGER_BYTES)}`,
+        },
+      },
+    ];
+    expect(
+      mb.send(
+        makeMsg({
+          content: "[image]",
+          triggerTurn: true,
+          metadata: { inputContent },
+        }),
+      ),
+    ).toBe("dropped");
+    expect(mb.hasPendingTriggerTurn()).toBe(false);
+    expect(mb.drain()).toEqual([]);
+  });
+
+  it("accepts exact-limit trigger content despite bounded envelope overhead", () => {
+    const mb = new Mailbox({ threadId: "worker" });
+    expect(
+      mb.send(
+        makeMsg({
+          content: "x".repeat(MAX_MAILBOX_TRIGGER_BYTES),
+          triggerTurn: true,
+        }),
+      ),
+    ).toBe("sent");
+    expect(mb.drain()).toHaveLength(1);
+  });
+
+  it("bounds non-consecutive passive omission bookkeeping", () => {
+    const mb = new Mailbox({
+      threadId: "worker",
+      maxDepth: 1,
+      maxPassiveBytes: 1,
+    });
+    expect(mb.send(makeMsg({ content: "control", triggerTurn: true }))).toBe(
+      "sent",
+    );
+    for (let index = 0; index < 200; index += 1) {
+      expect(mb.send(makeMsg({ content: `passive-${index}` }))).toBe("dropped");
+      expect(
+        mb.send(
+          makeMsg({
+            content: `blocked-control-${index}`,
+            triggerTurn: true,
+          }),
+        ),
+      ).toBe("dropped");
+    }
+    const omissions = (
+      mb as unknown as { passiveOmissions: readonly unknown[] }
+    ).passiveOmissions;
+    expect(omissions.length).toBeLessThanOrEqual(128);
   });
 });

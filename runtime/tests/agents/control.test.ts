@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import {
   AgentControl,
+  AgentAssignmentRejectedError,
   AgentReferenceUnresolvedError,
   MAX_AGENT_DEPTH,
   MaxDepthExceededError,
@@ -22,28 +23,35 @@ import {
 } from "./role.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { ThreadManager } from "./thread-manager.js";
-import { SimpleMailbox, type InterAgentCommunication } from "../session/session.js";
+import {
+  SimpleMailbox,
+  type InterAgentCommunication,
+} from "../session/session.js";
 import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 
 let agencHome = "";
 let originalAgencHome = "";
 
-function stubSession(opts: {
-  rolloutStore?: RolloutStore | null;
-  conversationId?: string;
-  cwd?: string;
-  submit?: (
-    message: string,
-    opts?: { displayUserMessage?: string | null },
-  ) => Promise<void>;
-  services?: {
-    readonly executionAdmission?: ExecutionAdmissionClient;
-    readonly admissionRequired?: boolean;
-  };
-} = {}) {
+function stubSession(
+  opts: {
+    rolloutStore?: RolloutStore | null;
+    conversationId?: string;
+    cwd?: string;
+    submit?: (
+      message: string,
+      opts?: { displayUserMessage?: string | null },
+    ) => Promise<void>;
+    services?: {
+      readonly executionAdmission?: ExecutionAdmissionClient;
+      readonly admissionRequired?: boolean;
+    };
+  } = {},
+) {
   const emitted: unknown[] = [];
-  const mailbox = new SimpleMailbox<InterAgentCommunication & { seq: number }>();
+  const mailbox = new SimpleMailbox<
+    InterAgentCommunication & { seq: number }
+  >();
   const cwd = opts.cwd ?? agencHome;
   return {
     emit: (e: unknown) => {
@@ -246,7 +254,8 @@ describe("AgentControl", () => {
     ).rejects.toThrow("cannot resume changed agent role: scanner");
     expect(registry.activeCount).toBe(0);
     expect(
-      (session as unknown as { childInboxes: Map<string, unknown> }).childInboxes,
+      (session as unknown as { childInboxes: Map<string, unknown> })
+        .childInboxes,
     ).toHaveLength(0);
   });
 
@@ -275,7 +284,8 @@ describe("AgentControl", () => {
     ).rejects.toThrow("cannot resume unknown agent role: scanner");
     expect(registry.activeCount).toBe(0);
     expect(
-      (session as unknown as { childInboxes: Map<string, unknown> }).childInboxes,
+      (session as unknown as { childInboxes: Map<string, unknown> })
+        .childInboxes,
     ).toHaveLength(0);
   });
 
@@ -292,7 +302,10 @@ describe("AgentControl", () => {
         conversationId: "root-a",
       });
       const registryA = new AgentRegistry();
-      const controlA = new AgentControl({ session: sessionA, registry: registryA });
+      const controlA = new AgentControl({
+        session: sessionA,
+        registry: registryA,
+      });
       controlA.registerSessionRoot("root-a");
       const existing = await controlA.spawn({
         parentPath: "/root",
@@ -309,7 +322,9 @@ describe("AgentControl", () => {
       ).rejects.toThrow("agent thread id already exists");
       expect(registryA.activeCount).toBe(1);
       expect(controlA.getLive(existing.agentId)).toBe(existing);
-      expect(registryA.agentIdForPath(existing.agentPath)).toBe(existing.agentId);
+      expect(registryA.agentIdForPath(existing.agentPath)).toBe(
+        existing.agentId,
+      );
       expect(registryA.agentIdForPath("/root/duplicate")).toBeUndefined();
       expect(sessionA.childInboxes.size).toBe(1);
 
@@ -335,7 +350,10 @@ describe("AgentControl", () => {
         conversationId: "root-b",
       });
       const registryB = new AgentRegistry();
-      const controlB = new AgentControl({ session: sessionB, registry: registryB });
+      const controlB = new AgentControl({
+        session: sessionB,
+        registry: registryB,
+      });
       controlB.registerSessionRoot("root-b");
       await expect(
         controlB.spawn({
@@ -483,14 +501,17 @@ describe("AgentControl", () => {
 
       expect(child.agentId).toBe("committed-reconcile-child");
       expect(control.getLive(child.agentId)).toBe(child);
-      expect(registry.agentIdForPath("/root/committed_child")).toBe(child.agentId);
-      expect(
-        rolloutStore.getThreadSpawnEdge(child.agentId)?.status,
-      ).toBe("open");
-      expect(reconcile).toHaveBeenCalledWith(
-        "spawn-reconcile-reservation",
-        { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      expect(registry.agentIdForPath("/root/committed_child")).toBe(
+        child.agentId,
       );
+      expect(rolloutStore.getThreadSpawnEdge(child.agentId)?.status).toBe(
+        "open",
+      );
+      expect(reconcile).toHaveBeenCalledWith("spawn-reconcile-reservation", {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
       expect(holdUnknown).toHaveBeenCalledWith(
         "spawn-reconcile-reservation",
         "spawn_reconciliation_failed_after_commit",
@@ -528,7 +549,9 @@ describe("AgentControl", () => {
   });
 
   it("releases admission capacity when durable-edge failure journaling also fails", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-settlement-failure-"));
+    const cwd = mkdtempSync(
+      join(tmpdir(), "agenc-control-settlement-failure-"),
+    );
     const rolloutStore = openRolloutStore({
       cwd,
       sessionId: "spawn-settlement-failure",
@@ -630,12 +653,14 @@ describe("AgentControl", () => {
         agentName: "parent",
       });
       const createEdge = rolloutStore.createThreadSpawnEdge.bind(rolloutStore);
-      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(edge => {
-        createEdge(edge);
-        if (edge.childThreadId === "cancel-child") {
-          control.interrupt(parent.agentId, "test persistence race");
-        }
-      });
+      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(
+        (edge) => {
+          createEdge(edge);
+          if (edge.childThreadId === "cancel-child") {
+            control.interrupt(parent.agentId, "test persistence race");
+          }
+        },
+      );
 
       await expect(
         control.spawn({
@@ -648,12 +673,13 @@ describe("AgentControl", () => {
       expect(control.getLive("cancel-child")).toBeUndefined();
       expect(registry.agentIdForPath("/root/parent/child")).toBeUndefined();
       expect(registry.activeCount).toBe(1);
+      expect(rolloutStore.getThreadSpawnEdge("cancel-child")?.status).toBe(
+        "closed",
+      );
       expect(
-        rolloutStore.getThreadSpawnEdge("cancel-child")?.status,
-      ).toBe("closed");
-      expect(
-        (session as unknown as { childInboxes: Map<string, unknown> })
-          .childInboxes.has("cancel-child"),
+        (
+          session as unknown as { childInboxes: Map<string, unknown> }
+        ).childInboxes.has("cancel-child"),
       ).toBe(false);
     } finally {
       rolloutStore.close();
@@ -684,12 +710,14 @@ describe("AgentControl", () => {
         agentName: "parent",
       });
       const createEdge = rolloutStore.createThreadSpawnEdge.bind(rolloutStore);
-      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(edge => {
-        createEdge(edge);
-        if (edge.childThreadId === "close-failure-child") {
-          control.interrupt(parent.agentId, "test close failure");
-        }
-      });
+      vi.spyOn(rolloutStore, "createThreadSpawnEdge").mockImplementation(
+        (edge) => {
+          createEdge(edge);
+          if (edge.childThreadId === "close-failure-child") {
+            control.interrupt(parent.agentId, "test close failure");
+          }
+        },
+      );
       const closeSpy = vi
         .spyOn(rolloutStore, "setThreadSpawnEdgeStatus")
         .mockImplementation((childThreadId, status) => {
@@ -708,17 +736,21 @@ describe("AgentControl", () => {
       ).rejects.toThrow("forced edge close failure");
 
       const child = control.getLive("close-failure-child");
-      expect(rolloutStore.getThreadSpawnEdge("close-failure-child")?.status)
-        .toBe("open");
+      expect(
+        rolloutStore.getThreadSpawnEdge("close-failure-child")?.status,
+      ).toBe("open");
       expect(child).toBeDefined();
       expect(child?.abortController.signal.aborted).toBe(true);
-      expect(registry.agentIdForPath("/root/parent/child"))
-        .toBe("close-failure-child");
-      expect(threadManager.getThread("close-failure-child").threadId)
-        .toBe("close-failure-child");
+      expect(registry.agentIdForPath("/root/parent/child")).toBe(
+        "close-failure-child",
+      );
+      expect(threadManager.getThread("close-failure-child").threadId).toBe(
+        "close-failure-child",
+      );
       expect(
-        (session as unknown as { childInboxes: Map<string, unknown> })
-          .childInboxes.has("close-failure-child"),
+        (
+          session as unknown as { childInboxes: Map<string, unknown> }
+        ).childInboxes.has("close-failure-child"),
       ).toBe(true);
       closeSpy.mockRestore();
     } finally {
@@ -732,9 +764,9 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 0 });
     // cap=0 permits only the root session.
-    await expect(
-      control.spawn({ parentPath: "/root" }),
-    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+    await expect(control.spawn({ parentPath: "/root" })).rejects.toBeInstanceOf(
+      MaxDepthExceededError,
+    );
   });
 
   it("MAX_AGENT_DEPTH default is 1", () => {
@@ -844,10 +876,13 @@ describe("AgentControl", () => {
       expect(live.downInbox.isClosed).toBe(false);
       expect(live.abortController.signal.aborted).toBe(false);
       expect(
-        (session as unknown as { childInboxes: Map<string, unknown> })
-          .childInboxes.get(live.agentId),
+        (
+          session as unknown as { childInboxes: Map<string, unknown> }
+        ).childInboxes.get(live.agentId),
       ).toBe(live.upInbox);
-      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.status).toBe("open");
+      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.status).toBe(
+        "open",
+      );
     } finally {
       raw.close();
       rolloutStore.close();
@@ -960,11 +995,17 @@ describe("AgentControl", () => {
       const registryA = new AgentRegistry();
       const registryB = new AgentRegistry();
       const controlA = new AgentControl({
-        session: stubSession({ cwd: workspaceA, conversationId: "workspace-a" }),
+        session: stubSession({
+          cwd: workspaceA,
+          conversationId: "workspace-a",
+        }),
         registry: registryA,
       });
       const controlB = new AgentControl({
-        session: stubSession({ cwd: workspaceB, conversationId: "workspace-b" }),
+        session: stubSession({
+          cwd: workspaceB,
+          conversationId: "workspace-b",
+        }),
         registry: registryB,
       });
       const metadata = (marker: "a" | "b"): AgentMetadata => ({
@@ -1139,8 +1180,9 @@ describe("AgentControl", () => {
     };
     const live = await control.resume({ parentPath: "/root", metadata });
     expect(live).not.toBeNull();
-    const inboxes = (session as unknown as { childInboxes: Map<string, unknown> })
-      .childInboxes;
+    const inboxes = (
+      session as unknown as { childInboxes: Map<string, unknown> }
+    ).childInboxes;
     expect(inboxes.get("thread-attach-1")).toBe(live!.upInbox);
   });
 
@@ -1157,11 +1199,17 @@ describe("AgentControl", () => {
       depth: 1,
     };
     await control.resume({ parentPath: "/root", metadata });
-    const emitted = (session as unknown as { _emitted: Array<{ msg: { type: string; payload?: { cause?: string; message?: string } } }> })
-      ._emitted;
+    const emitted = (
+      session as unknown as {
+        _emitted: Array<{
+          msg: { type: string; payload?: { cause?: string; message?: string } };
+        }>;
+      }
+    )._emitted;
     const resumed = emitted.find(
       (e) =>
-        e?.msg?.type === "warning" && e?.msg?.payload?.cause === "agent_resumed",
+        e?.msg?.type === "warning" &&
+        e?.msg?.payload?.cause === "agent_resumed",
     );
     expect(resumed).toBeDefined();
     expect(resumed!.msg.payload!.message).toContain("/root/emit");
@@ -1241,14 +1289,121 @@ describe("AgentControl", () => {
       recipient: live.agentPath,
       content: "iac payload",
       triggerTurn: false,
+      metadata: { taskId: "task-123", deliveryMode: "queue_only" },
     });
     const drained = live.downInbox.drain();
     expect(drained.length).toBe(1);
     const msg = drained[0]! as { triggerTurn: boolean; content: string };
     expect(msg.triggerTurn).toBe(false);
     expect(msg.content).toBe("iac payload");
+    expect(
+      (msg as { metadata?: Readonly<Record<string, unknown>> }).metadata,
+    ).toEqual({
+      kind: "inter_agent_communication",
+      taskId: "task-123",
+      deliveryMode: "queue_only",
+    });
     const meta = registry.agentMetadataForThread(live.agentId);
     expect(meta?.lastTaskMessage).toBe("iac payload");
+  });
+
+  it("assignTask() atomically reserves one assignment for an idle worker", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const live = await control.spawn({ parentPath: "/root" });
+    live.status.markRunning("initial-turn");
+    live.status.markIdle("initial-turn");
+
+    const accepted = control.assignTask(live.agentId, {
+      author: "/root",
+      recipient: live.agentPath,
+      content: "first task",
+      taskId: "task-1",
+    });
+
+    expect(accepted).toEqual({
+      taskId: "task-1",
+      turnId: expect.any(String),
+    });
+    expect(live.assignment).toMatchObject({
+      taskId: "task-1",
+      turnId: accepted.turnId,
+      author: "/root",
+      state: "accepted",
+    });
+    expect(() =>
+      control.assignTask(live.agentId, {
+        author: "/root",
+        recipient: live.agentPath,
+        content: "racing task",
+        taskId: "task-2",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<AgentAssignmentRejectedError>>({
+        code: "assignment_outstanding",
+      }),
+    );
+    expect(live.downInbox.drain()).toEqual([
+      expect.objectContaining({
+        author: "/root",
+        recipient: live.agentPath,
+        content: "first task",
+        triggerTurn: true,
+        metadata: expect.objectContaining({
+          taskId: "task-1",
+          turnId: accepted.turnId,
+        }),
+      }),
+    ]);
+  });
+
+  it("assignTask() rejects busy, self-targeted, and non-ancestor senders", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
+    const parent = await control.spawn({ parentPath: "/root" });
+    const child = await control.spawn({ parentPath: parent.agentPath });
+
+    expect(() =>
+      control.assignTask(child.agentId, {
+        author: parent.agentPath,
+        recipient: child.agentPath,
+        content: "busy",
+        taskId: "busy-task",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<AgentAssignmentRejectedError>>({
+        code: "worker_not_idle",
+      }),
+    );
+
+    child.status.markRunning("initial-turn");
+    child.status.markIdle("initial-turn");
+    expect(() =>
+      control.assignTask(child.agentId, {
+        author: child.agentPath,
+        recipient: child.agentPath,
+        content: "self",
+        taskId: "self-task",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<AgentAssignmentRejectedError>>({
+        code: "self_target",
+      }),
+    );
+    expect(() =>
+      control.assignTask(child.agentId, {
+        author: "/root/peer",
+        recipient: child.agentPath,
+        content: "peer",
+        taskId: "peer-task",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<AgentAssignmentRejectedError>>({
+        code: "sender_not_ancestor",
+      }),
+    );
   });
 
   it("sendInterAgentCommunication() can queue a message to the root session", async () => {
@@ -1274,6 +1429,75 @@ describe("AgentControl", () => {
       content: "final answer",
       triggerTurn: true,
     });
+  });
+
+  it("retries a transient root follow-up failure while its trigger remains queued", async () => {
+    vi.useFakeTimers();
+    try {
+      let session!: ReturnType<typeof stubSession>;
+      const submit = vi
+        .fn<NonNullable<Parameters<typeof stubSession>[0]["submit"]>>()
+        .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+        .mockImplementationOnce(async () => {
+          session.mailbox.drain();
+        });
+      session = stubSession({ conversationId: "root-thread", submit });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("root-thread");
+
+      await control.sendInterAgentCommunication("root-thread", {
+        author: "/root/task_3",
+        recipient: "/root",
+        content: "retry this trigger",
+        triggerTurn: true,
+      });
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect(session.mailbox.hasPending()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(submit).toHaveBeenCalledTimes(2);
+      expect(session.mailbox.hasPending()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a failed root follow-up for passive-only residue", async () => {
+    vi.useFakeTimers();
+    try {
+      let session!: ReturnType<typeof stubSession>;
+      const submit = vi.fn(async () => {
+        session.mailbox.extractWhere((message) => message.triggerTurn);
+        throw new Error("failed after trigger drain");
+      });
+      session = stubSession({ conversationId: "root-thread", submit });
+      session.mailbox.send({
+        author: "/root/task_3",
+        recipient: "/root",
+        content: "passive context",
+        triggerTurn: false,
+        direction: "up",
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      control.registerSessionRoot("root-thread");
+
+      await control.sendInterAgentCommunication("root-thread", {
+        author: "/root/task_3",
+        recipient: "/root",
+        content: "consumed trigger",
+        triggerTurn: true,
+      });
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect(session.mailbox.hasPending()).toBe(true);
+      expect(session.mailbox.hasPendingTriggerTurn()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(submit).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ───────────────────────────────────────────────────────────
@@ -1381,7 +1605,10 @@ describe("AgentControl", () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
-    const live = await control.spawn({ parentPath: "/root", roleName: "explorer" });
+    const live = await control.spawn({
+      parentPath: "/root",
+      roleName: "explorer",
+    });
     const snap = control.getAgentConfigSnapshot(live.agentId);
     expect(snap).toBeDefined();
     expect(snap!.threadId).toBe(live.agentId);
@@ -1436,7 +1663,7 @@ describe("AgentControl", () => {
     expect(msg.metadata?.kind).toBe("inter_agent_communication");
   });
 
-  it("maybeStartCompletionWatcher() notifies the parent after every completed child turn", async () => {
+  it("maybeStartCompletionWatcher() treats completed as terminal and does not reopen it", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 2 });
@@ -1450,9 +1677,9 @@ describe("AgentControl", () => {
     child.status.markCompleted("turn-1", "first done");
     await new Promise<void>((r) => setTimeout(r, 10));
     expect(
-      parent.downInbox.drain().map((msg) =>
-        "content" in msg ? msg.content : "",
-      ),
+      parent.downInbox
+        .drain()
+        .map((msg) => ("content" in msg ? msg.content : "")),
     ).toEqual([
       `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"first done"}}\n</subagent_notification>`,
     ]);
@@ -1460,13 +1687,11 @@ describe("AgentControl", () => {
     child.status.markRunning("turn-2");
     child.status.markCompleted("turn-2", "second done");
     await new Promise<void>((r) => setTimeout(r, 10));
-    expect(
-      parent.downInbox.drain().map((msg) =>
-        "content" in msg ? msg.content : "",
-      ),
-    ).toEqual([
-      `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"second done"}}\n</subagent_notification>`,
-    ]);
+    expect(parent.downInbox.drain()).toEqual([]);
+    expect(child.status.value).toMatchObject({
+      status: "completed",
+      turnId: "turn-1",
+    });
   });
 
   it("maybeStartCompletionWatcher() queues root-child completion through the root session mailbox", async () => {
@@ -1704,14 +1929,14 @@ describe("AgentControl", () => {
       const grandchild = await control.spawn({ parentPath: child.agentPath });
 
       const resumeSingle = control.resumeSingleAgentFromRollout.bind(control);
-      vi
-        .spyOn(control, "resumeSingleAgentFromRollout")
-        .mockImplementation(async (opts) => {
+      vi.spyOn(control, "resumeSingleAgentFromRollout").mockImplementation(
+        async (opts) => {
           if (opts.metadata.agentId === child.agentId) {
             throw new Error("child metadata corrupted");
           }
           return resumeSingle(opts);
-        });
+        },
+      );
 
       await control.shutdownAll("manager_shutdown");
 

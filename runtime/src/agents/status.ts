@@ -10,13 +10,10 @@
  * Non-final: `pending_init`, `running`, `idle`, `interrupted`.
  *
  * `idle` is a keep-alive worker between turns: alive and reusable, but not
- * actively working. Like `completed`, it is reversible — `assign_task` moves
- * the agent back to `running` for its next turn — but unlike `completed` it
- * is not a wait/list terminal state, so watchers keep observing a live worker.
+ * actively working. `assign_task` admits work only in this state and moves the
+ * worker back to `running`; `completed` remains terminal and is not reusable.
  *
- * A completed turn is reusable: `assign_task` may move the same live agent
- * from `completed` back to `running` for its next turn. Shutdown, errored, and
- * not_found remain irreversible.
+ * Shutdown, errored, and not_found remain irreversible.
  *
  * `interrupted` is intentionally non-final (matches reference runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
@@ -83,6 +80,7 @@ const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
 ]);
 
 const IRREVERSIBLE_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
+  "completed",
   "errored",
   "shutdown",
   "not_found",
@@ -117,10 +115,11 @@ export function agentStatusFromEvent(event: {
 }): AgentStatus | undefined {
   switch (event.type) {
     case "turn_started": {
-      const payload = (event.payload as {
-        turnId?: string;
-        startedAt?: number;
-      }) ?? {};
+      const payload =
+        (event.payload as {
+          turnId?: string;
+          startedAt?: number;
+        }) ?? {};
       return {
         status: "running",
         turnId: payload.turnId ?? "",
@@ -128,11 +127,12 @@ export function agentStatusFromEvent(event: {
       };
     }
     case "turn_complete": {
-      const payload = (event.payload as {
-        turnId?: string;
-        lastAgentMessage?: string;
-        completedAt?: number;
-      }) ?? {};
+      const payload =
+        (event.payload as {
+          turnId?: string;
+          lastAgentMessage?: string;
+          completedAt?: number;
+        }) ?? {};
       return {
         status: "completed",
         turnId: payload.turnId ?? "",
@@ -143,10 +143,11 @@ export function agentStatusFromEvent(event: {
       };
     }
     case "turn_aborted": {
-      const payload = (event.payload as {
-        turnId?: string;
-        reason?: string;
-      }) ?? {};
+      const payload =
+        (event.payload as {
+          turnId?: string;
+          reason?: string;
+        }) ?? {};
       const reason = (payload.reason ?? "").toLowerCase();
       const isInterruptClass =
         reason.includes("interrupt") || reason.includes("budget");
@@ -167,10 +168,11 @@ export function agentStatusFromEvent(event: {
       };
     }
     case "error": {
-      const payload = (event.payload as {
-        turnId?: string;
-        message?: string;
-      }) ?? {};
+      const payload =
+        (event.payload as {
+          turnId?: string;
+          message?: string;
+        }) ?? {};
       return {
         status: "errored",
         turnId: payload.turnId ?? "",
@@ -183,9 +185,7 @@ export function agentStatusFromEvent(event: {
   }
 }
 
-export function toAgentStatusJson(
-  status: AgentStatus,
-): AgentStatusJson {
+export function toAgentStatusJson(status: AgentStatus): AgentStatusJson {
   switch (status.status) {
     case "pending_init":
       return "pending_init";
@@ -209,11 +209,55 @@ export function toAgentStatusJson(
 export function formatSubagentNotification(params: {
   readonly agentPath: string;
   readonly status: AgentStatus;
+  readonly durableOutcomeRef?: {
+    readonly projection_id: string;
+    readonly agent_id: string;
+    readonly turn_id: string;
+    readonly task_id?: string;
+    readonly rollout_path?: string;
+  };
+  readonly receipt?: {
+    readonly lifecycle: "turn";
+    readonly outcome: "completed" | "errored" | "interrupted" | "nack";
+    readonly turn_id: string;
+    readonly task_id?: string;
+    readonly tool_call_count: number;
+    readonly message?: string;
+    readonly reason?: string;
+    readonly worktree?: {
+      readonly state:
+        | "committed_clean"
+        | "unchanged_clean"
+        | "dirty_uncommitted"
+        | "diverged"
+        | "unverifiable";
+      readonly path: string;
+      readonly branch: string;
+      readonly git_root: string;
+      readonly base_commit?: string;
+      readonly head_commit?: string;
+      readonly tree_hash?: string;
+      readonly clean?: boolean;
+      readonly base_is_ancestor?: boolean;
+      readonly integration_ref?: string;
+      readonly error?: string;
+    };
+  };
 }): string {
-  return `<subagent_notification>\n${JSON.stringify({
+  const payload = JSON.stringify({
     agent_path: params.agentPath,
     status: toAgentStatusJson(params.status),
-  })}\n</subagent_notification>`;
+    ...(params.receipt !== undefined ? { receipt: params.receipt } : {}),
+    ...(params.durableOutcomeRef !== undefined
+      ? { durable_outcome_ref: params.durableOutcomeRef }
+      : {}),
+  })
+    // Keep model-controlled prose from terminating the outer framing. JSON
+    // Unicode escapes preserve the exact decoded value for real parsers.
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
+  return `<subagent_notification>\n${payload}\n</subagent_notification>`;
 }
 
 /**
@@ -257,6 +301,20 @@ export class AgentStatusTracker {
     });
   }
 
+  /**
+   * Canonical journal/close failure supersedes an already-completed task
+   * terminal at the worker lifecycle level. This is deliberately narrower
+   * than reopening normal completed agents for reuse.
+   */
+  markDurabilityErrored(turnId: string, error: string): void {
+    this.subject.next({
+      status: "errored",
+      turnId,
+      endedAtMs: monotonicMs(),
+      error,
+    });
+  }
+
   markInterrupted(turnId: string, reason: string): void {
     this.set({
       status: "interrupted",
@@ -283,9 +341,8 @@ export class AgentStatusTracker {
   }
 
   private set(status: AgentStatus): void {
-    // Only irreversible states are sticky. `completed` is final for wait/list
-    // semantics, but a live agent can still accept assign_task and start a
-    // later turn.
+    // Only irreversible states are sticky. Control-plane admission separately
+    // enforces idle-only reuse, so a completed live handle cannot accept work.
     if (IRREVERSIBLE_STATES.has(this.subject.value.status)) return;
     this.subject.next(status);
   }

@@ -4,6 +4,7 @@ import type { Tool, ToolResult } from "../../tools/types.js";
 import {
   currentAgentContext,
   getSessionOrError,
+  isCurrentAgentContextError,
   json,
   localZeroAdmissionEstimate,
   strictArgs,
@@ -29,6 +30,7 @@ export function createListAgentsTool(opts: MultiAgentV2Options): Tool {
     const { control } = opts.ensureAgentControl(sessionOrError);
     control.registerSessionRoot(sessionOrError.conversationId);
     const current = currentAgentContext(sessionOrError, args, opts);
+    if (isCurrentAgentContextError(current)) return current;
     const pathPrefixRaw = stringValue(args.path_prefix);
     let resolvedPathPrefix: AgentPath | undefined;
     if (pathPrefixRaw !== undefined) {

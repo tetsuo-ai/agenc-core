@@ -38,6 +38,7 @@ import {
   statSync,
   utimesSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "./_deps/async-lock.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
@@ -230,6 +231,44 @@ function worktreeBranchName(slug: string): string {
   return `worktree-${slug}`;
 }
 
+/**
+ * Stable, repository-global worktree identity for one logical agent spawn.
+ *
+ * Agent task names are unique only among siblings. Worktree directories and
+ * branches live in the repository-global namespace, so include the durable
+ * session identity, full agent path, and per-spawn epoch in a
+ * collision-resistant suffix while retaining a short human-readable path
+ * segment. The epoch prevents a later spawn at the same path from silently
+ * resuming retained commits or dirty state from an earlier worker.
+ */
+export function deriveAgentWorktreeSlug(opts: {
+  readonly sessionId: string;
+  readonly agentPath: string;
+  readonly spawnId: string;
+}): string {
+  const pathName =
+    opts.agentPath.split("/").filter((segment) => segment.length > 0).at(-1) ??
+    "agent";
+  const readable =
+    pathName
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/gu, "-")
+      .replace(/^[._-]+|[._-]+$/gu, "")
+      .slice(0, 31)
+      .replace(/[._-]+$/gu, "") || "agent";
+  const identity = JSON.stringify([
+    opts.sessionId,
+    opts.agentPath,
+    opts.spawnId,
+  ]);
+  const suffix = createHash("sha256")
+    .update("agenc-agent-worktree-v1\0", "utf8")
+    .update(identity, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+  return `${readable}-${suffix}`;
+}
+
 export function validateWorktreeSlug(slug: string): void {
   if (slug.length === 0 || slug.length > MAX_SLUG_LEN) {
     throw new Error(
@@ -377,6 +416,271 @@ export async function getOrCreateWorktree(
 // ─────────────────────────────────────────────────────────────────────
 // Change detection
 // ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Human-facing coordinates for finding the retained worktree.
+ *
+ * These values are locators only. In particular, `branch` is mutable and must
+ * never be treated as an integration ref. A successful
+ * `committed_clean` capture carries the only integration-safe ref.
+ */
+export interface WorktreeTurnEvidenceLocator {
+  readonly path: string;
+  readonly branch: string;
+  readonly gitRoot: string;
+}
+
+interface VerifiableWorktreeTurnEvidence {
+  readonly locator: WorktreeTurnEvidenceLocator;
+  readonly baseCommit: string;
+  readonly headCommit: string;
+  readonly treeHash: string;
+  readonly clean: boolean;
+  readonly baseIsAncestor: boolean;
+}
+
+type NonIntegrableWorktreeTurnEvidence = {
+  readonly integrationRef?: never;
+};
+
+/**
+ * Immutable, read-only evidence captured from a worktree after one agent turn.
+ *
+ * Only a clean HEAD that changed and remains a descendant of the captured base
+ * is safe to offer for integration. Every other state deliberately omits
+ * `integrationRef`; callers must not infer one from the mutable branch/path
+ * locator.
+ */
+export type WorktreeTurnEvidence =
+  | (VerifiableWorktreeTurnEvidence & {
+      readonly state: "committed_clean";
+      readonly clean: true;
+      readonly baseIsAncestor: true;
+      /** Exact immutable commit, never the mutable worktree branch. */
+      readonly integrationRef: string;
+    })
+  | (VerifiableWorktreeTurnEvidence &
+      NonIntegrableWorktreeTurnEvidence & {
+        readonly state: "unchanged_clean";
+        readonly clean: true;
+        readonly baseIsAncestor: true;
+      })
+  | (VerifiableWorktreeTurnEvidence &
+      NonIntegrableWorktreeTurnEvidence & {
+        readonly state: "dirty_uncommitted";
+        readonly clean: false;
+        readonly baseIsAncestor: true;
+      })
+  | (VerifiableWorktreeTurnEvidence &
+      NonIntegrableWorktreeTurnEvidence & {
+        readonly state: "diverged";
+        readonly baseIsAncestor: false;
+      })
+  | (NonIntegrableWorktreeTurnEvidence & {
+      readonly state: "unverifiable";
+      readonly locator: WorktreeTurnEvidenceLocator;
+      readonly error: string;
+    });
+
+export interface CaptureWorktreeTurnEvidenceOpts {
+  readonly locator: WorktreeTurnEvidenceLocator;
+  readonly baseCommit: string;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
+}
+
+const FULL_GIT_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const EVIDENCE_GIT_OPTIONS = [
+  "--no-replace-objects",
+  "--no-optional-locks",
+] as const;
+
+function evidenceGitArgs(args: readonly string[]): string[] {
+  return [...EVIDENCE_GIT_OPTIONS, ...args];
+}
+
+/**
+ * Capture fail-closed worktree evidence without mutating the index, worktree,
+ * branch, or object database.
+ */
+export async function captureWorktreeTurnEvidence(
+  opts: CaptureWorktreeTurnEvidenceOpts,
+): Promise<WorktreeTurnEvidence> {
+  const locator: WorktreeTurnEvidenceLocator = {
+    path: opts.locator.path,
+    branch: opts.locator.branch,
+    gitRoot: opts.locator.gitRoot,
+  };
+  const unverifiable = (error: string): WorktreeTurnEvidence => ({
+    state: "unverifiable",
+    locator,
+    error: sanitizeEvidenceError(error),
+  });
+
+  if (!FULL_GIT_OBJECT_ID_RE.test(opts.baseCommit)) {
+    return unverifiable("base commit is not a full Git object id");
+  }
+  const canonicalGitRoot = findGitRoot(locator.path);
+  if (
+    canonicalGitRoot === null ||
+    resolvePath(canonicalGitRoot) !== resolvePath(locator.gitRoot)
+  ) {
+    return unverifiable(
+      "worktree locator does not match its canonical Git root",
+    );
+  }
+
+  try {
+    const headResult = await runGit(
+      evidenceGitArgs(["rev-parse", "--verify", "HEAD^{commit}"]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (headResult.code !== 0) {
+      return unverifiable(gitEvidenceFailure("HEAD lookup", headResult));
+    }
+    const headCommit = parseFullGitObjectId(headResult.stdout);
+    if (headCommit === null) {
+      return unverifiable("HEAD lookup returned an invalid Git object id");
+    }
+
+    // Resolve the tree from the immutable commit captured above, not from HEAD
+    // again, so a concurrent branch move cannot pair a different tree with it.
+    const treeResult = await runGit(
+      evidenceGitArgs([
+        "rev-parse",
+        "--verify",
+        `${headCommit}^{tree}`,
+      ]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (treeResult.code !== 0) {
+      return unverifiable(gitEvidenceFailure("tree lookup", treeResult));
+    }
+    const treeHash = parseFullGitObjectId(treeResult.stdout);
+    if (treeHash === null) {
+      return unverifiable("tree lookup returned an invalid Git object id");
+    }
+
+    // Untracked files are turn output too; ignored files remain excluded by
+    // Git's porcelain status contract.
+    const statusResult = await runGit(
+      evidenceGitArgs([
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+      ]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (statusResult.code !== 0) {
+      return unverifiable(gitEvidenceFailure("worktree status", statusResult));
+    }
+    const clean = statusResult.stdout.length === 0;
+
+    const ancestryResult = await runGit(
+      evidenceGitArgs([
+        "merge-base",
+        "--is-ancestor",
+        opts.baseCommit,
+        headCommit,
+      ]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (ancestryResult.code !== 0 && ancestryResult.code !== 1) {
+      return unverifiable(
+        gitEvidenceFailure("base ancestry check", ancestryResult),
+      );
+    }
+    const baseIsAncestor = ancestryResult.code === 0;
+
+    const stableHeadResult = await runGit(
+      evidenceGitArgs(["rev-parse", "--verify", "HEAD^{commit}"]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (stableHeadResult.code !== 0) {
+      return unverifiable(
+        gitEvidenceFailure("HEAD stability check", stableHeadResult),
+      );
+    }
+    const stableHeadCommit = parseFullGitObjectId(stableHeadResult.stdout);
+    if (stableHeadCommit === null) {
+      return unverifiable(
+        "HEAD stability check returned an invalid Git object id",
+      );
+    }
+    if (stableHeadCommit !== headCommit) {
+      return unverifiable("HEAD changed while worktree evidence was captured");
+    }
+
+    const stableStatusResult = await runGit(
+      evidenceGitArgs([
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+      ]),
+      locator.path,
+      opts.sandboxExecutionBroker,
+    );
+    if (stableStatusResult.code !== 0) {
+      return unverifiable(
+        gitEvidenceFailure(
+          "worktree status stability check",
+          stableStatusResult,
+        ),
+      );
+    }
+    if (stableStatusResult.stdout !== statusResult.stdout) {
+      return unverifiable(
+        "worktree status changed while evidence was captured",
+      );
+    }
+
+    const common = {
+      locator,
+      baseCommit: opts.baseCommit,
+      headCommit,
+      treeHash,
+      clean,
+      baseIsAncestor,
+    };
+
+    // Divergence takes precedence over dirtiness: neither state is
+    // integrable, and preserving the broken ancestry is the stronger signal.
+    if (!baseIsAncestor) {
+      return { ...common, state: "diverged", baseIsAncestor: false };
+    }
+    if (!clean) {
+      return {
+        ...common,
+        state: "dirty_uncommitted",
+        clean: false,
+        baseIsAncestor: true,
+      };
+    }
+    if (headCommit === opts.baseCommit.toLowerCase()) {
+      return {
+        ...common,
+        state: "unchanged_clean",
+        clean: true,
+        baseIsAncestor: true,
+      };
+    }
+    return {
+      ...common,
+      state: "committed_clean",
+      clean: true,
+      baseIsAncestor: true,
+      integrationRef: headCommit,
+    };
+  } catch {
+    // Broker/runtime exceptions can contain machine-local paths or arbitrary
+    // child diagnostics. Keep durable/model-facing evidence generic.
+    return unverifiable("worktree evidence capture failed");
+  }
+}
 
 /**
  * Whether the worktree has any uncommitted changes or commits ahead
@@ -664,4 +968,24 @@ function touchWorktreeMtime(path: string): void {
 
 function formatGitFailure(result: GitResult): string {
   return result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
+}
+
+function parseFullGitObjectId(stdout: string): string | null {
+  const value = stdout.trim().toLowerCase();
+  return FULL_GIT_OBJECT_ID_RE.test(value) ? value : null;
+}
+
+function gitEvidenceFailure(operation: string, result: GitResult): string {
+  return `${operation} failed (git exit ${result.code})`;
+}
+
+function sanitizeEvidenceError(error: string): string {
+  const sanitized = error
+    // Strip terminal escapes and control characters before evidence reaches a
+    // daemon event or model context.
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (sanitized || "worktree evidence capture failed").slice(0, 512);
 }

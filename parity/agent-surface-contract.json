@@ -1,7 +1,7 @@
 {
   "contractName": "agent-surface-contract",
-  "scope": "AgenC agent runtime, daemon lifecycle, task bridge, and TUI workbench parity against the Rust agent surface in codex-rs",
-  "generatedAt": "2026-06-14T17:35:39.962Z",
+  "scope": "Pinned AgenC agent runtime, daemon lifecycle, task bridge, and TUI workbench parity against the frozen Rust agent surface in codex-rs; AgenC-specific adaptive swarm policy is documented outside this parity matrix",
+  "generatedAt": "2026-07-23T05:26:08Z",
   "sourceRoot": "../../../codex/codex-rs",
   "sourceCommit": "966932124c243aab71719c269d79305844f35814",
   "targetRoot": "..",
@@ -134,6 +134,11 @@
     "runtime/src/agents/mailbox.ts",
     "runtime/src/agents/run-agent.ts",
     "runtime/src/agents/delegate.ts",
+    "runtime/src/agents/worktree.ts",
+    "runtime/src/agents/workflow-runner.ts",
+    "runtime/src/session/child-run-journal.ts",
+    "runtime/src/session/event-log.ts",
+    "runtime/src/session/session.ts",
     "runtime/src/session/turn-context.ts",
     "runtime/src/llm/model-registry.ts",
     "runtime/src/llm/types.ts",
@@ -170,6 +175,10 @@
     "runtime/src/tui/hooks/useTasksV2.ts",
     "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
     "runtime/src/tui/state/collabAgentTaskSync.ts",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/daemon-session.ts",
+    "runtime/src/tui/session-types.ts",
+    "runtime/src/bin/agenc-main.ts",
     "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
     "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs",
     "scripts/check-agent-surface-contract.mjs"
@@ -183,6 +192,11 @@
     "runtime/tests/agents/run-agent.test.ts",
     "runtime/tests/agents/run-agent-mailbox.test.ts",
     "runtime/tests/agents/mailbox.test.ts",
+    "runtime/tests/agents/v2/common.test.ts",
+    "runtime/tests/agents/v2/spawn-isolation.test.ts",
+    "runtime/tests/agents/worktree.test.ts",
+    "runtime/tests/agents/delegate-worktree.test.ts",
+    "runtime/tests/agents/workflow-runner.test.ts",
     "runtime/tests/agents/thread-manager.test.ts",
     "runtime/tests/agents/thread.test.ts",
     "runtime/tests/agents/thread-rollout-truncation.test.ts",
@@ -191,6 +205,7 @@
     "runtime/tests/app-server/agent-cli.contract.test.ts",
     "runtime/tests/app-server/daemon-dispatcher.contract.test.ts",
     "runtime/tests/session/agent-task-lifecycle.test.ts",
+    "runtime/tests/session/idle-input.test.ts",
     "runtime/tests/tasks/lifecycle.test.ts",
     "runtime/tests/tools/AgentTool/loadAgentsDir.test.ts",
     "runtime/tests/tools/tasks/task-tools.test.ts",
@@ -204,6 +219,9 @@
     "runtime/tests/tui/workbench/agents-rail.test.tsx",
     "runtime/tests/tui/workbench/agents.test.ts",
     "runtime/tests/tui/components/App.local-agents.test.tsx",
+    "runtime/tests/tui/components/App.render.test.tsx",
+    "runtime/tests/tui/daemon-session.contract.test.ts",
+    "runtime/tests/bin/agenc.deferred-input.test.ts",
     "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
     "runtime/tests/tui/hooks/useTasksV2.test.tsx",
     "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
@@ -232,7 +250,7 @@
         "enforces the default child depth cap while preserving configured per-session overrides",
         "maps role configuration into child model, tools, permission, prompt, service tier, and runtime limits",
         "normalizes final and nonfinal agent statuses consistently for list and TUI consumers",
-        "allows completed live agents to transition back to running for later follow-up turns while keeping errored, shutdown, and not_found irreversible",
+        "admits reusable-agent assignments only from idle, reserves at most one outstanding correlated task atomically, and keeps completed, errored, shutdown, and not_found terminal",
         "routes child terminal notifications through inter-agent communication for live and root parents, with a no-turn not_found fallback when the child handle is missing"
       ],
       "edgeCases": [
@@ -242,8 +260,8 @@
         "a missing role name resolves to the default role and still applies role-level tool policy",
         "a role TOML layer with model, reasoning, and service_tier exposes those locked settings in the spawn tool description",
         "an interrupt racing with spawn finalization releases the reserved slot and emits an interrupted status",
-        "a child completion whose parent is the root thread is delivered to the root session mailbox without triggering a turn",
-        "a child completion watcher emits a distinct parent notification for each completed turn after a follow-up restarts the same live child",
+        "a child completion whose parent is the root thread is delivered to the root session mailbox and requests a bounded coalesced follow-up turn",
+        "a child completion watcher treats completed as terminal and suppresses its generic notification when a correlated task receipt already owns that turn",
         "a completion watcher for a missing child handle emits a not_found subagent notification to the parent without triggering a turn"
       ],
       "tests": [
@@ -269,21 +287,24 @@
         "runtime/src/agents/run-agent.ts",
         "runtime/src/agents/mailbox.ts",
         "runtime/src/agents/thread.ts",
-        "runtime/src/agents/thread-manager.ts"
+        "runtime/src/agents/thread-manager.ts",
+        "runtime/src/session/session.ts"
       ],
       "requiredBehaviors": [
         "constructs a child session from parent context, fork history, role config, and worktree context",
         "runs the child provider turn loop through the same tool dispatch and rollout path as a normal session",
         "forwards child messages, tool calls, tool results, usage, completion, and error events to the parent mailbox",
         "drains parent-to-child trigger-turn messages between keep-alive turns without losing ordering",
-        "terminates cleanly on completion, provider error, max-turn exhaustion, mailbox close, or abort"
+        "terminates cleanly on completion, provider error, max-turn exhaustion, mailbox close, or abort",
+        "admits root human input through exact opaque ownership tokens with bounded retained content and exact pre-consumption rollback"
       ],
       "edgeCases": [
         "a follow-up trigger arriving while the child is idle starts the next turn on the same live child",
         "a provider rejection records run_error and final errored status without leaving the child mailbox open",
         "an abort while the provider stream is pending interrupts the child run and resolves the caller promise",
-        "silent mode suppresses parent notifications and child rollout while preserving the final result",
-        "maxTurns equal to one reports a deterministic max-turn error after the first child assistant response"
+        "silent mode suppresses parent notifications while preserving the canonical child rollout and final result",
+        "maxTurns equal to one reports a deterministic max-turn error after the first child assistant response",
+        "an input rejected before model consumption rolls back only its exact admission while consumed or indeterminate input is never duplicated"
       ],
       "tests": [
         "runtime/tests/agents/run-agent.test.ts",
@@ -291,10 +312,11 @@
         "runtime/tests/agents/mailbox.test.ts",
         "runtime/tests/agents/thread-manager.test.ts",
         "runtime/tests/agents/thread.test.ts",
-        "runtime/tests/agents/thread-rollout-truncation.test.ts"
+        "runtime/tests/agents/thread-rollout-truncation.test.ts",
+        "runtime/tests/session/idle-input.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/agents/run-agent.test.ts tests/agents/run-agent-mailbox.test.ts tests/agents/mailbox.test.ts tests/agents/thread-manager.test.ts tests/agents/thread.test.ts tests/agents/thread-rollout-truncation.test.ts tests/session/idle-input.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -314,6 +336,7 @@
       "requiredBehaviors": [
         "starts daemon-backed agents with a durable thread id, run id, initial prompt, cwd, sandbox, permission mode, and model context",
         "streams lifecycle, transcript, tool, status, and usage events to daemon clients in stable JSON-RPC shapes",
+        "projects correlated task, turn, tool-call count, worktree, and worktree-evidence fields from agent progress into daemon events",
         "keeps active-turn state and completion snapshots coherent across start, message, cancel, close, and reconnect paths",
         "maps runtime failures to daemon protocol errors without crashing the daemon process",
         "persists enough status and transcript data for CLI and TUI reattachment"
@@ -323,7 +346,8 @@
         "a cancellation during an active provider turn emits a terminal status and prevents later chunks from reopening the run",
         "a reconnect after completion can list the agent and fetch its final transcript without resurrecting a live runner",
         "a daemon restart during an idle agent session preserves durable status and rejects stale active-turn messages",
-        "tool-call events with malformed JSON arguments are surfaced as structured errors instead of process crashes"
+        "tool-call events with malformed JSON arguments are surfaced as structured errors instead of process crashes",
+        "a progress update with worktree evidence preserves every correlation field in the emitted daemon event"
       ],
       "tests": [
         "runtime/tests/app-server/agent-lifecycle.contract.test.ts",
@@ -382,6 +406,10 @@
         "runtime/src/agents/v2/wait.ts",
         "runtime/src/agents/v2/list-agents.ts",
         "runtime/src/agents/v2/close-agent.ts",
+        "runtime/src/agents/worktree.ts",
+        "runtime/src/agents/workflow-runner.ts",
+        "runtime/src/session/child-run-journal.ts",
+        "runtime/src/session/event-log.ts",
         "runtime/src/bin/model-facing-tools.ts",
         "runtime/src/agents/jobs/job-orchestrator.ts",
         "runtime/src/agents/jobs/csv-reader.ts",
@@ -399,12 +427,15 @@
         "keeps background task lifecycle, agent lifecycle, and TUI task views synchronized from one authoritative state",
         "applies role allowlists and tool policies before child tools execute",
         "spawn_agent v2 accepts service_tier, validates it against the effective child model, applies role model/reasoning/service_tier after valid request overrides, allows explicit service_tier with full-history forks, and forwards the selected tier to child runs",
-        "spawn_agent v2 defaults omitted fork_turns to the Rust default of all, documents that schema default, and requires fork_turns none for clean-fork role/model/reasoning overrides",
+        "spawn_agent v2 deliberately diverges from the pinned source full-history default: omitted fork_turns is a clean fork, the schema documents that AgenC default, and explicit fork_turns all retains inherited role/model/reasoning settings",
         "spawn_agent v2 permits a child agent to spawn descendants under its current agent path and applies a per-call child depth allowance instead of rejecting on the session max-depth cap",
-        "assign_task v2 accepts a completed live agent and sends a trigger-turn inter-agent communication instead of treating completed as a closed terminal state",
+        "assign_task v2 rejects self, peer, busy, completed, and already-reserved targets; a strict ancestor may atomically admit one correlated task only to an idle reusable worker",
+        "accepted reusable-worker tasks durably record one correlated completed, errored, interrupted, or NACK outcome in the child journal before the parent receipt is projected",
+        "nested agent identity is accepted only from a valid signed live-session credential pair and rejects missing halves, forged signatures, and unknown sessions without root fallback",
+        "isolated child worktree results expose immutable integration evidence only for stable committed-clean outcomes and fail closed for dirty, diverged, unstable, or unverifiable states",
         "send_message, assign_task, and close_agent v2 register the current root thread before resolving id or path targets so canonical /root maps to the active root session",
         "list_agents v2 registers the current root thread before listing so the root entry is present even before any child spawn has registered it",
-        "wait_agent v2 waits for parent mailbox updates and returns only message plus timed_out",
+        "wait_agent v2 waits for a parent mailbox update, drains delivered mailbox records into optional updates, and returns message plus timed_out",
         "wait_agent v2 validates, defaults, and describes timeout_ms from configured min, default, and max wait timeout options",
         "close_agent emits the close-end event with the previous status even when close request delivery fails",
         "spawn_agents_on_csv exposes the Rust CSV agent job schema including max_workers as a max_concurrency alias and dispatches worker subagents through the same background delegate path",
@@ -420,9 +451,9 @@
         "wait_agent rejects removed v1 targets input as an unknown field",
         "spawn_agent rejects an explicit service_tier unsupported by the role-resolved child model before delegation",
         "spawn_agent gives role service_tier precedence over a valid requested service_tier when the resolved model supports both",
-        "spawn_agent with omitted fork_turns dispatches a full-history fork to the delegate and exposes a fork_turns schema description that says it defaults to all",
-        "spawn_agent with omitted fork_turns and a reasoning/model/role override rejects before delegation because full-history forks inherit those settings",
-        "spawn_agent with fork_turns none allows role and reasoning overrides and dispatches without a forkMode",
+        "spawn_agent with omitted fork_turns dispatches a clean fork without a forkMode and exposes a schema description that documents the clean-fork default",
+        "spawn_agent with omitted fork_turns permits validated reasoning/model/role overrides because the default is a clean fork",
+        "spawn_agent with explicit fork_turns none allows role and reasoning overrides and dispatches without a forkMode",
         "spawn_agent allows an explicit service_tier when fork_turns is all while still rejecting full-history model and effort overrides",
         "spawn_agent called from a depth-one child with agent_max_depth set to one spawns a grandchild under the child path and emits begin/end lifecycle events",
         "list_agents called before any child spawn on an unregistered AgentControl returns the registered /root entry instead of an empty agent list",
@@ -431,7 +462,11 @@
         "close_agent called with /root on an unregistered AgentControl returns the root-not-spawned rejection instead of an unresolved path error",
         "a child spawned with service_tier priority forwards priority into the provider request options",
         "child session tool filtering keeps v2 agent tools visible at the configured depth cap while still blocking main-thread coordination tools",
-        "assign_task sends triggerTurn true to a completed live child and still emits begin/end interaction events with the current status",
+        "assign_task returns task_id and turn_id for an idle child, then rejects a racing second assignment until the first reaches a terminal receipt",
+        "an assignment accepted immediately before teardown is NACKed with its original task_id and turn_id without a duplicate generic completion",
+        "passive peer context remains in the bounded mailbox until an assignment and is framed with its authenticated author as untrusted input",
+        "a missing or forged nested identity credential returns invalid-runtime-identity while root fallback remains available only when both credential fields are absent",
+        "a fresh automatic worktree name changes across repeated spawns and committed-clean evidence is withheld when either status or HEAD changes during verification",
         "closing a running agent interrupts it once and produces an idempotent terminal task status",
         "a close_agent shutdown failure still emits collab_close_end and returns a structured tool error",
         "a fork containing multiple pending tool calls creates one placeholder result per call before child instructions",
@@ -450,12 +485,17 @@
         "runtime/tests/bin/model-facing-tools.test.ts",
         "runtime/tests/agents/jobs/job-orchestrator.test.ts",
         "runtime/tests/agents/run-agent.test.ts",
+        "runtime/tests/agents/v2/common.test.ts",
+        "runtime/tests/agents/v2/spawn-isolation.test.ts",
+        "runtime/tests/agents/worktree.test.ts",
+        "runtime/tests/agents/delegate-worktree.test.ts",
+        "runtime/tests/agents/workflow-runner.test.ts",
         "runtime/tests/llm/model-registry.test.ts",
         "runtime/tests/llm/models-manager.test.ts",
         "runtime/tests/phases/stream-model.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/session/agent-task-lifecycle.test.ts tests/tasks/lifecycle.test.ts tests/tools/AgentTool/loadAgentsDir.test.ts tests/tools/tasks/task-tools.test.ts tests/commands/agent-management.test.tsx tests/bin/model-facing-tools.test.ts tests/agents/jobs/job-orchestrator.test.ts tests/agents/run-agent.test.ts tests/agents/v2/common.test.ts tests/agents/v2/spawn-isolation.test.ts tests/agents/worktree.test.ts tests/agents/delegate-worktree.test.ts tests/agents/workflow-runner.test.ts tests/llm/model-registry.test.ts tests/llm/models-manager.test.ts tests/phases/stream-model.test.ts --reporter=dot"
       ],
       "status": "required"
     },
@@ -474,6 +514,10 @@
         "runtime/src/tui/hooks/useTasksV2.ts",
         "runtime/src/tui/startup/statusNoticeDefinitions.tsx",
         "runtime/src/tui/state/collabAgentTaskSync.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/daemon-session.ts",
+        "runtime/src/tui/session-types.ts",
+        "runtime/src/bin/agenc-main.ts",
         "runtime/scripts/check-tui-e2e/scenarios/03-subagent-completion.mjs",
         "runtime/scripts/check-tui-e2e/scenarios/23-slash-agents.mjs"
       ],
@@ -484,7 +528,8 @@
         "survives late daemon completion messages after the main prompt has returned",
         "renders startup auth notices without throwing when provider credential helpers report no Anthropic or AgenC account key",
         "keeps PTY startup, prompt visibility, idle detection, and crash detection covered by E2E scenarios",
-        "preserves first-seen agent navigation order while keeping completed agents selectable"
+        "preserves first-seen agent navigation order while keeping completed agents selectable",
+        "preserves exact root-input ownership across local, deferred-daemon, and live-daemon paths with bounded admission and origin-bound rollback"
       ],
       "edgeCases": [
         "a daemon completion message arriving after the prompt is visible does not crash the TUI",
@@ -494,7 +539,9 @@
         "an agent with no transcript renders an empty state instead of throwing during surface selection",
         "a completed agent remains selectable in the rail after active streaming stops",
         "rapid task-state synchronization batches keep row identity stable across running and completed statuses",
-        "agent rail next and previous navigation wraps through completed agents without resorting by status or start time"
+        "agent rail next and previous navigation wraps through completed agents without resorting by status or start time",
+        "first-start, attach, and pre-consumption preparation failures restore only the exact owned input while daemon-gone live proxies avoid text-only retry duplication",
+        "deferred input rejects atomically at 512 entries or 16 MiB of serialized retained content and does not advance ownership sequence on rejection"
       ],
       "tests": [
         "runtime/tests/tui/workbench/agent-surface.test.tsx",
@@ -504,10 +551,13 @@
         "runtime/tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx",
         "runtime/tests/tui/hooks/useTasksV2.test.tsx",
         "runtime/tests/tui/startup/statusNoticeDefinitions.test.tsx",
-        "runtime/tests/tui/state/collabAgentTaskSync.test.ts"
+        "runtime/tests/tui/state/collabAgentTaskSync.test.ts",
+        "runtime/tests/tui/components/App.render.test.tsx",
+        "runtime/tests/tui/daemon-session.contract.test.ts",
+        "runtime/tests/bin/agenc.deferred-input.test.ts"
       ],
       "commands": [
-        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts --reporter=dot",
+        "npm --workspace=@tetsuo-ai/runtime exec -- vitest run tests/tui/workbench/agent-surface.test.tsx tests/tui/workbench/agents-rail.test.tsx tests/tui/workbench/agents.test.ts tests/tui/components/App.local-agents.test.tsx tests/tui/hooks/useApiKeyVerification.wave200-066.coverage.test.tsx tests/tui/hooks/useTasksV2.test.tsx tests/tui/startup/statusNoticeDefinitions.test.tsx tests/tui/state/collabAgentTaskSync.test.ts tests/tui/components/App.render.test.tsx tests/tui/daemon-session.contract.test.ts tests/bin/agenc.deferred-input.test.ts --reporter=dot",
         "npm --workspace=@tetsuo-ai/runtime run build && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 03-subagent-completion && npm --workspace=@tetsuo-ai/runtime run check:tui-e2e -- --filter 23-slash-agents"
       ],
       "status": "required"
