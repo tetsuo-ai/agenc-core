@@ -45,6 +45,8 @@ describe("live coordinator surface", () => {
     expect(prompt).toContain("spawn_agent");
     expect(prompt).toContain("send_message");
     expect(prompt).toContain("wait_agent");
+    expect(prompt).toContain("give an idle reusable worker a new task");
+    expect(prompt).not.toContain("give a running worker a new task");
     expect(prompt).not.toContain("SendMessageTool");
     // Coordinator never edits directly.
     expect(prompt).toContain("do NOT edit files or run commands yourself");
