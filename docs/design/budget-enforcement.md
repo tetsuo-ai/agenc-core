@@ -140,7 +140,7 @@ Default `[agent.budget]` is **empty** (no token/dollar/wall-clock caps) so long
 foreground-style sessions are not killed by a hidden ceiling; operators who
 want per-run caps set them explicitly.
 
-## Production replacement (current as of 0.7.2)
+## Production replacement (introduced in 0.7.2)
 
 `ExecutionAdmissionKernel` is now the sole production accounting authority.
 It reserves at the actual model/charged-tool boundary, conserves child work

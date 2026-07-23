@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/runtime",
-  "version": "0.8.5",
+  "version": "0.9.0",
   "private": true,
   "description": "AgenC lean coding CLI",
   "type": "module",
@@ -142,7 +142,7 @@
     "react": "^19.0.0",
     "react-compiler-runtime": "^1.0.0",
     "react-reconciler": "^0.33.0",
-    "shell-quote": "1.8.4",
+    "shell-quote": "1.10.0",
     "signal-exit": "^4.1.0",
     "strip-ansi": "^7.2.0",
     "tree-kill": "^1.2.2",

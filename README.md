@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.7.2-blue)
+![version](https://img.shields.io/badge/version-0.9.0-blue)
 ![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.7.2` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.7.2` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.9.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.9.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -45,6 +45,10 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   (`agenc -p|--print`, `agenc --no-tui`).
 - **Background agents** — fire-and-forget sessions (`agenc agent start|list|
   attach|stop|logs`), attachable and resumable, independent of the foreground UI.
+- **Adaptive agent swarms** — conservative root-turn routing, atomic task
+  admission with correlated task/turn IDs, journal-first outcomes, bounded
+  mailboxes, isolated Git worktrees, and immutable integration evidence. See
+  [`docs/reference/agents.md`](docs/reference/agents.md).
 - **Channel gateway** — Telegram, Discord, Slack, WebChat, and stdio channels;
   pairing, bindings, in-channel approvals. See [`docs/gateway.md`](docs/gateway.md).
 - **Budget-bounded execution** — daemon-owned reservations, hierarchical caps,
@@ -91,7 +95,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current release: 0.7.2.** Runtime and launcher are versioned `0.7.2`; the
+**Current release: 0.9.0.** Runtime and launcher are versioned `0.9.0`; the
 embedding SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
@@ -99,9 +103,10 @@ is public so npm can issue verifiable provenance. Type-clean: **0**
 `@ts-nocheck`. MIT licensed
 ([`LICENSE`](LICENSE)).
 
-Shipped in this line: multi-channel gateway, Browser tool, heartbeat, budget
-envelope (heartbeat/cron/hooks), personas (onboard identity), hooks webhooks,
-onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth, SDK.
+Shipped in this line: adaptive agent swarms, multi-channel gateway, Browser
+tool, heartbeat, budget envelope (heartbeat/cron/hooks), personas (onboard
+identity), hooks webhooks, onboard acts 2–3, `agenc update`, remote pairing,
+Grok OAuth, SDK.
 
 ## Requirements
 
