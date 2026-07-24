@@ -6,7 +6,6 @@ import {
   capToolResult,
   classifyToolError,
   DEFAULT_MAX_TOOL_RESULT_BYTES,
-  DEFAULT_TOOL_TIMEOUT_MS,
   defaultCheckModeStillAllowed,
   executeToolDispatch,
   formatError,
@@ -116,11 +115,11 @@ describe("I-15 capToolResult", () => {
 });
 
 describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
-  test("per-call timeoutMs wins over per-tool and default", () => {
+  test("per-call timeoutMs wins over per-tool; otherwise there is no implicit deadline", () => {
     const tool = { timeoutMs: 15_000 } as unknown as Tool;
     expect(resolveTimeoutMs(tool, { timeoutMs: 5_000 })).toBe(5_000);
     expect(resolveTimeoutMs(tool, {})).toBe(15_000);
-    expect(resolveTimeoutMs({} as Tool, {})).toBe(DEFAULT_TOOL_TIMEOUT_MS);
+    expect(resolveTimeoutMs({} as Tool, {})).toBeNull();
   });
 
   test("tool-owned timeout disables the generic deadline", () => {

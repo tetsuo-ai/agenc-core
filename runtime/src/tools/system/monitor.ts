@@ -13,8 +13,9 @@
  *     donor `mapToolResultToToolResultBlockParam` content.
  *   - Streams output through AgenC's existing `unifiedExecManager`
  *     `tool_progress` event channel — the same path `exec_command`
- *     uses for live stdout/stderr chunks. The 30-minute timeout
- *     ceiling matches donor `MONITOR_TIMEOUT_MS`.
+ *     uses for live stdout/stderr chunks. The foreground stream yields
+ *     after about 30 seconds, while the process itself has no implicit
+ *     runtime deadline.
  *
  * @module
  */
@@ -29,7 +30,7 @@ import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership
 import { nonEmptyString as asNonEmptyString } from "../../utils/stringUtils.js";
 import { runtimeSandboxForExec } from "./exec-command.js";
 
-const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
+const MONITOR_INITIAL_YIELD_MS = 30_000;
 
 /**
  * Verbatim port of donor `MonitorTool.prompt()`
@@ -65,22 +66,9 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
     },
     requiresApproval: true,
     recoveryCategory: "side-effecting",
-    // The tool owns its own yield/timeout semantics: execCommand is
-    // driven with yield_time_ms/timeoutMs = MONITOR_TIMEOUT_MS so the
-    // monitored process keeps running in the background and yields a
-    // process_id. Without this, the generic executor's
-    // DEFAULT_TOOL_TIMEOUT_MS (30s) timer would fire as the clamped
-    // ~30s yield resolves and abort the *shared* AbortController that is
-    // forwarded into execCommand as __abortSignal — SIGTERM/SIGKILLing
-    // the still-running monitored process and returning a
-    // ToolTimeoutError instead of the "Monitor task started" yield.
-    // `timeoutBehavior: "tool"` makes resolveTimeoutMs return null so
-    // the executor only preserves aborts (matches TaskOutput, which owns
-    // its own deadline the same way). Keep an explicit timeoutMs so the
-    // ceiling is documented even though the executor no longer enforces
-    // it.
+    // Monitor owns its foreground yield semantics. The generic executor
+    // must not turn that yield window into a process deadline.
     timeoutBehavior: "tool",
-    timeoutMs: MONITOR_TIMEOUT_MS,
     inputSchema: {
       type: "object",
       properties: {
@@ -119,9 +107,9 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
       try {
         // Drive through unifiedExecManager exactly the same way
         // exec_command does — that's how the runtime already streams
-        // line-by-line tool_progress chunks. The yield ceiling
-        // matches AgenC's MONITOR_TIMEOUT_MS so abandoned
-        // monitors get reaped by the existing hard-timeout path.
+        // line-by-line tool_progress chunks. A bounded initial yield
+        // returns a process id; the command remains alive without an
+        // implicit hard timeout and can be polled or explicitly stopped.
         const ownerId = processOwnerIdFromToolArgs(
           rawArgs as Record<string, unknown>,
         );
@@ -134,8 +122,7 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           cmd: command,
           workdir: config.cwd,
           tty: false,
-          yield_time_ms: MONITOR_TIMEOUT_MS,
-          timeoutMs: MONITOR_TIMEOUT_MS,
+          yield_time_ms: MONITOR_INITIAL_YIELD_MS,
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }
             : {}),

@@ -4,7 +4,6 @@ import type { Session } from "../session/session.js";
 import {
   computeBackoffMs,
   detectSuspend,
-  RECONNECT_GIVE_UP_MS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_MS,
   RECONNECT_RETRY_AFTER_CEILING_MS,
@@ -159,6 +158,43 @@ describe("reconnectWithBackoff", () => {
     }
   });
 
+  test("has no implicit give-up deadline after six hours", async () => {
+    vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const log = new EventLog();
+      const session = mkSession(log);
+      let now = 0;
+      let calls = 0;
+      const promise = reconnectWithBackoff({
+        session,
+        now: () => now,
+        sleepDetectionThresholdMs: Number.POSITIVE_INFINITY,
+        maxAttempts: 3,
+        attempt: async () => {
+          calls += 1;
+          if (calls < 3) throw new Error("stream_idle");
+          return "recovered";
+        },
+        isTransient: () => true,
+      });
+
+      await Promise.resolve();
+      now = 6 * 60 * 60_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(promise).resolves.toMatchObject({
+        kind: "ok",
+        value: "recovered",
+      });
+      expect(calls).toBe(3);
+    } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   test("non-transient error bubbles immediately", async () => {
     const log = new EventLog();
     const session = mkSession(log);
@@ -293,7 +329,6 @@ describe("detectSuspend", () => {
   test("defaults match the transport reconnection contract", () => {
     expect(RECONNECT_INITIAL_MS).toBe(1_000);
     expect(RECONNECT_MAX_MS).toBe(30_000);
-    expect(RECONNECT_GIVE_UP_MS).toBe(600_000);
     expect(RECONNECT_SLEEP_DETECTION_THRESHOLD_MS).toBe(60_000);
   });
 });

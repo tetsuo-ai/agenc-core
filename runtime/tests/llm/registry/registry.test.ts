@@ -120,7 +120,7 @@ describe("LLM registry", () => {
       apiKeyEnvVar: "XAI_API_KEY",
       requestMaxRetries: 4,
       streamMaxRetries: 5,
-      streamIdleTimeoutMs: 300_000,
+      streamIdleTimeoutMs: 0,
       supportsWebsockets: false,
     });
 

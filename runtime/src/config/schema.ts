@@ -486,8 +486,7 @@ export interface ProviderConfig {
   /**
    * Provider request timeout in milliseconds. For streaming responses this
    * is the inter-chunk idle timeout, not a total-stream deadline. 0 disables
-   * the timeout entirely. Unset falls back to the provider's built-in
-   * default.
+   * the timeout entirely. Unset is unbounded.
    */
   readonly timeout_ms?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
@@ -968,16 +967,10 @@ export function defaultConfig(): AgenCConfig {
       "pyproject.toml",
     ]) as readonly string[],
     project_doc_max_bytes: 32_768,
-    // xAI generates function-call arguments server-side with ZERO bytes on
-    // the wire (no SSE keepalives — measured 51s of total silence for a
-    // ~250-line file, 2026-07-22). Any watchdog window shorter than the
-    // largest plausible argument generation kills healthy streams and forces
-    // full-regeneration reconnect loops. 5 minutes tolerates ~1500-line
-    // files. 600s matches xAI's documented per-chunk idle default
-    // (build/enterprise docs; proxy guidance is >=10 minutes). Stall
-    // detection degrades gracefully (true disconnects still usually
-    // surface as socket errors immediately).
-    stream_watchdog_timeout_ms: 600_000,
+    // No default stream-idle deadline. Providers can remain silent for hours
+    // while reasoning or generating large tool payloads; transport failures
+    // still surface as socket errors. Operators may opt in by setting
+    // stream_watchdog_timeout_ms explicitly.
     // No default turn cap. Interactive / long-running agents stop on the
     // model’s own stop signal (or explicit cancel / budget). Operators who
     // want a runaway-loop backstop can set `max_turns` or AGENC_MAX_TURNS.

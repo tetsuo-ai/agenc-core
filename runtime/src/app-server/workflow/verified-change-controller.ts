@@ -85,7 +85,6 @@ import {
 } from "../../workflow/independent-review.js";
 import type { ReviewOutput } from "../../session/review.js";
 import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   parseVerificationVerdict,
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
@@ -1092,7 +1091,6 @@ export class VerifiedChangeWorkflowController {
       const result = await this.#deps.commands.run({
         script: command.script,
         cwd: handle.path,
-        timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
       });
       exitCode = result.exitCode;
       stdout = result.stdout;

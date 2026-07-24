@@ -34,11 +34,11 @@ export interface WorkflowCommandRunner {
   run(input: {
     readonly script: string;
     readonly cwd: string;
-    readonly timeoutMs: number;
+    /** Optional operator-supplied deadline. Omitted means unbounded. */
+    readonly timeoutMs?: number;
   }): Promise<WorkflowCommandResult>;
 }
 
-export const DEFAULT_VERIFICATION_TIMEOUT_MS = 900_000;
 const EXCERPT_BYTES = 4_096;
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
@@ -86,7 +86,6 @@ export async function runRequiredVerification(opts: {
     labels.add(command.label);
   }
   const parallelism = Math.max(1, Math.floor(opts.parallelism));
-  const timeoutMs = opts.timeoutMsPerCommand ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
 
   const records: VerifiedChangeCommandRecord[] = new Array(commands.length);
   const excerpts: Record<string, { stdout: string; stderr: string }> = {};
@@ -102,7 +101,9 @@ export async function runRequiredVerification(opts: {
         result = await runner.run({
           script: command.script,
           cwd: worktreePath,
-          timeoutMs,
+          ...(opts.timeoutMsPerCommand !== undefined
+            ? { timeoutMs: opts.timeoutMsPerCommand }
+            : {}),
         });
       } catch (error) {
         // A runner crash is a failing command with diagnostic stderr, never

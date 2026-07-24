@@ -170,8 +170,8 @@ export interface Tool {
    * `throw` downgrades to `Exclusive`.
    */
   readonly isConcurrencySafe?: (args: Record<string, unknown>) => boolean;
-  /** I-9 per-tool timeout override (ms). Falls back to
-   *  `DEFAULT_TOOL_TIMEOUT_MS=30_000` when absent. */
+  /** I-9 opt-in per-tool timeout override (ms). Omission means no
+   * generic executor deadline. */
   readonly timeoutMs?: number;
   /**
    * Timeout ownership. `executor` means the generic tool executor
@@ -210,6 +210,12 @@ export interface Tool {
    * Missing categories are treated as side-effecting.
    */
   readonly recoveryCategory?: ToolRecoveryCategory;
+  /**
+   * Admission usage after cancellation once dispatch has begun. Omit for the
+   * conservative unknown-usage path. `zero` is only valid for local,
+   * non-metered operations that cannot incur provider usage after abort.
+   */
+  readonly cancellationUsage?: "zero";
   /**
    * Optional AgenC-style permission hook. The permissions evaluator
    * calls this before the generic mode gate so tools can request asks,

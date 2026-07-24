@@ -17,8 +17,6 @@ import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 
 const MONITOR_TOOL_NAME = 'Monitor'
 
-const MONITOR_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
-
 const inputSchema = lazySchema(() =>
   z.strictObject({
     command: z
@@ -179,7 +177,6 @@ export const MonitorTool = buildTool({
       abortController.signal,
       'bash',
       {
-        timeout: MONITOR_TIMEOUT_MS,
         sandboxExecutionBroker,
         sandboxExecutionSurface: toolUseContext.agentId
           ? 'child_agent'

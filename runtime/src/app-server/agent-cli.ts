@@ -145,7 +145,6 @@ export interface AgenCJsonLineDaemonClientOptions {
 // invocation with AGENC_DAEMON_REQUEST_TIMEOUT_MS for read-only smoke checks
 // where a faster failure is preferable.
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
-const DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 // Must hold the full attach-time replay (user_message + early tool/stream
@@ -158,14 +157,16 @@ const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 1000;
 // client memory unbounded. Mirrors the daemon transport's max-line / max
 // payload bound (16 MiB).
 const MAX_DAEMON_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
-const LONG_RUNNING_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> =
+// Agent turns and model-backed conversation maintenance have no wall-clock
+// deadline. They may legitimately remain live for hours while providers,
+// tools, approvals, or collaboration workers make progress. Explicit aborts,
+// request.cancel, socket closure, and daemon shutdown still terminate them.
+const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> =
   new Set([
+    // Both message methods await the full daemon turn before responding.
+    "message.send",
     "message.stream",
-    // Compact and rewind both run an LLM summarization pass on the daemon,
-    // which easily exceeds the generic 30s RPC timeout on large transcripts
-    // or slow models. Give them the same long-running budget as streaming.
-    // (These are internal methods reached through the TUI daemon-session
-    // wrapper, which widens the persistent client's request overloads.)
+    // Compact and rewind can run model summarization over large transcripts.
     "session.partialCompactFromMessage",
     "session.rewindConversationToMessage",
   ]);
@@ -435,13 +436,14 @@ export function createAgenCJsonLineDaemonRequestClient(
   const timeoutMs =
     options.timeoutMs ?? resolveAgenCDaemonRequestTimeoutMs(options.env);
   return {
-    request: (method, params = {}, _options = {}) =>
+    request: (method, params = {}, requestOptions = {}) =>
       requestDaemon(
         method,
         params,
         socketPath,
         timeoutMs,
         options.authCookie ?? readDaemonCookie(cookiePath),
+        requestOptions.signal,
       ),
   };
 }
@@ -1043,10 +1045,8 @@ function defaultAgenCAgentAttachClientId(): string {
 function requestTimeoutMsForMethod(
   method: AgenCDaemonKnownMethod,
   timeoutMs: number,
-): number {
-  return LONG_RUNNING_DAEMON_METHODS.has(method)
-    ? DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS
-    : timeoutMs;
+): number | null {
+  return UNBOUNDED_DAEMON_METHODS.has(method) ? null : timeoutMs;
 }
 
 function connectPersistentDaemonClient(
@@ -1060,7 +1060,7 @@ function connectPersistentDaemonClient(
       {
         readonly resolve: (value: unknown) => void;
         readonly reject: (error: Error) => void;
-        readonly timeout: ReturnType<typeof setTimeout>;
+        readonly timeout: ReturnType<typeof setTimeout> | null;
       }
     >();
     const sessionListeners = new Map<
@@ -1086,7 +1086,7 @@ function connectPersistentDaemonClient(
 
     const failPending = (error: Error) => {
       for (const waiter of pending.values()) {
-        clearTimeout(waiter.timeout);
+        if (waiter.timeout !== null) clearTimeout(waiter.timeout);
         waiter.reject(error);
       }
       pending.clear();
@@ -1148,27 +1148,30 @@ function connectPersistentDaemonClient(
             method,
             timeoutMs,
           );
-          const requestTimeout = setTimeout(() => {
-            // Tell the daemon to stop the orphaned work before rejecting
-            // locally: without request.cancel the daemon keeps running the
-            // request (e.g. a compact) and a retry hits "a turn is
-            // currently in flight". Must run before pending.delete(id) —
-            // sendCancel no-ops once the request is no longer pending.
-            sendCancel(`client timeout after ${requestTimeoutMs}ms`);
-            pending.delete(id);
-            removeAbortListener?.();
-            requestReject(
-              new Error(`Timed out waiting for daemon response to ${method}`),
-            );
-          }, requestTimeoutMs);
+          const requestTimeout =
+            requestTimeoutMs === null
+              ? null
+              : setTimeout(() => {
+                  // Tell the daemon to stop the orphaned work before rejecting
+                  // locally. Must run before pending.delete(id), because
+                  // sendCancel no-ops once the request is no longer pending.
+                  sendCancel(`client timeout after ${requestTimeoutMs}ms`);
+                  pending.delete(id);
+                  removeAbortListener?.();
+                  requestReject(
+                    new Error(
+                      `Timed out waiting for daemon response to ${method}`,
+                    ),
+                  );
+                }, requestTimeoutMs);
           pending.set(id, {
             resolve: (value) => {
-              clearTimeout(requestTimeout);
+              if (requestTimeout !== null) clearTimeout(requestTimeout);
               removeAbortListener?.();
               requestResolve(value);
             },
             reject: (error) => {
-              clearTimeout(requestTimeout);
+              if (requestTimeout !== null) clearTimeout(requestTimeout);
               removeAbortListener?.();
               requestReject(error);
             },
@@ -1300,7 +1303,7 @@ function handlePersistentDaemonMessage(
     {
       readonly resolve: (value: unknown) => void;
       readonly reject: (error: Error) => void;
-      readonly timeout: ReturnType<typeof setTimeout>;
+      readonly timeout: ReturnType<typeof setTimeout> | null;
     }
   >,
   sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
@@ -1313,7 +1316,7 @@ function handlePersistentDaemonMessage(
     const waiter = pending.get(message.id);
     if (waiter === undefined) return;
     pending.delete(message.id);
-    clearTimeout(waiter.timeout);
+    if (waiter.timeout !== null) clearTimeout(waiter.timeout);
     const response = message as AgenCDaemonResponse;
     if (isErrorResponse(response)) {
       waiter.reject(new Error(response.error.message));
@@ -1470,8 +1473,28 @@ async function requestDaemon<Method extends AgenCDaemonMethod>(
   socketPath: string,
   timeoutMs: number,
   authCookie: string | Promise<string>,
+  signal?: AbortSignal,
 ): Promise<AgenCDaemonResultByMethod[Method]> {
   const resolvedAuthCookie = await authCookie;
+  if (UNBOUNDED_DAEMON_METHODS.has(method)) {
+    const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
+    try {
+      await client.request("initialize", {
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+        clientName: "agenc-agent-cli",
+        authCookie: resolvedAuthCookie,
+        capabilities: {},
+      });
+      return await client.request(
+        method,
+        params,
+        signal !== undefined ? { signal } : {},
+      );
+    } finally {
+      await client.close();
+    }
+  }
   const responses = await sendJsonLineRequestWithRetry(socketPath, timeoutMs, [
     {
       jsonrpc: JSON_RPC_VERSION,

@@ -324,6 +324,61 @@ describe("syncCollabAgentEventToAppState", () => {
     expect(runningAgain.tasks.agent_1).not.toHaveProperty("result");
   });
 
+  it("preserves a completed turn when its reusable worker is later shut down", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Verifier",
+        status: { status: "running" },
+      },
+    }, 1_000);
+    const completed = applyEvent(spawned, {
+      type: "collab_agent_status",
+      payload: {
+        threadId: "agent_1",
+        status: "completed",
+        toolUseCount: 4,
+      },
+    }, 2_000);
+
+    const afterShutdown = applyEvent(completed, {
+      type: "collab_agent_status",
+      payload: {
+        threadId: "agent_1",
+        status: { status: "killed", error: "agent shutdown" },
+      },
+    }, 3_000);
+
+    expect(afterShutdown.tasks.agent_1).toMatchObject({
+      status: "completed",
+      endTime: 2_000,
+      progress: { toolUseCount: 4 },
+    });
+    expect(afterShutdown.tasks.agent_1).not.toHaveProperty("error");
+
+    // A new interaction is a new turn and may establish a new terminal result.
+    const reopened = applyEvent(afterShutdown, {
+      type: "collab_agent_interaction_begin",
+      payload: {
+        receiverThreadId: "agent_1",
+        prompt: "verify another change",
+      },
+    }, 4_000);
+    const failed = applyEvent(reopened, {
+      type: "collab_agent_status",
+      payload: {
+        threadId: "agent_1",
+        status: { status: "errored", error: "new verification failed" },
+      },
+    }, 5_000);
+    expect(failed.tasks.agent_1).toMatchObject({
+      status: "failed",
+      error: "new verification failed",
+      endTime: 5_000,
+    });
+  });
+
   it("updates spawned agents from collab wait completion summaries", () => {
     const firstSpawn = applyEvent(baseState(), {
       type: "collab_agent_spawn_end",

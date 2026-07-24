@@ -4,7 +4,6 @@ export {
   buildBaselineGitScript,
   buildCandidateCollectionScript,
   buildRealProviderAgentScript,
-  DEFAULT_AGENT_TIMEOUT_MS,
   EVAL_BASELINE_TAG,
   runAgentOnTask,
   runRealProviderAgentOnTask,

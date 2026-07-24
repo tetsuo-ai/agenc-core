@@ -6,9 +6,10 @@
  * `client.rs:1146`
  * (`stream_idle_timeout_ms` from provider info).
  *
- * AgenC gates behind `AGENC_ENABLE_STREAM_WATCHDOG` env var
- * (opt-in). AgenC ships default-on because silent provider stalls
- * are pure latency burn; opt-out is `AGENC_DISABLE_STREAM_WATCHDOG=1`.
+ * The watchdog has no implicit deadline. Operators may opt in with a
+ * positive `AGENC_STREAM_IDLE_TIMEOUT_MS` value or an explicit runtime
+ * configuration value; `0` disables it. This keeps long silent reasoning and
+ * tool-argument generation valid for arbitrarily long turns.
  *
  * Timers use monotonic clock (I-82) via `monotonicMs()` — immune to
  * NTP corrections, `date` set, suspend/resume, container clock skew.
@@ -31,17 +32,16 @@
 import { monotonicMs } from "./_deps/monotonic.js";
 
 /**
- * Default idle timeout. Override
- * via env `AGENC_STREAM_IDLE_TIMEOUT_MS` (positive integer) or via
- * explicit `timeoutMs` option on `installStreamWatchdog`.
+ * There is deliberately no default idle timeout. A positive operator value is
+ * required to install a deadline.
  */
-const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 90_000;
+const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 0;
 
 export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
   const raw = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-  if (raw) {
+  if (raw !== undefined && raw.trim() !== "") {
     const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n) && n > 0) return n;
+    if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
   }
   // `preferredMs` carries config (`stream_watchdog_timeout_ms`) or a
   // provider-declared tolerance (e.g. grok's silent tool-argument
@@ -57,16 +57,10 @@ export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
 }
 
 /**
- * Session-level idle-timeout resolution: env (unconditional operator
- * escape hatch) > effective preference > 90s default, where the effective
- * preference applies the provider suggestion as a FLOOR over the
- * `stream_watchdog_timeout_ms` config value. Providers with silent
- * server-side generation phases (xAI emits zero bytes — not even SSE
- * keepalives — while generating function-call arguments; 51s measured for
- * a ~250-line file) declare a tolerance below which any window is
- * guaranteed to kill healthy streams, so shorter configured values
- * (e.g. the stale 30s scaffold default in old config.toml files) must not
- * win over it.
+ * Session-level idle-timeout resolution: env > explicit config > disabled.
+ * A provider suggestion may raise an explicitly configured timeout, but it
+ * never creates a deadline by itself. Provider silence is not evidence of a
+ * dead turn, and healthy agent/model calls may remain silent for hours.
  */
 export function resolveSessionStreamIdleTimeoutMs(input: {
   readonly configuredMs?: number;
@@ -84,16 +78,20 @@ export function resolveSessionStreamIdleTimeoutMs(input: {
     input.providerSuggestedMs > 0
       ? input.providerSuggestedMs
       : undefined;
+  if (configured === undefined) {
+    return resolveStreamIdleTimeoutMs();
+  }
   const preferred =
     suggested !== undefined
-      ? Math.max(configured ?? 0, suggested)
+      ? Math.max(configured, suggested)
       : configured;
   return resolveStreamIdleTimeoutMs(preferred);
 }
 
 /**
- * Whether the watchdog is enabled. AgenC ships default-on; opt-out
- * via `AGENC_DISABLE_STREAM_WATCHDOG=1`.
+ * Whether an explicitly configured watchdog is allowed to run. The timeout
+ * resolver still returns `0` by default, so this gate alone never creates a
+ * deadline. Opt out via `AGENC_DISABLE_STREAM_WATCHDOG=1`.
  */
 export function isStreamWatchdogEnabled(): boolean {
   const raw = process.env.AGENC_DISABLE_STREAM_WATCHDOG;
@@ -121,7 +119,7 @@ export interface StreamWatchdogHandle {
   stop(): void;
   /** Whether this watchdog already fired. */
   readonly firedAt: number | null;
-  /** Scheduled idle-timeout in ms (reflects env + override). */
+  /** Scheduled idle-timeout in ms; `0` means disabled. */
   readonly timeoutMs: number;
 }
 
@@ -130,8 +128,8 @@ export interface InstallStreamWatchdogOptions {
    *  watchdog signals the stream's abort channel to tear down the
    *  in-flight request. */
   readonly abortController: AbortController;
-  /** Override for the idle timeout. Defaults to env / built-in
-   *  constant. Pass 0 to disable explicitly (returns a no-op handle). */
+  /** Override for the idle timeout. Defaults to env / disabled. Pass 0 to
+   *  disable explicitly (returns a no-op handle). */
   readonly timeoutMs?: number;
   /** Callback fired exactly once when the timer expires, before the
    *  `abortController.abort(...)` call. Emit I-8 `stream_error` here. */

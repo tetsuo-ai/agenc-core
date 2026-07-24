@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { GrokProvider } from "src/llm/providers/grok/adapter";
-import { LLMTimeoutError } from "src/llm/errors";
+import { LLMProviderError } from "src/llm/errors";
 import type { LLMStreamChunk } from "src/llm/types";
 
 // gaphunt3 #21: grok chatStream must honor the caller's AbortSignal *after* the
@@ -137,9 +137,8 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
     await flushMicrotasks();
 
     expect(settled).toBe("rejected");
-    // Caller aborts map through the provider error mapper to LLMTimeoutError,
-    // the same shape one-shot aborts already produce in this adapter.
-    expect(captured).toBeInstanceOf(LLMTimeoutError);
+    // Caller cancellation must not masquerade as a retryable provider timeout.
+    expect(captured).toBeInstanceOf(LLMProviderError);
     // The in-flight stream iterator must be torn down on abort.
     expect(returnCalled()).toBe(true);
     // No visible content should have leaked from the aborted turn.
@@ -288,7 +287,7 @@ describe("gaphunt3 #21: grok chatStream honors caller abort after stream open", 
     await flushMicrotasks();
 
     expect(settled).toBe("rejected");
-    expect(captured).toBeInstanceOf(LLMTimeoutError);
+    expect(captured).toBeInstanceOf(LLMProviderError);
     expect(returnCalled()).toBe(true);
   });
 });

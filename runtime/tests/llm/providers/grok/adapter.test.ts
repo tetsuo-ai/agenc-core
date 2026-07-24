@@ -860,6 +860,83 @@ describe("GrokProvider stream timeout semantics", () => {
     };
   }
 
+  test("an unconfigured stream survives a six-hour silent chunk gap", async () => {
+    vi.useFakeTimers();
+    try {
+      const sixHours = 6 * 60 * 60_000;
+      const provider = new GrokProvider({
+        apiKey: "xai-test",
+        model: "grok-4-fast",
+      });
+      const create = vi.fn().mockImplementation(() =>
+        withResponse({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "response.output_text.delta", delta: "one " };
+            await new Promise((resolve) => setTimeout(resolve, sixHours));
+            yield { type: "response.output_text.delta", delta: "two" };
+            yield {
+              type: "response.completed",
+              response: buildXaiResponse(
+                "resp_unbounded_silent_stream",
+                "one two",
+              ),
+            };
+          },
+        }),
+      );
+      (provider as any).client = { responses: { create } };
+
+      const resultPromise = provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+      );
+      resultPromise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(sixHours + 1);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        content: "one two",
+        finishReason: "stop",
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("bypasses the SDK's implicit ten-minute header timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new GrokProvider({
+        apiKey: "xai-test",
+        model: "grok-4-fast",
+      });
+      const client = await (provider as any).ensureClient();
+      const responseGate = Promise.withResolvers<Response>();
+      client.fetch = vi.fn(() => responseGate.promise);
+      const controller = new AbortController();
+      let settled = false;
+      const request = client
+        .fetchWithTimeout(
+          "https://api.x.ai/v1/responses",
+          { method: "POST" },
+          600_000,
+          controller,
+        )
+        .finally(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60_000);
+      expect(settled).toBe(false);
+      expect(controller.signal.aborted).toBe(false);
+
+      responseGate.resolve(new Response(null, { status: 200 }));
+      await expect(request).resolves.toBeInstanceOf(Response);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("healthy stream longer than timeoutMs completes — timeout is inter-chunk idle, not a total deadline", async () => {
     // Revert guard: with the pre-0.7.3 streamDeadlineAt total-budget
     // semantics this stream is killed at t=1000ms mid-flight and the call

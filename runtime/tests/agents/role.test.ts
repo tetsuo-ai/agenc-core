@@ -164,7 +164,7 @@ describe("role registry", () => {
     const role = getAgentRole(DEFAULT_WORKSPACE, "awaiter")!;
     expect(role.config.background).toBe(true);
     expect(role.config.reasoningEffort).toBe("low");
-    expect(role.config.timeoutMs).toBe(3_600_000);
+    expect(role.config.timeoutMs).toBeUndefined();
   });
 
   it("derives xhigh reasoning effort from user role layers", () => {

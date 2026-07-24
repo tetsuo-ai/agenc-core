@@ -42,6 +42,7 @@ vi.mock('../../../src/utils/supervisedProcess.js', async importOriginal => {
 import {
   allowPermissionDecision,
   rejectPermissionDecision,
+  resolveXaiAcpPromptTimeoutMs,
   XaiAcpClient,
   type XaiAcpPermissionRequest,
 } from '../../../src/services/xai/acp.ts'
@@ -81,6 +82,12 @@ function makeClient(options?: {
 }
 
 describe('XaiAcpClient', () => {
+  test('ACP prompts have no implicit total runtime deadline', () => {
+    expect(resolveXaiAcpPromptTimeoutMs(undefined)).toBe(0)
+    expect(resolveXaiAcpPromptTimeoutMs(0)).toBe(0)
+    expect(resolveXaiAcpPromptTimeoutMs(7_200_000)).toBe(7_200_000)
+  })
+
   test('initialize → authenticate → session → prompt with streamed chunks', async () => {
     const client = makeClient()
     try {

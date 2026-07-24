@@ -1169,6 +1169,81 @@ describe("runAgent", () => {
     ).toBe(42);
   });
 
+  it("projects usage before a tool-using subagent turn completes without double-counting it", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+        usage: { promptTokens: 31, completionTokens: 11, totalTokens: 42 },
+      },
+      {
+        content: "tool work complete",
+        finishReason: "stop",
+        usage: { promptTokens: 50, completionTokens: 8, totalTokens: 58 },
+      },
+    ]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        registry: {
+          tools: [
+            {
+              name: "system.echo",
+              description: "echo",
+              inputSchema: { type: "object" },
+              execute: async () => ({ content: JSON.stringify({ ok: true }) }),
+            },
+          ],
+          toLLMTools: () => [
+            {
+              type: "function",
+              function: {
+                name: "system.echo",
+                description: "echo",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+          dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
+        } satisfies ToolRegistry,
+      },
+    });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "go" }],
+      taskPrompt: "go",
+    });
+
+    await nextProgressEvent(iter, "tool_call");
+
+    // The first provider response is durable, but the multi-iteration turn is
+    // still open. This is the exact point where the live rail used to show 0.
+    expect(live.status.value.status).toBe("running");
+    expect(live.tokenUsage).toEqual({
+      inputTokens: 31,
+      outputTokens: 11,
+      totalTokens: 42,
+    });
+
+    const { events, result } = await collectRun(iter);
+    expect(result.outcome).toBe("completed");
+    expect(live.tokenUsage).toEqual({
+      inputTokens: 81,
+      outputTokens: 19,
+      totalTokens: 100,
+    });
+    expect(
+      events.find((event) => event.kind === "usage_update"),
+    ).toMatchObject({
+      inputTokens: 81,
+      outputTokens: 19,
+      totalTokens: 100,
+    });
+  });
+
   it("ignores array-shaped parent services when resolving the provider", async () => {
     const provider = makeProvider([{ content: "should not run" }]);
     const session = makeStubSession();
@@ -1324,6 +1399,7 @@ describe("runAgent", () => {
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     expect(result.finalMessage).toBe("tool work complete");
     expect(result.toolCallCount).toBe(1);
+    expect(live.toolCallCount).toBe(1);
   });
 
   it("applies a per-spawn service tier to the child session provider request", async () => {
@@ -1711,6 +1787,30 @@ describe("runAgent", () => {
     } finally {
       await stopKeepAliveRun(iter, live.abortController);
     }
+  });
+
+  it("closes an idle keep-alive worker as completed instead of failing its finished turn", async () => {
+    const provider = makeProvider([{ content: "verified" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({
+      live,
+      parent: session,
+      initialMessages: [{ role: "user", content: "verify" }],
+      taskPrompt: "verify",
+      keepAlive: true,
+    });
+
+    const completed = await nextProgressEvent(iter, "turn_complete");
+    expect(completed.finalMessage).toBe("verified");
+    live.abortController.abort("agent shutdown");
+
+    const { result } = await collectRun(iter);
+    expect(result).toMatchObject({
+      outcome: "completed",
+      finalMessage: "verified",
+    });
+    expect(live.status.value.status).toBe("completed");
   });
 
   it("fsyncs one correlated child outcome before projecting its one parent receipt", async () => {

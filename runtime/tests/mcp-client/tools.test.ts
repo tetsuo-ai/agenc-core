@@ -632,6 +632,75 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     }
   });
 
+  test("does not impose a default MCP tool-call deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const rawResult = Promise.withResolvers<{
+        content: Array<{ type: "text"; text: string }>;
+        isError: boolean;
+      }>();
+      let rpcSignal: AbortSignal | undefined;
+      let rpcOptions:
+        | {
+            timeout?: number;
+            resetTimeoutOnProgress?: boolean;
+          }
+        | undefined;
+      const callTool = vi.fn(
+        async (
+          _params: unknown,
+          _schema: unknown,
+          requestOptions?: {
+            signal?: AbortSignal;
+            timeout?: number;
+            resetTimeoutOnProgress?: boolean;
+          },
+        ) => {
+          rpcSignal = requestOptions?.signal;
+          rpcOptions = requestOptions;
+          return rawResult.promise;
+        },
+      );
+      const bridge = await createToolBridge(
+        {
+          listTools: async () => ({
+            tools: [{ name: "long_remote", description: "runs for hours" }],
+          }),
+          callTool,
+          close: async () => {},
+        },
+        "remote",
+      );
+      let settled = false;
+
+      const running = bridge.tools[0]!.execute({ value: 1 });
+      void running.finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callTool).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+      expect(rpcSignal?.aborted).toBe(false);
+      expect(settled).toBe(false);
+      expect(rpcOptions).toMatchObject({
+        timeout: 2_147_483_647,
+        resetTimeoutOnProgress: true,
+      });
+
+      rawResult.resolve({
+        content: [{ type: "text", text: "finished" }],
+        isError: false,
+      });
+      await expect(running).resolves.toMatchObject({
+        content: "finished",
+        isError: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("normalizes malformed MCP tool call result content", async () => {
     const observedResults: string[] = [];
     const bridge = await createToolBridge(

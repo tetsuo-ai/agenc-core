@@ -409,6 +409,10 @@ export function createDaemonTuiSession<
   const receivedEvents: unknown[] = [];
   const REPLAY_BACKLOG_LIMIT = 500;
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
+  // Terminal transcript events are authoritative for a turn. Tool cleanup can
+  // arrive afterward; those late events must never manufacture a new
+  // "daemon-turn" and relatch the TUI spinner.
+  let terminalDaemonTurnObserved = false;
   let queuedInputCount = 0;
   let queuedInputBytes = 0;
   let inFlightInputCount = 0;
@@ -424,6 +428,7 @@ export function createDaemonTuiSession<
   >();
   let unsubscribeDaemonEvents: (() => void) | null = null;
   const markDaemonActivityActive = (event: unknown): void => {
+    if (terminalDaemonTurnObserved) return;
     const payload = (event as { readonly payload?: unknown }).payload;
     const turnId =
       isJsonObject(payload) && typeof payload.turnId === "string" && payload.turnId.length > 0
@@ -443,9 +448,11 @@ export function createDaemonTuiSession<
     // not left permanently blocked after a failed turn.
     if (typeof eventType === "string" && TERMINAL_DAEMON_TRANSCRIPT_EVENTS.has(eventType)) {
       activeTurnSnapshot = null;
+      terminalDaemonTurnObserved = true;
       return;
     }
     if (eventType === "turn_start" || eventType === "turn_started") {
+      terminalDaemonTurnObserved = false;
       markDaemonActivityActive(event);
       return;
     }
@@ -461,8 +468,11 @@ export function createDaemonTuiSession<
     const status = (payload as { readonly status?: unknown }).status;
     const turnId = (payload as { readonly turnId?: unknown }).turnId;
     if (typeof status !== "string") return;
+    if (status === "idle") {
+      activeTurnSnapshot = null;
+      return;
+    }
     if (
-      status === "idle" ||
       status === "completed" ||
       status === "failed" ||
       status === "error" ||
@@ -470,8 +480,10 @@ export function createDaemonTuiSession<
       status === "canceled"
     ) {
       activeTurnSnapshot = null;
+      terminalDaemonTurnObserved = true;
       return;
     }
+    if (terminalDaemonTurnObserved) return;
     activeTurnSnapshot = {
       turnId: typeof turnId === "string" && turnId.length > 0 ? turnId : "daemon-turn",
     };
@@ -614,6 +626,7 @@ export function createDaemonTuiSession<
       inFlightInputCount += submittedInputCount;
       inFlightInputBytes += submittedInputBytes;
       const streamId = `${clientId}:${Date.now()}`;
+      terminalDaemonTurnObserved = false;
       activeTurnSnapshot = { turnId: streamId };
       const content =
         queued.length === 0

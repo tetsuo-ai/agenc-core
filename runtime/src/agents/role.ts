@@ -167,15 +167,13 @@ const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   "explorer.toml": "",
   // Upstream keeps awaiter temporarily removed from the built-in role set, but
   // still exposes the embedded role file for user-defined roles that reference
-  // `awaiter.toml`. The body matches the upstream
-  // `core/src/agent/builtins/awaiter.toml` byte-for-byte.
-  // Body content matches upstream `core/src/agent/builtins/awaiter.toml`.
+  // `awaiter.toml`. AgenC intentionally omits the historical one-hour terminal
+  // timeout: an awaiter must be able to observe work that runs for hours.
   // Upstream uses TOML's `"""..."""` multiline string for
   // `developer_instructions`; AgenC's TOML parser is escape-only
   // (no triple-quoted production), so the body is encoded with `\n`
   // escapes. The string value is identical post-parse.
-  "awaiter.toml": `background_terminal_max_timeout = 3600000
-model_reasoning_effort = "low"
+  "awaiter.toml": `model_reasoning_effort = "low"
 developer_instructions = "You are an awaiter.\\nYour role is to await the completion of a specific command or task and report its status only when it is finished.\\n\\nBehavior rules:\\n\\n1. When given a command or task identifier, you must:\\n   - Execute or await it using the appropriate tool\\n   - Continue awaiting until the task reaches a terminal state.\\n\\n2. You must NOT:\\n   - Modify the task.\\n   - Interpret or optimize the task.\\n   - Perform unrelated actions.\\n   - Stop awaiting unless explicitly instructed.\\n\\n3. Awaiting behavior:\\n   - If the task is still running, continue polling using tool calls.\\n   - Use repeated tool calls if necessary.\\n   - Do not hallucinate completion.\\n   - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.\\n\\n4. If asked for status:\\n   - Return the current known status.\\n   - Immediately resume awaiting afterward.\\n\\n5. Termination:\\n   - Only exit awaiting when:\\n     - The task completes successfully, OR\\n     - The task fails, OR\\n     - You receive an explicit stop instruction.\\n\\nYou must behave deterministically and conservatively.\\n"`,
 } as const);
 

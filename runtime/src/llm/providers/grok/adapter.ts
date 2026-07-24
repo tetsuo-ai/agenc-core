@@ -46,7 +46,10 @@ import {
   parseStructuredOutputText,
   supportsXaiReasoningEffortParam,
 } from "../../structured-output.js";
-import { withTimeout } from "../../timeout.js";
+import {
+  externalAbortReasonToError,
+  withTimeout,
+} from "../../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
 import {
@@ -99,7 +102,6 @@ import {
 } from "../../registry/provider-info.js";
 
 const DEFAULT_VISION_MODEL = "grok-4-0709";
-const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
  * Streamed raw reasoning (`response.reasoning_text.delta`) rides the
@@ -109,15 +111,6 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  */
 const RAW_REASONING_SUMMARY_INDEX_OFFSET = 10_000;
 
-/**
- * Default inter-chunk idle tolerance for STREAMS (chatStream) when no
- * provider timeout is configured. Distinct from DEFAULT_TIMEOUT_MS (120s,
- * request-open): xAI emits nothing at all while generating function-call
- * arguments, and 120s of tolerance kills healthy streams generating large
- * files, forcing full-regeneration retry loops that never converge. An
- * explicitly configured `timeout_ms` still wins.
- */
-const STREAM_SILENT_GENERATION_TIMEOUT_MS = 600_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
@@ -187,18 +180,69 @@ function createStreamTimeoutError(providerName: string, timeoutMs: number): Erro
   return err;
 }
 
-// gaphunt3 #21: caller-abort error for the open-stream chunk loop. Shaped as an
-// AbortError so it propagates/maps the same way as a one-shot abort.
-function createStreamAbortError(providerName: string): Error {
-  const err = new Error(`${providerName} stream aborted by caller`);
-  (err as { name?: string }).name = "AbortError";
-  (err as { code?: string }).code = "ABORT_ERR";
-  return err;
+// gaphunt3 #21/#42: caller cancellation is not a provider timeout. Preserve
+// the external signal's reason (when present) and deliberately avoid the
+// AbortError/ABORT_ERR shape, which mapLLMError classifies as a retryable
+// timeout.
+function createStreamAbortError(
+  providerName: string,
+  externalSignal?: AbortSignal,
+): Error {
+  if (externalSignal) {
+    return externalAbortReasonToError(
+      externalSignal,
+      `${providerName} stream aborted by caller`,
+    );
+  }
+  return new Error(`${providerName} stream aborted by caller`);
+}
+
+/**
+ * The OpenAI-compatible SDK used for xAI installs its own unconditional
+ * ten-minute header timeout when `timeout` is omitted. AgenC owns timeout and
+ * cancellation policy outside the SDK, so replace only that transport seam:
+ * explicit AgenC timeouts still arrive through `withTimeout`, while an
+ * unconfigured request can remain open indefinitely.
+ */
+function installAgenCManagedSdkFetch(client: any): void {
+  if (typeof client?.fetch !== "function") return;
+  client.fetchWithTimeout = async (
+    url: string,
+    init: (RequestInit & { duplex?: "half" }) | undefined,
+    _sdkTimeoutMs: number,
+    controller: AbortController,
+  ): Promise<Response> => {
+    const { signal, method, ...options } = init ?? {};
+    const abort = () => {
+      if (!controller.signal.aborted) controller.abort(signal?.reason);
+    };
+    if (signal) {
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    }
+    const isReadableBody =
+      (globalThis.ReadableStream &&
+        options.body instanceof globalThis.ReadableStream) ||
+      (typeof options.body === "object" &&
+        options.body !== null &&
+        Symbol.asyncIterator in options.body);
+    const fetchOptions: RequestInit & { duplex?: "half" } = {
+      signal: controller.signal,
+      ...(isReadableBody ? { duplex: "half" as const } : {}),
+      method: method?.toUpperCase() ?? "GET",
+      ...options,
+    };
+    try {
+      return await client.fetch.call(undefined, url, fetchOptions);
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  };
 }
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
-    return DEFAULT_TIMEOUT_MS;
+    return undefined;
   }
   if (timeoutMs <= 0) {
     return undefined;
@@ -288,7 +332,7 @@ function resolveRequestTimeoutMs(
   return {
     configuredProviderTimeoutMs,
     callOverrideTimeoutMs,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
+    timeoutMs: undefined,
     source: "provider_default",
   };
 }
@@ -311,7 +355,7 @@ async function nextStreamChunkWithTimeout<T>(
   // chunk so a mid-stream cancel cannot block on a slow iterator.next().
   if (externalSignal?.aborted) {
     await closeAsyncIterator(iterator);
-    throw createStreamAbortError(providerName);
+    throw createStreamAbortError(providerName, externalSignal);
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -348,7 +392,8 @@ async function nextStreamChunkWithTimeout<T>(
     }, effectiveTimeoutMs);
   }
   if (externalSignal) {
-    abortHandler = () => interrupt(createStreamAbortError(providerName));
+    abortHandler = () =>
+      interrupt(createStreamAbortError(providerName, externalSignal));
     externalSignal.addEventListener("abort", abortHandler, { once: true });
   }
 
@@ -370,7 +415,7 @@ async function nextStreamChunkWithTimeout<T>(
     if (interruption.error !== undefined) throw interruption.error;
     if (outcome.kind === "error") throw outcome.error;
     if (outcome.kind === "interrupted") {
-      throw createStreamAbortError(providerName);
+      throw createStreamAbortError(providerName, externalSignal);
     }
     return outcome.result;
   } finally {
@@ -804,18 +849,6 @@ export class GrokProvider implements LLMProvider {
   >();
   private readonly toolChars: number;
   private readonly configuredTimeoutMs: number | undefined;
-  /**
-   * xAI buffers function-call argument generation server-side: measured 51s
-   * of ZERO bytes (no SSE keepalives) for a ~250-line file (2026-07-22).
-   * A healthy stream is indistinguishable from a stall during that window
-   * at every layer the client can observe, so the session watchdog must
-   * tolerate silence at least as long as the largest plausible argument
-   * payload. 600s matches xAI's OWN documented per-chunk idle default
- * (docs: build/enterprise — "per-chunk idle timeout defaults to 600
- * seconds", proxy guidance ≥10 minutes; docs/tools/function-calling
- * WARNING confirms whole-in-one-chunk function calls by design).
-   */
-  readonly suggestedStreamIdleTimeoutMs = STREAM_SILENT_GENERATION_TIMEOUT_MS;
 
   constructor(config: GrokProviderConfig) {
     this.configuredTimeoutMs = config.timeoutMs;
@@ -1299,26 +1332,12 @@ export class GrokProvider implements LLMProvider {
       this.configuredTimeoutMs,
       options?.timeoutMs,
     );
-    // Streams get a larger idle default than request-open: the inter-chunk
-    // wait must survive xAI's silent server-side function-call argument
-    // generation (see STREAM_SILENT_GENERATION_TIMEOUT_MS). Explicit
-    // provider config / call overrides are respected unchanged.
-    const streamTimeout =
-      resolvedStreamTimeout.source === "provider_default"
-        ? {
-            ...resolvedStreamTimeout,
-            timeoutMs: STREAM_SILENT_GENERATION_TIMEOUT_MS,
-          }
-        : resolvedStreamTimeout;
-    // The resolved timeout is inter-chunk idle time, not a total-stream
-    // deadline. A healthy stream that keeps producing chunks must never be
-    // torn down by elapsed wall-clock time alone: long reasoning turns
-    // routinely stream for longer than any sane per-request timeout, and
-    // aborting them forces a full re-stream that repays the entire cost
-    // (tetsuo 2026-07-20: grok-4.5 turns died at the old 120s total deadline
-    // mid-stream, retried from zero, and looped). Silent-stall protection is
-    // preserved: each chunk wait re-arms the same timeout, so a stream that
-    // stops producing chunks for timeoutMs still aborts.
+    const streamTimeout = resolvedStreamTimeout;
+    // There is no implicit request-open or inter-chunk deadline. A healthy
+    // xAI stream can emit zero bytes for hours while reasoning or generating
+    // one large function-call argument payload. When an operator explicitly
+    // configures timeout_ms, that value remains an inter-chunk idle timeout
+    // rather than a total-stream deadline.
 
     let consecutiveFallbackFailures = 0;
     while (true) {
@@ -1454,7 +1473,7 @@ export class GrokProvider implements LLMProvider {
         // opens, so re-check it here and inside nextStreamChunkWithTimeout
         // (which rejects when the signal fires while awaiting the next chunk).
         if (options?.signal?.aborted) {
-          throw createStreamAbortError(this.name);
+          throw createStreamAbortError(this.name, options.signal);
         }
         // Idle timeout: the full resolved timeout re-arms on every chunk wait.
         // nextStreamChunkWithTimeout throws the stream-stalled error when no
@@ -2021,12 +2040,14 @@ export class GrokProvider implements LLMProvider {
 
     this.client = await ensureLazyImport("openai", this.name, (mod) => {
       const ProviderSdk = (mod.default ?? mod.OpenAI ?? mod) as any; // branding-scan: allow real SDK export
-      return new ProviderSdk({
+      const client = new ProviderSdk({
         apiKey: this.config.apiKey,
         baseURL: this.config.baseURL,
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
       });
+      installAgenCManagedSdkFetch(client);
+      return client;
     });
     return this.client;
   }

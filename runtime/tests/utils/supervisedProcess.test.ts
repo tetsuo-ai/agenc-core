@@ -91,6 +91,24 @@ async function withFakeWindowsTaskkill(
 }
 
 describe("runSupervisedProcess", () => {
+  it("runs without an implicit deadline when timeoutMs is omitted", async () => {
+    const result = await runSupervisedProcess(
+      nodeCommand("setTimeout(() => process.stdout.write('done'), 75)"),
+      {
+        maxOutputBytes: 1_024,
+      },
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      signal: null,
+      forced: false,
+      backstopExpired: false,
+    });
+    expect(result.stopReason).toBeUndefined();
+    expect(result.stdout.toString()).toBe("done");
+  });
+
   it("does not spawn when the caller signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();

@@ -8,6 +8,7 @@ import {
   AgenCDelegateBackgroundAgentRunner,
   daemonEventFromUnboundSessionEvent,
   notificationFromDaemonEvent,
+  resolvePermissionDecisionTimeoutMs,
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
   managedTokenUsage,
@@ -27,6 +28,22 @@ const backgroundAgentRunnerSourcePath = new URL(
   "../../src/app-server/background-agent-runner.ts",
   import.meta.url,
 );
+
+describe("background permission timing", () => {
+  it("has no implicit permission-decision deadline", () => {
+    expect(resolvePermissionDecisionTimeoutMs({})).toBeUndefined();
+    expect(
+      resolvePermissionDecisionTimeoutMs({
+        AGENC_PERMISSION_TIMEOUT_MS: "invalid",
+      }),
+    ).toBeUndefined();
+    expect(
+      resolvePermissionDecisionTimeoutMs({
+        AGENC_PERMISSION_TIMEOUT_MS: "7200000",
+      }),
+    ).toBe(7_200_000);
+  });
+});
 
 type TurnCompleteProgressProjection = (
   agentId: string,

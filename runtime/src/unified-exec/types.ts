@@ -65,6 +65,7 @@ export interface UnifiedExecRuntimeSandbox {
 export interface UnifiedExecManagerOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  /** Optional cap applied only when a request explicitly supplies timeoutMs. */
   readonly maxTimeoutMs?: number;
   readonly maxProcesses?: number;
   readonly sandboxManager?: UnifiedExecSandboxManager;
@@ -118,6 +119,7 @@ export interface ExecCommandToolOutput {
 }
 
 export interface UnifiedExecProcessManagerLike {
+  /** Explicit-timeout cap; Infinity means no configured cap. */
   readonly maxTimeoutMs: number;
   execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput>;
   writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput>;

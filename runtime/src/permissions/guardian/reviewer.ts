@@ -63,7 +63,6 @@ export type {
 } from "./prompt.js";
 
 export const GUARDIAN_PREFERRED_MODEL = "codex-auto-review"; // branding-scan: allow OpenAI model identifier
-const GUARDIAN_REVIEW_TIMEOUT_MS = 90_000;
 
 const GUARDIAN_REJECTION_INSTRUCTIONS =
   "The agent must not attempt to achieve the same outcome via workaround, " +
@@ -158,11 +157,11 @@ export function shouldRouteApprovalToGuardian(ctx: ApprovalCtx): boolean {
 export function createDefaultGuardianApprovalReviewer(
   opts: DefaultGuardianApprovalReviewerOptions = {},
 ): GuardianApprovalReviewer {
-  return new DefaultGuardianApprovalReviewer(opts.timeoutMs ?? GUARDIAN_REVIEW_TIMEOUT_MS);
+  return new DefaultGuardianApprovalReviewer(opts.timeoutMs);
 }
 
 class DefaultGuardianApprovalReviewer implements GuardianApprovalReviewer {
-  constructor(private readonly timeoutMs: number) {}
+  constructor(private readonly timeoutMs?: number) {}
 
   async reviewApprovalRequest(
     opts: GuardianApprovalReviewOptions,
@@ -246,7 +245,7 @@ class DefaultGuardianApprovalReviewer implements GuardianApprovalReviewer {
         approvalRequest,
         rootHumanTurn,
         signal: opts.signal,
-        timeoutMs: this.timeoutMs,
+        ...(this.timeoutMs !== undefined ? { timeoutMs: this.timeoutMs } : {}),
       });
       const manager = session.services?.reviewManager ?? new ReviewManager();
       outcome = await manager.runReview(session, request);
@@ -383,7 +382,8 @@ interface BuildOneShotRequestOptions {
     readonly text: string;
   };
   readonly signal?: AbortSignal;
-  readonly timeoutMs: number;
+  /** Optional operator-supplied deadline. Omitted means unbounded. */
+  readonly timeoutMs?: number;
 }
 
 function buildOneShotRequest(
@@ -424,7 +424,7 @@ function buildOneShotRequest(
     initialHistory: reviewContext.initialHistory,
     reuseKey: reviewContext.reuseKey,
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-    timeoutMs: opts.timeoutMs,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   };
 }
 

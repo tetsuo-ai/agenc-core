@@ -361,30 +361,16 @@ describe("registerAgentThreadTask", () => {
     const lifecycle = new BackgroundTaskLifecycle();
     const status = new FakeStatus();
     const joined = deferred<RunAgentResult>();
-    // A live handle whose accumulated counters look like a substantial run:
-    // 51000 cumulative tokens and 3 tool calls across the transcript.
+    // A live handle whose dedicated counters look like a substantial run.
+    // The runner intentionally does not copy tool calls into its model-facing
+    // transcript, so the rail must not infer this value from messages.
     const live = {
       agentId: "agent-counts",
       abortController: new AbortController(),
       status,
       tokenUsage: { totalTokens: 51000 },
-      messages: [
-        { role: "user", content: "build it" },
-        {
-          role: "assistant",
-          content: "running tools",
-          toolCalls: [
-            { id: "c1", name: "Bash", arguments: "{}" },
-            { id: "c2", name: "Edit", arguments: "{}" },
-          ],
-        },
-        { role: "tool", toolCallId: "c1", toolName: "Bash", content: "ok" },
-        {
-          role: "assistant",
-          content: "one more",
-          toolCalls: [{ id: "c3", name: "Read", arguments: "{}" }],
-        },
-      ],
+      toolCallCount: 3,
+      messages: [{ role: "assistant", content: "done" }],
     };
     const snapshots: Array<{
       readonly status: string;

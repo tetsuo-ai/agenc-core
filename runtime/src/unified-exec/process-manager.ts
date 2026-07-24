@@ -39,7 +39,7 @@ const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
 const MIN_YIELD_TIME_MS = 250;
 const MIN_EMPTY_YIELD_TIME_MS = 5_000;
 const MAX_YIELD_TIME_MS = 30_000;
-const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300_000;
+const MAX_EMPTY_WRITE_YIELD_TIME_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
 const PTY_ARGV0_EXECVE_SCRIPT =
@@ -354,7 +354,7 @@ function clampWriteYield(value: number | undefined, input: string): number {
   const base = Math.max(MIN_YIELD_TIME_MS, Math.floor(raw));
   if (input.length === 0) {
     return Math.min(
-      DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+      MAX_EMPTY_WRITE_YIELD_TIME_MS,
       Math.max(MIN_EMPTY_YIELD_TIME_MS, base),
     );
   }
@@ -408,8 +408,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   constructor(options: UnifiedExecManagerOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env;
-    this.maxTimeoutMs =
-      options.maxTimeoutMs ?? DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
+    this.maxTimeoutMs = options.maxTimeoutMs ?? Number.POSITIVE_INFINITY;
     this.maxProcesses = options.maxProcesses ?? DEFAULT_MAX_PROCESSES;
     this.sandboxManager = options.sandboxManager ?? new SandboxManager();
   }
@@ -474,20 +473,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       tty,
     });
 
-    // Hard timeout: explicit `timeoutMs` always wins. When unset, non-tty
-    // calls fall back to `maxTimeoutMs` so abandoned processes (yield-and-
-    // forget) eventually get reaped. Tty sessions are intentionally
-    // long-lived (write_stdin interaction) and stay opt-in.
+    // A hard timeout is opt-in. Yielding a process must not silently
+    // create a lifetime limit: agents may legitimately keep terminal
+    // work alive for hours and return to it through write_stdin.
     const explicitTimeoutMs =
       request.timeoutMs !== undefined && request.timeoutMs > 0
         ? Math.min(request.timeoutMs, this.maxTimeoutMs)
         : null;
-    const effectiveTimeoutMs =
-      explicitTimeoutMs ?? (tty ? null : this.maxTimeoutMs);
-    if (effectiveTimeoutMs !== null) {
+    if (explicitTimeoutMs !== null) {
       entry.hardTimeout = setTimeout(() => {
         this.forceTerminate(entry);
-      }, effectiveTimeoutMs);
+      }, explicitTimeoutMs);
       entry.hardTimeout.unref?.();
     }
 

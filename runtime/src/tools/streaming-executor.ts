@@ -197,17 +197,15 @@ function normalizeMaxConcurrency(value: number | undefined): number {
 /**
  * Default drain FLOOR. The effective per-tool drain deadline is
  * `max(this.maxToolDrainMs, toolEffectiveTimeoutMs + DRAIN_GRACE_MS)`, so this
- * value is only the lower bound applied to short/default-timeout tools (e.g.
- * Read, whose execute timeout is 30s → floor 180s catches a wedged dispatch).
+ * value is only the lower bound applied to tools with an explicit timeout.
  * Tools that resolve to a LARGER own timeout (a long `bash` with
  * `args.timeoutMs`, or a `tool.timeoutMs` > floor) raise their deadline above
  * this floor, and tools with `timeoutBehavior:"tool"` (request-user-input,
  * wait, monitor, background — intentionally unbounded) are EXEMPT from the
  * backstop entirely and rely on the abort signal as their only stop.
  *
- * Chosen well above the default execute timeout (`execution.ts`
- * `DEFAULT_TOOL_TIMEOUT_MS` = 30s) so the normal path is never tripped — only
- * a dispatch that never settles. Override via env `AGENC_MAX_TOOL_DRAIN_MS`
+ * Chosen well above ordinary explicit tool timeouts so the normal path is
+ * never tripped—only a timed dispatch that never settles. Override via env `AGENC_MAX_TOOL_DRAIN_MS`
  * (positive integer) or the `maxToolDrainMs` constructor option. `0` /
  * non-positive disables the backstop (restores the prior unbounded behavior).
  */

@@ -3,7 +3,7 @@
  *
  * Covers:
  * 1. Gemini `store: false` rejection fix
- * 2. Session timeout / 500 error fix (stream idle timeout)
+ * 2. Long-running model streams have no implicit idle timeout
  * 3. Agent loop continuation nudge
  * 4. Web search result count improvements
  */
@@ -39,33 +39,23 @@ describe('Gemini store field fix', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fix 2: Session timeout — stream idle timeout
+// Fix 2: Long-running model streams remain unbounded by default
 // ---------------------------------------------------------------------------
 describe('Session timeout fix', () => {
-  test('openaiShim has idle timeout for SSE streams', async () => {
+  test('openaiShim does not impose an SSE idle timeout', async () => {
     const content = await file('services/api/openaiShim.ts').text()
 
-    expect(content).toContain('STREAM_IDLE_TIMEOUT_MS')
-    expect(content).toContain('readWithTimeout')
-    expect(content).toMatch(/readWithTimeout\(\)/)
+    expect(content).not.toContain('STREAM_IDLE_TIMEOUT_MS')
+    expect(content).not.toContain('readWithTimeout')
+    expect(content).toContain('await reader.read()')
   })
 
-  test('openAiCodeTransform has idle timeout for SSE streams', async () => {
+  test('openAiCodeTransform does not impose an SSE idle timeout', async () => {
     const content = await file('services/api/openAiCodeTransform.ts').text()
 
-    expect(content).toContain('STREAM_IDLE_TIMEOUT_MS')
-    expect(content).toContain('readWithTimeout')
-    expect(content).toMatch(/readWithTimeout\(\)/)
-  })
-
-  test('idle timeout is set to a reasonable value (>= 60s)', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    // Extract the timeout value (supports numeric separators like 120_000)
-    const match = content.match(/STREAM_IDLE_TIMEOUT_MS\s*=\s*([\d_]+)/)
-    expect(match).not.toBeNull()
-    const timeoutMs = parseInt(match![1].replace(/_/g, ''), 10)
-    expect(timeoutMs).toBeGreaterThanOrEqual(60_000)
+    expect(content).not.toContain('STREAM_IDLE_TIMEOUT_MS')
+    expect(content).not.toContain('readWithTimeout')
+    expect(content).toContain('await reader.read()')
   })
 })
 
@@ -183,16 +173,16 @@ describe('Web search result count improvements', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fix 5: MCP tool timeout fix
+// Fix 5: MCP tool timeout policy
 // ---------------------------------------------------------------------------
 describe('MCP tool timeout fix', () => {
-  test('default MCP tool timeout is reasonable (not 27 hours)', async () => {
+  test('MCP tool calls have no implicit runtime deadline', async () => {
     const content = await file('services/mcp/client.ts').text()
 
-    // Should NOT have the old ~27.8 hour default
-    expect(content).not.toContain('100_000_000')
-    // Should have a reasonable timeout (5 minutes = 300_000ms)
-    expect(content).toMatch(/DEFAULT_MCP_TOOL_TIMEOUT_MS\s*=\s*300_000/)
+    expect(content).not.toContain('DEFAULT_MCP_TOOL_TIMEOUT_MS')
+    expect(content).toContain(
+      'timeoutMs ?? MCP_SDK_UNBOUNDED_WINDOW_MS',
+    )
   })
 
   test('MCP tools/list has retry logic', async () => {

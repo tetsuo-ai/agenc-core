@@ -239,13 +239,10 @@ function isMcpSessionExpiredError(error: Error): boolean {
   )
 }
 
-/**
- * Default timeout for MCP tool calls (5 minutes — reasonable for most tools).
- * Use MCP_TOOL_TIMEOUT env var to override per-server.
- * The previous default of ~27.8 hours effectively meant no timeout, causing
- * tools to hang indefinitely on unresponsive servers.
- */
-const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000
+// The MCP SDK requires a finite timer even when the runtime has no deadline.
+// Its largest safe Node timer is ~24.8 days, far beyond an agent/tool turn;
+// progress resets that SDK guard. AgenC itself adds no implicit tool deadline.
+const MCP_SDK_UNBOUNDED_WINDOW_MS = 2_147_483_647
 
 /**
  * Cap on MCP tool descriptions and server instructions sent to the model.
@@ -409,15 +406,12 @@ function sanitizeSdkMcpInputSchemaForModel(
 }
 
 /**
- * Gets the timeout for MCP tool calls in milliseconds.
- * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to
- * DEFAULT_MCP_TOOL_TIMEOUT_MS (5 minutes).
+ * Gets an explicit MCP tool-call timeout in milliseconds. Unset or invalid
+ * values mean that AgenC does not impose a tool deadline.
  */
-function getMcpToolTimeoutMs(): number {
-  return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
-    DEFAULT_MCP_TOOL_TIMEOUT_MS
-  )
+function getMcpToolTimeoutMs(): number | undefined {
+  const parsed = Number.parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
@@ -612,11 +606,6 @@ function getConnectionTimeoutMs(): number {
 }
 
 /**
- * Default timeout for individual MCP requests (auth, tool calls, etc.)
- */
-const MCP_REQUEST_TIMEOUT_MS = 60000
-
-/**
  * MCP Streamable HTTP spec requires clients to advertise acceptance of both
  * JSON and SSE on every POST. Servers that enforce this strictly reject
  * requests without it (HTTP 406).
@@ -634,30 +623,18 @@ export function formatMcpShellPrefixCommand(
 }
 
 /**
- * Wraps a fetch function to apply a fresh timeout signal to each request.
- * This avoids the bug where a single AbortSignal.timeout() created at connection
- * time becomes stale after 60 seconds, causing all subsequent requests to fail
- * immediately with "The operation timed out." Uses a 60-second timeout.
- *
- * Also ensures the Accept header required by the MCP Streamable HTTP spec is
- * present on POSTs. The MCP SDK sets this inside StreamableHTTPClientTransport.send(),
- * but it is attached to a Headers instance that passes through an object spread here,
- * and some runtimes/agents have been observed dropping it before it reaches the wire.
- * See https://github.com/anthropics/agenc-agent-sdk-typescript/issues/202.
- * Normalizing here (the last wrapper before fetch()) guarantees it is sent.
- *
- * GET requests are excluded from the timeout since, for MCP transports, they are
- * long-lived SSE streams meant to stay open indefinitely. (Auth-related GETs use
- * a separate fetch wrapper with its own timeout in auth.ts.)
- *
- * @param baseFetch - The fetch function to wrap
+ * Ensures the Accept header required by the MCP Streamable HTTP spec is
+ * present on POSTs. The MCP SDK sets this inside
+ * StreamableHTTPClientTransport.send(), but some runtimes have dropped it
+ * before the wire. The wrapper deliberately adds no deadline: MCP tools can
+ * legitimately run for hours, and cancellation remains owned by the request's
+ * AbortSignal or an explicit MCP_TOOL_TIMEOUT.
  */
-function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
+export function wrapMcpTransportFetch(baseFetch: FetchLike): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
 
-    // Skip timeout for GET requests - in MCP transports, these are long-lived SSE streams.
-    // (OAuth discovery GETs in auth.ts use a separate createAuthFetch() with its own timeout.)
+    // MCP transport GETs are long-lived SSE streams and need no header repair.
     if (method === 'GET') {
       return baseFetch(url, init)
     }
@@ -672,43 +649,10 @@ function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
       headers.set('accept', MCP_STREAMABLE_HTTP_ACCEPT)
     }
 
-    // Use setTimeout instead of AbortSignal.timeout() so we can clearTimeout on
-    // completion. AbortSignal.timeout's internal timer is only released when the
-    // signal is GC'd, which in Bun is lazy — ~2.4KB of native memory per request
-    // lingers for the full 60s even when the request completes in milliseconds.
-    const controller = new AbortController()
-    const timer = setTimeout(
-      c =>
-        c.abort(new DOMException('The operation timed out.', 'TimeoutError')),
-      MCP_REQUEST_TIMEOUT_MS,
-      controller,
-    )
-    timer.unref?.()
-
-    const parentSignal = init?.signal
-    const abort = () => controller.abort(parentSignal?.reason)
-    parentSignal?.addEventListener('abort', abort)
-    if (parentSignal?.aborted) {
-      controller.abort(parentSignal.reason)
-    }
-
-    const cleanup = () => {
-      clearTimeout(timer)
-      parentSignal?.removeEventListener('abort', abort)
-    }
-
-    try {
-      const response = await baseFetch(url, {
-        ...init,
-        headers,
-        signal: controller.signal,
-      })
-      cleanup()
-      return response
-    } catch (error) {
-      cleanup()
-      throw error
-    }
+    return baseFetch(url, {
+      ...init,
+      headers,
+    })
   }
 }
 
@@ -815,10 +759,9 @@ export const connectToServer = memoize(
         // Use the auth provider with SSEClientTransport
         const transportOptions: SSEClientTransportOptions = {
           authProvider,
-          // Use fresh timeout per request to avoid stale AbortSignal bug.
           // Step-up detection wraps innermost so the 403 is seen before the
           // SDK's handler calls auth() → tokens().
-          fetch: wrapFetchWithTimeout(
+          fetch: wrapMcpTransportFetch(
             wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
           ),
           requestInit: {
@@ -829,11 +772,9 @@ export const connectToServer = memoize(
           },
         }
 
-        // IMPORTANT: Always set eventSourceInit with a fetch that does NOT use the
-        // timeout wrapper. The EventSource connection is long-lived (stays open indefinitely
-        // to receive server-sent events), so applying a 60-second timeout would kill it.
-        // The timeout is only meant for individual API requests (POST, auth refresh), not
-        // the persistent SSE stream.
+        // Keep the long-lived EventSource fetch separate from POST header
+        // normalization. Auth-related GETs use their own bounded control-plane
+        // fetch wrapper in auth.ts.
         transportOptions.eventSourceInit = {
           fetch: async (url: string | URL, init?: RequestInit) => {
             // Get auth headers from the auth provider
@@ -1009,10 +950,9 @@ export const connectToServer = memoize(
 
         const transportOptions: StreamableHTTPClientTransportOptions = {
           authProvider,
-          // Use fresh timeout per request to avoid stale AbortSignal bug.
           // Step-up detection wraps innermost so the 403 is seen before the
           // SDK's handler calls auth() → tokens().
-          fetch: wrapFetchWithTimeout(
+          fetch: wrapMcpTransportFetch(
             wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
           ),
           requestInit: {
@@ -1043,7 +983,7 @@ export const connectToServer = memoize(
             url: serverRef.url,
             headers: headersForLogging,
             hasAuthProvider: !!authProvider,
-            timeoutMs: MCP_REQUEST_TIMEOUT_MS,
+            requestDeadline: 'none',
           })}`,
         )
 
@@ -1075,8 +1015,7 @@ export const connectToServer = memoize(
 
         const proxyOptions = getProxyFetchOptions()
         const transportOptions: StreamableHTTPClientTransportOptions = {
-          // Wrap fetchWithAuth with fresh timeout per request
-          fetch: wrapFetchWithTimeout(fetchWithAuth),
+          fetch: wrapMcpTransportFetch(fetchWithAuth),
           requestInit: {
             ...proxyOptions,
             headers: {
@@ -3252,10 +3191,12 @@ async function callMCPTool({
     signal.throwIfAborted()
     const effectController = new AbortController()
     const timeoutError =
-      new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-        `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
-        'MCP tool timeout',
-      )
+      timeoutMs === undefined
+        ? undefined
+        : new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+            `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
+            'MCP tool timeout',
+          )
     let timedOut = false
     const forwardCallerAbort = (): void => {
       if (!effectController.signal.aborted) {
@@ -3263,12 +3204,15 @@ async function callMCPTool({
       }
     }
     signal.addEventListener('abort', forwardCallerAbort, { once: true })
-    const timeoutId = setTimeout(() => {
-      timedOut = true
-      if (!effectController.signal.aborted) {
-        effectController.abort(timeoutError)
-      }
-    }, timeoutMs)
+    const timeoutId =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true
+            if (!effectController.signal.aborted) {
+              effectController.abort(timeoutError)
+            }
+          }, timeoutMs)
 
     let result: Awaited<ReturnType<typeof client.callTool>>
     try {
@@ -3285,7 +3229,10 @@ async function callMCPTool({
         CallToolResultSchema,
         {
           signal: effectController.signal,
-          timeout: timeoutMs,
+          timeout: timeoutMs ?? MCP_SDK_UNBOUNDED_WINDOW_MS,
+          ...(timeoutMs === undefined
+            ? { resetTimeoutOnProgress: true }
+            : {}),
           onprogress: onProgress
             ? sdkProgress => {
               onProgress({
@@ -3302,13 +3249,13 @@ async function callMCPTool({
         },
       )
       signal.throwIfAborted()
-      if (timedOut) throw timeoutError
+      if (timedOut && timeoutError !== undefined) throw timeoutError
     } catch (error) {
       signal.throwIfAborted()
-      if (timedOut) throw timeoutError
+      if (timedOut && timeoutError !== undefined) throw timeoutError
       throw error
     } finally {
-      clearTimeout(timeoutId)
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
       signal.removeEventListener('abort', forwardCallerAbort)
     }
 

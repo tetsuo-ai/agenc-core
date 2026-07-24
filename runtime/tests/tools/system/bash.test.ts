@@ -669,14 +669,14 @@ describe("system.bash tool", () => {
     expect(parsed.timedOut).toBe(true);
   });
 
-  it("uses default timeout when none specified", async () => {
+  it("does not invent a timeout when none is specified", async () => {
     const tool = createBashTool();
     mockSuccess();
 
     await tool.execute({ command: "ls" });
 
     const opts = mockExecFile.mock.calls[0][2] as Record<string, unknown>;
-    expect(opts.timeout).toBe(30_000);
+    expect(opts.timeout).toBeUndefined();
   });
 
   it("uses per-call timeout override when within maxTimeoutMs", async () => {

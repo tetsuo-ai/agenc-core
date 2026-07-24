@@ -52,6 +52,34 @@ function ok(stdout = "ok\n"): WorkflowCommandResult {
 }
 
 describe("M5 required verification", () => {
+  it("has no implicit command deadline and forwards only an explicit one", async () => {
+    const inputs: Array<{
+      readonly script: string;
+      readonly cwd: string;
+      readonly timeoutMs?: number;
+    }> = [];
+    const runner: WorkflowCommandRunner = {
+      async run(input) {
+        inputs.push(input);
+        return ok();
+      },
+    };
+    const common = {
+      worktreePath: "/wt",
+      commands: [{ label: "unit", script: "npm test" }],
+      runner,
+      sink: new MemorySink(),
+      step: STEP,
+      parallelism: 1,
+    };
+
+    await runRequiredVerification(common);
+    await runRequiredVerification({ ...common, timeoutMsPerCommand: 12_345 });
+
+    expect(inputs[0]).not.toHaveProperty("timeoutMs");
+    expect(inputs[1].timeoutMs).toBe(12_345);
+  });
+
   it("runs every command bounded by parallelism and never short-circuits", async () => {
     let live = 0;
     let peak = 0;

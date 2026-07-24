@@ -1,0 +1,11 @@
+This is a very different kind of coding agent swarm.
+
+AgenC shipped a swarm upgrade for concurrent agents. The stack covers adaptive routing, atomic admission, durable outcomes, isolated execution, bounded context, and immutable integration evidence.
+
+The /swarm router defaults to one agent and recommends fan-out only for explicitly parallel or independent work. It routes only the current runtime-owned human turn and fingerprints that input in the receipt. Stale transcript text and completion messages cannot recursively start another swarm.
+
+A child is durably registered before it is live. Each assignment is atomically admitted to one idle worker with its own task_id and a fresh turn_id. Outcomes are written to the child journal before the parent is notified. A journal persistence failure fails closed. If teardown wins before execution starts, the accepted task gets a correlated NACK instead of silent loss.
+
+Parallel writers run in spawn-unique Git worktrees. At completion, AgenC records the base commit, HEAD, tree hash, cleanliness, and ancestry, then checks for movement during capture. Only committed_clean work receives an integration_ref set to the exact immutable Git object ID. Dirty, diverged, or unverifiable work cannot be integrated, and that worker is not returned to the reusable pool.
+
+Agent identities are runtime-authenticated. Mailboxes and model projection are independently bounded. Children start with clean context by default. Conversation history is an explicit dependency. Nothing auto-merges. Agent prose is not evidence. A branch name is not evidence. Completed is not merge authorization.

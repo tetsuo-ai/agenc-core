@@ -21,18 +21,38 @@ function createAbortTimeoutError(
 // AbortError name / ABORT_ERR code). Downstream abort handling already relies on
 // the AbortSignal's own `aborted` flag, not on this error's name/code, so the
 // non-AbortError shape here is safe.
-function createExternalAbortError(
-  providerName: string,
+export function externalAbortReasonToError(
   externalSignal: AbortSignal,
+  fallbackMessage: string,
 ): Error {
   const reason = (externalSignal as { reason?: unknown }).reason;
   if (reason instanceof Error) {
+    const code = (reason as Error & { code?: unknown }).code;
+    if (reason.name === "AbortError" || code === "ABORT_ERR") {
+      // AbortController.abort() without an explicit reason creates a
+      // DOMException named AbortError. Passing that object through would make
+      // mapLLMError relabel a caller interrupt as a provider timeout. Preserve
+      // it as the cause while removing the timeout-shaped outer identity.
+      const normalized = new Error(reason.message || fallbackMessage);
+      (normalized as Error & { cause?: unknown }).cause = reason;
+      return normalized;
+    }
     return reason;
   }
   if (typeof reason === "string" && reason.length > 0) {
     return new Error(reason);
   }
-  return new Error(`${providerName} request aborted by external signal`);
+  return new Error(fallbackMessage);
+}
+
+function createExternalAbortError(
+  providerName: string,
+  externalSignal: AbortSignal,
+): Error {
+  return externalAbortReasonToError(
+    externalSignal,
+    `${providerName} request aborted by external signal`,
+  );
 }
 
 /**

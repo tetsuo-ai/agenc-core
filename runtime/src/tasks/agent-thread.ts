@@ -41,8 +41,8 @@ function finalMessageMetadata(
 
 /**
  * Derive the live per-agent tool-use + token counts for a spawned
- * subagent. For DAEMON/collab-spawned agents the runner accumulates token
- * usage on `live.tokenUsage` and records tool calls in the live transcript;
+ * subagent. For DAEMON/collab-spawned agents the runner projects each durable
+ * token-count event onto `live.tokenUsage` and increments `live.toolCallCount`;
  * this reads both so the fan-out rail reflects real activity instead of 0.
  * Returns `undefined` when neither signal is available (so we don't clobber
  * a previously-recorded progress with zeros).
@@ -51,17 +51,18 @@ function liveAgentCounts(
   thread: AgentThreadTaskHandle,
 ): { readonly toolUseCount: number; readonly tokenCount: number } | undefined {
   const tokenCount = thread.live.tokenUsage?.totalTokens;
-  const messages = thread.live.messages;
-  let toolUseCount = 0;
-  let sawMessages = false;
-  if (messages !== undefined) {
-    sawMessages = true;
-    for (const message of messages) {
-      const calls = message.toolCalls;
-      if (calls !== undefined) toolUseCount += calls.length;
+  const liveToolCallCount = thread.live.toolCallCount;
+  let toolUseCount = liveToolCallCount ?? 0;
+  let sawToolCount = liveToolCallCount !== undefined;
+  // Structural/legacy adapters may not expose the dedicated counter yet.
+  // Retain transcript counting as a compatibility fallback only.
+  if (!sawToolCount && thread.live.messages !== undefined) {
+    sawToolCount = true;
+    for (const message of thread.live.messages) {
+      toolUseCount += message.toolCalls?.length ?? 0;
     }
   }
-  if (tokenCount === undefined && !sawMessages) return undefined;
+  if (tokenCount === undefined && !sawToolCount) return undefined;
   return { toolUseCount, tokenCount: tokenCount ?? 0 };
 }
 
@@ -88,15 +89,16 @@ export interface AgentThreadTaskHandle {
       subscribe?: (listener: (status: AgentStatus) => void) => () => void;
     };
     /**
-     * Cumulative token usage for this live subagent. Populated by the
-     * runner's per-turn `usage_update` accumulation (run-agent.ts). Read
-     * each time a status snapshot is emitted so the fan-out rail shows
+     * Cumulative token usage for this live subagent. Populated incrementally
+     * from the child session's durable token-count events (run-agent.ts).
+     * Read each time a status snapshot is emitted so the fan-out rail shows
      * real per-agent token counts for DAEMON/collab-spawned agents, not 0.
      */
     readonly tokenUsage?: { readonly totalTokens?: number };
+    /** Cumulative tool calls maintained directly by the child runner. */
+    readonly toolCallCount?: number;
     /**
-     * Live child transcript. Assistant messages carry `toolCalls`; their
-     * total length is the per-agent tool-use count surfaced on the rail.
+     * Legacy fallback for adapters that predate `toolCallCount`.
      */
     readonly messages?: ReadonlyArray<LLMMessage>;
   };

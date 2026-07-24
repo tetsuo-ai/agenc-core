@@ -103,11 +103,9 @@ export interface AgentRunInputs {
 
 export interface AgentRunConfig {
   readonly overlay: AgentOverlay;
+  /** Optional operator-supplied deadline. Omitted means unbounded. */
   readonly agentTimeoutMs?: number;
 }
-
-export const DEFAULT_AGENT_TIMEOUT_MS = 1_800_000;
-
 
 export async function assertOverlayLayout(
   overlay: AgentOverlay,
@@ -286,7 +284,7 @@ async function readResultAndCollect(params: {
   readonly runner: ContainerRunner;
   readonly handle: ContainerHandle;
   readonly executed: ContainerExecResult;
-  readonly agentTimeoutMs: number;
+  readonly agentTimeoutMs?: number;
   readonly timeouts: PreflightTimeouts;
   readonly onSpecialExit?: (
     exitCode: number,
@@ -309,7 +307,14 @@ async function readResultAndCollect(params: {
   const base = { agent, rawAgentResult: resultRead.stdout, patch: null, patchBytes: null } as const;
   const special = executed.exitCode !== null ? params.onSpecialExit?.(executed.exitCode) : null;
   if (executed.timedOut) {
-    return { ...base, outcome: "agent_timeout", failureDetail: `agent exceeded ${agentTimeoutMs}ms` };
+    return {
+      ...base,
+      outcome: "agent_timeout",
+      failureDetail:
+        agentTimeoutMs === undefined
+          ? "agent timed out"
+          : `agent exceeded ${agentTimeoutMs}ms`,
+    };
   }
   if (special) {
     return { ...base, outcome: special.outcome, failureDetail: special.failureDetail };
@@ -442,7 +447,7 @@ export async function runAgentOnTask(
   let collect: CollectResult | null = null;
   let outcome: AgentRunOutcome | null = null;
   let failureDetail: string | null = null;
-  const agentTimeoutMs = config.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  const agentTimeoutMs = config.agentTimeoutMs;
 
   try {
     handle = await runner.createTaskContainer(inputs.task.image, {
@@ -453,13 +458,13 @@ export async function runAgentOnTask(
     await applySetupAndPrompt(runner, handle, inputs.setupPatch, prompt, timeouts);
     const executed = await runner.exec(handle, {
       script: buildAgentScript(),
-      timeoutMs: agentTimeoutMs,
+      ...(agentTimeoutMs !== undefined ? { timeoutMs: agentTimeoutMs } : {}),
     });
     collect = await readResultAndCollect({
       runner,
       handle,
       executed,
-      agentTimeoutMs,
+      ...(agentTimeoutMs !== undefined ? { agentTimeoutMs } : {}),
       timeouts,
       onSpecialExit: (code) =>
         code === 86
@@ -643,7 +648,7 @@ export async function runRealProviderAgentOnTask(
   let failureDetail: string | null = null;
   let probes: EgressContainmentProbes = ALL_FALSE_PROBES;
   let patchKeyScan: EgressReport["patchKeyScan"] = "not-run";
-  const agentTimeoutMs = config.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  const agentTimeoutMs = config.agentTimeoutMs;
 
   let lane: Awaited<ReturnType<EgressLaneFactory>> | null = null;
   try {
@@ -671,10 +676,16 @@ export async function runRealProviderAgentOnTask(
           model: config.model,
           baseUrl: config.baseUrl,
         }),
-        timeoutMs: agentTimeoutMs,
+        ...(agentTimeoutMs !== undefined ? { timeoutMs: agentTimeoutMs } : {}),
         envPassthrough: [config.keyEnvVar],
       });
-      collect = await readResultAndCollect({ runner, handle, executed, agentTimeoutMs, timeouts });
+      collect = await readResultAndCollect({
+        runner,
+        handle,
+        executed,
+        ...(agentTimeoutMs !== undefined ? { agentTimeoutMs } : {}),
+        timeouts,
+      });
       outcome = collect.outcome;
       failureDetail = collect.failureDetail;
       // Scan for the key across the patch AND the agent's own output (a

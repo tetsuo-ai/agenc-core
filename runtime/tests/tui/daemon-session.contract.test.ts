@@ -656,6 +656,40 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
   });
 
+  it("does not revive a terminal daemon turn when a late tool completion arrives", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    const emitTranscriptEvent = (id: string, type: string): void => {
+      client.emit("session_1", {
+        method: "event.session_event",
+        params: {
+          eventId: id,
+          event: { id, type, payload: {} },
+        },
+      });
+    };
+
+    emitTranscriptEvent("turn_started", "turn_started");
+    expect(session.activeTurn?.unsafePeek()).not.toBeNull();
+
+    emitTranscriptEvent("turn_aborted", "turn_aborted");
+    emitTranscriptEvent("turn_error", "error");
+    emitTranscriptEvent("late_tool_done", "tool_call_completed");
+
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+
+    // A real next turn explicitly resets the terminal latch.
+    emitTranscriptEvent("next_turn", "turn_started");
+    expect(session.activeTurn?.unsafePeek()).not.toBeNull();
+    unsubscribe();
+  });
+
   it("sends TUI user input through message.stream", async () => {
     const client = createClient();
     const abortController = new AbortController();

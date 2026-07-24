@@ -45,8 +45,6 @@ import type {
   SandboxExecutionSurface,
 } from '../sandbox/execution-broker.js'
 
-const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
-
 export type ShellConfig = {
   provider: ShellProvider
 }
@@ -200,7 +198,10 @@ export async function exec(
     sandboxExecutionBroker,
     sandboxExecutionSurface,
   } = options ?? {}
-  const commandTimeout = timeout || DEFAULT_TIMEOUT
+  const commandTimeout =
+    typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+      ? timeout
+      : null
 
   const provider = await resolveProvider[shellType]()
 

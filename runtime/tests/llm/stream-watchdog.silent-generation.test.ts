@@ -7,12 +7,10 @@ import {
 import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
 
 // Idle-tolerance resolution for providers with silent server-side
-// generation. xAI emits ZERO bytes (no SSE keepalives) while generating
-// function-call arguments — 51s measured for a ~250-line file — so any
-// watchdog window shorter than the provider-declared tolerance kills
-// healthy streams and forces full-regeneration reconnect loops. This is
-// the failure the 0.7.3 provider-level fix and the 90s session default
-// each only half-addressed.
+// generation. xAI can emit ZERO bytes while generating function-call
+// arguments, so provider silence must not create a deadline by default.
+// Operators may still opt in, and provider suggestions can make that
+// explicitly configured window safer.
 
 describe("resolveSessionStreamIdleTimeoutMs", () => {
   const originalEnv = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
@@ -26,14 +24,14 @@ describe("resolveSessionStreamIdleTimeoutMs", () => {
     else process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = originalEnv;
   });
 
-  it("defaults to 90s with no inputs", () => {
-    expect(resolveSessionStreamIdleTimeoutMs({})).toBe(90_000);
+  it("is unbounded with no inputs", () => {
+    expect(resolveSessionStreamIdleTimeoutMs({})).toBe(0);
   });
 
-  it("uses the provider suggestion when nothing is configured", () => {
+  it("does not turn a provider suggestion into an implicit deadline", () => {
     expect(
       resolveSessionStreamIdleTimeoutMs({ providerSuggestedMs: 300_000 }),
-    ).toBe(300_000);
+    ).toBe(0);
   });
 
   it("lets config win when it is at or above the provider suggestion", () => {
@@ -70,18 +68,23 @@ describe("resolveSessionStreamIdleTimeoutMs", () => {
     ).toBe(15_000);
   });
 
-  it("resolveStreamIdleTimeoutMs still honors a direct preferred value", () => {
-    expect(resolveStreamIdleTimeoutMs(120_000)).toBe(120_000);
-    expect(resolveStreamIdleTimeoutMs()).toBe(90_000);
+  it("an explicit zero env value disables an explicit config value", () => {
+    process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = "0";
+    expect(
+      resolveSessionStreamIdleTimeoutMs({
+        configuredMs: 600_000,
+        providerSuggestedMs: 900_000,
+      }),
+    ).toBe(0);
   });
 
-  it("grok declares xAI's documented 600s per-chunk idle tolerance", () => {
-    // xAI docs, build/enterprise: "per-chunk idle timeout defaults to 600
-    // seconds" (proxy guidance >=10 minutes), and tools/function-calling
-    // WARNS that streamed function calls arrive whole in a single chunk.
-    // The declared tolerance must not silently drift below the documented
-    // figure — 118s of zero-byte silence was measured for a ~600-line file.
+  it("resolveStreamIdleTimeoutMs still honors a direct preferred value", () => {
+    expect(resolveStreamIdleTimeoutMs(120_000)).toBe(120_000);
+    expect(resolveStreamIdleTimeoutMs()).toBe(0);
+  });
+
+  it("grok does not declare an implicit per-chunk deadline", () => {
     const provider = new GrokProvider({ apiKey: "test", model: "grok-4.5" });
-    expect(provider.suggestedStreamIdleTimeoutMs).toBe(600_000);
+    expect(provider.suggestedStreamIdleTimeoutMs).toBeUndefined();
   });
 });

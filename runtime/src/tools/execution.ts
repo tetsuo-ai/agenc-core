@@ -41,9 +41,9 @@
  * Invariants enforced here:
  *   I-8  (every error site emits a typed event) — errors funnel
  *        through the caller's event log via `eventLog` option.
- *   I-9  (per-tool execution timeout) — `Promise.race([tool, timer])`.
- *        Default `DEFAULT_TOOL_TIMEOUT_MS=30000`; per-tool override
- *        via `tool.timeoutMs`; per-call override via `args.timeoutMs`.
+ *   I-9  (opt-in tool execution timeout) — `Promise.race([tool, timer])`.
+ *        There is no implicit deadline; tools or callers may opt in
+ *        via `tool.timeoutMs` or `args.timeoutMs`.
  *        Tools with `timeoutBehavior:'tool'` own their deadline and
  *        keep only the abort race.
  *   I-15 (tool result size cap) — result bytes truncated to
@@ -162,8 +162,6 @@ import type { TransactionGuardConfig } from "../config/schema.js";
 // ─────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────
-
-export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
@@ -613,7 +611,7 @@ export function resolveTimeoutMs(
   ) {
     return Math.floor(tool.timeoutMs);
   }
-  return DEFAULT_TOOL_TIMEOUT_MS;
+  return null;
 }
 
 export async function withTimeoutAndAbort<T>(
