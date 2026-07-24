@@ -240,6 +240,34 @@ describe("tool-call correlation contract", () => {
   test("collab-v2 raw spawn_agent tool events do not duplicate the structured agent row", () => {
     const transcript = adaptTranscriptEvents([
       {
+        id: "raw-spawn-input-start",
+        msg: {
+          type: "tool_input_block_start",
+          payload: {
+            callId: "agent-10",
+            index: 1,
+            contentBlock: {
+              type: "tool_use",
+              id: "agent-10",
+              name: "spawn_agent",
+              input: {},
+            },
+          },
+        },
+      },
+      {
+        id: "raw-spawn-input-delta",
+        msg: {
+          type: "tool_input_delta",
+          payload: {
+            callId: "agent-10",
+            index: 1,
+            partialJson:
+              '{"task_name":"reviewer","message":"review the diff"}',
+          },
+        },
+      },
+      {
         id: "raw-spawn-begin",
         msg: {
           type: "tool_call_started",
@@ -296,6 +324,9 @@ describe("tool-call correlation contract", () => {
     // unavailable" cards). Name registration is display-metadata, not a
     // row.
     expect(transcript.toolNames.has("spawn_agent")).toBe(true);
+    // Provider input streaming is another generic rendering path. It must
+    // not leak a second `spawn_agent ({})` row beside the structured card.
+    expect(transcript.streamingToolUses).toEqual([]);
     expect(transcript.messages).toMatchObject([
       { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);

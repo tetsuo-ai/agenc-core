@@ -308,13 +308,16 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Collab v2 agent tools that produce their own structured transcript
- * rows via `collab_agent_spawn_*`, `collab_agent_interaction_*`,
- * `collab_waiting_*`, and `collab_close_*` events. The raw
- * `tool_call_started`/`tool_call_completed` rows for these names are
- * suppressed so the transcript shows a single structured collab-agent row
- * per call, matching `CollabAgentToolCall` ThreadItem routing where the
- * generic function-call ThreadItem variant is never produced for these tools.
+ * Collab v2 agent-control tools whose raw function-call rows are internal
+ * plumbing rather than useful transcript content. Lifecycle operations have
+ * structured rows via `collab_agent_spawn_*`, `collab_agent_interaction_*`,
+ * `collab_waiting_*`, and `collab_close_*`; `list_agents` is represented by
+ * the always-current Agents rail and the assistant's status narration.
+ * Suppressing the raw `tool_call_started`/`tool_call_completed` rows keeps
+ * function names and machine JSON out of the user-facing transcript.
+ * Provider-level `tool_input_block_*` events are suppressed for the same
+ * reason: their incomplete inputs otherwise become vague synthetic rows such
+ * as `spawn_agent ({})` before or after the structured lifecycle card.
  */
 const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
   "spawn_agent",
@@ -322,6 +325,7 @@ const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
   "close_agent",
   "assign_task",
   "send_message",
+  "list_agents",
   // followup_task (a deleted assign_task alias) stays here so historical
   // transcripts that recorded it still render a single structured row.
   "followup_task",
@@ -1741,6 +1745,8 @@ export function adaptTranscriptEvents(
   const runningToolNames = new Map<string, string>();
   const settledToolCallIds = new Set<string>();
   const suppressedToolResults = new Set<string>();
+  const suppressedStreamingToolCallIds = new Set<string>();
+  const suppressedStreamingToolInputIndexes = new Map<number, string>();
   const pendingToolInputDeltas = new Map<number, string[]>();
   const durableQueuedPromptUuids = new Set<string>();
   const collabAgents = new Map<string, CollabAgentDisplay>();
@@ -1776,6 +1782,24 @@ export function adaptTranscriptEvents(
     streamingText = "";
   };
 
+  const discardStreamingToolUse = (callId: string): void => {
+    const slot = streamingToolUses.findIndex(
+      (entry) => entry.contentBlock.id === callId,
+    );
+    if (slot !== -1) {
+      streamingToolUses.splice(slot, 1);
+    }
+  };
+
+  const clearSuppressedStreamingToolInput = (callId: string): void => {
+    suppressedStreamingToolCallIds.delete(callId);
+    for (const [index, suppressedCallId] of suppressedStreamingToolInputIndexes) {
+      if (suppressedCallId === callId) {
+        suppressedStreamingToolInputIndexes.delete(index);
+      }
+    }
+  };
+
   for (const raw of orderedEvents) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
@@ -1802,6 +1826,8 @@ export function adaptTranscriptEvents(
         runningToolNames.clear();
         settledToolCallIds.clear();
         suppressedToolResults.clear();
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         collabAgents.clear();
         streamingToolUses.length = 0;
@@ -1822,6 +1848,8 @@ export function adaptTranscriptEvents(
         runningToolNames.clear();
         settledToolCallIds.clear();
         suppressedToolResults.clear();
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         collabAgents.clear();
         streamingToolUses.length = 0;
@@ -1872,6 +1900,8 @@ export function adaptTranscriptEvents(
         // because they will never receive a matching completion event in this
         // turn.
         streamingToolUses.length = 0;
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         // Drop any thinking accumulator from a previous turn so the live
         // visibility window resets cleanly. Persisted `agent_thinking`
@@ -1889,6 +1919,8 @@ export function adaptTranscriptEvents(
         persistAssistantText(content, nextUuid);
         streamingText = "";
         streamingToolUses.length = 0;
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         isStreaming = false;
         if (
@@ -1938,6 +1970,8 @@ export function adaptTranscriptEvents(
         // abandoned because their completion events will never arrive
         // for this turn.
         streamingToolUses.length = 0;
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning", nextUuid()));
         break;
@@ -2190,6 +2224,12 @@ export function adaptTranscriptEvents(
           // spawn_agent/close_agent cards).
           toolNames.add(toolName);
           suppressedToolResults.add(callId);
+          suppressedStreamingToolCallIds.add(callId);
+          // A provider may have emitted tool_input_block_start before this
+          // durable tool start. Collaboration calls have their own named
+          // lifecycle cards, so discard any generic streaming cell that was
+          // provisionally created from an incomplete block.
+          discardStreamingToolUse(callId);
           break;
         }
         pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload), nextUuid);
@@ -2234,6 +2274,21 @@ export function adaptTranscriptEvents(
         ) {
           toolNames.add(contentBlock.name);
         }
+        // Collaboration tools render through their structured lifecycle
+        // events (`Spawned <name>`, `Waiting for agents`, and so on). Keeping
+        // their provider-level input block would make <Messages> synthesize a
+        // second, context-free row such as `spawn_agent ({})` while the JSON
+        // arguments are still streaming.
+        if (COLLAB_V2_TOOL_NAMES.has(contentBlock.name)) {
+          suppressedStreamingToolCallIds.add(callId);
+          suppressedStreamingToolInputIndexes.set(indexCandidate, callId);
+          pendingToolInputDeltas.delete(indexCandidate);
+          discardStreamingToolUse(callId);
+          break;
+        }
+        // Provider content-block indexes are scoped to a sampling iteration
+        // and may be reused by the next tool call.
+        suppressedStreamingToolInputIndexes.delete(indexCandidate);
         // De-dupe on (index, contentBlock.id): if the same block_start fires
         // twice (e.g. retried stream), reuse the existing slot rather than
         // appending a duplicate that would confuse the Messages filter.
@@ -2282,6 +2337,17 @@ export function adaptTranscriptEvents(
               : null;
         if (partialJson === null) break;
         turnStreamedChars += partialJson.length;
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        const suppressedCallId =
+          suppressedStreamingToolInputIndexes.get(indexCandidate);
+        if (
+          (callId !== null && suppressedStreamingToolCallIds.has(callId)) ||
+          (suppressedCallId !== undefined &&
+            (callId === null || suppressedCallId === callId))
+        ) {
+          break;
+        }
         const slot = streamingToolUses.findIndex(
           (entry) => entry.index === indexCandidate,
         );
@@ -2304,8 +2370,13 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        if (suppressedToolResults.has(callId)) {
+        if (
+          suppressedToolResults.has(callId) ||
+          suppressedStreamingToolCallIds.has(callId)
+        ) {
           suppressedToolResults.delete(callId);
+          discardStreamingToolUse(callId);
+          clearSuppressedStreamingToolInput(callId);
           settledToolCallIds.add(callId);
           break;
         }
@@ -2364,12 +2435,8 @@ export function adaptTranscriptEvents(
         // the Messages.tsx:446 filter (drop ids in inProgressToolUseIDs or
         // normalizedToolUseIDs) to do this; we drop here on completion because
         // AgenC moves the call out of openTools at the same step.
-        const slot = streamingToolUses.findIndex(
-          (entry) => entry.contentBlock.id === callId,
-        );
-        if (slot !== -1) {
-          streamingToolUses.splice(slot, 1);
-        }
+        discardStreamingToolUse(callId);
+        clearSuppressedStreamingToolInput(callId);
         break;
       }
       case "context_compacted":
@@ -2438,6 +2505,8 @@ export function adaptTranscriptEvents(
         streamingText = "";
         streamingThinking = null;
         streamingToolUses.length = 0;
+        suppressedStreamingToolCallIds.clear();
+        suppressedStreamingToolInputIndexes.clear();
         pendingToolInputDeltas.clear();
         isStreaming = false;
         currentTurnId = null;

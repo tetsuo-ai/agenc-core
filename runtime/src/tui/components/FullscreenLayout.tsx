@@ -27,6 +27,7 @@ import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
 import ThemedText from './design-system/ThemedText.js';
 import { LedgerStatus } from './LedgerStatus.js';
+import { SwarmStatusIndicator } from './SwarmStatusIndicator.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
@@ -631,8 +632,8 @@ function DesignBottomLeftLabel({
   readonly modelLabel: string;
 }): React.ReactNode {
   const modeLabel = permissionModeFooterChrome(mode).label;
-  // Swarm indicator sits next to the mode (like yolo): visible only while
-  // swarm mode is on; carries the live running-agent count from AppState.
+  // Swarm status sits next to the mode: visible only while swarm mode is on
+  // and carrying the live running-agent count from AppState.
   // Read from AppState (the appStateBridge /swarm writes through), with the
   // provider-safe hook so the label also renders without AppStateProvider.
   const swarmMode =
@@ -642,12 +643,11 @@ function DesignBottomLeftLabel({
     () => Object.values(tasks ?? {}).filter((task: any) => task?.type !== "local_bash" && (task?.status === "running" || task?.status === "pending")).length,
     [tasks],
   );
-  const swarmBadgeText = ` SWARM${runningAgents > 0 ? ` ${runningAgents}` : ""} `;
   return (
     <>
       <ThemedText color="text2" wrap="truncate-end">● {modeLabel}</ThemedText>
       {swarmMode ? (
-        <ThemedText backgroundColor="agenc" color="ansi:white" bold wrap="truncate-end">{swarmBadgeText}</ThemedText>
+        <SwarmStatusIndicator runningAgents={runningAgents} />
       ) : null}
       <ThemedText color="text2" wrap="truncate-end"> · {modelLabel}{gitLabel === null ? '' : ` · ${gitLabel}`}</ThemedText>
     </>
