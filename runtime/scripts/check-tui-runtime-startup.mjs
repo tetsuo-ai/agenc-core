@@ -28,6 +28,11 @@ const MAX_PTY_OUTPUT_BYTES = 1024 * 1024;
 // timeout, but leave enough headroom that the pre-commit build immediately
 // followed by this smoke does not fail a healthy first viewport.
 const FIRST_PAINT_MS = 3_000;
+// A rebuild makes the next CLI reap a build-skewed daemon for up to 5s before
+// starting its replacement. The throwaway warmup must outlive that reap
+// window plus the ordinary first-paint budget; otherwise it kills the CLI
+// midway through recovery and hands the measured probe the same cold start.
+export const COLD_WARMUP_FIRST_PAINT_MS = 5_000 + FIRST_PAINT_MS;
 const POST_REPLY_MS = 1_500;
 const SIGTERM_GRACE_MS = 1_000;
 const FORCE_KILL_GRACE_MS = 1_000;
@@ -635,12 +640,14 @@ async function main() {
   console.log(green("[2/4] built TUI artifact returned a verified import proof"));
 
   // Warmup: the very first PTY spawn after a fresh `npm run build` pays cold
-  // module/daemon-attach caches and reliably blows the FIRST_PAINT_MS budget
-  // on a loaded machine (reproduced 3/3 in the pre-commit hook, 0/2
-  // standalone). One untimed throwaway spawn warms those paths so every
-  // MEASURED scenario asserts the real budget against warm caches; its
-  // result is deliberately ignored.
-  await ptyStartupSmoke("warmup", [], VIEWPORTS[0], { resultIgnored: true });
+  // module/daemon-attach caches and may also spend 5s reaping a build-skewed
+  // daemon. Give this throwaway spawn enough time to finish that recovery so
+  // every MEASURED scenario asserts the real first-paint budget against warm
+  // caches; only the warmup result is deliberately ignored.
+  await ptyStartupSmoke("warmup", [], VIEWPORTS[0], {
+    firstPaintMs: COLD_WARMUP_FIRST_PAINT_MS,
+    resultIgnored: true,
+  });
 
   const results = [];
   for (const viewport of VIEWPORTS) {

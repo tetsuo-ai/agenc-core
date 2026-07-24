@@ -20,8 +20,8 @@ import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/Pro
 import type { PendingRequest } from "../permission-requests.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
-import ThemedText from "../components/design-system/ThemedText.js";
 import { LedgerStatus } from "../components/LedgerStatus.js";
+import { SwarmStatusIndicator } from "../components/SwarmStatusIndicator.js";
 import { PreviewSurface } from "./surfaces/PreviewSurface.js";
 import { isDangerousPermissionMode } from "./WorkbenchContextStrip.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
@@ -94,8 +94,8 @@ function ComposerContextRow({
   const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
   const modeLabel = permissionModeShortTitle(mode).toLowerCase();
   const dangerous = isDangerousPermissionMode(mode);
-  // Swarm indicator next to the mode (like yolo): visible only while swarm
-  // mode is on (/swarm), carrying the live running-agent count from AppState.
+  // Swarm status sits next to the mode: visible only while swarm mode is on
+  // and carrying the live running-agent count from AppState.
   const swarmMode =
     useAppStateMaybeOutsideOfProvider((state) => state.swarmMode) === true;
   const tasks = useAppStateMaybeOutsideOfProvider((state) => state.tasks) ?? {};
@@ -104,7 +104,6 @@ function ComposerContextRow({
       task?.type !== "local_bash" &&
       (task?.status === "running" || task?.status === "pending"),
   ).length;
-  const swarmBadgeText = ` SWARM${runningAgents > 0 ? ` ${runningAgents}` : ""} `;
   return (
     <Box flexDirection="row" paddingX={1} height={1} overflowY="hidden" justifyContent="space-between">
       <Box flexDirection="row">
@@ -112,9 +111,7 @@ function ComposerContextRow({
           {modeLabel}
         </Text>
         {swarmMode ? (
-          <ThemedText backgroundColor="agenc" color="ansi:white" bold wrap="truncate-end">
-            {swarmBadgeText}
-          </ThemedText>
+          <SwarmStatusIndicator runningAgents={runningAgents} />
         ) : null}
         <Text color="inactive" wrap="truncate-end">
           {` · ${modelLabel}${contextPctLabel !== null ? ` · ${contextPctLabel}` : ""}`}

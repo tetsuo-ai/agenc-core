@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  COLD_WARMUP_FIRST_PAINT_MS,
   hasSemanticPtyReadiness,
   observePtySession,
   runImportProbe,
@@ -75,6 +76,10 @@ test("candidate iterator poisoning cannot skip export requirements", async () =>
 });
 
 const SEMANTIC_PAINT = `\x1b[?2004h${" ".repeat(128)}AgenC interactive screen`;
+
+test("cold warmup outlives the build-skew daemon reap window", () => {
+  assert.ok(COLD_WARMUP_FIRST_PAINT_MS > 5_000);
+});
 
 function fakeTerm({ earlyExit = false, terminationExit, paint = SEMANTIC_PAINT, spontaneousExitMs } = {}) {
   const dataHandlers = [];
