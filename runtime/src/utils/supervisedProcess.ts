@@ -27,7 +27,8 @@ export interface SupervisedProcessControl {
 }
 
 export interface SupervisedProcessOptions {
-  readonly timeoutMs: number;
+  /** Optional caller-supplied deadline. Omitted means unbounded. */
+  readonly timeoutMs?: number;
   readonly maxOutputBytes: number;
   readonly signal?: AbortSignal;
   readonly terminateGraceMs?: number;
@@ -68,7 +69,7 @@ export interface TerminateProcessTreeOptions {
   readonly label?: string;
 }
 
-/** Run a finite native helper with bounded output and process-tree cleanup. */
+/** Run a native helper with bounded output and process-tree cleanup. */
 export function runSupervisedProcess(
   command: SupervisedProcessCommand,
   options: SupervisedProcessOptions,
@@ -122,6 +123,7 @@ export function runSupervisedProcess(
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
     let processError: Error | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let backstopTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -155,7 +157,7 @@ export function runSupervisedProcess(
     const finish = (backstopExpired: boolean): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeoutTimer);
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
       if (forceTimer !== undefined) clearTimeout(forceTimer);
       if (backstopTimer !== undefined) clearTimeout(backstopTimer);
       options.signal?.removeEventListener("abort", onAbort);
@@ -198,11 +200,13 @@ export function runSupervisedProcess(
     }
 
     const onAbort = (): void => requestStop("aborted");
-    const timeoutTimer = setTimeout(
-      () => requestStop("timeout"),
-      options.timeoutMs,
-    );
-    timeoutTimer.unref?.();
+    if (options.timeoutMs !== undefined) {
+      timeoutTimer = setTimeout(
+        () => requestStop("timeout"),
+        options.timeoutMs,
+      );
+      timeoutTimer.unref?.();
+    }
     options.signal?.addEventListener("abort", onAbort, { once: true });
     // Abort may race the pre-spawn check and listener installation.
     if (options.signal?.aborted === true) onAbort();
@@ -232,7 +236,10 @@ export function runSupervisedProcess(
 }
 
 function validateLimits(options: SupervisedProcessOptions): void {
-  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+  ) {
     throw new Error("supervised process timeoutMs must be finite and positive");
   }
   if (!Number.isFinite(options.maxOutputBytes) || options.maxOutputBytes <= 0) {

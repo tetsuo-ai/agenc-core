@@ -709,8 +709,10 @@ export function createWorkflowSessionSeams(
       });
       const startedAt = performance.now();
       const result = await runSupervisedProcess(command, {
-        timeoutMs: input.timeoutMs,
         maxOutputBytes: COMMAND_MAX_OUTPUT_BYTES,
+        ...(input.timeoutMs !== undefined
+          ? { timeoutMs: input.timeoutMs }
+          : {}),
       });
       return {
         exitCode:

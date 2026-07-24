@@ -510,8 +510,8 @@ describe("StreamingToolExecutor cooperative cancel of wedged tools", () => {
     }
   });
 
-  // ── Test E — interruptBehavior:'block' tool is still force-finalizable; a
-  //    timeoutBehavior:'tool' tool is NOT. The drain kill is unconditional and
+  // ── Test E — an explicitly timed interruptBehavior:'block' tool is still
+  //    force-finalizable; a timeoutBehavior:'tool' tool is NOT. The drain kill is unconditional and
   //    does NOT consult getToolInterruptBehavior — it keys ONLY off
   //    toolDrainDeadlineMs. So a block-behavior tool with a finite
   //    (timeoutBehavior:'executor') deadline IS subject to the backstop, while
@@ -520,11 +520,11 @@ describe("StreamingToolExecutor cooperative cancel of wedged tools", () => {
   //    computation the backstop actually keys off (white-box), so the proof is
   //    fast and exact rather than waiting out the multi-minute own+grace floor
   //    that a real registered tool's finite deadline carries.
-  test("interruptBehavior:'block' has a finite drain deadline; timeoutBehavior:'tool' is exempt", async () => {
+  test("explicitly timed interruptBehavior:'block' has a finite drain deadline; timeoutBehavior:'tool' is exempt", async () => {
     const blockTool = testTool({
       name: "blocking-tool",
       interruptBehavior: () => "block",
-      // timeoutBehavior defaults to "executor" -> finite deadline.
+      timeoutMs: 1_000,
     });
     const exemptTool = testTool({
       name: "request-user-input",

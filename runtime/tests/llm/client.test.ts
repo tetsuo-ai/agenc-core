@@ -21,7 +21,7 @@ describe("ProviderHttpClient", () => {
     expect(session.providerName).toBe("openai");
     expect(session.wireApi).toBe("responses");
     expect(session.requestRetryBudget.maxRetries).toBe(2);
-    expect(session.streamIdleTimeoutMs).toBeGreaterThan(0);
+    expect(session.streamIdleTimeoutMs).toBe(0);
   });
 
   test("bindConversationId and clear/reset helpers affect every turn session built from the client", async () => {

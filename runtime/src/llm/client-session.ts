@@ -3,7 +3,8 @@
  *
  * Ports the upstream runtime provider/session contract into the runtime-facing
  * TypeScript client layer: provider-level query params, auth/header injection,
- * bounded retry budgets, stream idle timeouts, and explicit wire-api metadata.
+ * bounded retry budgets, operator-configurable stream idle timeouts, and
+ * explicit wire-api metadata. Stream idle timeouts are disabled by default.
  *
  * @module
  */

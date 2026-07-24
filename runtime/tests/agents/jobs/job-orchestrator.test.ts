@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../../state/sqlite-driver.js";
 import {
@@ -19,6 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await rm(workDir, { recursive: true, force: true });
 });
 
@@ -47,6 +48,53 @@ function fakeSpawnReporter(): AgentJobSpawn & {
 }
 
 describe("runAgentsOnCsv", () => {
+  it("does not impose a default runtime deadline on workers", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id,value\nrow1,a\n", "utf8");
+    vi.useFakeTimers();
+    let markSpawned!: () => void;
+    const spawned = new Promise<void>((resolve) => {
+      markSpawned = resolve;
+    });
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        markSpawned();
+        setTimeout(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: { completedAfterHours: true },
+          });
+        }, 2 * 60 * 60_000);
+      },
+      async cancelOutstanding() {},
+    };
+
+    const pending = runAgentsOnCsv({
+      csvPath,
+      instruction: "long analysis",
+      idColumn: "id",
+      spawn,
+    });
+    const outcome = pending.then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error }),
+    );
+    await spawned;
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
+
+    expect(await outcome).toMatchObject({
+      result: {
+        items: [
+          {
+            status: "completed",
+            result: { completedAfterHours: true },
+          },
+        ],
+      },
+    });
+  });
+
   it("spawns one worker per row and collects their results", async () => {
     const csvPath = join(workDir, "input.csv");
     await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");

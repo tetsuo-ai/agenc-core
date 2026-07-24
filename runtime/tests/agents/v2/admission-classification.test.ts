@@ -51,6 +51,18 @@ describe("collaboration control admission classification", () => {
     }
   });
 
+  it("classifies mailbox draining as mutating but replay-safe", () => {
+    const registry = collaborationRegistry();
+    const wait = registry.tools.find((tool) => tool.name === "wait_agent");
+
+    expect(wait).toMatchObject({
+      isReadOnly: false,
+      recoveryCategory: "idempotent",
+      cancellationUsage: "zero",
+      metadata: expect.objectContaining({ mutating: true }),
+    });
+  });
+
   it("admits each control effect as a zero-cost tool_exec boundary", async () => {
     let reservationSequence = 0;
     const acquire = vi.fn(

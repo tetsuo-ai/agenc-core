@@ -1479,19 +1479,6 @@ function compactHookLabel(hookType: unknown): string {
 }
 const TITLE_ANIMATION_FRAME_COUNT = 2;
 const TITLE_ANIMATION_INTERVAL_MS = 960;
-// Keep this strictly above ONE FULL provider recovery cycle: the stream-idle
-// watchdog (90s default) + reconnect setup + the next attempt's first-event
-// latency. The provider must get the first chance to emit `stream_idle` and
-// enter its reconnect path; using 60s here made the TUI cancel
-// healthy-but-paused Grok streams as `interrupted` before provider recovery
-// could run, and 120s still raced the reconnect: after the cancel event
-// resets the clock, a large-context re-prefill plus another idle window can
-// legitimately push the next recovery event past 120s, so the TUI aborted
-// the turn in the middle of the provider's own recovery (observed: turn
-// killed by daemon_stall_watchdog ~2min into a reconnect after stream_idle).
-// Any recovery event resets the activity clock, while a genuinely silent
-// daemon is still released after this longer safety window.
-const DAEMON_STALL_WATCHDOG_MS = 300_000;
 // A submitted prompt that gets NO daemon acknowledgment within this window
 // (no turn_started, no streaming, no message growth — the 403 flavor where
 // the request dies before any event is broadcast) never started. A cold
@@ -1947,69 +1934,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     setPendingSubmission(false);
     setActiveModelSubmissionCount(0);
   }, [transcript.isStreaming, hasActiveSessionTurn, pendingSubmission, activeModelSubmissionCount]);
-  // Daemon-silence watchdog: the SECOND stuck-spinner failure mode — a turn
-  // that dies emitting NO terminal event (no turn_complete, no error) leaves
-  // zero transcript activity, so neither the reducer nor the latch above can
-  // ever fire and "Working…" spins forever while ESC cancels a turn that's
-  // already gone. While a turn is supposedly active, any transcript activity
-  // (messages, streaming text/thinking, tool progress) resets the clock; a
-  // full silent window means the turn is dead — cancel best-effort, mark it
-  // interrupted locally so the transcript closes, and warn the user.
-  const lastDaemonActivityRef = useRef(Date.now());
-  useEffect(() => {
-    lastDaemonActivityRef.current = Date.now();
-  }, [transcript.messages, transcript.streamingText, transcript.streamingThinking, transcript.inProgressToolUseIDs]);
-  useEffect(() => {
-    if (!isLoading) return;
-    const interval = setInterval(() => {
-      // A turn parked on a permission request or elicitation prompt emits
-      // nothing — by design, not by death. Reset the clock there instead of
-      // firing, or the watchdog aborts a turn that is legitimately waiting
-      // for the user (observed: watchdog cancelled a pending TodoWrite
-      // approval at the 60s mark). Same rule while a tool call is in flight
-      // (e.g. wait_agent blocking on subagents) or background agents are
-      // running: the main transcript goes quiet while the agents work, but
-      // the turn is alive — only TRUE silence (nothing pending, nothing
-      // running) means dead.
-      if (
-        permissionRequests.length > 0 ||
-        elicitation.prompt !== null ||
-        transcript.inProgressToolUseIDs.size > 0 ||
-        hasActiveLocalAgents
-      ) {
-        lastDaemonActivityRef.current = Date.now();
-        return;
-      }
-      const silentMs = Date.now() - lastDaemonActivityRef.current;
-      if (silentMs < DAEMON_STALL_WATCHDOG_MS) {
-        return;
-      }
-      requestTuiSessionTurnCancel(props.session);
-      lastDaemonActivityRef.current = Date.now();
-      props.session.emit?.({
-        id: `daemon-stall-watchdog-${Date.now()}`,
-        msg: {
-          type: "turn_aborted",
-          payload: { reason: "daemon_stall_watchdog" },
-        },
-      });
-      // The turn_aborted emit only touches transcript state. If the spinner
-      // is held by the local latches (pendingSubmission / hung
-      // activeModelSubmissionCount — the no-events 403 flavor or a
-      // message.stream RPC that never settles), isLoading would stay true
-      // and this watchdog would re-fire every window forever. Reset the
-      // latches too: giving up must mean giving up on EVERY busy source.
-      setPendingSubmission(false);
-      setActiveModelSubmissionCount(0);
-      addNotification({
-        key: "daemon-stall-watchdog",
-        text: `No daemon activity for ${Math.round(silentMs / 1000)}s — the turn was marked interrupted. Resubmit, or run /login again if this was an auth failure.`,
-        priority: "immediate",
-        timeoutMs: 8000,
-      });
-    }, 10_000);
-    return () => clearInterval(interval);
-  }, [isLoading, props.session, addNotification, permissionRequests.length, elicitation.prompt, transcript.inProgressToolUseIDs, hasActiveLocalAgents]);
   // M4 unknown-outcome gate visibility: when a tool result reports the
   // session blocked by an unresolved unknown-outcome effect, the block
   // otherwise only reaches the agent as a tool error — the user just watches

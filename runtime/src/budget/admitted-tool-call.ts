@@ -586,7 +586,19 @@ export async function runAdmittedToolCall(
     if (settled) {
       throw error;
     } else if (dispatched && dispatch.context.signal.aborted) {
-      client.holdUnknown(reservationId, "tool_cancelled_after_dispatch");
+      if (
+        params.tool.cancellationUsage === "zero" &&
+        isZeroBound(estimate)
+      ) {
+        client.reconcile(reservationId, {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+        });
+      } else {
+        client.holdUnknown(reservationId, "tool_cancelled_after_dispatch");
+      }
+      settled = true;
     } else if (dispatched && isZeroBound(estimate)) {
       client.reconcile(reservationId, {
         inputTokens: 0,

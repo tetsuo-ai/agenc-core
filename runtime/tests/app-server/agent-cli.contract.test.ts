@@ -2,12 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import {
   collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   createAgenCJsonLineDaemonClient,
+  createAgenCJsonLineDaemonRequestClient,
   defaultEnsureDaemonReady,
   formatAgenCAgentAttachResult,
   formatAgenCAgentList,
@@ -1503,6 +1504,7 @@ autostart = false
       authCookie: "timeout-cookie",
       timeoutMs: 50,
     });
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {
       await expect(
         client.request("message.stream", {
@@ -1515,8 +1517,123 @@ autostart = false
         streamId: "stream_delayed",
         acceptedAt: "2026-05-01T12:00:04.000Z",
       });
+      expect(
+        timeoutSpy.mock.calls.some(([, delay]) => delay === 30 * 60_000),
+      ).toBe(false);
+    } finally {
+      timeoutSpy.mockRestore();
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps message.send requests alive beyond the generic daemon timeout", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-send-timeout-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "message.send") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              messageId: "message_delayed",
+              acceptedAt: "2026-05-01T12:00:04.000Z",
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "timeout-cookie",
+      timeoutMs: 50,
+    });
+    try {
+      await expect(
+        client.request("message.send", {
+          sessionId: "session_delayed",
+          content: "continue",
+        }),
+      ).resolves.toEqual({
+        messageId: "message_delayed",
+        acceptedAt: "2026-05-01T12:00:04.000Z",
+      });
     } finally {
       await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps one-shot message.stream requests unbounded too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-one-shot-stream-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "message.stream") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              messageId: "message_one_shot",
+              streamId: "stream_one_shot",
+              acceptedAt: "2026-05-01T12:00:04.000Z",
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath,
+      authCookie: "timeout-cookie",
+      timeoutMs: 50,
+    });
+    try {
+      await expect(
+        client.request("message.stream", {
+          sessionId: "session_one_shot",
+          content: "continue",
+          streamId: "stream_one_shot",
+        }),
+      ).resolves.toMatchObject({
+        messageId: "message_one_shot",
+        streamId: "stream_one_shot",
+      });
+    } finally {
       await server.close();
       await rm(dir, { recursive: true, force: true });
     }

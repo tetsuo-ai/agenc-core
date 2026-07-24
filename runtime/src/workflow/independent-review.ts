@@ -32,7 +32,8 @@ export interface ReviewerInvoker {
     readonly systemPrompt: string;
     readonly userMessage: string;
     readonly reviewerModel: string;
-    readonly timeoutMs: number;
+    /** Optional operator-supplied deadline. Omitted means unbounded. */
+    readonly timeoutMs?: number;
     /**
      * Owning workflow run id (additive, Phase 5): lets a daemon-backed
      * invoker route the one-shot review through the run's own session.
@@ -48,8 +49,6 @@ export class ReviewParseError extends Error {
     this.name = "ReviewParseError";
   }
 }
-
-export const DEFAULT_REVIEW_TIMEOUT_MS = 600_000;
 
 /**
  * A finding blocks completion when the reviewer marked it high priority
@@ -160,8 +159,8 @@ export async function runIndependentReview(opts: {
     systemPrompt: prompt.systemPrompt,
     userMessage: prompt.userMessage,
     reviewerModel: opts.spec.reviewerModel,
-    timeoutMs: opts.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
     runId: opts.step.runId,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
   const review = parseReviewOutput(raw);
   // parseReviewOutput's plain-text fallback has this exact shape; a review

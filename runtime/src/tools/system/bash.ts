@@ -28,7 +28,6 @@ import {
 import {
   DEFAULT_DENY_LIST,
   DEFAULT_DENY_PREFIXES,
-  DEFAULT_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
   DANGEROUS_SHELL_PATTERNS,
 } from "./types.js";
@@ -292,7 +291,7 @@ function runSpawnedCommand(params: {
   readonly execArgs: readonly string[];
   readonly cwd: string;
   readonly env: Record<string, string>;
-  readonly timeout: number;
+  readonly timeout?: number;
   readonly maxOutputBytes: number;
   readonly logCmd: string;
   readonly logger: Logger;
@@ -375,28 +374,31 @@ function runSpawnedCommand(params: {
       });
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        process.kill(-child.pid!, "SIGTERM");
-      } catch (error) {
-        params.logger.debug(
-          "Bash tool process-group SIGTERM failed; falling back to child.kill",
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-        child.kill("SIGTERM");
-      }
-      forceKillTimer = setTimeout(() => {
+    let timer: NodeJS.Timeout | null = null;
+    if (params.timeout !== undefined) {
+      timer = setTimeout(() => {
+        timedOut = true;
         try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
+          process.kill(-child.pid!, "SIGTERM");
+        } catch (error) {
+          params.logger.debug(
+            "Bash tool process-group SIGTERM failed; falling back to child.kill",
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          child.kill("SIGTERM");
         }
-      }, 500);
-      cleanup("timeout");
-    }, params.timeout);
+        forceKillTimer = setTimeout(() => {
+          try {
+            process.kill(-child.pid!, "SIGKILL");
+          } catch {
+            child.kill("SIGKILL");
+          }
+        }, 500);
+        cleanup("timeout");
+      }, params.timeout);
+    }
 
     const terminateChild = (signalName: "SIGTERM" | "SIGKILL") => {
       try {
@@ -432,7 +434,7 @@ function runSpawnedCommand(params: {
     const doResolve = (code: number | null) => {
       if (resolved) return;
       resolved = true;
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
       }
@@ -513,7 +515,7 @@ function runSpawnedCommand(params: {
     child.on("error", (err) => {
       if (resolved) return;
       resolved = true;
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
       }
@@ -871,7 +873,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
       ? new Set<string>(config.denyExclusions)
       : null;
   const defaultCwd = config?.cwd ?? process.cwd();
-  const defaultTimeout = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const defaultTimeout = config?.timeoutMs;
   const maxTimeoutMs = config?.maxTimeoutMs ?? defaultTimeout;
   const maxOutputBytes = config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const env = buildEnv(config?.env);
@@ -1129,8 +1131,17 @@ export function createBashTool(config?: BashToolConfig): Tool {
         };
       }
 
-      // Apply timeout — cap at maxTimeoutMs to prevent LLM from setting arbitrarily high values
-      const timeout = Math.min(input.timeoutMs ?? defaultTimeout, maxTimeoutMs);
+      const requestedTimeout = input.timeoutMs ?? defaultTimeout;
+      const timeout =
+        typeof requestedTimeout === "number" &&
+        Number.isFinite(requestedTimeout) &&
+        requestedTimeout > 0
+          ? typeof maxTimeoutMs === "number" &&
+            Number.isFinite(maxTimeoutMs) &&
+            maxTimeoutMs > 0
+            ? Math.min(requestedTimeout, maxTimeoutMs)
+            : requestedTimeout
+          : undefined;
 
       const logCmd = useShellMode
         ? `[shell] ${shellCommand}`

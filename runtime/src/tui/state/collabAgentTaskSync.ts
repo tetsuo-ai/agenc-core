@@ -24,6 +24,7 @@ type CollabAgentTaskPatch = {
   readonly id: string;
   readonly status: TaskStatus;
   readonly requiresExisting?: boolean;
+  readonly preserveCompletedOnTermination?: boolean;
   readonly title?: string;
   readonly prompt?: string;
   readonly role?: string;
@@ -143,6 +144,8 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
       id,
       status,
       requiresExisting: true,
+      preserveCompletedOnTermination:
+        status === "failed" || status === "killed",
       title:
         taskStringField(payload, "agentNickname") ??
         taskStringField(payload, "agentPath"),
@@ -190,6 +193,8 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
       id,
       status,
       requiresExisting: true,
+      preserveCompletedOnTermination:
+        status === "failed" || status === "killed",
       ...(status === "failed" ? { error: taskStringField(payload, "message") } : {}),
     };
   }
@@ -235,12 +240,18 @@ function applyPatch(
 ): LocalAgentTaskState {
   const previousAgent =
     previous?.type === "local_agent" ? (previous as LocalAgentTaskState) : undefined;
+  const preserveCompleted =
+    previousAgent?.status === "completed" &&
+    patch.preserveCompletedOnTermination === true &&
+    (patch.status === "failed" || patch.status === "killed");
+  const status = preserveCompleted ? "completed" : patch.status;
+  const error = preserveCompleted ? undefined : patch.error;
   const title = patch.title ?? previousAgent?.description ?? patch.id;
   const prompt = patch.prompt ?? previousAgent?.prompt ?? title;
   const ended =
-    patch.status === "completed" ||
-    patch.status === "failed" ||
-    patch.status === "killed";
+    status === "completed" ||
+    status === "failed" ||
+    status === "killed";
   // Merge live tool-use/token counts (forwarded by the daemon collab status
   // event) into the task's progress so AgentsRail renders real per-agent
   // activity. Carry the latest non-undefined count forward; never regress a
@@ -264,7 +275,7 @@ function applyPatch(
   return {
     id: patch.id,
     type: "local_agent",
-    status: patch.status,
+    status,
     description: title,
     startTime: previousAgent?.startTime ?? now,
     outputFile: previousAgent?.outputFile ?? outputUri(patch.id),
@@ -274,7 +285,7 @@ function applyPatch(
     prompt,
     agentType: patch.role ?? previousAgent?.agentType ?? "agent",
     ...(patch.model !== undefined ? { model: patch.model } : {}),
-    ...(patch.error !== undefined ? { error: patch.error } : {}),
+    ...(error !== undefined ? { error } : {}),
     retrieved: previousAgent?.retrieved ?? false,
     ...(previousAgent?.messages !== undefined ? { messages: previousAgent.messages } : {}),
     lastReportedToolCount:

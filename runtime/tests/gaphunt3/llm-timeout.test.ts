@@ -86,6 +86,33 @@ describe("gaphunt3 #42: withTimeout external-signal abort reason", () => {
     expect(mapped).not.toBeInstanceOf(LLMTimeoutError);
   });
 
+  it("does not classify AbortController's default DOMException as a timeout", async () => {
+    const controller = new AbortController();
+    const physical = Promise.withResolvers<string>();
+    const promise = withTimeout<string>(
+      () => physical.promise,
+      10 * 60_000,
+      "TestProvider",
+      controller.signal,
+    );
+
+    controller.abort();
+    physical.resolve("late result");
+
+    const err = await promise.then(
+      () => {
+        throw new Error("expected rejection");
+      },
+      (e: unknown) => e as Error,
+    );
+
+    expect(err.name).not.toBe("AbortError");
+    expect((err as { code?: unknown }).code).not.toBe("ABORT_ERR");
+    expect(mapLLMError("TestProvider", err, 10 * 60_000)).not.toBeInstanceOf(
+      LLMTimeoutError,
+    );
+  });
+
   it("preserves an Error reason verbatim (including its name/code)", async () => {
     const controller = new AbortController();
     const reason = new Error("user cancelled");

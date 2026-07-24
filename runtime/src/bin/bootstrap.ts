@@ -1092,7 +1092,6 @@ export async function bootstrapLocalRuntimeSession(
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
-    maxTimeoutMs: 300_000,
   });
   const codeModeService = createCodeModeService({ env });
   let sessionRef: Session | null = null;

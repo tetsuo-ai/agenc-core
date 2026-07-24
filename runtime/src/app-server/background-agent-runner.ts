@@ -2453,14 +2453,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) return DENIED;
     const requestId = ctx.callId;
-    // todo-109: default timeout so unattended pauses cannot hang forever.
-    const timeoutMsRaw = process.env.AGENC_PERMISSION_TIMEOUT_MS;
-    const timeoutMsParsed =
-      timeoutMsRaw !== undefined ? Number.parseInt(timeoutMsRaw, 10) : NaN;
-    const timeoutMs =
-      Number.isFinite(timeoutMsParsed) && timeoutMsParsed > 0
-        ? timeoutMsParsed
-        : 5 * 60 * 1000;
+    const timeoutMs = resolvePermissionDecisionTimeoutMs();
     const decision = new Promise<ReviewDecision>((resolve) => {
       let pendingForAgent = this.#pendingToolDecisions.get(agentId);
       if (pendingForAgent === undefined) {
@@ -2484,9 +2477,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         settle(ABORT);
       };
       ctx.signal?.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(() => {
-        settle(TIMED_OUT);
-      }, timeoutMs);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          settle(TIMED_OUT);
+        }, timeoutMs);
+      }
     });
     return decision;
   }
@@ -5397,6 +5392,15 @@ function hashStable(value: string): string {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash.toString(36);
+}
+
+export function resolvePermissionDecisionTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env.AGENC_PERMISSION_TIMEOUT_MS;
+  if (raw === undefined) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function readApprovalAgentId(ctx: ApprovalCtx): string | null {

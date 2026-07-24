@@ -1152,8 +1152,8 @@ function buildGrokNativeXSearchProvider(
     return providerFactory("grok", {
       ...factoryOptions,
       tools: [],
-      // Native x_search agentic loops can exceed the default 120s request timeout.
-      timeoutMs: Math.max(factoryOptions.timeoutMs ?? 0, 300_000),
+      // Preserve only an operator-supplied timeout. Native x_search agentic
+      // loops are otherwise unbounded like every other model call.
       extra,
     });
   } catch {
@@ -1798,7 +1798,7 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
           max_runtime_seconds: {
             type: "number",
             description:
-              "Maximum runtime per worker before it is failed. Defaults to 1800 seconds.",
+              "Optional maximum runtime per worker before it is failed. Omit for no runtime deadline.",
           },
           output_schema: { type: "object" },
         },

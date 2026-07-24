@@ -10,10 +10,10 @@
  * Mirrors agenc `query.ts:561-1082`.
  *
  * Invariants wired here:
- *   I-11 (stream idle watchdog, default-on) — installStreamWatchdog
- *        wraps the stream; `kick()` fires on every chunk. On idle
- *        expiry the watchdog aborts the underlying fetch via the
- *        scoped AbortController.
+ *   I-11 (stream idle watchdog, operator opt-in) — installStreamWatchdog
+ *        wraps the stream; `kick()` fires on every chunk. An explicitly
+ *        configured idle expiry aborts the underlying fetch via the scoped
+ *        AbortController; unconfigured streams are unbounded.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -834,8 +834,9 @@ export async function streamModel(
 
   const planMode = isPlanMode(ctx);
 
-  // Scoped AbortController: aborted by either the external signal or
-  // the watchdog, whichever fires first.
+  // Scoped AbortController: always follows the external signal. An
+  // operator-configured stream watchdog may also abort it, but there is no
+  // implicit idle deadline.
   const scoped = new AbortController();
   const onExternalAbort = () => {
     if (!scoped.signal.aborted) {
@@ -846,14 +847,11 @@ export async function streamModel(
     signal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  // I-11 watchdog installed BEFORE the stream begins so a stall at
-  // first-byte also trips. Idle tolerance resolves env >
-  // `stream_watchdog_timeout_ms` config > provider suggestion > default:
-  // providers with silent server-side generation phases (grok buffers
-  // whole function-call argument payloads with zero bytes on the wire)
-  // declare a multi-minute tolerance, because during those phases a
-  // healthy stream is indistinguishable from a stall and killing it
-  // forces a full-regeneration retry loop that never converges.
+  // I-11 watchdog wiring is installed before the stream begins, but is a
+  // no-op unless the operator explicitly configures a positive idle timeout.
+  // Provider suggestions may raise an explicit value; they never invent one.
+  // A healthy provider can remain completely silent while reasoning or
+  // generating a large tool payload, so silence alone must not end a turn.
   const configuredWatchdogMs = (() => {
     const services = session.services as {
       configStore?: { current?: () => { stream_watchdog_timeout_ms?: number } };

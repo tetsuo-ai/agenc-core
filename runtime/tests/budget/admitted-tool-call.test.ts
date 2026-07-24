@@ -217,6 +217,58 @@ describe("runAdmittedToolCall", () => {
     ]);
   });
 
+  it("settles cancelled zero-cost idempotent waits without unknown-outcome residue", async () => {
+    const state = toolHarness();
+    const tool = {
+      name: "wait_agent",
+      recoveryCategory: "idempotent",
+      cancellationUsage: "zero",
+      admissionEstimate: () => ({
+        maxInputTokens: 0,
+        maxOutputTokens: 0,
+        maxCostUsd: 0,
+      }),
+    } as unknown as Tool;
+    const invoked = Promise.withResolvers<AbortSignal>();
+    const call = runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-wait",
+      tool,
+      args: {},
+      invoke: async ({ signal }) => {
+        invoked.resolve(signal);
+        return new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    });
+    await invoked.promise;
+    const cancellation = new AdmissionDeniedError(
+      "parent_cancelled",
+      "cancelled",
+    );
+    state.leaseController.abort(cancellation);
+
+    await expect(call).rejects.toBe(cancellation);
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.reconcile).toHaveBeenCalledWith("tool-reservation", {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+    ]);
+    expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+      type: "effect_result",
+      payload: { outcome: "cancelled" },
+    });
+  });
+
   it("rejects a late tool success after durable cancellation", async () => {
     const state = toolHarness();
     const tool = {

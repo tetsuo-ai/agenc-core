@@ -2689,11 +2689,26 @@ function terminalResultForLiveAgent(live: LiveAgent): ChildRunTerminalResult {
       };
     case "pending_init":
     case "running":
-    case "shutdown":
     case "not_found":
       return {
         status: "failed",
         stopReason: `subagent_shutdown_from_${status.status}`,
+        finalMessage: null,
+      };
+    case "shutdown":
+      if (
+        live.assignment === undefined &&
+        live.lastTaskReceipt?.outcome === "completed"
+      ) {
+        return {
+          status: "completed",
+          stopReason: "turn_completed",
+          finalMessage: null,
+        };
+      }
+      return {
+        status: "failed",
+        stopReason: "subagent_shutdown_from_shutdown",
         finalMessage: null,
       };
   }
@@ -2898,6 +2913,7 @@ export async function* runAgent(
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
   let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
+  let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let currentTaskId = params.taskId;
@@ -3401,6 +3417,16 @@ export async function* runAgent(
       params.taskPrompt,
     );
     const activeChildSession = childSession;
+    let sawTokenCountThisTurn = false;
+    unsubscribeChildUsage = activeChildSession.eventLog.subscribe((event) => {
+      if (event.msg.type !== "token_count") return;
+      sawTokenCountThisTurn = true;
+      const { promptTokens, completionTokens, totalTokens } = event.msg.payload;
+      live.tokenUsage.inputTokens += promptTokens ?? 0;
+      live.tokenUsage.outputTokens += completionTokens ?? 0;
+      live.tokenUsage.totalTokens +=
+        totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0);
+    });
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
     let firstTurn = true;
     let assistantText = "";
@@ -3459,6 +3485,7 @@ export async function* runAgent(
       currentTurnReceiptCommitted = false;
       currentCommittedReceipt = undefined;
       currentTurnToolCallCount = 0;
+      pendingWorkerTerminal = undefined;
       if (
         accepted.taskId !== undefined &&
         live.assignment?.taskId === accepted.taskId
@@ -3489,6 +3516,7 @@ export async function* runAgent(
       // (turn_complete below) when a follow-up turn starts, so each iteration
       // must re-assert `running` to flip the FSM idle -> running.
       live.status.markRunning(turnId);
+      sawTokenCountThisTurn = false;
       const chatOptions = startTurnCall();
       let turnAssistantText = "";
       let turnToolCallCount = 0;
@@ -3549,6 +3577,7 @@ export async function* runAgent(
           toolCallCount += 1;
           turnToolCallCount += 1;
           currentTurnToolCallCount += 1;
+          live.toolCallCount += 1;
           const recoveryCategory = recoveryCategoryForTool(
             childSession.services.registry,
             event.toolCall.name,
@@ -3599,12 +3628,19 @@ export async function* runAgent(
       stopTurnCall();
 
       assistantText = turnAssistantText;
-      if (turnUsage !== undefined) {
+      // Each sampling iteration emits a durable token_count event. The
+      // subscription above projects those counts immediately so a long,
+      // tool-using turn does not sit at `tokens 0` until it finishes. Retain
+      // terminal usage as a fallback for providers/paths that emitted no
+      // token_count event, but never add both representations of the turn.
+      if (turnUsage !== undefined && !sawTokenCountThisTurn) {
         live.tokenUsage.inputTokens += turnUsage.promptTokens ?? 0;
         live.tokenUsage.outputTokens += turnUsage.completionTokens ?? 0;
         live.tokenUsage.totalTokens +=
           turnUsage.totalTokens ??
           (turnUsage.promptTokens ?? 0) + (turnUsage.completionTokens ?? 0);
+      }
+      if (turnUsage !== undefined || sawTokenCountThisTurn) {
         yield {
           kind: "usage_update",
           inputTokens: live.tokenUsage.inputTokens,
@@ -3740,6 +3776,11 @@ export async function* runAgent(
         }
         if (reuseBlockedReason === undefined) {
           live.status.markIdle(completedTurnId);
+          pendingWorkerTerminal = {
+            status: "completed",
+            turnId: completedTurnId,
+            ...(assistantText ? { message: assistantText } : {}),
+          };
           // The completed receipt owns the previous correlation. While parked,
           // teardown is a worker-lifecycle event, not a second task outcome.
           currentTaskId = undefined;
@@ -3806,7 +3847,14 @@ export async function* runAgent(
     // If the caller aborted during the provider call, surface that
     // outcome instead of completion. `role_timeout` is a distinct
     // bucket routed through run_error so delegate.ts can retry.
-    if (merged.signal.aborted) {
+    const parkedCompletion =
+      params.keepAlive &&
+      currentTaskId === undefined &&
+      currentTurnReceiptCommitted &&
+      pendingWorkerTerminal?.status === "completed"
+        ? pendingWorkerTerminal
+        : undefined;
+    if (merged.signal.aborted && parkedCompletion === undefined) {
       const reason = String(merged.signal.reason ?? "aborted");
       if (!currentTurnReceiptCommitted) {
         const receiptCommitted = await commitTaskReceipt({
@@ -3880,14 +3928,17 @@ export async function* runAgent(
         };
       }
     }
-    pendingWorkerTerminal = {
-      status: "completed",
-      turnId,
-      ...(assistantText !== undefined ? { message: assistantText } : {}),
-    };
+    if (parkedCompletion === undefined) {
+      pendingWorkerTerminal = {
+        status: "completed",
+        turnId,
+        ...(assistantText !== undefined ? { message: assistantText } : {}),
+      };
+    }
+    const finalMessage = parkedCompletion?.message ?? assistantText;
     yield {
       kind: "run_complete",
-      ...(assistantText !== undefined ? { finalMessage: assistantText } : {}),
+      ...(finalMessage !== undefined ? { finalMessage } : {}),
       toolCallCount,
       ...taskCorrelation(),
     };
@@ -3896,7 +3947,7 @@ export async function* runAgent(
       threadId: live.agentId,
       durationMs: Date.now() - startedAt,
       outcome: "completed",
-      finalMessage: assistantText,
+      finalMessage,
       toolCallCount,
     };
   } catch (err) {
@@ -3976,6 +4027,8 @@ export async function* runAgent(
     if (forwardMergedAbort !== null) {
       merged.signal.removeEventListener("abort", forwardMergedAbort);
     }
+    unsubscribeChildUsage?.();
+    unsubscribeChildUsage = null;
     const cleanupErrors: unknown[] = [];
     let durableCloseError: unknown;
     if (childSandboxExecutionBroker !== undefined) {

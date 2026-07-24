@@ -30,7 +30,7 @@ interface SpawnResult {
 }
 
 interface SpawnBoundedOptions {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly stdin?: Uint8Array;
   readonly maxOutputBytes?: number;
 }
@@ -68,16 +68,19 @@ function spawnBounded(
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = capture(stderr, chunk);
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, options.timeoutMs);
+    const timer =
+      options.timeoutMs !== undefined && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, options.timeoutMs)
+        : undefined;
     child.once("error", (error) => {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       reject(new EvalExecutorError([`failed to spawn ${command}: ${error.message}`]));
     });
     child.once("close", (code) => {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       resolve({
         exitCode: code,
         stdout: stdout.toString("utf8"),
@@ -425,7 +428,14 @@ export class DockerContainerRunner implements ContainerRunner {
     return spawnBounded(
       "docker",
       ["exec", ...envArgs, "-w", handle.workdir, handle.id, "bash", "-c", request.script],
-      { timeoutMs: request.timeoutMs, maxOutputBytes: request.maxOutputBytes },
+      {
+        ...(request.timeoutMs !== undefined
+          ? { timeoutMs: request.timeoutMs }
+          : {}),
+        ...(request.maxOutputBytes !== undefined
+          ? { maxOutputBytes: request.maxOutputBytes }
+          : {}),
+      },
     );
   }
 

@@ -125,7 +125,7 @@ class ShellCommandImpl implements ShellCommand {
   #onTimeoutCallback:
     | ((backgroundFn: (taskId: string) => boolean) => void)
     | undefined
-  #timeout: number
+  #timeout: number | null
   #shouldAutoBackground: boolean
   #resultResolver: ((result: ExecResult) => void) | null = null
   #exitCodeResolver: ((code: number) => void) | null = null
@@ -148,14 +148,17 @@ class ShellCommandImpl implements ShellCommand {
   constructor(
     childProcess: ChildProcess,
     abortSignal: AbortSignal,
-    timeout: number,
+    timeout: number | null | undefined,
     taskOutput: TaskOutput,
     shouldAutoBackground = false,
     maxOutputBytes = MAX_TASK_OUTPUT_BYTES,
   ) {
     this.#childProcess = childProcess
     this.#abortSignal = abortSignal
-    this.#timeout = timeout
+    this.#timeout =
+      typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+        ? timeout
+        : null
     this.#shouldAutoBackground = shouldAutoBackground
     this.#maxOutputBytes = maxOutputBytes
     this.taskOutput = taskOutput
@@ -272,11 +275,13 @@ class ShellCommandImpl implements ShellCommand {
     this.#childProcess.once('exit', this.#exitHandler.bind(this))
     this.#childProcess.once('error', this.#errorHandler.bind(this))
 
-    this.#timeoutId = setTimeout(
-      ShellCommandImpl.#handleTimeout,
-      this.#timeout,
-      this,
-    ) as NodeJS.Timeout
+    if (this.#timeout !== null) {
+      this.#timeoutId = setTimeout(
+        ShellCommandImpl.#handleTimeout,
+        this.#timeout,
+        this,
+      ) as NodeJS.Timeout
+    }
 
     const exitPromise = new Promise<number>(resolve => {
       this.#exitCodeResolver = resolve
@@ -320,7 +325,7 @@ class ShellCommandImpl implements ShellCommand {
         `Background command killed: output file exceeded ${MAX_TASK_OUTPUT_BYTES_DISPLAY}`,
         result.stderr,
       )
-    } else if (code === SIGTERM) {
+    } else if (code === SIGTERM && this.#timeout !== null) {
       result.stderr = prependStderr(
         `Command timed out after ${formatDuration(this.#timeout)}`,
         result.stderr,
@@ -387,7 +392,7 @@ class ShellCommandImpl implements ShellCommand {
 export function wrapSpawn(
   childProcess: ChildProcess,
   abortSignal: AbortSignal,
-  timeout: number,
+  timeout: number | null | undefined,
   taskOutput: TaskOutput,
   shouldAutoBackground = false,
   maxOutputBytes = MAX_TASK_OUTPUT_BYTES,

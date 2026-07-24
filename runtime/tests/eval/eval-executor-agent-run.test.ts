@@ -108,6 +108,7 @@ type ContainerPlan = AgentContainerPlan | VerifyContainerPlan;
 class FakeAgentRunner implements ContainerRunner {
   readonly createOptions: Array<CreateTaskContainerOptions | undefined> = [];
   readonly writtenFiles: string[] = [];
+  readonly execRequests: ContainerExecRequest[] = [];
   private index = -1;
 
   constructor(private readonly plans: readonly ContainerPlan[]) {}
@@ -132,6 +133,7 @@ class FakeAgentRunner implements ContainerRunner {
   }
 
   async exec(_handle: ContainerHandle, request: ContainerExecRequest): Promise<ContainerExecResult> {
+    this.execRequests.push(request);
     const plan = this.plans[this.index]!;
     if (plan.kind === "agent") {
       if (request.script.includes("dist/bin/agenc.js") || request.script.startsWith("set -u")) {
@@ -233,6 +235,10 @@ describe("eval executor agent run", () => {
       // with no mounts. (Network isolation is unconditional in the runner.)
       expect(runner.createOptions[0]!.readOnlyMounts).toHaveLength(1);
       expect(runner.createOptions[1]?.readOnlyMounts ?? []).toHaveLength(0);
+      const agentRequest = runner.execRequests.find((request) =>
+        request.script.startsWith("set -u"),
+      );
+      expect(agentRequest?.timeoutMs).toBeUndefined();
       // Oracle isolation: only the prompt reaches the agent container (c-0);
       // the test patch lands only in the verify container (c-1).
       expect(runner.writtenFiles.filter((f) => f.startsWith("c-0:"))).toEqual([
@@ -241,6 +247,23 @@ describe("eval executor agent run", () => {
       expect(
         runner.writtenFiles.filter((f) => f.startsWith("c-1:") && f.includes("test.patch")),
       ).toHaveLength(1);
+    });
+  });
+
+  test("an explicit evaluation-agent deadline remains opt-in", async () => {
+    await withOverlay(async (config) => {
+      const runner = new FakeAgentRunner([
+        { kind: "agent", agentResultJson: AGENT_RESULT, patchDiff: "" },
+      ]);
+      await runAgentOnTask(runner, EMPTY_SETUP, {
+        ...config,
+        agentTimeoutMs: 7_200_000,
+      });
+
+      const agentRequest = runner.execRequests.find((request) =>
+        request.script.startsWith("set -u"),
+      );
+      expect(agentRequest?.timeoutMs).toBe(7_200_000);
     });
   });
 

@@ -36,6 +36,7 @@ import {
   getMcpServerConnectionBatchSize,
   prefetchAllMcpResources,
   reconnectMcpServerImpl,
+  wrapMcpTransportFetch,
 } from './client.js'
 import type { ConnectedMCPServer, MCPServerConnection } from './types.js'
 
@@ -174,6 +175,45 @@ test('getMcpRootUriForPath encodes roots as unambiguous file URIs', () => {
   assert.equal(parsed.hash, '')
   assert.equal(parsed.search, '')
   assert.equal(fileURLToPath(uri), rootPath)
+})
+
+test('MCP transport POSTs remain pending for hours without an implicit fetch deadline', async () => {
+  vi.useFakeTimers()
+  let settleFetch: ((response: Response) => void) | undefined
+  const baseFetch = vi.fn(
+    async () =>
+      await new Promise<Response>(resolve => {
+        settleFetch = resolve
+      }),
+  )
+
+  try {
+    const request = wrapMcpTransportFetch(baseFetch)(
+      'https://mcp.example.test/rpc',
+      {
+        method: 'POST',
+        headers: { 'x-test': 'kept' },
+      },
+    )
+    let settled = false
+    void request.finally(() => {
+      settled = true
+    })
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000)
+
+    assert.equal(settled, false)
+    assert.equal(baseFetch.mock.calls.length, 1)
+    const forwarded = baseFetch.mock.calls[0]?.[1]
+    const headers = new Headers(forwarded?.headers)
+    assert.equal(headers.get('accept'), 'application/json, text/event-stream')
+    assert.equal(headers.get('x-test'), 'kept')
+
+    settleFetch?.(new Response('ok'))
+    assert.equal((await request).status, 200)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 function seedConnectionCache(
@@ -1131,6 +1171,58 @@ test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout
     ),
     /MCP server "slow-sdk" tool "slow" timed out after 0s/,
   )
+})
+
+test('MCP tool calls have no implicit five-minute deadline', async () => {
+  delete process.env.MCP_TOOL_TIMEOUT
+  vi.useFakeTimers()
+  try {
+    const rawResult = Promise.withResolvers<{
+      content: Array<{ type: 'text'; text: string }>
+    }>()
+    let requestOptions:
+      | {
+          signal?: AbortSignal
+          timeout?: number
+          resetTimeoutOnProgress?: boolean
+        }
+      | undefined
+    const client = connectedClient({
+      name: 'long-sdk',
+      client: {
+        callTool: async (
+          _params: unknown,
+          _schema: unknown,
+          options?: {
+            signal?: AbortSignal
+            timeout?: number
+            resetTimeoutOnProgress?: boolean
+          },
+        ) => {
+          requestOptions = options
+          return rawResult.promise
+        },
+      } as never,
+    })
+    let settled = false
+
+    const running = callIdeRpc('long_remote', {}, client)
+    void running.finally(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000)
+
+    assert.equal(requestOptions?.signal?.aborted, false)
+    assert.equal(settled, false)
+    assert.equal(requestOptions?.timeout, 2_147_483_647)
+    assert.equal(requestOptions?.resetTimeoutOnProgress, true)
+
+    rawResult.resolve({ content: [{ type: 'text', text: 'finished' }] })
+    assert.deepEqual(await running, [{ type: 'text', text: 'finished' }])
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('MCP tool calls log progress while waiting before timing out', async () => {

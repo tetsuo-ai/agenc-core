@@ -498,7 +498,10 @@ export function getDefaultAppState(): AppState {
     authVersion: 0,
     initialMessage: null,
     effortValue: undefined,
-    swarmMode: false,
+    // `/swarm` is persisted in user settings. A fresh TUI must reflect that
+    // value immediately; waiting for a later file-change event left routing
+    // enabled in the daemon while the badge and local command state said off.
+    swarmMode: initialSettings.swarmMode === true,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

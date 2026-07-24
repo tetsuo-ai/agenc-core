@@ -193,7 +193,10 @@ function modelFacingMcpToolDescription(
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
-const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
+// @modelcontextprotocol/sdk always installs a request timer. Use Node's
+// largest safe timer window and reset it on progress when no operator timeout
+// was configured; AgenC itself imposes no MCP tool-call deadline.
+const MCP_SDK_UNBOUNDED_WINDOW_MS = 2_147_483_647;
 const MCP_REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
 const MCP_RAW_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -809,16 +812,17 @@ async function callRequestPermissionsTool(
 
 async function withRPCDeadline<T>(
   operation: string,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   task: (signal: AbortSignal) => Promise<T>,
   callerSignal?: AbortSignal,
 ): Promise<T> {
   callerSignal?.throwIfAborted();
 
   const controller = new AbortController();
-  const timeoutError = new Error(
-    `${operation} timed out after ${timeoutMs}ms`,
-  );
+  const timeoutError =
+    timeoutMs === undefined
+      ? undefined
+      : new Error(`${operation} timed out after ${timeoutMs}ms`);
   let timedOut = false;
   const forwardCallerAbort = (): void => {
     if (!controller.signal.aborted) {
@@ -826,10 +830,13 @@ async function withRPCDeadline<T>(
     }
   };
   callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    if (!controller.signal.aborted) controller.abort(timeoutError);
-  }, timeoutMs);
+  const timer =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          if (!controller.signal.aborted) controller.abort(timeoutError);
+        }, timeoutMs);
 
   try {
     // Abort the physical RPC on cancellation/deadline, but do not settle this
@@ -838,14 +845,14 @@ async function withRPCDeadline<T>(
     // abort-ignoring MCP request is still live.
     const result = await task(controller.signal);
     callerSignal?.throwIfAborted();
-    if (timedOut) throw timeoutError;
+    if (timedOut && timeoutError !== undefined) throw timeoutError;
     return result;
   } catch (error) {
     callerSignal?.throwIfAborted();
-    if (timedOut) throw timeoutError;
+    if (timedOut && timeoutError !== undefined) throw timeoutError;
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     callerSignal?.removeEventListener("abort", forwardCallerAbort);
   }
 }
@@ -880,10 +887,12 @@ export async function createToolBridge(
     options.listToolsTimeoutMs,
     DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS,
   );
-  const callToolTimeoutMs = normalizeTimeoutMs(
-    options.callToolTimeoutMs,
-    DEFAULT_MCP_CALL_TIMEOUT_MS,
-  );
+  const callToolTimeoutMs =
+    typeof options.callToolTimeoutMs === "number" &&
+    Number.isFinite(options.callToolTimeoutMs) &&
+    options.callToolTimeoutMs > 0
+      ? Math.max(1, Math.floor(options.callToolTimeoutMs))
+      : undefined;
 
   const response = await withRPCDeadline<MCPListToolsResponse>(
     `MCP server "${serverName}" listTools`,
@@ -1010,7 +1019,14 @@ export async function createToolBridge(
                     arguments: executionArgs,
                   },
                   undefined,
-                  { signal, timeout: callToolTimeoutMs },
+                  {
+                    signal,
+                    timeout:
+                      callToolTimeoutMs ?? MCP_SDK_UNBOUNDED_WINDOW_MS,
+                    ...(callToolTimeoutMs === undefined
+                      ? { resetTimeoutOnProgress: true }
+                      : {}),
+                  },
                 ),
               effectSignal,
             ),

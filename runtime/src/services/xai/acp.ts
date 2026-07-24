@@ -37,7 +37,6 @@ export const GROK_ACP_AUTH_METHOD_API_KEY = 'xai.api_key'
 export const GROK_ACP_AUTH_METHOD_CACHED_TOKEN = 'cached_token'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
-const DEFAULT_PROMPT_TIMEOUT_MS = 20 * 60 * 1000
 const STDERR_TAIL_LIMIT = 4_096
 const DEFAULT_TERMINATE_GRACE_MS = 500
 const DEFAULT_SETTLE_BACKSTOP_MS = 1_000
@@ -94,6 +93,16 @@ export type XaiAcpSessionInfo = {
 export type XaiAcpPromptResult = {
   stopReason: string
   text: string
+}
+
+export function resolveXaiAcpPromptTimeoutMs(
+  configured: number | undefined,
+): number {
+  return typeof configured === 'number' &&
+    Number.isFinite(configured) &&
+    configured > 0
+    ? configured
+    : 0
 }
 
 export interface XaiAcpClientOptions {
@@ -351,7 +360,10 @@ export class XaiAcpClient {
           sessionId: params.sessionId,
           prompt: [{ type: 'text', text: params.text }],
         },
-        this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+        // Prompt turns may legitimately run for hours. Passing zero disables
+        // the request timer; an explicit promptTimeoutMs still opts into a
+        // finite deadline.
+        resolveXaiAcpPromptTimeoutMs(this.options.promptTimeoutMs),
       )
       const stopReason =
         typeof result.stopReason === 'string' ? result.stopReason : 'unknown'

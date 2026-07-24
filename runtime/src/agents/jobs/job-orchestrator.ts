@@ -57,7 +57,8 @@ export interface JobConfig {
   readonly instruction: string;
   readonly outputSchema?: Record<string, unknown>;
   readonly maxConcurrency: number;
-  readonly maxRuntimeSeconds: number;
+  /** Optional operator-supplied deadline. Omitted means unbounded. */
+  readonly maxRuntimeSeconds?: number;
 }
 
 export interface AgentJobSpawnContext {
@@ -76,8 +77,8 @@ export interface AgentJobSpawnOutcome {
    * `report_agent_job_result` and apply reference `finalize_finished_item`
    * guard at `agent_jobs.rs:992-1004` ("worker finished without calling
    * report_agent_job_result"). Adapters that cannot observe terminal
-   * status may omit this field; the orchestrator falls back to the
-   * `max_runtime_seconds` timeout in that case.
+   * status may omit this field; without an explicit `max_runtime_seconds`,
+   * the orchestrator then waits for a result or operator cancellation.
    */
   readonly threadFinished?: Promise<void>;
 }
@@ -155,7 +156,6 @@ export interface RunAgentsOnCsvResult {
 }
 
 const DEFAULT_MAX_CONCURRENCY = 16;
-const DEFAULT_MAX_RUNTIME_SECONDS = 1800;
 
 interface JobRuntimeState {
   readonly config: JobConfig;
@@ -297,7 +297,9 @@ export async function runAgentsOnCsv(
     instruction: opts.instruction,
     ...(opts.outputSchema !== undefined ? { outputSchema: opts.outputSchema } : {}),
     maxConcurrency: clampConcurrency(opts.maxConcurrency),
-    maxRuntimeSeconds: opts.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
+    ...(opts.maxRuntimeSeconds !== undefined
+      ? { maxRuntimeSeconds: opts.maxRuntimeSeconds }
+      : {}),
   };
   const items = new Map<ItemId, JobItemRecord>();
   const itemSeed: Array<{
@@ -433,7 +435,7 @@ function clampConcurrency(
  * or from a half-finished prior dispatch).
  *
  * Branches mirror the reference policy:
- *   - Stale (age >= maxRuntimeSeconds): markItemFailed + shutdown thread
+ *   - Stale under an explicit maxRuntimeSeconds: mark failed + shut down
  *     (agent_jobs.rs:840-852)
  *   - Missing assigned_thread_id: markItemFailed (agent_jobs.rs:855-862)
  *   - Thread in final state: finalize from DB (agent_jobs.rs:877-885)
@@ -456,7 +458,10 @@ async function recoverRunningItems(state: JobRuntimeState): Promise<void> {
   for (const dbItem of running) {
     const inMemoryItem = state.items.get(dbItem.itemId);
     const ageSec = nowSec - dbItem.updatedAt;
-    if (ageSec >= runtimeTimeoutSec) {
+    if (
+      runtimeTimeoutSec !== undefined &&
+      ageSec >= runtimeTimeoutSec
+    ) {
       const message = `worker exceeded max runtime of ${runtimeTimeoutSec}s`;
       repository.markItemFailed(state.config.jobId, dbItem.itemId, message);
       if (inMemoryItem !== undefined) {
@@ -575,19 +580,13 @@ async function processItems(
     const completion = new Promise<void>((resolve, reject) => {
       state.pending.set(itemId, { resolve, reject });
     });
-    const runtimeBudgetMs = state.config.maxRuntimeSeconds * 1000;
-    // gaphunt3 #6: capture the watchdog handle so it can be cleared once the
-    // item completes; otherwise the timer stays armed for the full
-    // max_runtime_seconds budget (default 30min) after every completed row,
-    // leaking one live timer per row and pinning the event loop.
+    const runtimeBudgetMs =
+      state.config.maxRuntimeSeconds !== undefined
+        ? state.config.maxRuntimeSeconds * 1000
+        : undefined;
+    // Explicit operator deadlines still need their timer cleared as soon as
+    // another completion path wins the race.
     let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((_, reject) => {
-      runtimeTimer = setTimeout(
-        () => reject(new Error(`item ${itemId} exceeded max_runtime_seconds`)),
-        runtimeBudgetMs,
-      );
-      runtimeTimer.unref?.();
-    });
     item.attemptCount += 1;
     // Mirror reference ordering: status flips to running before the worker
     // can report. Thread_id is attached after spawn returns. On capacity
@@ -603,7 +602,21 @@ async function processItems(
           outcome.threadId,
         );
       }
-      const racers: Array<Promise<void>> = [completion, timeout];
+      const racers: Array<Promise<void>> = [completion];
+      if (runtimeBudgetMs !== undefined) {
+        racers.push(
+          new Promise<void>((_, reject) => {
+            runtimeTimer = setTimeout(
+              () =>
+                reject(
+                  new Error(`item ${itemId} exceeded max_runtime_seconds`),
+                ),
+              runtimeBudgetMs,
+            );
+            runtimeTimer.unref?.();
+          }),
+        );
+      }
       if (outcome?.threadFinished !== undefined) {
         racers.push(outcome.threadFinished);
       }
@@ -677,7 +690,7 @@ async function processItems(
       try {
         await spawn.cancelOutstanding(state.config.jobId);
       } catch {
-        /* cancellation is best-effort; the runtime timeout still bounds workers */
+        /* cancellation is best-effort */
       }
       for (const waiter of state.pending.values()) {
         waiter.resolve();
@@ -855,7 +868,9 @@ async function resumeSingleJob(
     instruction: job.instruction,
     ...(job.outputSchema !== undefined ? { outputSchema: job.outputSchema } : {}),
     maxConcurrency: clampConcurrency(opts.maxConcurrency),
-    maxRuntimeSeconds: job.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
+    ...(job.maxRuntimeSeconds !== undefined
+      ? { maxRuntimeSeconds: job.maxRuntimeSeconds }
+      : {}),
   };
   const items = new Map<ItemId, JobItemRecord>();
   for (const dbItem of repository.listItems({ jobId })) {

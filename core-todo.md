@@ -171,7 +171,7 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
   per-connection dispatch chain serializes non-preemptive requests FIFO; `message.stream`/`message.send`
   are non-preemptive and await the entire turn. The TUI drives streams AND interactive control RPCs
   (`setModel`, `applyConfig`, `hooks.setDisabled`, `mcp.addServer/reconnect`, `snapshot`, `clear`) over the
-  same connection, so any of those issued mid-turn waits up to 30 min.
+  same connection, so any of those issued mid-turn waits for the entire (now intentionally unbounded) turn.
   **Fix:** dispatch full-turn `message.stream`/`message.send` off the per-connection FIFO (they have their
   own cancel correlation).
 
@@ -194,14 +194,11 @@ and the TOML pollution were additionally reproduced by executing the suspect cod
 
 ### Tools / exec
 
-- [x] `[V]` **M-EXEC-1 — `Monitor` streams only the first 30s of a 30-min watch.**
-  `runtime/src/tools/system/monitor.ts:131`. Passes `yield_time_ms = MONITOR_TIMEOUT_MS` (30 min) but
-  `clampExecYield` caps it at `MAX_YIELD_TIME_MS = 30_000`. After 30s `execCommand` returns with the process
-  alive and nothing re-drives it, yet the tool description promises ~1s polling. Output arriving after 30s
-  (slow build, log that goes quiet then errors) is never seen.
-  **Fix:** drive Monitor as a persistent background task that re-polls until exit/30-min ceiling, or correct
-  the description/result text to say only the first ~30s is streamed and the model must poll via
-  `write_stdin(session_id, '')`.
+- [x] `[V]` **M-EXEC-1 — `Monitor` confused its foreground yield with process lifetime.**
+  `runtime/src/tools/system/monitor.ts` now uses the bounded foreground yield only to return a process id.
+  The monitored process has no implicit hard timeout and remains available for later
+  `write_stdin(session_id, '')` polls until it exits or is explicitly stopped. Explicit caller-supplied
+  process deadlines are still honored.
 
 - [x] `[V]` **M-EXEC-2 — Unbounded subprocess buffering in shell mode (OOM risk).**
   `runtime/src/tools/system/bash.ts:347` (`runSpawnedCommand`). Shell / shell-wrapper mode pushes every

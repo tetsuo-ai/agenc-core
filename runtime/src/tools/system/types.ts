@@ -16,9 +16,9 @@ import type { Logger } from "../../utils/logger.js";
 export interface BashToolConfig {
   /** Working directory (default: process.cwd()) */
   readonly cwd?: string;
-  /** Command timeout in ms (default: 30_000) */
+  /** Optional default command timeout in ms. Omission means no deadline. */
   readonly timeoutMs?: number;
-  /** Maximum timeout the LLM can request per-call in ms. Caps per-call timeoutMs overrides. */
+  /** Optional cap for per-call timeoutMs overrides. */
   readonly maxTimeoutMs?: number;
   /** Allowed command prefixes (empty = allow all) */
   readonly allowList?: readonly string[];
@@ -469,5 +469,4 @@ export const DEFAULT_DENY_PREFIXES: readonly string[] = [];
 
 // Default direct bash timeout. Daemon desktop mode lifts this ceiling via
 // resolveBashToolTimeoutConfig(), but the standalone tool stays short by default.
-export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 100_000;

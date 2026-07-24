@@ -166,14 +166,19 @@ class HarnessJournal implements WorkflowRunJournal {
 function runBash(
   script: string,
   cwd: string,
-  timeoutMs: number,
+  timeoutMs?: number,
 ): Promise<WorkflowCommandResult> {
   const startedAt = performance.now();
   return new Promise((resolvePromise) => {
     execFile(
       "bash",
       ["-lc", script],
-      { cwd, timeout: timeoutMs, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 },
+      {
+        cwd,
+        encoding: "buffer",
+        maxBuffer: 8 * 1024 * 1024,
+        ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+      },
       (error, stdout, stderr) => {
         const durationMs = Math.round(performance.now() - startedAt);
         const killed =

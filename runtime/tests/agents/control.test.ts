@@ -148,7 +148,7 @@ describe("AgentControl", () => {
     expect(live.metadata.agentPath).toBe("/root/task_3");
   });
 
-  it("reaps a keep-alive worker idle past the grace and frees its registry slot", async () => {
+  it("keeps an idle reusable worker alive indefinitely between assignments", async () => {
     vi.useFakeTimers();
     try {
       const session = stubSession();
@@ -159,10 +159,11 @@ describe("AgentControl", () => {
       // Worker finishes a turn and parks idle (keep-alive between turns).
       live.status.markRunning("turn-1");
       live.status.markIdle("turn-1");
-      // Advance past the 10min grace + one 60s reaper interval.
-      await vi.advanceTimersByTimeAsync(10 * 60_000 + 60_000 + 1_000);
-      expect(live.status.value.status).toBe("shutdown");
-      expect(registry.activeCount).toBe(0);
+      // Long swarms can park workers for hours before assigning follow-up
+      // work. Advancing a full day must not trigger hidden lifecycle cleanup.
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+      expect(live.status.value.status).toBe("idle");
+      expect(registry.activeCount).toBe(1);
     } finally {
       vi.useRealTimers();
     }

@@ -631,59 +631,18 @@ export async function performProviderCodeRequest(options: {
   return response
 }
 
-async function* readSseEvents(response: Response, signal?: AbortSignal): AsyncGenerator<ResponsesSseEvent> {
+async function* readSseEvents(response: Response, _signal?: AbortSignal): AsyncGenerator<ResponsesSseEvent> {
   const reader = response.body?.getReader()
   if (!reader) return
 
   const decoder = new TextDecoder()
   let buffer = ''
-  const STREAM_IDLE_TIMEOUT_MS = 120_000 // 2 minutes without data
-  let lastDataTime = Date.now()
-
-  /**
-   * Read from the stream with an idle timeout. Respects the caller's
-   * AbortSignal — clears the idle timer on abort so the AbortError
-   * surfaces cleanly instead of a spurious idle timeout.
-   */
-  async function readWithTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        const elapsed = Math.round((Date.now() - lastDataTime) / 1000)
-        reject(new Error(
-          `Responses SSE stream idle for ${elapsed}s (limit: ${STREAM_IDLE_TIMEOUT_MS / 1000}s). Connection likely dropped.`,
-        ))
-      }, STREAM_IDLE_TIMEOUT_MS)
-
-      let abortCleanup: (() => void) | undefined
-      if (signal) {
-        abortCleanup = () => {
-          clearTimeout(timeoutId)
-        }
-        signal.addEventListener('abort', abortCleanup, { once: true })
-      }
-
-      // `reader` is guaranteed defined here: the enclosing generator returns
-      // early at `if (!reader) return` before this closure can run. The
-      // non-null assertion only restores that narrowing across the closure
-      // boundary; it does not change behavior.
-      reader!.read().then(
-        result => {
-          clearTimeout(timeoutId)
-          if (signal && abortCleanup) signal.removeEventListener('abort', abortCleanup)
-          if (result.value) lastDataTime = Date.now()
-          resolve(result)
-        },
-        err => {
-          clearTimeout(timeoutId)
-          if (signal && abortCleanup) signal.removeEventListener('abort', abortCleanup)
-          reject(err)
-        },
-      )
-    })
-  }
 
   while (true) {
-    const { done, value } = await readWithTimeout()
+    // A silent stream is not proof of failure: a reasoning response or a large
+    // function-call payload can take hours before producing its next byte.
+    // Cancellation is owned by the caller's signal, not an implicit timer.
+    const { done, value } = await reader.read()
     if (done) break
 
     buffer += decoder.decode(value, { stream: true })

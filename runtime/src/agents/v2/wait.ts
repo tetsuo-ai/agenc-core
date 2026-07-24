@@ -214,9 +214,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       mutating: true,
       keywords: ["agent", "wait", "status"],
     }),
-    // Waiting drains delivered mailbox receipts into this turn.
+    // Draining already-durable local receipts mutates mailbox state, but the
+    // state transition is idempotent: replay after a completed drain is a
+    // no-op, while replay before a drain consumes the same durable records.
     isReadOnly: false,
-    recoveryCategory: "side-effecting",
+    recoveryCategory: "idempotent",
+    cancellationUsage: "zero",
     admissionEstimate: localZeroAdmissionEstimate,
     timeoutBehavior: "tool",
     inputSchema: {

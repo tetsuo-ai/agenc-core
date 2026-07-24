@@ -555,11 +555,9 @@ export class ReviewManager {
    * delta prompt logic around the child-session delegate). AgenC port
    * wraps the T13 delegate with:
    *
-   *   - a bounded timeout (the upstream
-   *     `run_before_review_deadline` / `GUARDIAN_REVIEW_SESSION_DEADLINE`
-   *     analog),
-   *   - an `AbortController` that fires on timeout OR on the caller's
-   *     own abort signal,
+   *   - an optional caller-supplied timeout, with no implicit deadline,
+   *   - an `AbortController` that fires on an explicit timeout OR on
+   *     the caller's own abort signal,
    *   - registration in the manager registry for session-wide
    *     shutdown,
    *   - an `exit_review_mode` event on every termination path
@@ -574,8 +572,8 @@ export class ReviewManager {
     session: AgenCDelegateSessionLike,
     req: AgenCReviewOneShotRequest,
   ): Promise<AgenCReviewOneShotOutcome> {
-    // Build the controller the manager owns so `shutdown()` +
-    // timeout can both fire it without fighting the caller's own
+    // Build the controller the manager owns so `shutdown()` + an
+    // explicit timeout can both fire it without fighting the caller's own
     // signal. The delegate also accepts a `signal` through
     // `req.signal`; we merge by letting the caller's original
     // `req.signal` cascade here, then pass the merged controller's

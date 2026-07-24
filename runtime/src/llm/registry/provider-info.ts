@@ -44,7 +44,7 @@ function mergeDerivedProviderModels(
   return Object.freeze(merged);
 }
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 0;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;

@@ -99,7 +99,8 @@ export interface ContainerHandle {
 export interface ContainerExecRequest {
   /** POSIX shell script executed with `bash -c` inside the workdir. */
   readonly script: string;
-  readonly timeoutMs: number;
+  /** Optional operator-supplied deadline. Omitted means unbounded. */
+  readonly timeoutMs?: number;
   /**
    * Per-call host capture cap. Defaults to
    * `EVAL_EXECUTOR_MAXIMUM_CAPTURED_OUTPUT_BYTES`; raised only for the

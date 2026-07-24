@@ -43,6 +43,14 @@ const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const READY_POLL_MS = 50;
 /** Mirrors the daemon transports' 16 MiB max-line bound. */
 const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
+// These RPCs respond only after the full model/tool turn. They must not inherit
+// the short control-RPC timeout: SDK-backed agents may legitimately run for
+// hours. Explicit cancellation, socket closure, and daemon shutdown still
+// settle them.
+const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgencDaemonMethod> = new Set([
+  "message.send",
+  "message.stream",
+]);
 
 export function resolveAgencHome(
   env: NodeJS.ProcessEnv = process.env,
@@ -71,7 +79,7 @@ export function resolveDaemonCookiePath(
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
-  readonly timeout: ReturnType<typeof setTimeout>;
+  readonly timeout: ReturnType<typeof setTimeout> | null;
 }
 
 export interface AgencSocketTransportOptions {
@@ -149,21 +157,23 @@ export class AgencSocketTransport implements AgencTransport {
       return Promise.reject(new Error("AgenC daemon connection is closed"));
     }
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(request.id);
-        reject(
-          new Error(
-            `Timed out waiting for daemon response to ${request.method}`,
-          ),
-        );
-      }, this.#requestTimeoutMs);
+      const timeout = UNBOUNDED_DAEMON_METHODS.has(request.method)
+        ? null
+        : setTimeout(() => {
+            this.#pending.delete(request.id);
+            reject(
+              new Error(
+                `Timed out waiting for daemon response to ${request.method}`,
+              ),
+            );
+          }, this.#requestTimeoutMs);
       this.#pending.set(request.id, {
         resolve: (value) => {
-          clearTimeout(timeout);
+          if (timeout !== null) clearTimeout(timeout);
           resolve(value as AgencDaemonResponse<Method>);
         },
         reject: (error) => {
-          clearTimeout(timeout);
+          if (timeout !== null) clearTimeout(timeout);
           reject(error);
         },
         timeout,
@@ -226,7 +236,7 @@ export class AgencSocketTransport implements AgencTransport {
 
   #failAll(error: Error): void {
     for (const waiter of this.#pending.values()) {
-      clearTimeout(waiter.timeout);
+      if (waiter.timeout !== null) clearTimeout(waiter.timeout);
       waiter.reject(error);
     }
     this.#pending.clear();
@@ -259,7 +269,10 @@ export interface AgencConnectOptions {
   readonly agencCommand?: string | readonly string[];
   /** Total budget for autostart + readiness polling. Default 45s or `AGENC_DAEMON_READY_TIMEOUT_MS`. */
   readonly readyTimeoutMs?: number;
-  /** Per-request timeout. Default 30s or `AGENC_DAEMON_REQUEST_TIMEOUT_MS`. */
+  /**
+   * Per-request timeout for bounded control RPCs. Default 30s or
+   * `AGENC_DAEMON_REQUEST_TIMEOUT_MS`. Full-turn message RPCs are unbounded.
+   */
   readonly requestTimeoutMs?: number;
   readonly clientId?: string;
   readonly clientName?: string;

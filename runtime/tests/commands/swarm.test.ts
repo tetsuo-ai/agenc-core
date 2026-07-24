@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { swarmCommand } from "../../src/commands/swarm.js";
 import { swarmModeProducer } from "../../src/prompts/attachments/swarm-mode.js";
 import { routeSwarmTask } from "../../src/agents/swarm-routing.js";
+import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -63,6 +64,11 @@ describe("/swarm command", () => {
     expect(result.kind).toBe("text");
     expect(ctx.appState.state.swarmMode).toBe(true);
     expect(getSettingsForSource("userSettings")?.swarmMode).toBe(true);
+  });
+
+  test("a fresh TUI restores persisted swarm mode immediately", () => {
+    updateSettingsForSource("userSettings", { swarmMode: true });
+    expect(getDefaultAppState().swarmMode).toBe(true);
   });
 
   test("off disables swarm mode again", async () => {

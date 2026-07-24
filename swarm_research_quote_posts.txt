@@ -1,0 +1,103 @@
+THREAD 1/4 — WORKTREE ISOLATION
+===============================
+
+“Effective Strategies for Asynchronous Software Engineering Agents” directly
+influenced AgenC’s worktree isolation.
+
+https://arxiv.org/abs/2603.21489v2
+
+Parallel agents sharing one checkout can interfere with each other even when
+prompts tell them not to.
+
+AgenC now gives every parallel writer a spawn-unique Git worktree. It returns
+an integration reference only when the result is committed, clean, descended
+from the captured base, and independently verifiable.
+
+Nothing auto-merges.
+
+
+THREAD 2/4 — SCALING AGENT SYSTEMS
+==================================
+
+“Towards a Science of Scaling Agent Systems” is why /swarm defaults to one
+agent.
+
+https://arxiv.org/abs/2512.08296v3
+
+On sequential PlanCraft, every multi-agent architecture evaluated in this
+paper underperformed the single-agent mean.
+
+Agent count is not intelligence. The topology has to match the task.
+
+AgenC recommends fan-out only when work is explicitly parallel or genuinely
+independent.
+
+
+THREAD 3/4 — EXTERNAL BENCHMARKS
+================================
+
+External research results—not AgenC benchmark scores:
+
+“Effective Strategies for Asynchronous Software Engineering Agents”
+https://arxiv.org/abs/2603.21489v2
+
+CAID’s PaperBench Code-Dev isolation ablation:
+
+Shared-workspace multi-agent: 55.5
+Single agent: 57.2
+Worktree-isolated multi-agent: 63.3
+
+“Towards a Science of Scaling Agent Systems”
+https://arxiv.org/abs/2512.08296v3
+
+Scaling Agent Systems on sequential PlanCraft:
+
+Every evaluated multi-agent architecture finished 39.1%–70.0% below the
+single-agent mean.
+
+That is why AgenC 0.9.0 defaults to one agent, isolates parallel writers, and
+treats integration as an evidence problem—not a prompt instruction.
+
+
+THREAD 4/4 — RESEARCH
+=====================
+
+The research behind AgenC’s agent/swarm upgrade:
+
+Effective Strategies for Asynchronous Software Engineering Agents
+https://arxiv.org/abs/2603.21489v2
+
+Towards a Science of Scaling Agent Systems
+https://arxiv.org/abs/2512.08296v3
+
+MAS-Orchestra: Understanding and Improving Multi-Agent Reasoning Through
+Holistic Orchestration and Controlled Benchmarks
+https://arxiv.org/abs/2601.14652v5
+
+Multi-Agent Teams Hold Experts Back
+https://arxiv.org/abs/2602.01011v4
+
+TeamBench: Evaluating Agent Coordination under Enforced Role Separation
+https://arxiv.org/abs/2605.07073v1
+
+PerspectiveGap: A Benchmark for Multi-Agent Orchestration Prompting
+https://arxiv.org/abs/2606.08878v2
+
+Software Delegation Contracts: Measuring Reviewability in AI Coding-Agent Work
+https://arxiv.org/abs/2606.17099v1
+
+Who Broke the System? Failure Localization in LLM-Based Multi-Agent Systems
+https://arxiv.org/abs/2607.07989v1
+
+Why Do Multi-Agent LLM Systems Fail?
+https://arxiv.org/abs/2503.13657v3
+
+Beyond the Leaderboard: A Synthesis of Tool-Use, Planning, and Reasoning
+Failures in Large Language Model Agents
+https://arxiv.org/abs/2607.05775v1
+
+MultiAgentBench: Evaluating the Collaboration and Competition of LLM Agents
+https://arxiv.org/abs/2503.01935
+
+These papers informed the isolation, routing, topology, context-boundary,
+delegation-contract, failure-attribution, and evidence rules in the upgrade.

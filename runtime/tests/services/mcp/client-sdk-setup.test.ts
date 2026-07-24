@@ -2184,7 +2184,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
   assert.equal(fakeClients[5]?.closed, true)
 })
 
-test('connectToServer HTTP fetch wrapper aborts long POST requests on timeout', async () => {
+test('connectToServer HTTP fetch wrapper leaves long POST requests unbounded until cancelled', async () => {
   vi.resetModules()
   vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: FakeClient,
@@ -2230,11 +2230,26 @@ test('connectToServer HTTP fetch wrapper aborts long POST requests on timeout', 
 
   vi.useFakeTimers()
   try {
+    const controller = new AbortController()
     const responsePromise = httpFetch('https://example.test/slow-post', {
       method: 'POST',
+      signal: controller.signal,
     })
-    await vi.advanceTimersByTimeAsync(60_000)
-    assert.equal(await (await responsePromise).text(), 'TimeoutError')
+    let settled = false
+    void responsePromise.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1_000)
+    assert.equal(settled, false)
+
+    controller.abort(new DOMException('operator cancelled', 'AbortError'))
+    assert.equal(await (await responsePromise).text(), 'AbortError')
   } finally {
     vi.useRealTimers()
   }

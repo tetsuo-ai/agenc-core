@@ -34,6 +34,7 @@ afterEach(() => {
 });
 
 const REVIEWER_CONTRACT_TIMEOUT_MS = 30_000;
+const SIX_HOURS_MS = 6 * 60 * 60 * 1_000;
 const ALLOW_ASSESSMENT = JSON.stringify({
   risk_level: "low",
   user_authorization: "medium",
@@ -547,6 +548,39 @@ describe("guardian approval reviewer", () => {
       consecutiveDenials: 1,
       totalDenials: 1,
     });
+  });
+
+  it("allows a default guardian review to run for hours without an implicit deadline", async () => {
+    vi.useFakeTimers();
+    let reviewerSignal: AbortSignal | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const { session } = mkSession({
+      provider: mkProvider({
+        content: ALLOW_ASSESSMENT,
+        delayMs: SIX_HOURS_MS + 1,
+        onChat: (_messages, options) => {
+          reviewerSignal = options?.signal;
+          markStarted();
+        },
+      }),
+    });
+    const turn = newDefaultTurnWithSubId(session, "turn-unbounded");
+    const reviewer = createDefaultGuardianApprovalReviewer();
+
+    const promise = reviewer.reviewApprovalRequest({
+      ctx: mkApprovalCtx(session, turn),
+      args: { path: "file.txt", content: "ok" },
+    });
+    await started;
+    await vi.advanceTimersByTimeAsync(SIX_HOURS_MS);
+    expect(reviewerSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await promise;
+
+    expect(result.decision.kind).toBe("approved");
   });
 
   it("timeout fails closed without counting as a breaker denial", async () => {

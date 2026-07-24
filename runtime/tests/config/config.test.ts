@@ -95,6 +95,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.max_turns).toBeUndefined();
     expect(cfg.agent_max_threads).toBeUndefined();
     expect(cfg.agent_max_depth).toBe(1);
+    expect(cfg.stream_watchdog_timeout_ms).toBeUndefined();
     expect(cfg.auth?.backend).toBe("remote");
     expect(cfg.auth?.managedKeys?.enabled).toBe(true);
     expect(cfg.plugins?.enabled).toBe(false);

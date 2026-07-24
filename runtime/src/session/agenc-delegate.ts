@@ -168,10 +168,9 @@ export interface AgenCReviewOneShotRequest {
    *  derives a child controller from this so it can shut down
    *  independently on completion. */
   readonly signal?: AbortSignal;
-  /** Optional hard deadline for the one-shot turn. Upstream's
-   *  `run_before_review_deadline` enforces a per-review timeout at
-   *  the manager level; exposing it on the delegate as well lets
-   *  callers without a `ReviewManager` bound still apply a budget. */
+  /** Optional caller-supplied hard deadline for the one-shot turn.
+   *  Omitted means unbounded; callers that need a finite operational
+   *  budget can opt in explicitly. */
   readonly timeoutMs?: number;
   /**
    * Optional reviewer system prompt override. Generic `/review` uses

@@ -4,7 +4,8 @@
  * Port of agenc reconnection pattern: on transient network /
  * provider errors (ECONNRESET, ECONNREFUSED, 503, stream_idle), the
  * recovery layer sleeps with exponential backoff (1s → 30s cap,
- * ±25% jitter, 10-minute give-up budget) then resamples. Pending
+ * ±25% jitter) then resamples. There is no implicit wall-clock give-up
+ * budget; callers may provide one explicitly. Pending
  * tool-call re-injection ensures the model sees the same prompt
  * after the reconnect (history is unchanged).
  *
@@ -27,7 +28,6 @@ import { emitWarning } from "../session/event-log.js";
 
 export const RECONNECT_INITIAL_MS = 1_000;
 export const RECONNECT_MAX_MS = 30_000;
-export const RECONNECT_GIVE_UP_MS = 600_000;
 const RECONNECT_JITTER_FRAC = 0.25; // ±25 %
 export const RECONNECT_SLEEP_DETECTION_THRESHOLD_MS =
   RECONNECT_MAX_MS * 2;
@@ -119,6 +119,7 @@ export interface ReconnectOpts<T> {
   readonly session: Session;
   readonly signal?: AbortSignal;
   readonly maxAttempts?: number;
+  /** Optional operator/caller deadline. Unset retries without a time ceiling. */
   readonly giveUpMs?: number;
   readonly sleepDetectionThresholdMs?: number;
   readonly now?: () => number;
@@ -143,7 +144,7 @@ export async function reconnectWithBackoff<T>(
   opts: ReconnectOpts<T>,
 ): Promise<ReconnectOutcome<T>> {
   const maxAttempts = opts.maxAttempts;
-  const giveUpMs = opts.giveUpMs ?? RECONNECT_GIVE_UP_MS;
+  const giveUpMs = opts.giveUpMs;
   const sleepDetectionThresholdMs =
     opts.sleepDetectionThresholdMs ?? RECONNECT_SLEEP_DETECTION_THRESHOLD_MS;
   const now = opts.now ?? monotonicMs;
@@ -187,7 +188,10 @@ export async function reconnectWithBackoff<T>(
           lastError,
         };
       }
-      if (currentNow - reconnectStartedAt >= giveUpMs) {
+      if (
+        giveUpMs !== undefined &&
+        currentNow - reconnectStartedAt >= giveUpMs
+      ) {
         return {
           kind: "exhausted",
           attempts: attempt + 1,
