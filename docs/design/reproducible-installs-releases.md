@@ -115,11 +115,11 @@ Research was refreshed on 2026-07-14. The load-bearing sources are:
   [GitHub release assets](https://docs.github.com/rest/releases/assets)
 - GitHub-hosted native runner labels receive weekly mutable images. The exact
   image versions reviewed for this release contract are macOS arm64
-  `20260715.0234.1`, macOS x64 `20260715.0340.1`, and Windows x64
+  `20260715.0234.1`, macOS x64 `20260720.0353.1`, and Windows x64
   `20260714.173.1`; their release inventories are the primary source for the
   pinned Xcode, SDK, Visual Studio, MSVC, and Windows SDK identities.
   [macOS arm64 image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260715.0234),
-  [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260715.0340),
+  [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260720.0353),
   [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
 - Node's release archive identifies 25.9.0 as out of maintenance, and the
   current Homebrew/core Node formula list has no `node@25`. The 0.7.2 release

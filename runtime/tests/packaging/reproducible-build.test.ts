@@ -350,7 +350,7 @@ describe("reproducible install and release contract", () => {
       },
       "darwin-x64": {
         runnerLabel: "macos-15-intel",
-        imageVersion: "20260715.0340.1",
+        imageVersion: "20260720.0353.1",
         runnerArch: "X64",
       },
       "win-x64": {
@@ -385,8 +385,8 @@ describe("reproducible install and release contract", () => {
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "b218a774252c748c748d0e18837b7ca655c8e657bc20b1213a9f8cbb177b58bb",
-        arm64: "cd2f3fb1aa51e2142ca74e202d9403b2861d47fc82cb036150ecb92ee62306d2",
+        x64: "59512994add5fd7459df93586bac1855877a232a71ee3a114c941d66ba4dab0d",
+        arm64: "c352613f54e67597cfd7af3534d163798455cef42c2e4be3741d36a837da71ce",
       },
     });
   });
