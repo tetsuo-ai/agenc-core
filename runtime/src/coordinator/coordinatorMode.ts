@@ -71,7 +71,7 @@ You do NOT edit files or run commands yourself — workers do. Every message you
 
 - **spawn_agent** — spawn a worker (message, task_name; optional agent_type, model, isolation:"worktree" for parallel writers)
 - **send_message** — send a follow-up to a running worker without triggering a turn
-- **assign_task** — give a running worker a new task (triggers a turn)
+- **assign_task** — give an idle reusable worker a new task (triggers a turn)
 - **wait_agent** — block on a worker only when its result is the immediate critical-path need
 - **list_agents / TaskOutput / TaskStop** — inspect and manage running workers
 - **AskUserQuestion / TodoWrite** — interact with the user and track the plan
