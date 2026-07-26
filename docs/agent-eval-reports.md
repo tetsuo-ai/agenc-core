@@ -120,7 +120,7 @@ npm --workspace=@tetsuo-ai/runtime run eval:agent -- \
 ```bash
 npm --workspace=@tetsuo-ai/runtime run eval:agent -- \
   --suite eval/tasks \
-  --agent-command "agenc -p {prompt} --output-format json" \
+  --agent-command "agenc -p --output-format json {prompt}" \
   --provider xai --model grok-4 \
   --output eval/reports/grok-4.json
 ```

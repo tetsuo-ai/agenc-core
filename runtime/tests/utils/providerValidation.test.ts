@@ -138,3 +138,18 @@ test('startup provider validation stays strict for non-interactive launches', ()
     }),
   ).toBe(true)
 })
+
+test('startup provider validation ignores control-looking prompt text', () => {
+  expect(
+    shouldExitForStartupProviderValidationError({
+      args: ['explain', '-p', '--init-only', '--sdk-url=ws://prompt.invalid'],
+      stdoutIsTTY: true,
+    }),
+  ).toBe(false)
+  expect(
+    shouldExitForStartupProviderValidationError({
+      args: ['--', '--print', '--sdk-url', 'ws://prompt.invalid'],
+      stdoutIsTTY: true,
+    }),
+  ).toBe(false)
+})

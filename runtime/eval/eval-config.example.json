@@ -10,7 +10,7 @@
       "id": "grok-4",
       "provider": "xai",
       "model": "grok-4",
-      "agentCommand": "agenc -p {prompt} --output-format json"
+      "agentCommand": "agenc -p --output-format json {prompt}"
     }
   ]
 }

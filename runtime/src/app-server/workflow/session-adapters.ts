@@ -34,6 +34,10 @@ import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
 } from "../../bin/bootstrap.js";
+import {
+  insertProcessCliOptionsBeforePrompt,
+  tokenizeCliOptionRegion,
+} from "../../bin/cli-option-region.js";
 import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
 import type { AgentPath } from "../../agents/registry.js";
@@ -257,22 +261,23 @@ export function workflowPermissionModeArgv(
   permissionMode: WorkflowRunSessionPolicy["permissionMode"],
   baseArgv: readonly string[] = process.argv,
 ): readonly string[] {
-  const argv = [...baseArgv];
+  const optionArgs = tokenizeCliOptionRegion(baseArgv.slice(2)).optionArgs;
+  const generatedOptions: string[] = [];
   if (
     permissionMode === "bypassPermissions" &&
-    !argv.includes("--yolo") &&
-    !argv.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !argv.includes("--allow-dangerously-skip-permissions")
+    !optionArgs.includes("--yolo") &&
+    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
+    !optionArgs.includes("--allow-dangerously-skip-permissions")
   ) {
-    argv.push("--yolo");
+    generatedOptions.push("--yolo");
   }
   if (
     permissionMode !== "bypassPermissions" &&
-    !argv.includes("--permission-mode")
+    !optionArgs.includes("--permission-mode")
   ) {
-    argv.push("--permission-mode", permissionMode);
+    generatedOptions.push("--permission-mode", permissionMode);
   }
-  return argv;
+  return insertProcessCliOptionsBeforePrompt(baseArgv, generatedOptions);
 }
 
 /**

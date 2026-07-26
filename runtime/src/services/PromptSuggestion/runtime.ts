@@ -10,6 +10,7 @@
 import { randomUUID } from 'crypto'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
+import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
 import type { LLMProvider } from '../../llm/types.js'
 import { isDangerousCommand } from '../../permissions/bash.js'
 import {
@@ -225,9 +226,10 @@ export function getInitialPromptSuggestionSettings(
 
 export function isAgentSwarmsEnabled(): boolean {
   if (process.env.USER_TYPE === 'ant') return true
+  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
   if (
     !isEnvTruthy(process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS) &&
-    !process.argv.includes('--agent-teams')
+    !optionArgs.includes('--agent-teams')
   ) {
     return false
   }

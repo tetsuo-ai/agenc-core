@@ -16,6 +16,7 @@ import type { AssistantMessage } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js'
+import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
 import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
 import { consumeInvokingRequestId } from '../../utils/agentContext.js'
 import { EMPTY_USAGE } from './emptyUsage.js'
@@ -248,8 +249,9 @@ function logAPISuccess({
 }): void {
   const isNonInteractiveSession = getIsNonInteractiveSession()
   const isPostCompaction = consumePostCompaction()
+  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
   const hasPrintFlag =
-    process.argv.includes('-p') || process.argv.includes('--print')
+    optionArgs.includes('-p') || optionArgs.includes('--print')
 
   const now = Date.now()
   const lastCompletion = getLastApiCompletionTimestamp()

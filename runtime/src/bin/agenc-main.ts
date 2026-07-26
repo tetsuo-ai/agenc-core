@@ -32,13 +32,13 @@ import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   classifyCLI,
   extractFlagValues,
-  isStartupValueFlagToken,
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
   type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
+import { tokenizeCliOptionRegion } from "./cli-option-region.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -311,24 +311,8 @@ function leadingFlagBeforePrompt(
   argv: readonly string[],
   targets: readonly string[],
 ): boolean {
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    // Literal `--` ends the option region: everything after is prompt.
-    if (arg === "--") return false;
-    if (targets.includes(arg)) return true;
-    if (isStartupValueFlagToken(arg)) {
-      // `--flag value` form consumes the next token as its value, so that
-      // value is not a positional that would end the option region.
-      const next = argv[i + 1];
-      if (typeof next === "string" && !next.startsWith("-")) i += 1;
-      continue;
-    }
-    // Any other option-looking token (`-x`, `--foo`, `--foo=bar`) stays in
-    // the option region; the first bare positional ends it.
-    if (arg.startsWith("-")) continue;
-    return false;
-  }
-  return false;
+  const { optionArgs } = tokenizeCliOptionRegion(argv);
+  return optionArgs.some((arg) => targets.includes(arg));
 }
 
 export function formatCliHelpText(): string {
@@ -1412,12 +1396,8 @@ async function prepareOneShotPromptForDaemon(params: {
   | { readonly blocked: true; readonly blockMessage: string }
 > {
   const target = createOneShotHookTarget();
-  const argv = process.argv.slice(2);
   const explicitDanger =
-    argv.includes("--yolo") ||
-    argv.includes("--dangerously-bypass-approvals-and-sandbox") ||
-    argv.includes("--dangerously-skip-permissions") ||
-    argv.includes("--allow-dangerously-skip-permissions");
+    readStartupCliFlags(process.argv).allowDangerouslySkipPermissions === true;
   const configuredSandbox = params.configStore.current().sandbox_mode;
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     mode: explicitDanger
@@ -2298,6 +2278,7 @@ export async function oneShotCLI(
     throwIfAborted("validateAgencHome");
     const agencHome = resolveAgencHome(process.env);
     const oneShotArgv = process.argv.slice(2);
+    const startupCliFlags = readStartupCliFlags(process.argv);
     const outputFormat = readOneShotOutputFormat(oneShotArgv);
     readOneShotInputFormat(oneShotArgv);
 
@@ -2370,9 +2351,7 @@ export async function oneShotCLI(
     // print-mode oneShot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
     const isYoloOneShot =
-      oneShotArgv.includes("--yolo") ||
-      oneShotArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
-      oneShotArgv.includes("--allow-dangerously-skip-permissions");
+      startupCliFlags.allowDangerouslySkipPermissions === true;
     // Honor a validated `--permission-mode <value>` in the print path. Without
     // this, only --yolo/bypass propagated and acceptEdits/plan/default were
     // silently dropped. readStartupCliFlags already validated the flag (throwing
@@ -2384,7 +2363,6 @@ export async function oneShotCLI(
     // bypassPermissions takes precedence over any other forwarded mode. Narrow
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
-    const startupCliFlags = readStartupCliFlags(process.argv);
     const oneShotPermissionMode = isYoloOneShot
       ? ("bypassPermissions" as const)
       : startupCliFlags.permissionMode === "default" ||
@@ -3081,11 +3059,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
       // Propagate --yolo from the user's argv into the daemon-spawned
       // agent's session config so the deferred TUI mirrors the bootTUI
       // path. See GAP-PE-GUARDIAN-YOLO-LEAK.
-      const deferredArgvForYolo = process.argv.slice(2);
       const isYoloDeferred =
-        deferredArgvForYolo.includes("--yolo") ||
-        deferredArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
-        deferredArgvForYolo.includes("--allow-dangerously-skip-permissions");
+        readStartupCliFlags(process.argv).allowDangerouslySkipPermissions ===
+        true;
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
@@ -3899,11 +3875,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       startupImages.length === 0
     ) {
       const deps = daemonCliDeps();
-      const idleArgvForYolo = process.argv.slice(2);
       const isYoloIdle =
-        idleArgvForYolo.includes("--yolo") ||
-        idleArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
-        idleArgvForYolo.includes("--allow-dangerously-skip-permissions");
+        startupCliFlags.allowDangerouslySkipPermissions === true;
       const {
         configStore,
         workspaceRoot,
@@ -4013,11 +3986,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     // this, --yolo only affected the local CLI bootstrap and dropped on
     // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
     // forwarding in background-agent-runner.buildBootstrapArgv.
-    const cliArgvForYolo = process.argv.slice(2);
     const isYoloFromCli =
-      cliArgvForYolo.includes("--yolo") ||
-      cliArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
-      cliArgvForYolo.includes("--allow-dangerously-skip-permissions");
+      startupCliFlags.allowDangerouslySkipPermissions === true;
     const started = await deps.startPromptAgent({
       prompt: preparedObjective,
       env: process.env,
@@ -4137,13 +4107,8 @@ export async function attachAgentTuiEntry(
       return 1;
     }
     const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const attachArgvForYolo = process.argv.slice(2);
     const isYoloAttach =
-      attachArgvForYolo.includes("--yolo") ||
-      attachArgvForYolo.includes(
-        "--dangerously-bypass-approvals-and-sandbox",
-      ) ||
-      attachArgvForYolo.includes("--allow-dangerously-skip-permissions");
+      readStartupCliFlags(process.argv).allowDangerouslySkipPermissions === true;
     const {
       configStore,
       workspaceRoot,

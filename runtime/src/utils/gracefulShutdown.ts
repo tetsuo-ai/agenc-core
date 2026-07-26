@@ -3,6 +3,7 @@ import { writeSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { onExit } from 'signal-exit'
 import type { ExitReason } from 'src/entrypoints/sdk/coreTypes.generated.js'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 import {
   getIsInteractive,
   getIsScrollDraining,
@@ -351,7 +352,8 @@ export const setupGracefulShutdown = memoize(() => {
     // avoid racing with it. Only check print mode — other non-interactive
     // sessions (--sdk-url, --init-only, non-TTY) don't register their own
     // SIGINT handler and need gracefulShutdown to run.
-    if (process.argv.includes('-p') || process.argv.includes('--print')) {
+    const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
+    if (optionArgs.includes('-p') || optionArgs.includes('--print')) {
       return
     }
     logForDiagnosticsNoPII('info', 'shutdown_signal', { signal: 'SIGINT' })

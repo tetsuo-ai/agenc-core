@@ -30,6 +30,7 @@ import {
 } from "../../src/app-server/workflow/session-adapters.js";
 import type { WorkflowRunSessionPolicy } from "../../src/app-server/workflow/verified-change-controller.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { readStartupCliFlags } from "../../src/bin/startup-selection.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
@@ -225,6 +226,29 @@ describe("A2 — spec permission policy on the run session", () => {
       "--permission-mode",
       "plan",
     ]);
+  });
+
+  it("inserts generated permission options before a positional argv boundary", () => {
+    const argv = workflowPermissionModeArgv("plan", [
+      "node",
+      "agenc",
+      "daemon",
+      "run",
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+
+    expect(argv).toEqual([
+      "node",
+      "agenc",
+      "--permission-mode",
+      "plan",
+      "daemon",
+      "run",
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+    expect(readStartupCliFlags(argv).permissionMode).toBe("plan");
   });
 });
 

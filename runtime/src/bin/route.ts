@@ -19,6 +19,11 @@
  * without touching Ink, the session subsystem, or the provider layer.
  */
 
+import {
+  STARTUP_VALUE_OPTIONS,
+  tokenizeCliOptionRegion,
+} from "./cli-option-region.js";
+
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv
  * vector. Returns `null` when the flag is absent or has no value. When
@@ -31,11 +36,14 @@ export function extractFlagValue(
   argv: readonly string[],
   flag: string,
 ): string | null {
+  const { optionArgs } = tokenizeCliOptionRegion(argv, {
+    additionalValueOptions: [flag],
+  });
   const prefix = `${flag}=`;
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
+  for (let i = 0; i < optionArgs.length; i += 1) {
+    const arg = optionArgs[i]!;
     if (arg === flag) {
-      const next = argv[i + 1];
+      const next = optionArgs[i + 1];
       if (typeof next !== "string" || next.startsWith("-")) return null;
       return next;
     }
@@ -50,12 +58,15 @@ export function extractFlagValues(
   argv: readonly string[],
   flag: string,
 ): string[] {
+  const { optionArgs } = tokenizeCliOptionRegion(argv, {
+    additionalValueOptions: [flag],
+  });
   const out: string[] = [];
   const prefix = `${flag}=`;
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
+  for (let i = 0; i < optionArgs.length; i += 1) {
+    const arg = optionArgs[i]!;
     if (arg === flag) {
-      const next = argv[i + 1];
+      const next = optionArgs[i + 1];
       if (typeof next === "string" && !next.startsWith("-")) {
         out.push(next);
         i += 1;
@@ -73,6 +84,7 @@ const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 
 const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
+  "-h",
   "--version",
   "--yolo",
   "--continue",
@@ -91,17 +103,7 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
 // here silently swallowed the flag AND its value, dropping the user's
 // intent with no behavior and no feedback. Removing them lets the flag
 // text fall through as visible prompt content instead of vanishing.
-const STARTUP_VALUE_FLAGS = Object.freeze([
-  "--resume",
-  "-r",
-  "--provider",
-  "--model",
-  "--profile",
-  "--permission-mode",
-  "--output-format",
-  "--input-format",
-  "--image",
-] as const);
+const STARTUP_VALUE_FLAGS = STARTUP_VALUE_OPTIONS;
 
 function shouldStripValueFlag(arg: string): boolean {
   return STARTUP_VALUE_FLAGS.some(
@@ -133,8 +135,8 @@ function isResumeFlagToken(arg: string): boolean {
  * Returns false for the `--flag=value` form, which carries its own value.
  */
 export function isStartupValueFlagToken(arg: string): boolean {
-  return STARTUP_VALUE_FLAGS.includes(
-    arg as (typeof STARTUP_VALUE_FLAGS)[number],
+  return STARTUP_VALUE_OPTIONS.includes(
+    arg as (typeof STARTUP_VALUE_OPTIONS)[number],
   );
 }
 
@@ -245,20 +247,21 @@ function shouldStripBooleanFlag(arg: string): boolean {
  * stripping logic before it builds its prompt string.
  */
 export function stripRoutingFlags(argv: readonly string[]): string[] {
+  const { optionArgs, promptArgs } = tokenizeCliOptionRegion(argv);
   const out: string[] = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
+  for (let i = 0; i < optionArgs.length; i += 1) {
+    const arg = optionArgs[i]!;
     if (shouldStripBooleanFlag(arg)) continue;
     if (shouldStripValueFlag(arg)) {
       if (arg.includes("=")) continue;
       // Skip flag + its value (if any non-flag follows).
-      const next = argv[i + 1];
+      const next = optionArgs[i + 1];
       if (typeof next === "string" && !next.startsWith("-")) i += 1;
       continue;
     }
     out.push(arg);
   }
-  return out;
+  return [...out, ...promptArgs];
 }
 
 export interface BootTUIArgs {
@@ -319,16 +322,18 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   // provided args start at argv[2] and are the input the caller wants to
   // treat as the prompt (after stripping routing flags).
   const userArgv = opts.argv.slice(2);
-  const hasNoTuiFlag = userArgv.includes("--no-tui");
+  const { optionArgs } = tokenizeCliOptionRegion(userArgv);
+  const hasNoTuiFlag = optionArgs.includes("--no-tui");
   const hasPrintFlag =
-    userArgv.includes("-p") || userArgv.includes("--print");
+    optionArgs.includes("-p") || optionArgs.includes("--print");
   const hasContinueFlag =
-    userArgv.includes("--continue") || userArgv.includes("-c");
+    optionArgs.includes("--continue") || optionArgs.includes("-c");
   const resumeId =
-    extractFlagValue(userArgv, "--resume") ?? extractFlagValue(userArgv, "-r");
-  const hasResumeFlag = userArgv.some(isResumeFlagToken);
+    extractFlagValue(optionArgs, "--resume") ??
+    extractFlagValue(optionArgs, "-r");
+  const hasResumeFlag = optionArgs.some(isResumeFlagToken);
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
-  const startupImages = extractFlagValues(userArgv, "--image");
+  const startupImages = extractFlagValues(optionArgs, "--image");
 
   // 0. A resume flag token was supplied but with no session id (bare
   //    `--resume`/`-r`, or the empty `--resume=`/`-r=` form). Resuming
@@ -356,7 +361,7 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   //     errorAndExit shape, exitCode 2, both TTY and non-TTY). Only a real
   //     leading flag token matches — a `--model=gpt` value form or a prompt
   //     that merely contains the word "model" is unaffected.
-  const missingSelectionFlag = findMissingValueSelectionFlag(userArgv);
+  const missingSelectionFlag = findMissingValueSelectionFlag(optionArgs);
   if (missingSelectionFlag !== null) {
     return {
       kind: "errorAndExit",
@@ -364,7 +369,8 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
       exitCode: 2,
     };
   }
-  const missingHeadlessFormatFlag = findMissingHeadlessFormatValueFlag(userArgv);
+  const missingHeadlessFormatFlag =
+    findMissingHeadlessFormatValueFlag(optionArgs);
   if (missingHeadlessFormatFlag !== null) {
     return {
       kind: "errorAndExit",

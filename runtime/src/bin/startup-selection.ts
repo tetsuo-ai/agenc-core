@@ -13,6 +13,7 @@ import { configuredModelForProvider, defaultModelForProvider, resolveDisambiguat
 import { resolveProfile } from "../config/profiles.js";
 import { resolveProfileName } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
+import { tokenizeCliOptionRegion } from "./cli-option-region.js";
 import { extractFlagValue } from "./route.js";
 
 const DEFAULT_MODEL = "grok-4.5";
@@ -44,11 +45,12 @@ export function readStartupCliFlags(
   argv: readonly string[],
 ): StartupCliFlags {
   const userArgv = argv.slice(2);
-  const provider = extractFlagValue(userArgv, "--provider") ?? undefined;
-  const model = extractFlagValue(userArgv, "--model") ?? undefined;
-  const profile = extractFlagValue(userArgv, "--profile") ?? undefined;
+  const { optionArgs } = tokenizeCliOptionRegion(userArgv);
+  const provider = extractFlagValue(optionArgs, "--provider") ?? undefined;
+  const model = extractFlagValue(optionArgs, "--model") ?? undefined;
+  const profile = extractFlagValue(optionArgs, "--profile") ?? undefined;
   const rawPermissionMode =
-    extractFlagValue(userArgv, "--permission-mode") ?? undefined;
+    extractFlagValue(optionArgs, "--permission-mode") ?? undefined;
   // Distinguish "flag absent" from "flag present but invalid". An invalid
   // value must not be silently coerced to `undefined` (which would boot in
   // DEFAULT mode — a silent failure toward a LESS restrictive session). Throw
@@ -56,11 +58,11 @@ export function readStartupCliFlags(
   // mode`, surfacing as a clean error + non-zero exit at the CLI entrypoint.
   const permissionMode = resolvePermissionModeOrThrow(rawPermissionMode);
   const allowDangerouslySkipPermissions =
-    userArgv.includes("--yolo") ||
-    userArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
-    userArgv.includes("--allow-dangerously-skip-permissions");
+    optionArgs.includes("--yolo") ||
+    optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") ||
+    optionArgs.includes("--allow-dangerously-skip-permissions");
   const autonomousMode =
-    userArgv.includes("--autonomous") || userArgv.includes("--proactive");
+    optionArgs.includes("--autonomous") || optionArgs.includes("--proactive");
   return Object.freeze({
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),

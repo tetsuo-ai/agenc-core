@@ -2406,6 +2406,60 @@ describe("main() smoke", () => {
     }
   });
 
+  it("oneShotCLI never forwards a permission bypass token from prompt text", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-prompt-yolo-cwd-"));
+    const prevEnv = { ...process.env };
+    const prevArgv = [...process.argv];
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "explain",
+      "--yolo",
+      "--permission-mode",
+      "bypassPermissions",
+    ];
+
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_prompt_yolo",
+      sessionId: "session_prompt_yolo",
+      cwd: tmpCwd,
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(
+        oneShotCLI("explain --yolo --permission-mode bypassPermissions"),
+      ).resolves.toBe(0);
+      const createCall = daemon.requests.find(
+        (request) => request.method === "agent.create",
+      );
+      expect(createCall).toBeDefined();
+      expect(
+        (createCall?.params as { permissionMode?: string } | undefined)
+          ?.permissionMode,
+      ).toBeUndefined();
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("bootTUIEntry streams startup prompt and images as one daemon message", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-image-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-image-cwd-"));
@@ -3344,4 +3398,117 @@ describe("main() smoke", () => {
     }
     expect(rejections).toEqual([]);
   });
+
+  it.each([
+    {
+      label: "after the positional prompt begins",
+      argv: [
+        "literal prompt",
+        "--yolo",
+        "--permission-mode",
+        "bypassPermissions",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5",
+        "--help",
+        "--version",
+      ],
+      expectedPrompt:
+        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+    },
+    {
+      label: "after the end-of-options delimiter",
+      argv: [
+        "--",
+        "literal prompt",
+        "--yolo",
+        "--permission-mode",
+        "bypassPermissions",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5",
+        "--help",
+        "--version",
+      ],
+      expectedPrompt:
+        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+    },
+  ])(
+    "main keeps startup-looking tokens literal $label",
+    async ({ argv, expectedPrompt }) => {
+      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-boundary-main-"));
+      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-boundary-cwd-"));
+      const prevArgv = process.argv;
+      const prevEnv = { ...process.env };
+      const prevStdinIsTTY = Object.getOwnPropertyDescriptor(
+        process.stdin,
+        "isTTY",
+      );
+
+      process.argv = [
+        process.argv[0] ?? "node",
+        "agenc-test-entry",
+        ...argv,
+      ];
+      process.env.AGENC_HOME = tmpHome;
+      process.env.AGENC_WORKSPACE = tmpCwd;
+      process.env.AGENC_PROVIDER = "grok";
+      process.env.AGENC_MODEL = "grok-4.3";
+      process.env.XAI_API_KEY = "stub-key-for-test";
+      process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+      process.env.AGENC_DAEMON_AUTOSTART = "0";
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      Object.defineProperty(process.stdin, "isTTY", {
+        configurable: true,
+        value: false,
+      });
+      const daemon = installDaemonCliDepsForTest({
+        agentId: "agent_boundary_main",
+        sessionId: "session_boundary_main",
+        cwd: tmpCwd,
+      });
+      const stdoutSpy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation(() => true);
+
+      try {
+        await expect(main()).resolves.toBe(0);
+        const createCall = daemon.requests.find(
+          (request) => request.method === "agent.create",
+        );
+        expect(createCall).toBeDefined();
+        expect(createCall?.params).toEqual(
+          expect.objectContaining({
+            objective: expectedPrompt,
+            instructions: expectedPrompt,
+            provider: "grok",
+            model: "grok-4.3",
+          }),
+        );
+        expect(
+          (createCall?.params as { permissionMode?: string } | undefined)
+            ?.permissionMode,
+        ).toBeUndefined();
+        expect(
+          stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        ).toBe("daemon answer\n");
+      } finally {
+        stdoutSpy.mockRestore();
+        process.argv = prevArgv;
+        if (prevStdinIsTTY === undefined) {
+          delete (process.stdin as { isTTY?: boolean }).isTTY;
+        } else {
+          Object.defineProperty(process.stdin, "isTTY", prevStdinIsTTY);
+        }
+        for (const key of Object.keys(process.env)) {
+          if (!(key in prevEnv)) delete process.env[key];
+        }
+        Object.assign(process.env, prevEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
 });

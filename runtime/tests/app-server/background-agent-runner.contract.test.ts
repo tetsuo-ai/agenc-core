@@ -1435,6 +1435,42 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
+  it("inserts generated bootstrap options before a positional daemon argv", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "positional-bootstrap-session",
+      argv: ["node", "agenc", "daemon", "run"],
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      provider: "openai",
+      model: "gpt-5",
+      profile: "fast",
+      permissionMode: "plan",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        argv: [
+          "node",
+          "agenc",
+          "--provider",
+          "openai",
+          "--model",
+          "gpt-5",
+          "--profile",
+          "fast",
+          "--permission-mode",
+          "plan",
+          "daemon",
+          "run",
+        ],
+      }),
+    );
+  });
+
   it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
     const executionAdmissionKernel = {} as ExecutionAdmissionKernel;
     const { runner, bootstrap, shutdown } = makeTopLevelRunner({

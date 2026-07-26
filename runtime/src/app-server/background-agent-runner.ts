@@ -12,6 +12,10 @@ import {
   type BootstrapLocalRuntimeSessionOptions,
   type LocalRuntimeBootstrap,
 } from "../bin/bootstrap.js";
+import {
+  insertProcessCliOptionsBeforePrompt,
+  tokenizeCliOptionRegion,
+} from "../bin/cli-option-region.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
@@ -5466,10 +5470,12 @@ function buildBootstrapArgv(
   },
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
-  const argv = [...(baseArgv ?? process.argv)];
-  appendFlag(argv, "--provider", params.provider);
-  appendFlag(argv, "--model", params.model);
-  appendFlag(argv, "--profile", params.profile);
+  const argv = baseArgv ?? process.argv;
+  const optionArgs = tokenizeCliOptionRegion(argv.slice(2)).optionArgs;
+  const generatedOptions: string[] = [];
+  appendFlag(generatedOptions, "--provider", params.provider);
+  appendFlag(generatedOptions, "--model", params.model);
+  appendFlag(generatedOptions, "--profile", params.profile);
   // Forward `--yolo` when the caller asked for bypassPermissions mode.
   // bin/bootstrap.ts:1146 keys off cli.allowDangerouslySkipPermissions
   // (which startup-selection.ts sets when --yolo is in argv), so adding
@@ -5478,11 +5484,11 @@ function buildBootstrapArgv(
   // already carries one.
   if (
     params.permissionMode === "bypassPermissions" &&
-    !argv.includes("--yolo") &&
-    !argv.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !argv.includes("--allow-dangerously-skip-permissions")
+    !optionArgs.includes("--yolo") &&
+    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
+    !optionArgs.includes("--allow-dangerously-skip-permissions")
   ) {
-    argv.push("--yolo");
+    generatedOptions.push("--yolo");
   }
   // Mirror non-bypass modes via `--permission-mode <value>` so plan and
   // acceptEdits also propagate. startup-selection.ts already parses
@@ -5490,15 +5496,15 @@ function buildBootstrapArgv(
   if (
     params.permissionMode !== undefined &&
     params.permissionMode !== "bypassPermissions" &&
-    !argv.includes("--permission-mode")
+    !optionArgs.includes("--permission-mode")
   ) {
-    argv.push("--permission-mode", params.permissionMode);
+    generatedOptions.push("--permission-mode", params.permissionMode);
   }
   // todo-114: do not force --autonomous on every daemon agent. Unattended
   // permission policy is installed separately; keepalive ticks only exist on
   // the TUI contract path. Forcing autonomous here made models expect ticks
   // that never arrived and defaulted empty unattended allowlists to pause-all.
-  return argv;
+  return insertProcessCliOptionsBeforePrompt(argv, generatedOptions);
 }
 
 function appendFlag(

@@ -12,6 +12,7 @@
  */
 
 import { lastGrapheme } from './intl.js'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 
 // Buffer for early input characters
 let earlyInputBuffer = ''
@@ -27,14 +28,15 @@ let readableHandler: (() => void) | null = null
  * Only captures if stdin is a TTY (interactive terminal).
  */
 export function startCapturingEarlyInput(): void {
+  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
   // Only capture in interactive mode: stdin must be a TTY, and we must not
   // be in print mode. Raw mode disables ISIG (terminal Ctrl+C → SIGINT),
   // which would make -p uninterruptible.
   if (
     !process.stdin.isTTY ||
     isCapturing ||
-    process.argv.includes('-p') ||
-    process.argv.includes('--print')
+    optionArgs.includes('-p') ||
+    optionArgs.includes('--print')
   ) {
     return
   }

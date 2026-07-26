@@ -428,6 +428,61 @@ describe("classifyCLI", () => {
       startupImages: ["/tmp/cat.png"],
     });
   });
+
+  it("treats every option-looking token after the prompt begins as literal text", () => {
+    const promptTokens = [
+      "explain",
+      "--yolo",
+      "--permission-mode",
+      "bypassPermissions",
+      "--provider",
+      "openai",
+      "--model",
+      "gpt-5",
+      "--image",
+      "/tmp/prompt.png",
+      "-p",
+      "--no-tui",
+      "--continue",
+      "--resume",
+      "session-from-prompt",
+    ];
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, ...promptTokens],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: promptTokens.join(" ") },
+    });
+  });
+
+  it("treats every token after -- as literal prompt text and removes the delimiter", () => {
+    const promptTokens = [
+      "explain",
+      "--permission-mode",
+      "bypassPermissions",
+      "--yolo",
+      "--model",
+      "gpt-5",
+      "--help",
+      "--version",
+    ];
+
+    expect(
+      classifyCLI({
+        argv: [NODE, SCRIPT, "--", ...promptTokens],
+        isTTY: true,
+        isStdoutTTY: true,
+      }),
+    ).toEqual({
+      kind: "bootTUI",
+      args: { initialPrompt: promptTokens.join(" ") },
+    });
+  });
 });
 
 describe("classifyCLI startup selection value-flag missing-value guard", () => {
@@ -674,5 +729,41 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
       ]),
     ).toStrictEqual(["hello"]);
     expect(stripRoutingFlags(["hello"])).toStrictEqual(["hello"]);
+  });
+
+  it("never extracts or strips flags after the prompt boundary", () => {
+    expect(
+      extractFlagValue(
+        ["explain", "--permission-mode", "bypassPermissions"],
+        "--permission-mode",
+      ),
+    ).toBeNull();
+    expect(
+      stripRoutingFlags([
+        "explain",
+        "--yolo",
+        "--model",
+        "gpt-5",
+        "--no-tui",
+      ]),
+    ).toStrictEqual([
+      "explain",
+      "--yolo",
+      "--model",
+      "gpt-5",
+      "--no-tui",
+    ]);
+    expect(
+      stripRoutingFlags([
+        "--",
+        "--permission-mode",
+        "bypassPermissions",
+        "--yolo",
+      ]),
+    ).toStrictEqual([
+      "--permission-mode",
+      "bypassPermissions",
+      "--yolo",
+    ]);
   });
 });

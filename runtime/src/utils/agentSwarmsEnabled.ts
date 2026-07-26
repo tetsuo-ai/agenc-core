@@ -1,4 +1,5 @@
 import { isEnvTruthy } from './envUtils.js'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 
 /**
  * Check if --agent-teams flag is provided via CLI.
@@ -7,7 +8,9 @@ import { isEnvTruthy } from './envUtils.js'
  * pass it anyway, it will work (subject to the killswitch).
  */
 function isAgentTeamsFlagSet(): boolean {
-  return process.argv.includes('--agent-teams')
+  return tokenizeCliOptionRegion(process.argv.slice(2)).optionArgs.includes(
+    '--agent-teams',
+  )
 }
 
 /**

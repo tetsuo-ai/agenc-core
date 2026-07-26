@@ -5,6 +5,7 @@ import {
   resolveProviderCodeApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 import { getGlobalAgenCFile } from './env.js'
 import { isBareMode } from './envUtils.js'
 import {
@@ -175,6 +176,9 @@ export function shouldExitForStartupProviderValidationError(options: {
   stdoutIsTTY?: boolean
 } = {}): boolean {
   const args = options.args ?? process.argv.slice(2)
+  const { optionArgs } = tokenizeCliOptionRegion(args, {
+    additionalValueOptions: ['--sdk-url'],
+  })
   const stdoutIsTTY = options.stdoutIsTTY ?? process.stdout.isTTY
 
   if (!stdoutIsTTY) {
@@ -182,10 +186,10 @@ export function shouldExitForStartupProviderValidationError(options: {
   }
 
   return (
-    args.includes('-p') ||
-    args.includes('--print') ||
-    args.includes('--init-only') ||
-    args.some(arg => arg.startsWith('--sdk-url'))
+    optionArgs.includes('-p') ||
+    optionArgs.includes('--print') ||
+    optionArgs.includes('--init-only') ||
+    optionArgs.some(arg => arg.startsWith('--sdk-url'))
   )
 }
 

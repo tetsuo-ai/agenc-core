@@ -97,4 +97,42 @@ describe("readStartupCliFlags --permission-mode validation", () => {
     ]);
     expect(flags.permissionMode).toBeUndefined();
   });
+
+  it("ignores startup-looking tokens after the positional prompt begins", () => {
+    const flags = readStartupCliFlags([
+      "node",
+      "agenc",
+      "explain",
+      "--provider",
+      "openai",
+      "--model",
+      "gpt-5",
+      "--profile",
+      "fast",
+      "--permission-mode",
+      "bypassPermissions",
+      "--yolo",
+      "--autonomous",
+    ]);
+
+    expect(flags).toEqual({});
+  });
+
+  it("ignores startup-looking tokens after the end-of-options delimiter", () => {
+    const flags = readStartupCliFlags([
+      "node",
+      "agenc",
+      "--",
+      "--provider",
+      "openai",
+      "--model",
+      "gpt-5",
+      "--permission-mode",
+      "bypassPermissions",
+      "--yolo",
+      "--proactive",
+    ]);
+
+    expect(flags).toEqual({});
+  });
 });

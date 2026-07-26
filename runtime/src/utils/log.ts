@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { join } from 'path'
 import type { QuerySource } from 'src/constants/querySource.js'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 import {
   setLastAPIRequest,
   setLastAPIRequestMessages,
@@ -154,7 +155,9 @@ export function attachErrorLogSink(newSink: ErrorLogSink): void {
  * - In-memory: Call `getInMemoryErrors()` to get recent errors for the current session
  */
 const isHardFailMode = memoize((): boolean => {
-  return process.argv.includes('--hard-fail')
+  return tokenizeCliOptionRegion(process.argv.slice(2)).optionArgs.includes(
+    '--hard-fail',
+  )
 })
 
 export function logError(error: unknown): void {

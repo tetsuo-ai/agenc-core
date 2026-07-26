@@ -1,6 +1,7 @@
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { join } from 'path'
+import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
 
 export function resolveAgenCConfigHomeDir(options?: {
   configDirEnv?: string
@@ -73,9 +74,10 @@ export function isEnvDefinedFalsy(
  * — notably startKeychainPrefetch() at main.tsx top-level.
  */
 export function isBareMode(): boolean {
+  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
   return (
     isEnvTruthy(process.env.AGENC_SIMPLE) ||
-    process.argv.includes('--bare')
+    optionArgs.includes('--bare')
   )
 }
 
