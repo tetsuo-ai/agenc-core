@@ -1,6 +1,6 @@
 {
   "name": "agenc-core",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "license": "MIT",
   "private": true,
   "packageManager": "npm@11.17.0",

@@ -1,6 +1,6 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**Current release: 0.9.3.** The public installer and npm package resolve to the
+**Current release: 0.9.4.** The public installer and npm package resolve to the
 same reviewed immutable runtime release.
 
 Prerequisites: Node.js **>=25.9 <26** (release toolchain: 25.9.0), `tar`, and a way to reach a model — BYOK
@@ -127,6 +127,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channels are not in 0.9.3.
+Signal, WhatsApp, and email channels are not in 0.9.4.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.
