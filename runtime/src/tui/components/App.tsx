@@ -95,7 +95,12 @@ import { createFileStateCacheWithSizeLimit, READ_FILE_STATE_CACHE_SIZE } from ".
 import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 import { escapeXml, unescapeXml } from "../../utils/xml.js";
-import { Onboarding, type FirstRunOnboardingState, useFirstRunOnboardingController } from "../../onboarding/Onboarding.js";
+import {
+  firstRunOnboardingInputPresentation,
+  Onboarding,
+  type FirstRunOnboardingState,
+  useFirstRunOnboardingController,
+} from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
 import { refreshLedgerStatus } from "../../services/Ledger/ledgerStatus.js";
 import {
@@ -3040,13 +3045,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
+    const onboardingInput = firstRunOnboardingInputPresentation(onboarding.state);
     return <Box flexDirection="column" width="100%">
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
         <Onboarding state={onboarding.state} steps={onboarding.steps} currentStep={onboarding.currentStep} context={onboardingContext} />
       {toolJSX !== null ? <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
         </Box> : null}
-      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
+      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus="valid" agencHome={agencHome} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onboardingInput={onboardingInput} onSubmit={async (value_0, helpers) => {
         if (isExitSlashCommand(value_0)) {
           setInput("");
           helpers.clearBuffer();

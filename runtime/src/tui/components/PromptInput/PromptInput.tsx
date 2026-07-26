@@ -434,6 +434,11 @@ type Props = {
   setHelpOpen: React.Dispatch<React.SetStateAction<boolean>>;
   hasSuppressedDialogs?: boolean;
   isLocalJSXCommandActive?: boolean;
+  onboardingInput?: {
+    readonly placeholder: string;
+    readonly footerHint: string;
+    readonly allowEmptySubmit: boolean;
+  };
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -559,7 +564,8 @@ function PromptInput({
   helpOpen,
   setHelpOpen,
   hasSuppressedDialogs,
-  isLocalJSXCommandActive = false
+  isLocalJSXCommandActive = false,
+  onboardingInput
 }: Props): React.ReactNode {
   const mainLoopModel = useMainLoopModel();
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
@@ -1179,7 +1185,7 @@ function PromptInput({
     const currentInput = lastInternalInputRef.current;
     const currentCursorOffset = cursorOffsetRef.current;
     const currentPastedContents = pastedContentsRef.current;
-    if (interpretShortcuts && value === '?') {
+    if (onboardingInput === undefined && interpretShortcuts && value === '?') {
       setHelpOpen(v => !v);
       return;
     }
@@ -1196,7 +1202,7 @@ function PromptInput({
     // mode itself is shown via the prompt prefix in the UI. Without this,
     // typing `!` into empty input would enter bash mode but leave the literal
     // `!` in the buffer (issue #662).
-    const modeEntry = interpretShortcuts ? detectModeEntry({
+    const modeEntry = onboardingInput === undefined && interpretShortcuts ? detectModeEntry({
       value,
       prevInputLength: currentInput.length,
       cursorOffset: currentCursorOffset,
@@ -1222,7 +1228,7 @@ function PromptInput({
       footerSelection: null
     });
     trackAndSetInput(processedValue);
-  }, [trackAndSetInput, onModeChange, pushToBuffer, dismissStashHint, setAppState, setCurrentCursorOffset]);
+  }, [trackAndSetInput, onModeChange, pushToBuffer, dismissStashHint, setAppState, setCurrentCursorOffset, onboardingInput]);
   const {
     resetHistory,
     onHistoryUp,
@@ -1340,7 +1346,7 @@ function PromptInput({
     // Only in leader view — promptSuggestion is leader-context, not teammate.
     const suggestionText = promptSuggestionState.text;
     const inputMatchesSuggestion = inputParam.trim() === '' || inputParam === suggestionText;
-    if (inputMatchesSuggestion && suggestionText && !hasImages && !hasWorkbenchAttachments && !state.viewingAgentTaskId) {
+    if (onboardingInput === undefined && inputMatchesSuggestion && suggestionText && !hasImages && !hasWorkbenchAttachments && !state.viewingAgentTaskId) {
       // If speculation is active, inject messages immediately as they stream
       if (speculation.status === 'active') {
         markAccepted();
@@ -1407,7 +1413,7 @@ function PromptInput({
     }
 
     // Allow submission if there are images attached, even without text
-    if (inputParam.trim() === '' && !hasImages && !hasWorkbenchAttachments) {
+    if (inputParam.trim() === '' && !hasImages && !hasWorkbenchAttachments && onboardingInput?.allowEmptySubmit !== true) {
       return;
     }
 
@@ -1542,7 +1548,7 @@ function PromptInput({
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
     }
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, getMessages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset, setPastedContentsAndRef]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, removeNotification, vimMode, mode, getToolUseContext, getMessages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification, setCurrentCursorOffset, setPastedContentsAndRef, onboardingInput]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1561,14 +1567,14 @@ function PromptInput({
     agents,
     setSuggestionsState,
     suggestionsState,
-    suppressSuggestions: isSearchingHistory || historyIndex > 0,
+    suppressSuggestions: onboardingInput !== undefined || isSearchingHistory || historyIndex > 0,
     markAccepted,
     onModeChange
   });
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
   // Hidden in teammate view — suggestion is leader-context only.
-  const showPromptSuggestion = shouldShowPromptSuggestionPlaceholder({
+  const showPromptSuggestion = onboardingInput === undefined && shouldShowPromptSuggestionPlaceholder({
     mode,
     promptSuggestion,
     suggestionCount: suggestions.length,
@@ -1581,7 +1587,7 @@ function PromptInput({
   // If suggestion was generated but can't be shown due to timing, log suppression.
   // Exclude teammate view: markShown() is gated above, so shownAt stays 0 there —
   // but that's not a timing failure, the suggestion is valid when returning to leader.
-  const shouldSuppressPromptSuggestion = shouldSuppressPromptSuggestionForTiming({
+  const shouldSuppressPromptSuggestion = onboardingInput === undefined && shouldSuppressPromptSuggestionForTiming({
     promptSuggestionText: promptSuggestionState.text,
     visiblePromptSuggestion: promptSuggestion,
     shownAt: promptSuggestionState.shownAt,
@@ -2532,6 +2538,8 @@ function PromptInput({
   // frame and compete for attention.
   const placeholder = isPasting
     ? undefined
+    : onboardingInput !== undefined
+      ? onboardingInput.placeholder
     : showPromptSuggestion && promptSuggestion
       ? promptSuggestion
       : defaultPlaceholder;
@@ -2704,8 +2712,8 @@ function PromptInput({
     // NOT via useKeybindings. This allows useTextInput's upOrHistoryUp/downOrHistoryDown
     // to try cursor movement first and only fall through to history navigation when the
     // cursor can't move further (important for wrapped text and multi-line input).
-    onHistoryUp: handleHistoryUp,
-    onHistoryDown: handleHistoryDown,
+    onHistoryUp: onboardingInput === undefined ? handleHistoryUp : undefined,
+    onHistoryDown: onboardingInput === undefined ? handleHistoryDown : undefined,
     onHistoryReset: resetHistory,
     placeholder,
     onExit,
@@ -2738,6 +2746,9 @@ function PromptInput({
     inputFilter: lazySpaceInputFilter
   };
   const getBorderColor = (): keyof Theme => {
+    if (onboardingInput !== undefined) {
+      return 'agenc';
+    }
     const modeColors: Record<string, keyof Theme> = {
       bash: 'worker'
     };
@@ -2792,22 +2803,29 @@ function PromptInput({
             </Box>
           </Box>
           <Text color={swarmBanner.bgColor}>{promptGlyphs.horizontal.repeat(columns)}</Text>
-        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1} backgroundColor={mode === 'bash' ? 'workerWash' : undefined} borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
+        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1} backgroundColor={mode === 'bash' ? 'workerWash' : undefined} borderText={onboardingInput !== undefined ? {
+          content: ' setup ',
+          position: 'top',
+          align: 'start',
+          offset: 1
+        } : buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
           <PromptInputModeIndicator mode={mode} permissionMode={effectiveToolPermissionContext.mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
             {textInputElement}
           </Box>
         </Box>}
-      {!isFullscreenEnvEnabled() && modeSwitcherElement ? <Box flexDirection="column" marginTop={1}>{modeSwitcherElement}</Box> : null}
+      {onboardingInput === undefined && !isFullscreenEnvEnabled() && modeSwitcherElement ? <Box flexDirection="column" marginTop={1}>{modeSwitcherElement}</Box> : null}
       {/* Round-2 M-NEW6: don't hide "? for shortcuts" on the first
           keystroke — the hint is about discovering keybindings, not
           about typing. Suppress it only when an active dropdown (the
           slash command picker / @-mention list) needs the same row,
           which the suggestions branch in PromptInputFooter handles
           via its own early return. */}
-      <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
-      {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
-      {isFullscreenEnvEnabled() ?
+      {onboardingInput !== undefined ? <Box paddingX={2}>
+          <Text dimColor>{onboardingInput.footerHint}</Text>
+        </Box> : <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />}
+      {onboardingInput !== undefined || isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
+      {onboardingInput === undefined && isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner
     // doesn't shift when a notification appears/disappears. Yoga
     // anchors absolute children at the parent's content-box origin;

@@ -474,7 +474,7 @@ function parseProvider(
 function invalidCommandError(raw: string, expected: string): string | null {
   return raw.trim().toLowerCase() === expected
     ? null
-    : `Type ${expected} to continue.`;
+    : `Press Enter to continue, or type ${expected}.`;
 }
 
 function normalizeApiKeyEntry(raw: string): string {
@@ -522,6 +522,29 @@ function normalizeOnboardingCommand(raw: string): string {
   return raw;
 }
 
+function defaultOnboardingCommand(
+  state: FirstRunOnboardingState,
+  raw: string,
+): string {
+  if (raw.trim() !== "") return raw;
+  switch (state.currentStepId) {
+    case "preflight":
+    case "connection-test":
+    case "security":
+      return "next";
+    case "terminal-setup":
+      return "done";
+    case "theme":
+    case "provider":
+      return raw;
+    case "api-key":
+      // Empty input intentionally means "continue without saving" on the
+      // ordinary credential step. Never choose for the user once a verified
+      // key is awaiting the explicit yes/no persistence decision.
+      return state.pendingApiKeyApproval === null ? raw : "";
+  }
+}
+
 function approvalAnswer(command: string): "yes" | "no" | null {
   if (command === "y" || command === "yes") return "yes";
   if (command === "n" || command === "no" || command === "skip") return "no";
@@ -534,12 +557,12 @@ function onboardingSlashCommandError(raw: string): string | null {
     return "Onboarding is active. Finish setup before loading $skills, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
   }
   if (!input.startsWith("/") || input.length <= 1) return null;
-  return "Onboarding is active. Type next or skip to continue setup, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
+  return "Onboarding is active. Press Enter to continue setup, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
 }
 
 function apiKeyVerificationErrorMessage(error: string | undefined): string {
   const base = error?.trim() || "API key verification failed.";
-  return `${base} Type next or skip to continue without saving, or paste a replacement key.`;
+  return `${base} Press Enter to continue without saving, or paste a replacement key.`;
 }
 
 function verifiedApiKeyConnection(
@@ -851,7 +874,10 @@ export async function submitFirstRunOnboardingInput(
   rawInput: string,
   context: FirstRunOnboardingContext,
 ): Promise<FirstRunOnboardingSubmitResult> {
-  const raw = normalizeOnboardingCommand(rawInput);
+  const raw = defaultOnboardingCommand(
+    state,
+    normalizeOnboardingCommand(rawInput),
+  );
   const slashError = onboardingSlashCommandError(raw);
   if (slashError !== null) {
     return {
@@ -925,7 +951,10 @@ export async function submitFirstRunOnboardingInput(
       const command = raw.trim().toLowerCase();
       if (command !== "next" && command !== "test") {
         return {
-          state: { ...state, error: "Type test or next to run the connection check." },
+          state: {
+            ...state,
+            error: "Press Enter to run the connection check, or type test.",
+          },
           completed: false,
         };
       }
@@ -1063,7 +1092,7 @@ export async function submitFirstRunOnboardingInput(
             state: {
               ...state,
               error:
-                "Type next or skip to continue without saving, or paste a single API key without whitespace.",
+                "Press Enter to continue without saving, or paste a single API key without whitespace.",
             },
             completed: false,
           };
@@ -1131,7 +1160,10 @@ export async function submitFirstRunOnboardingInput(
         const command = raw.trim().toLowerCase();
         if (command !== "done") {
           return {
-            state: { ...state, error: "Type done to finish onboarding." },
+            state: {
+              ...state,
+              error: "Press Enter to finish onboarding, or type done.",
+            },
             completed: false,
           };
         }
@@ -1258,16 +1290,16 @@ function apiKeyInstructionForConnection(
   connection: ProviderConnectionCheck | null,
 ): string {
   if (connection === null) {
-    return "Paste an API key to verify it, or type next to continue without saving.";
+    return "Paste an API key to verify it, or press Enter to continue without saving.";
   }
   if (connection.status === "ready") {
     if (connection.keyEnvVar !== undefined) {
-      return `${connection.keyEnvVar} is present and verified. Type next to continue, or paste a replacement key.`;
+      return `${connection.keyEnvVar} is present and verified. Press Enter to continue, or paste a replacement key.`;
     }
-    return "Provider credential is verified. Type next to continue, or paste a replacement key.";
+    return "Provider credential is verified. Press Enter to continue, or paste a replacement key.";
   }
   if (connection.keyEnvVar === undefined) {
-    return "Paste an API key to verify it, or type next or skip to continue.";
+    return "Paste an API key to verify it, or press Enter to continue.";
   }
   if (connection.canSkip === false) {
     return `Paste ${connection.keyEnvVar} to verify it before continuing.`;
@@ -1276,9 +1308,9 @@ function apiKeyInstructionForConnection(
     connection.status === "auth-failed" ||
     connection.status === "provider-unreachable"
   ) {
-    return `${connection.keyEnvVar} did not verify. Type next or skip to continue without saving, or paste a replacement key.`;
+    return `${connection.keyEnvVar} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
   }
-  return `Paste ${connection.keyEnvVar} to verify it, or type next or skip to add it later.`;
+  return `Paste ${connection.keyEnvVar} to verify it, or press Enter to add it later.`;
 }
 
 function apiKeyInstructionForProvider(
@@ -1291,15 +1323,15 @@ function apiKeyInstructionForProvider(
     resolveAuthManagedKeysEnabled(context.config) &&
     hasEntitledRemoteAuthSessionSync(context.env)
   ) {
-    return "Your Pro account can use hosted model access here. Type next to verify it.";
+    return "Your Pro account can use hosted model access here. Press Enter to verify it.";
   }
   if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
-    return "This provider can continue without a BYOK API key. Type next to continue.";
+    return "This provider can continue without a BYOK API key. Press Enter to continue.";
   }
   if (keyEnvVar === undefined) {
-    return "Paste an API key to verify it, or type next or skip to add it later.";
+    return "Paste an API key to verify it, or press Enter to add it later.";
   }
-  return `Paste ${keyEnvVar} to verify it, or type next or skip to add it later.`;
+  return `Paste ${keyEnvVar} to verify it, or press Enter to add it later.`;
 }
 
 function securityLinesForContext(
@@ -1309,14 +1341,82 @@ function securityLinesForContext(
     return [
       "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
       "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
-      "Type next to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+      "Press Enter to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
     ];
   }
   return [
     `Permission mode: ${context.permissionMode ?? "default"}`,
     `Sandbox: ${context.sandboxMode ?? "workspace-write"}`,
-    "Type next to keep these defaults.",
+    "Press Enter to keep these defaults.",
   ];
+}
+
+export interface FirstRunOnboardingInputPresentation {
+  readonly placeholder: string;
+  readonly footerHint: string;
+  readonly allowEmptySubmit: boolean;
+}
+
+export function firstRunOnboardingInputPresentation(
+  state: FirstRunOnboardingState,
+): FirstRunOnboardingInputPresentation {
+  const standardFooter =
+    "Enter confirms the shown default · type a listed choice to change it · /exit leaves setup";
+  switch (state.currentStepId) {
+    case "preflight":
+      return {
+        placeholder: "Press Enter to start setup",
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "theme":
+      return {
+        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–3`,
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "provider":
+      return {
+        placeholder: `Press Enter to keep ${state.selectedProvider}, or type a provider number`,
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "api-key":
+      if (state.pendingApiKeyApproval !== null) {
+        return {
+          placeholder: "Type yes to save this key, or no to discard it",
+          footerHint:
+            "Saving a verified key always requires an explicit yes · /exit leaves setup",
+          allowEmptySubmit: false,
+        };
+      }
+      return {
+        placeholder:
+          state.selectedProvider === "grok"
+            ? "Paste XAI_API_KEY, type login, or press Enter to add it later"
+            : "Paste an API key, or press Enter to add it later",
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "connection-test":
+      return {
+        placeholder: `Press Enter to test ${state.selectedProvider}`,
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "security":
+      return {
+        placeholder: "Press Enter to keep these security defaults",
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+    case "terminal-setup":
+      return {
+        placeholder: "Press Enter to finish onboarding",
+        footerHint: standardFooter,
+        allowEmptySubmit: true,
+      };
+  }
 }
 
 export function detailLinesForStep(
@@ -1332,7 +1432,7 @@ export function detailLinesForStep(
           ? ["--yolo is active: tool approvals and workspace sandboxing are bypassed for this session."]
           : []),
         "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
-        "Type next to continue.",
+        "Press Enter to continue (or type next).",
       ];
     case "theme": {
       // The TUI colours text but does NOT repaint the terminal's own
@@ -1355,7 +1455,7 @@ export function detailLinesForStep(
           `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`
         ),
         themeTip,
-        "Type a number or theme name.",
+        `Press Enter to keep ${state.selectedTheme}, or type a number or theme name.`,
       ];
     }
     case "provider": {
@@ -1369,7 +1469,7 @@ export function detailLinesForStep(
               `Tip: ${[...detected][0]} is already running on this machine — pick it for a zero-key start.`,
             ]
           : []),
-        "Type a number or provider slug.",
+        `Press Enter to keep ${state.selectedProvider}, or type a number or provider slug.`,
       ];
     }
     case "connection-test":
@@ -1378,7 +1478,7 @@ export function detailLinesForStep(
         : [
             `Provider: ${state.selectedProvider}`,
             `Model: ${state.selectedModel}`,
-            "Type test or next to run the connection check.",
+            "Press Enter to run the connection check (or type test).",
           ];
     case "api-key": {
       if (state.pendingApiKeyApproval !== null) {
@@ -1416,7 +1516,7 @@ export function detailLinesForStep(
     case "terminal-setup":
       return [
         `Terminal: ${context.terminalName ?? "terminal"}`,
-        "Type done to finish onboarding.",
+        "Press Enter to finish onboarding (or type done).",
       ];
   }
 }
@@ -1449,7 +1549,7 @@ function classifyOnboardingDetail(line: string): OnboardingDetailEntry {
       current: /\(current\)\s*$/u.test(line),
     };
   }
-  if (/^(Type |Or type |Tip:|Onboarding input only)/u.test(line)) {
+  if (/^(Press Enter|Type |Or type |Tip:|Onboarding input only)/u.test(line)) {
     return { kind: "hint", text: line };
   }
   const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);
@@ -1509,7 +1609,7 @@ function renderOnboardingDetail(lines: readonly string[]): React.ReactNode[] {
   entries.forEach((entry, index) => {
     const previous = entries[index - 1];
     // A blank line before the first hint after any content splits the action
-    // instructions ("Type next…") from the data/choices above them.
+    // instructions ("Press Enter…") from the data/choices above them.
     if (entry.kind === "hint" && previous !== undefined && previous.kind !== "hint") {
       nodes.push(<Box key={`gap-${index}`} height={1} />);
     }

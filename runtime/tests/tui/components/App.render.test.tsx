@@ -552,6 +552,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       mode,
       onModeChange,
       setToolPermissionContext,
+      onboardingInput,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -576,6 +577,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       mode?: unknown;
       onModeChange?: unknown;
       setToolPermissionContext?: unknown;
+      onboardingInput?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
@@ -598,6 +600,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         mode,
         onModeChange,
         setToolPermissionContext,
+        onboardingInput,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -2962,6 +2965,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const session = createSession();
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
     const fetchSpy = mockOfflineOnboardingFetch();
+    const previousApiKeyStatus = apiKeyVerificationProbe.status;
+    apiKeyVerificationProbe.status = "missing";
     try {
       const output = await renderApp(
         <AgenCTuiApp
@@ -2980,7 +2985,17 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect(output).toContain("agenc");
       expect(output).toContain("Preflight");
       expect(output).not.toContain("messages:0");
+      expect(providerProbe.promptProps.at(-1)).toEqual(
+        expect.objectContaining({
+          apiKeyStatus: "valid",
+          onboardingInput: expect.objectContaining({
+            placeholder: "Press Enter to start setup",
+            allowEmptySubmit: true,
+          }),
+        }),
+      );
     } finally {
+      apiKeyVerificationProbe.status = previousApiKeyStatus;
       fetchSpy.mockRestore();
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -3623,16 +3638,19 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           // This marker already exists before the invalid submission, so the
           // next input can arrive before its error frame commits. That keeps
           // this regression sensitive to stale passive-effect state writes.
-          await submit("summarize this repository", "Typenexttocontinue.");
+          await submit(
+            "summarize this repository",
+            "PressEntertocontinue,ortypenext.",
+          );
           expect(output()).toContain("Preflight");
           expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
-          await submit("next", "Typeanumberorthemename.");
-          await submit("1", "Typeanumberorproviderslug.");
+          await submit("", "PressEntertokeepdark,ortypeanumberorthemename.");
+          await submit("1", "PressEntertokeepgrok,ortypeanumberorproviderslug.");
           await submit("2", "OPENAI_API_KEY");
-          await submit("skip", "runtheconnectioncheck.");
+          await submit("skip", "PressEntertoruntheconnectioncheck");
           await submit("test", "Sandboxworkspace-write");
-          await submit("next", "Typedonetofinishonboarding.");
-          await submit("done", "spinner:requesting:");
+          await submit("", "PressEntertofinishonboarding");
+          await submit("", "spinner:requesting:");
 
           expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
             provider: "openai",

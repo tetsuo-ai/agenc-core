@@ -1,5 +1,5 @@
 /**
- * `agenc onboard` scenario (TODO task 2).
+ * `agenc onboard` scenario.
  *
  * The explicit onboard subcommand boots the TUI with the first-run wizard
  * forced. Drive the whole wizard with the mock openai-compatible provider
@@ -28,16 +28,16 @@ export default async function (session) {
   // so phrase anchors are only reliable on this first screen; subsequent
   // steps are driven input→idle. The wizard's input protocol is fixed:
   // src/onboarding/Onboarding.tsx submitFirstRunOnboardingInput.)
-  await session.waitFor(/Type next to continue\./, { timeout: 60_000 });
+  await session.waitFor(/Press Enter to continue/, { timeout: 60_000 });
 
   const wizardInputs = [
-    "next", // preflight → theme
+    "", // preflight: Enter → theme
     "1", // theme: dark → provider
     "openai-compatible", // provider (mock server) → api-key
-    "next", // api-key: keyless local provider → connection-test
-    "next", // connection-test: runs the mock-server check → security
-    "next", // security: keep defaults → terminal-setup
-    "done", // terminal-setup: finish onboarding
+    "", // api-key: Enter on keyless local provider → connection-test
+    "", // connection-test: Enter runs the mock-server check → security
+    "", // security: Enter keeps defaults → terminal-setup
+    "", // terminal-setup: Enter finishes onboarding
   ];
   for (const input of wizardInputs) {
     await session.submit(input);

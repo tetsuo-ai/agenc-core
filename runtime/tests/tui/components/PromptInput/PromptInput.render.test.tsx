@@ -988,6 +988,45 @@ describe('PromptInput render surface', () => {
     }
   })
 
+  test('renders onboarding as a distinct input surface and submits empty Enter', async () => {
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({
+      input: '',
+      onSubmit,
+      onboardingInput: {
+        placeholder: 'Press Enter to start setup',
+        footerHint: 'Enter confirms the shown default',
+        allowEmptySubmit: true,
+      },
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      expect(baseProps.placeholder).toBe('Press Enter to start setup')
+      expect(baseProps.onHistoryUp).toBeUndefined()
+      expect(baseProps.onHistoryDown).toBeUndefined()
+
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('')
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        '',
+        expect.objectContaining({
+          clearBuffer: harness.clearBuffer,
+          resetHistory: expect.any(Function),
+          setCursorOffset: expect.any(Function),
+        }),
+        undefined,
+        expect.objectContaining({
+          mode: 'prompt',
+          vimRoutingState: expect.objectContaining({ enabled: false }),
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
   test('submits normal prompt input through the leader path', async () => {
     const onSubmit = vi.fn(async () => {})
     const rendered = await renderPromptInput({ input: 'hello', onSubmit })

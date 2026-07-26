@@ -23,6 +23,7 @@ import {
   createInitialFirstRunOnboardingState,
   detectRunningLocalProviders,
   detailLinesForStep,
+  firstRunOnboardingInputPresentation,
   submitFirstRunOnboardingInput,
   wizardThemeToSetting,
 } from "./Onboarding.js";
@@ -167,6 +168,40 @@ describe("first-run onboarding wizard", () => {
     const result = await submitFirstRunOnboardingInput(state, "done", context);
     expect(result.completed).toBe(true);
     expect(result.state.completedStepIds).toContain("terminal-setup");
+  });
+
+  test("makes Enter advance every default step except credential persistence", async () => {
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+    };
+    let state = createInitialFirstRunOnboardingState(context);
+
+    expect(firstRunOnboardingInputPresentation(state)).toMatchObject({
+      placeholder: "Press Enter to start setup",
+      allowEmptySubmit: true,
+    });
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("theme");
+
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("provider");
+
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("api-key");
+
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("connection-test");
+
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("security");
+
+    state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+    expect(state.currentStepId).toBe("terminal-setup");
+
+    const result = await submitFirstRunOnboardingInput(state, "", context);
+    expect(result.completed).toBe(true);
   });
 
   test("checks configured provider credentials and local endpoints", async () => {
@@ -317,7 +352,7 @@ describe("first-run onboarding wizard", () => {
         "1. openrouter (current)",
       );
       expect(detailLinesForStep({ ...state, currentStepId: "api-key" }, context)).toContain(
-        "Your Pro account can use hosted model access here. Type next to verify it.",
+        "Your Pro account can use hosted model access here. Press Enter to verify it.",
       );
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
@@ -405,7 +440,7 @@ describe("first-run onboarding wizard", () => {
 
     expect(lines).toContain("Provider credential found via XAI_API_KEY.");
     expect(lines).toContain(
-      "XAI_API_KEY is present and verified. Type next to continue, or paste a replacement key.",
+      "XAI_API_KEY is present and verified. Press Enter to continue, or paste a replacement key.",
     );
     expect(lines.join("\n")).not.toContain("add it later");
   });
@@ -434,7 +469,7 @@ describe("first-run onboarding wizard", () => {
     );
     expect(lines.join("\n")).not.toContain("Sandbox: workspace-write");
     expect(lines).toContain(
-      "Type next to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+      "Press Enter to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
     );
   });
 
@@ -464,7 +499,7 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("api-key");
-    expect(result.state.error).toContain("next or skip");
+    expect(result.state.error).toContain("Press Enter");
     expect(fetchImpl).toHaveBeenCalledOnce();
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
@@ -605,7 +640,7 @@ describe("first-run onboarding wizard", () => {
       expect(result.state.currentStepId).toBe("api-key");
       expect(result.state.pendingApiKeyApproval).toBeNull();
       expect(result.state.error).toContain("Provider rejected");
-      expect(result.state.error).toContain("next or skip");
+      expect(result.state.error).toContain("Press Enter");
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey("grok"),
       ).resolves.toBeUndefined();
@@ -638,7 +673,7 @@ describe("first-run onboarding wizard", () => {
       context,
     );
     expect(result.state.currentStepId).toBe("api-key");
-    expect(result.state.error).toContain("next or skip");
+    expect(result.state.error).toContain("Press Enter");
 
     result = await submitFirstRunOnboardingInput(
       result.state,
@@ -731,6 +766,14 @@ describe("first-run onboarding wizard", () => {
         provider: "grok",
         maskedTail: "...-key",
       });
+      expect(firstRunOnboardingInputPresentation(state)).toMatchObject({
+        placeholder: "Type yes to save this key, or no to discard it",
+        allowEmptySubmit: false,
+      });
+
+      state = (await submitFirstRunOnboardingInput(state, "", context)).state;
+      expect(state.currentStepId).toBe("api-key");
+      expect(state.error).toContain("yes");
 
       state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
       expect(state.currentStepId).toBe("connection-test");
@@ -888,7 +931,7 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
-  test("requires explicit commands for command-only steps", async () => {
+  test("rejects unrelated text on setup-action steps", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
     let state = createInitialFirstRunOnboardingState(context);
@@ -899,7 +942,7 @@ describe("first-run onboarding wizard", () => {
       context,
     );
     expect(result.state.currentStepId).toBe("preflight");
-    expect(result.state.error).toContain("Type next");
+    expect(result.state.error).toContain("Press Enter");
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
@@ -912,7 +955,7 @@ describe("first-run onboarding wizard", () => {
       context,
     );
     expect(result.state.currentStepId).toBe("api-key");
-    expect(result.state.error).toContain("Type next");
+    expect(result.state.error).toContain("Press Enter");
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     result = await submitFirstRunOnboardingInput(
@@ -933,7 +976,7 @@ describe("first-run onboarding wizard", () => {
     );
     expect(result.completed).toBe(false);
     expect(result.state.currentStepId).toBe("terminal-setup");
-    expect(result.state.error).toContain("Type done");
+    expect(result.state.error).toContain("Press Enter");
   });
 
   test("reports onboarding-only input for slash commands", async () => {
