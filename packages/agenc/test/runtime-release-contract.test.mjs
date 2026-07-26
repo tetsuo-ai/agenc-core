@@ -122,6 +122,14 @@ test("installer promotion is exact-SHA, fast-forward-only, and lane-scoped", () 
   assert.match(workflow, /installer-stable/u);
   assert.match(workflow, /git merge-base --is-ancestor/u);
   assert.match(workflow, /-F force=false/u);
+  assert.match(
+    workflow,
+    /\.message == "Not Found" and \(\.status \| tostring\) == "404"/u,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /git\/ref\/heads\/installer-stable"[\s\S]{0,160}\|\| true/u,
+  );
   assert.match(workflow, /test "\$TESTED_SHA" = "\$GITHUB_SHA"/u);
   assert.match(
     workflow,

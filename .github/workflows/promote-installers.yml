@@ -99,10 +99,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          current="$(
+          current_response=""
+          if current_response="$(
             gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/installer-stable" \
-              --jq .object.sha 2>/dev/null || true
-          )"
+              2>/dev/null
+          )"; then
+            current="$(
+              jq --exit-status --raw-output \
+                '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' \
+                <<<"$current_response"
+            )"
+          elif jq --exit-status \
+            '.message == "Not Found" and (.status | tostring) == "404"' \
+            <<<"$current_response" >/dev/null 2>&1; then
+            current=""
+          else
+            echo "failed to read installer-stable ref" >&2
+            printf '%s\n' "$current_response" >&2
+            exit 1
+          fi
           if [[ "$LANE" = installer-hotfix && -z "$current" ]]; then
             echo "installer-hotfix requires an existing full-release promotion" >&2
             exit 1
