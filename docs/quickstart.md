@@ -33,7 +33,8 @@ First-run wizard order:
 1. **preflight**
 2. **theme**
 3. **provider**
-4. **api-key** (live-verified when required)
+4. **model access** — AgenC account, X / xAI sign-in, provider API key, or
+   configure later
 5. **connection-test**
 6. **security**
 7. **terminal-setup**
@@ -45,9 +46,12 @@ agenc onboard --status
 agenc onboard --reset    # show the wizard again on next interactive start
 ```
 
-Optional: `agenc login` for remote auth + managed models
-([managed-openrouter.md](managed-openrouter.md)). BYOK env keys always win
-over managed vending.
+The wizard launches both account flows directly; no slash command is needed.
+An AgenC account provides hosted models (including the free-model catalog for
+free accounts). X / xAI sign-in uses Grok through an eligible subscription.
+Provider BYOK keys are live-verified before the wizard asks permission to save
+them. Details: [managed-openrouter.md](managed-openrouter.md) and
+[grok-oauth.md](grok-oauth.md).
 
 ## 3. Check your posture
 

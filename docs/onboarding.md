@@ -58,8 +58,12 @@ in `runtime/src/onboarding/Onboarding.tsx` (`FIRST_RUN_STEP_ORDER`):
 2. **theme** — dark / light / system
 3. **provider** — built-in providers, local runtimes, managed OpenRouter when
    logged in
-4. **api-key** — live verification for key-required providers (skipped for
-   local / managed paths when appropriate)
+4. **model access** — choose directly in the wizard:
+   - sign in or create an AgenC account for hosted models (free accounts get
+     the free-model catalog)
+   - sign in with X / xAI for Grok through an eligible subscription
+   - verify and save a provider API key
+   - configure access later
 5. **connection-test** — real provider check
 6. **security** — fail-closed defaults
 7. **terminal-setup** — shell/terminal integration
@@ -70,11 +74,14 @@ Then you are in chat. Flags:
 - `--reset` — show the wizard again next interactive start (does not wipe
   keys, persona, or gateway config)
 
-Credentials: BYOK env keys, pasted keys, local Ollama/LM Studio, or
-`agenc login` for remote auth + managed OpenRouter (default
-`auth.managedKeys.enabled = true`). Free accounts can use hosted `:free`
-routes; paid default model is `x-ai/grok-4.5`. See
-[managed-openrouter.md](managed-openrouter.md).
+No slash command is required during first run. The model-access step launches
+either account flow itself and displays the browser URL/device code in the
+wizard. BYOK env keys, directly pasted keys, and local Ollama/LM Studio remain
+available. AgenC account access uses managed OpenRouter (default
+`auth.managedKeys.enabled = true`): free accounts receive hosted `:free`
+routes, while the paid default model is `x-ai/grok-4.5`. See
+[managed-openrouter.md](managed-openrouter.md) and
+[grok-oauth.md](grok-oauth.md).
 
 ## Act 2a — identity
 

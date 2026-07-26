@@ -51,8 +51,10 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   concurrency, cancellation, and evidence across interactive/background work,
   including heartbeat / cron / hooks. Design:
   [`docs/design/execution-admission-kernel.md`](docs/design/execution-admission-kernel.md).
-- **Guided onboarding** — `agenc onboard` plus acts: `identity`, `channel`,
-  `autonomy`, `recap` (personas, channels, budget/heartbeat/webhooks).
+- **Guided onboarding** — `agenc onboard` includes AgenC account sign-in,
+  X / xAI sign-in for Grok, provider API keys, and local providers without
+  requiring slash commands; follow-on acts: `identity`, `channel`, `autonomy`,
+  `recap` (personas, channels, budget/heartbeat/webhooks).
 - **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
   co-drive chats, receive background completion/attention events, and settle
   permissions from the phone. Android can route an explicit, physically
@@ -81,8 +83,9 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   openai, anthropic, ollama, lmstudio, openai-compatible, openrouter, groq,
   deepseek, gemini, mistral, nvidia-nim, minimax, github, amazon-bedrock, agenc.
   See [`docs/reference/providers.md`](docs/reference/providers.md).
-- **Grok OAuth** — sign in with X via `/grok-login` for subscription Grok access
-  without an API key ([`docs/grok-oauth.md`](docs/grok-oauth.md)).
+- **Grok OAuth** — sign in with X during onboarding or via `/grok-login` for
+  subscription Grok access without an API key
+  ([`docs/grok-oauth.md`](docs/grok-oauth.md)).
 - **Embedding SDK** — `@tetsuo-ai/agenc-sdk` for socket / subprocess embedding.
   See [`docs/sdk.md`](docs/sdk.md).
 - **Durable sessions** — append-only rollout logs + SQLite state; `--continue` /

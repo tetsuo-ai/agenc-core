@@ -351,8 +351,13 @@ describe("first-run onboarding wizard", () => {
       expect(detailLinesForStep({ ...state, currentStepId: "provider" }, context)[0]).toBe(
         "1. openrouter (current)",
       );
-      expect(detailLinesForStep({ ...state, currentStepId: "api-key" }, context)).toContain(
-        "Your Pro account can use hosted model access here. Press Enter to verify it.",
+      expect(
+        detailLinesForStep(
+          { ...state, currentStepId: "api-key" },
+          context,
+        ).join("\n"),
+      ).toContain(
+        "Sign in or create an AgenC account — use hosted models",
       );
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
@@ -416,6 +421,43 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
+  test("recognizes a signed-in free account's hosted free model as ready", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-free-ready-"));
+    try {
+      writeFileSync(
+        join(agencHome, "auth.json"),
+        JSON.stringify({
+          version: 1,
+          provider: "remote",
+          token: "remote-session-token",
+          subscriptionTier: "free",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      const context = {
+        config: defaultConfig(),
+        env: { AGENC_HOME: agencHome },
+      };
+      const state = createInitialFirstRunOnboardingState(context);
+
+      expect(state.selectedProvider).toBe("openrouter");
+      expect(state.selectedModel).toMatch(/:free$/);
+      await expect(
+        checkOnboardingProviderConnection(
+          context,
+          state.selectedProvider,
+          state.selectedModel,
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        detail: "AgenC account is signed in. Free hosted model access is ready.",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("describes verified provider credentials without asking users to add them later", () => {
     const config = defaultConfig();
     const context = {
@@ -426,6 +468,7 @@ describe("first-run onboarding wizard", () => {
     const state = {
       ...createInitialFirstRunOnboardingState(context),
       currentStepId: "api-key" as const,
+      modelAccessInput: "api-key" as const,
       connection: {
         provider: "grok",
         model: "grok-4.3",
@@ -497,7 +540,11 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.error).toContain("provider");
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    result = await submitFirstRunOnboardingInput(state, "later", context);
+    result = await submitFirstRunOnboardingInput(
+      state,
+      "not-a-real-key",
+      context,
+    );
     expect(result.state.currentStepId).toBe("api-key");
     expect(result.state.error).toContain("Press Enter");
     expect(fetchImpl).toHaveBeenCalledOnce();
@@ -664,7 +711,7 @@ describe("first-run onboarding wizard", () => {
     let state = await advanceToApiKey(context);
 
     expect(detailLinesForStep(state, context).join("\n")).toContain(
-      "Paste XAI_API_KEY",
+      "Use XAI_API_KEY",
     );
 
     let result = await submitFirstRunOnboardingInput(
@@ -1180,7 +1227,7 @@ describe("theme step terminal-background awareness", () => {
   });
 });
 
-describe("grok OAuth sign-in from the api-key step", () => {
+describe("account sign-in from the model-access step", () => {
   async function advanceToGrokApiKey(context: Parameters<typeof createInitialFirstRunOnboardingState>[0]) {
     let state = createInitialFirstRunOnboardingState(context);
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
@@ -1191,25 +1238,72 @@ describe("grok OAuth sign-in from the api-key step", () => {
     return state;
   }
 
-  test("offers the keyless X / xAI sign-in for grok only", async () => {
+  test("explains AgenC, X / xAI, API-key, and configure-later access without slash commands", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
-    const grokState = await advanceToGrokApiKey(context);
-    expect(detailLinesForStep(grokState, context).join("\n")).toContain(
-      "Or type login to sign in with your X / xAI account",
-    );
+    const state = await advanceToGrokApiKey(context);
+    const details = detailLinesForStep(state, context).join("\n");
 
-    const openaiState = {
-      ...grokState,
-      selectedProvider: "openai" as const,
-      connection: null,
-    };
-    expect(detailLinesForStep(openaiState, context).join("\n")).not.toContain(
-      "Or type login",
+    expect(details).toContain(
+      "Sign in or create an AgenC account — use hosted models; free accounts get the free-model catalog.",
+    );
+    expect(details).toContain(
+      "Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
+    );
+    expect(details).toContain(
+      "Use XAI_API_KEY — requests are billed by xAI.",
+    );
+    expect(details).toContain(
+      "Configure later — continue without signing in or saving a key.",
+    );
+    expect(details).not.toContain("/login");
+    expect(firstRunOnboardingInputPresentation(state).placeholder).toBe(
+      "Choose 1–4, or paste a provider API key directly",
     );
   });
 
-  test("login runs the injected OAuth flow and advances to the connection test", async () => {
+  test("choice 1 signs in or creates an AgenC account and selects its free hosted route", async () => {
+    const config = defaultConfig();
+    const runAgenCAccountLogin = vi
+      .fn<
+        () => Promise<{
+          ok: true;
+          accountLabel: string;
+          subscriptionTier: "free";
+        }>
+      >()
+      .mockResolvedValue({
+        ok: true,
+        accountLabel: "new-user@example.com",
+        subscriptionTier: "free",
+      });
+    const context = {
+      config,
+      env: {},
+      checkLocalProviders: false,
+      runAgenCAccountLogin,
+    };
+    const state = await advanceToGrokApiKey(context);
+
+    const result = await submitFirstRunOnboardingInput(state, "1", context);
+
+    expect(runAgenCAccountLogin).toHaveBeenCalledTimes(1);
+    expect(result.state.currentStepId).toBe("security");
+    expect(result.state.selectedProvider).toBe("openrouter");
+    expect(result.state.selectedModel).toMatch(/:free$/);
+    expect(result.state.connection).toMatchObject({
+      ok: true,
+      status: "ready",
+    });
+    expect(result.state.connection?.detail).toContain(
+      "Free hosted model access is ready.",
+    );
+    expect(result.state.completedStepIds).toEqual(
+      expect.arrayContaining(["api-key", "connection-test"]),
+    );
+  });
+
+  test("choice 2 runs X / xAI OAuth, selects Grok, and needs no follow-up command", async () => {
     const config = defaultConfig();
     const runGrokOauthLogin = vi
       .fn<() => Promise<{ ok: true; accountLabel: string }>>()
@@ -1220,16 +1314,30 @@ describe("grok OAuth sign-in from the api-key step", () => {
       checkLocalProviders: false,
       runGrokOauthLogin,
     };
-    const state = await advanceToGrokApiKey(context);
+    const state = {
+      ...(await advanceToGrokApiKey(context)),
+      selectedProvider: "openai" as const,
+      selectedModel: "gpt-4.1",
+    };
 
-    const result = await submitFirstRunOnboardingInput(state, "login", context);
+    const result = await submitFirstRunOnboardingInput(state, "2", context);
     expect(runGrokOauthLogin).toHaveBeenCalledTimes(1);
-    expect(result.state.currentStepId).toBe("connection-test");
-    expect(result.state.completedStepIds).toContain("api-key");
+    expect(result.state.currentStepId).toBe("security");
+    expect(result.state.selectedProvider).toBe("grok");
+    expect(result.state.connection).toMatchObject({
+      ok: true,
+      status: "ready",
+    });
+    expect(result.state.connection?.detail).toContain(
+      "Grok subscription access is ready.",
+    );
+    expect(result.state.completedStepIds).toEqual(
+      expect.arrayContaining(["api-key", "connection-test"]),
+    );
     expect(result.state.error).toBeNull();
   });
 
-  test("a failed sign-in surfaces the message and stays on the api-key step", async () => {
+  test("a failed X / xAI sign-in surfaces the message and stays on model access", async () => {
     const config = defaultConfig();
     const context = {
       config,
@@ -1242,28 +1350,57 @@ describe("grok OAuth sign-in from the api-key step", () => {
     };
     const state = await advanceToGrokApiKey(context);
 
-    const result = await submitFirstRunOnboardingInput(state, "login", context);
+    const result = await submitFirstRunOnboardingInput(state, "2", context);
     expect(result.state.currentStepId).toBe("api-key");
     expect(result.state.error).toContain("Browser sign-in did not complete");
   });
 
-  test("login on a non-grok provider is treated as a key attempt, not a sign-in", async () => {
+  test("choice 3 enters API-key mode and back returns to the access menu", async () => {
     const config = defaultConfig();
-    const runGrokOauthLogin = vi.fn();
     const context = {
       config,
       env: {},
       checkLocalProviders: false,
-      runGrokOauthLogin,
-      fetchImpl: (async () =>
-        new Response("unauthorized", { status: 401 })) as typeof fetch,
     };
-    let state = await advanceToGrokApiKey(context);
-    state = { ...state, selectedProvider: "openai" as const };
+    const state = await advanceToGrokApiKey(context);
 
-    const result = await submitFirstRunOnboardingInput(state, "login", context);
-    expect(runGrokOauthLogin).not.toHaveBeenCalled();
-    expect(result.state.currentStepId).toBe("api-key");
-    expect(result.state.error).not.toBeNull();
+    const keyEntry = await submitFirstRunOnboardingInput(state, "3", context);
+    expect(keyEntry.state.currentStepId).toBe("api-key");
+    expect(keyEntry.state.modelAccessInput).toBe("api-key");
+    expect(firstRunOnboardingInputPresentation(keyEntry.state).placeholder).toContain(
+      "Paste XAI_API_KEY",
+    );
+
+    const menu = await submitFirstRunOnboardingInput(
+      keyEntry.state,
+      "back",
+      context,
+    );
+    expect(menu.state.modelAccessInput).toBe("menu");
+  });
+
+  test("keeps a browser URL and device code visible while sign-in is pending", async () => {
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+    };
+    const state = {
+      ...(await advanceToGrokApiKey(context)),
+      authPrompt: {
+        heading: "Sign in or create an AgenC account",
+        detail: "Finish the browser sign-in.",
+        url: "https://id.agenc.ag/activate",
+        userCode: "ABCD-EFGH",
+      },
+    };
+
+    expect(detailLinesForStep(state, context)).toEqual([
+      "Sign in or create an AgenC account",
+      "Finish the browser sign-in.",
+      "Code: ABCD-EFGH",
+      "URL: https://id.agenc.ag/activate",
+      "Finish sign-in in your browser; AgenC will continue automatically.",
+    ]);
   });
 });

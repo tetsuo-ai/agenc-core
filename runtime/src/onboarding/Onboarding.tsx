@@ -12,7 +12,15 @@ import {
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
-import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
+import {
+  createAuthBackend,
+  resolveAuthManagedKeysEnabled,
+} from "../auth/selection.js";
+import type {
+  AuthIdentity,
+  AuthSubscriptionTier,
+} from "../auth/backend.js";
+import type { RemoteAuthDeviceCodePrompt } from "../auth/backends/remote.js";
 import {
   hasEntitledRemoteAuthSessionSync,
   hasRemoteAuthSessionSync,
@@ -59,7 +67,12 @@ import {
   verifyApiKey,
   type VerificationStatus,
 } from "./useApiKeyVerification.js";
-import { subscriptionManagedDefaultModel } from "../commands/subscription-managed-models.js";
+import {
+  isFreeSubscriptionManagedModel,
+  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+  subscriptionManagedDefaultModel,
+  subscriptionManagedDefaultModelForTier,
+} from "../commands/subscription-managed-models.js";
 
 export type FirstRunOnboardingStepId =
   | "preflight"
@@ -115,6 +128,8 @@ export interface FirstRunOnboardingState {
   readonly connection: ProviderConnectionCheck | null;
   readonly pastedContents: readonly PastedContent[];
   readonly pendingApiKeyApproval: PendingApiKeyApproval | null;
+  readonly modelAccessInput: "menu" | "api-key";
+  readonly authPrompt: OnboardingAuthPrompt | null;
   readonly error: string | null;
   readonly isCheckingConnection: boolean;
   /** Local runtimes found listening (O-1): annotated in the provider step. */
@@ -131,6 +146,21 @@ export interface FirstRunByokAuthBackend {
 export type GrokOauthLoginResult =
   | { readonly ok: true; readonly accountLabel: string }
   | { readonly ok: false; readonly message: string };
+
+export type AgenCAccountLoginResult =
+  | {
+      readonly ok: true;
+      readonly accountLabel: string;
+      readonly subscriptionTier: AuthSubscriptionTier;
+    }
+  | { readonly ok: false; readonly message: string };
+
+export interface OnboardingAuthPrompt {
+  readonly heading: string;
+  readonly detail: string;
+  readonly url: string;
+  readonly userCode?: string;
+}
 
 export interface FirstRunOnboardingContext {
   readonly agencHome?: string;
@@ -149,26 +179,72 @@ export interface FirstRunOnboardingContext {
    * browser; the default lazily imports the real flow.
    */
   readonly runGrokOauthLogin?: () => Promise<GrokOauthLoginResult>;
+  /**
+   * Runs AgenC account sign-in (the same remote auth backend as /login).
+   * Injectable so wizard tests never open a browser.
+   */
+  readonly runAgenCAccountLogin?: () => Promise<AgenCAccountLoginResult>;
+  /** Reports the URL/code while a browser or device sign-in is pending. */
+  readonly onAuthPrompt?: (prompt: OnboardingAuthPrompt) => void;
 }
 
 /**
- * Default grok OAuth sign-in used by the api-key step's `login` input: the
- * browser PKCE loopback flow with tokens persisted exactly like /grok-login.
- * Lazy imports keep the wizard module light for the non-grok path.
+ * Default Grok OAuth sign-in used by the model-access step. Browser PKCE is
+ * primary and device code is the headless fallback, matching /grok-login.
+ * Lazy imports keep the wizard module light for the non-Grok path.
  */
-async function defaultRunGrokOauthLogin(): Promise<GrokOauthLoginResult> {
+async function defaultRunGrokOauthLogin(
+  context: FirstRunOnboardingContext,
+): Promise<GrokOauthLoginResult> {
   try {
-    const [{ runXaiBrowserLogin }, { openUrlInBrowser }, creds] =
+    const [oauth, { openUrlInBrowser }, creds] =
       await Promise.all([
         import("../services/xai/oauth.js"),
         import("../commands/auth.js"),
         import("../utils/xaiOauthCredentials.js"),
       ]);
-    const login = await runXaiBrowserLogin({
-      onAuthorizeUrl: (url) => {
-        void openUrlInBrowser(url);
-      },
-    });
+    let login;
+    try {
+      login = await oauth.runXaiBrowserLogin({
+        onAuthorizeUrl: async (url) => {
+          context.onAuthPrompt?.({
+            heading: "Sign in with X / xAI",
+            detail:
+              "Finish the xAI consent flow in your browser. The page may say Grok Build.",
+            url,
+          });
+          await openUrlInBrowser(url).catch(() => {
+            // The URL remains visible in the onboarding card.
+          });
+        },
+      });
+    } catch (error) {
+      if (
+        !(error instanceof oauth.XaiOauthError) ||
+        error.code !== "callback_failed"
+      ) {
+        throw error;
+      }
+      login = await oauth.runXaiDeviceLogin({
+        onUserCode: async ({
+          userCode,
+          verificationUri,
+          verificationUriComplete,
+        }) => {
+          const url = verificationUriComplete ?? verificationUri;
+          context.onAuthPrompt?.({
+            heading: "Sign in with X / xAI",
+            detail:
+              "Finish the xAI device sign-in in your browser. The page may say Grok Build.",
+            url,
+            userCode,
+          });
+          await openUrlInBrowser(url).catch(() => {
+            // The URL and code remain visible in the onboarding card.
+          });
+        },
+      });
+    }
     const blob = creds.xaiOauthTokensToBlob(login.tokens, {
       tokenEndpoint: login.tokenEndpoint,
     });
@@ -187,7 +263,72 @@ async function defaultRunGrokOauthLogin(): Promise<GrokOauthLoginResult> {
     const detail = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
-      message: `Browser sign-in did not complete (${detail}). Paste XAI_API_KEY instead, or run /grok-login device after setup.`,
+      message:
+        `X / xAI sign-in did not complete (${detail}). ` +
+        "Try again, use an API key, or configure model access later.",
+    };
+  }
+}
+
+function authIdentityLabel(identity: AuthIdentity | undefined): string {
+  return (
+    identity?.displayName?.trim() ||
+    identity?.email?.trim() ||
+    identity?.accountId?.trim() ||
+    "AgenC account"
+  );
+}
+
+function reportAgenCDeviceCode(
+  context: FirstRunOnboardingContext,
+  prompt: RemoteAuthDeviceCodePrompt,
+): void {
+  if (prompt.verificationUri === undefined) return;
+  context.onAuthPrompt?.({
+    heading: "Sign in or create an AgenC account",
+    detail:
+      "Finish the browser sign-in. New users can create their account in the same flow.",
+    url: prompt.verificationUri,
+    ...(prompt.userCode !== undefined ? { userCode: prompt.userCode } : {}),
+  });
+}
+
+async function defaultRunAgenCAccountLogin(
+  context: FirstRunOnboardingContext,
+): Promise<AgenCAccountLoginResult> {
+  try {
+    const { openUrlInBrowser } = await import("../commands/auth.js");
+    const backend = createAuthBackend(context.config, {
+      ...(context.agencHome !== undefined
+        ? { agencHome: context.agencHome }
+        : {}),
+      env: context.env ?? process.env,
+      remote: {
+        onDeviceCode: async (prompt) => {
+          reportAgenCDeviceCode(context, prompt);
+          if (prompt.verificationUri === undefined) return;
+          await openUrlInBrowser(prompt.verificationUri).catch(() => {
+            // The URL and optional code remain visible in the onboarding card.
+          });
+        },
+      },
+    });
+    const login = await backend.login({ sessionId: "tui" });
+    const subscriptionTier = await backend.getSubscriptionTier({
+      sessionId: "tui",
+    });
+    return {
+      ok: true,
+      accountLabel: authIdentityLabel(login.identity),
+      subscriptionTier,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      message:
+        `AgenC account sign-in did not complete (${detail}). ` +
+        "Try again, use another access method, or configure model access later.",
     };
   }
 }
@@ -228,7 +369,7 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     theme: "Theme",
     provider: "Provider",
     "connection-test": "Connection check",
-    "api-key": "API key",
+    "api-key": "Model access",
     security: "Security",
     "terminal-setup": "Terminal setup",
   });
@@ -285,9 +426,13 @@ function providerDefaultModel(
   if (
     MANAGED_KEY_PROVIDERS.has(provider) &&
     resolveAuthManagedKeysEnabled(config) &&
-    hasEntitledRemoteAuthSessionSync(env)
+    hasRemoteAuthSessionSync(env)
   ) {
     return (
+      subscriptionManagedDefaultModelForTier(
+        provider,
+        remoteAuthSessionSubscriptionTierSync(env),
+      ) ??
       subscriptionManagedDefaultModel(provider) ??
       BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
     );
@@ -306,7 +451,7 @@ function initialProvider(
   });
   if (envOrShortcut !== undefined) return envOrShortcut;
   const configured = normalizeBuiltInProviderSlug(config.model_provider);
-  if (resolveAuthManagedKeysEnabled(config) && hasEntitledRemoteAuthSessionSync(env)) {
+  if (resolveAuthManagedKeysEnabled(config) && hasRemoteAuthSessionSync(env)) {
     return configured === undefined || configured === "grok"
       ? "openrouter"
       : configured;
@@ -333,6 +478,8 @@ export function createInitialFirstRunOnboardingState(
     connection: null,
     pastedContents: [],
     pendingApiKeyApproval: null,
+    modelAccessInput: "menu",
+    authPrompt: null,
     error: null,
     isCheckingConnection: false,
     detectedLocalProviders: [],
@@ -370,12 +517,12 @@ export async function detectRunningLocalProviders(
 function providerChoices(
   context?: Pick<FirstRunOnboardingContext, "config" | "env">,
 ): readonly BuiltInProviderSlug[] {
-  const proHostedReady =
+  const hostedReady =
     context !== undefined &&
     resolveAuthManagedKeysEnabled(context.config) &&
-    hasEntitledRemoteAuthSessionSync(context.env);
+    hasRemoteAuthSessionSync(context.env);
   const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze(
-    proHostedReady
+    hostedReady
       ? [
           "openrouter",
           "grok",
@@ -500,7 +647,42 @@ function lowerCommand(raw: string): string {
 }
 
 function isSkipApiKeyCommand(command: string): boolean {
-  return command === "" || command === "next" || command === "skip";
+  return (
+    command === "" ||
+    command === "4" ||
+    command === "later" ||
+    command === "next" ||
+    command === "skip"
+  );
+}
+
+function isAgenCAccountLoginCommand(command: string): boolean {
+  return (
+    command === "1" ||
+    command === "account" ||
+    command === "agenc" ||
+    command === "agenc-login" ||
+    command === "login"
+  );
+}
+
+function isGrokOauthLoginCommand(command: string): boolean {
+  return (
+    command === "2" ||
+    command === "grok-login" ||
+    command === "x" ||
+    command === "xai" ||
+    command === "xai-login"
+  );
+}
+
+function isApiKeyEntryCommand(command: string): boolean {
+  return (
+    command === "3" ||
+    command === "api" ||
+    command === "api-key" ||
+    command === "key"
+  );
 }
 
 function apiKeySkipError(
@@ -576,6 +758,20 @@ function verifiedApiKeyConnection(
     ok: true,
     detail: "Provider API key verified.",
     keyEnvVar: BUILT_IN_PROVIDER_API_KEY_ENVS[provider],
+  };
+}
+
+function authenticatedConnection(
+  provider: BuiltInProviderSlug,
+  model: string,
+  detail: string,
+): ProviderConnectionCheck {
+  return {
+    provider,
+    model,
+    status: "ready",
+    ok: true,
+    detail,
   };
 }
 
@@ -795,9 +991,22 @@ export async function checkOnboardingProviderConnection(
     resolveAuthManagedKeysEnabled(context.config) &&
     hasRemoteAuthSessionSync(context.env)
   ) {
+    const tier =
+      remoteAuthSessionSubscriptionTierSync(context.env) ?? "unknown";
+    if (
+      tier === "free" &&
+      isFreeSubscriptionManagedModel(provider, model)
+    ) {
+      return {
+        provider,
+        model,
+        status: "ready",
+        ok: true,
+        detail: "AgenC account is signed in. Free hosted model access is ready.",
+        baseURL,
+      };
+    }
     if (!hasEntitledRemoteAuthSessionSync(context.env)) {
-      const tier =
-        remoteAuthSessionSubscriptionTierSync(context.env) ?? "unknown";
       const keyLabel = keyEnvVar ?? "a BYOK API key";
       return {
         provider,
@@ -940,6 +1149,8 @@ export async function submitFirstRunOnboardingInput(
             connection: null,
             pastedContents: [],
             pendingApiKeyApproval: null,
+            modelAccessInput: "menu",
+            authPrompt: null,
           },
           "provider",
           "api-key",
@@ -1045,31 +1256,155 @@ export async function submitFirstRunOnboardingInput(
       }
       {
         const command = lowerCommand(raw);
-        // Grok: `login` runs the X / xAI OAuth sign-in instead of a pasted
-        // key. On success the step advances to the connection test, which
-        // verifies the stored OAuth bearer through the same provider
-        // resolution the session will use (OAuth always wins over env BYOK).
-        if (
-          state.selectedProvider === "grok" &&
-          (command === "login" ||
-            command === "grok-login" ||
-            command === "xai-login")
-        ) {
+        if (isAgenCAccountLoginCommand(command)) {
           const runLogin =
-            context.runGrokOauthLogin ?? defaultRunGrokOauthLogin;
+            context.runAgenCAccountLogin ??
+            (() => defaultRunAgenCAccountLogin(context));
           const result = await runLogin();
           if (!result.ok) {
             return {
-              state: { ...state, error: result.message },
+              state: {
+                ...state,
+                authPrompt: null,
+                error: result.message,
+              },
+              completed: false,
+            };
+          }
+          if (!resolveAuthManagedKeysEnabled(context.config)) {
+            return {
+              state: {
+                ...state,
+                authPrompt: null,
+                error:
+                  `Signed in as ${result.accountLabel}, but hosted model access ` +
+                  "is disabled in this AgenC configuration. Choose an API key " +
+                  "or configure model access later.",
+              },
+              completed: false,
+            };
+          }
+          const hostedProvider = normalizeBuiltInProviderSlug(
+            SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+          );
+          const hostedModel =
+            hostedProvider === undefined
+              ? undefined
+              : subscriptionManagedDefaultModelForTier(
+                  hostedProvider,
+                  result.subscriptionTier,
+                );
+          if (hostedProvider === undefined || hostedModel === undefined) {
+            return {
+              state: {
+                ...state,
+                authPrompt: null,
+                error:
+                  `Signed in as ${result.accountLabel}, but no hosted model is ` +
+                  `available for the ${result.subscriptionTier} plan. ` +
+                  "Choose another access method or configure model access later.",
+              },
+              completed: false,
+            };
+          }
+          const accessDetail =
+            result.subscriptionTier === "free"
+              ? `Signed in to AgenC as ${result.accountLabel}. Free hosted model access is ready.`
+              : `Signed in to AgenC as ${result.accountLabel}. Hosted model access for the ${result.subscriptionTier} plan is ready.`;
+          return {
+            state: withCompletedSteps(
+              {
+                ...state,
+                selectedProvider: hostedProvider,
+                selectedModel: hostedModel,
+                connection: authenticatedConnection(
+                  hostedProvider,
+                  hostedModel,
+                  accessDetail,
+                ),
+                modelAccessInput: "menu",
+                authPrompt: null,
+              },
+              ["api-key", "connection-test"],
+              "security",
+            ),
+            completed: false,
+          };
+        }
+        if (isGrokOauthLoginCommand(command)) {
+          const runLogin =
+            context.runGrokOauthLogin ??
+            (() => defaultRunGrokOauthLogin(context));
+          const result = await runLogin();
+          if (!result.ok) {
+            return {
+              state: {
+                ...state,
+                authPrompt: null,
+                error: result.message,
+              },
+              completed: false,
+            };
+          }
+          const provider: BuiltInProviderSlug = "grok";
+          const model = providerDefaultModel(
+            provider,
+            context.config,
+            context.env,
+          );
+          return {
+            state: withCompletedSteps(
+              {
+                ...state,
+                selectedProvider: provider,
+                selectedModel: model,
+                connection: authenticatedConnection(
+                  provider,
+                  model,
+                  `Signed in to X / xAI as ${result.accountLabel}. Grok subscription access is ready.`,
+                ),
+                modelAccessInput: "menu",
+                authPrompt: null,
+              },
+              ["api-key", "connection-test"],
+              "security",
+            ),
+            completed: false,
+          };
+        }
+        if (isApiKeyEntryCommand(command)) {
+          if (!KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)) {
+            return {
+              state: withCompletedStep(
+                {
+                  ...state,
+                  modelAccessInput: "menu",
+                  authPrompt: null,
+                },
+                "api-key",
+                "connection-test",
+              ),
               completed: false,
             };
           }
           return {
-            state: withCompletedStep(
-              { ...state, error: null },
-              "api-key",
-              "connection-test",
-            ),
+            state: {
+              ...state,
+              modelAccessInput: "api-key",
+              authPrompt: null,
+              error: null,
+            },
+            completed: false,
+          };
+        }
+        if (command === "back" && state.modelAccessInput === "api-key") {
+          return {
+            state: {
+              ...state,
+              modelAccessInput: "menu",
+              authPrompt: null,
+              error: null,
+            },
             completed: false,
           };
         }
@@ -1082,7 +1417,15 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           return {
-            state: withCompletedStep(state, "api-key", "connection-test"),
+            state: withCompletedStep(
+              {
+                ...state,
+                modelAccessInput: "menu",
+                authPrompt: null,
+              },
+              "api-key",
+              "connection-test",
+            ),
             completed: false,
           };
         }
@@ -1238,15 +1581,30 @@ export function useFirstRunOnboardingController(
       // render overwrite a newer transition when input arrives quickly.
       const checkingState = {
         ...stateRef.current,
+        authPrompt: null,
+        error: null,
         isCheckingConnection: true,
       };
       stateRef.current = checkingState;
       setState(checkingState);
       try {
+        const submitContext: FirstRunOnboardingContext = {
+          ...options,
+          onAuthPrompt: (prompt) => {
+            const promptState = {
+              ...stateRef.current,
+              authPrompt: prompt,
+              error: null,
+            };
+            stateRef.current = promptState;
+            setState(promptState);
+            options.onAuthPrompt?.(prompt);
+          },
+        };
         const result = await submitFirstRunOnboardingInput(
           checkingState,
           input,
-          options,
+          submitContext,
         );
         const nextState = {
           ...result.state,
@@ -1315,16 +1673,8 @@ function apiKeyInstructionForConnection(
 
 function apiKeyInstructionForProvider(
   provider: BuiltInProviderSlug,
-  context: FirstRunOnboardingContext,
 ): string {
   const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-  if (
-    MANAGED_KEY_PROVIDERS.has(provider) &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    hasEntitledRemoteAuthSessionSync(context.env)
-  ) {
-    return "Your Pro account can use hosted model access here. Press Enter to verify it.";
-  }
   if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
     return "This provider can continue without a BYOK API key. Press Enter to continue.";
   }
@@ -1390,12 +1740,20 @@ export function firstRunOnboardingInputPresentation(
           allowEmptySubmit: false,
         };
       }
+      if (state.modelAccessInput === "api-key") {
+        const keyEnvVar =
+          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider] ?? "API key";
+        return {
+          placeholder: `Paste ${keyEnvVar}, type back, or press Enter to configure later`,
+          footerHint:
+            "Keys are verified before an explicit save confirmation · /exit leaves setup",
+          allowEmptySubmit: true,
+        };
+      }
       return {
-        placeholder:
-          state.selectedProvider === "grok"
-            ? "Paste XAI_API_KEY, type login, or press Enter to add it later"
-            : "Paste an API key, or press Enter to add it later",
-        footerHint: standardFooter,
+        placeholder: "Choose 1–4, or paste a provider API key directly",
+        footerHint:
+          "No slash commands needed · Enter chooses Configure later · /exit leaves setup",
         allowEmptySubmit: true,
       };
     case "connection-test":
@@ -1484,35 +1842,60 @@ export function detailLinesForStep(
       if (state.pendingApiKeyApproval !== null) {
         return [];
       }
-      // Grok has a keyless path: the X / xAI OAuth sign-in behind
-      // /grok-login (subscription access; always wins over env BYOK).
-      // Offer it here so first-run users are not funneled into creating a
-      // console.x.ai key they may not need.
-      const grokLoginOffer =
-        state.selectedProvider === "grok"
-          ? [
-              "Or type login to sign in with your X / xAI account — no API key needed.",
-            ]
-          : [];
+      if (state.authPrompt !== null) {
+        return [
+          state.authPrompt.heading,
+          state.authPrompt.detail,
+          ...(state.authPrompt.userCode !== undefined
+            ? [`Code: ${state.authPrompt.userCode}`]
+            : []),
+          `URL: ${state.authPrompt.url}`,
+          "Finish sign-in in your browser; AgenC will continue automatically.",
+        ];
+      }
+      if (state.modelAccessInput === "menu") {
+        const keyEnvVar =
+          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider];
+        const billingProvider =
+          state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
+        const providerAccess =
+          KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)
+            ? `Use ${keyEnvVar ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
+            : `Use ${state.selectedProvider} directly — no account sign-in or provider API key required.`;
+        return [
+          `Provider: ${state.selectedProvider}`,
+          `Model: ${state.selectedModel}`,
+          "1. Sign in or create an AgenC account — use hosted models; free accounts get the free-model catalog.",
+          "2. Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
+          `3. ${providerAccess}`,
+          "4. Configure later — continue without signing in or saving a key.",
+          "Choose a number. You can also paste a provider API key directly.",
+        ];
+      }
       const connection = state.connection;
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
-          apiKeyInstructionForProvider(state.selectedProvider, context),
-          ...grokLoginOffer,
+          apiKeyInstructionForProvider(state.selectedProvider),
+          "Type back to choose a different access method.",
         ];
       }
       return [
         connection.detail,
         apiKeyInstructionForConnection(connection),
-        ...grokLoginOffer,
+        "Type back to choose a different access method.",
         ...(state.pastedContents.length > 0
           ? [`Captured ${state.pastedContents.length} large paste privately.`]
           : []),
       ];
     }
     case "security":
-      return securityLinesForContext(context);
+      return [
+        ...(state.connection?.ok === true
+          ? [`Model access: ${state.connection.detail}`]
+          : []),
+        ...securityLinesForContext(context),
+      ];
     case "terminal-setup":
       return [
         `Terminal: ${context.terminalName ?? "terminal"}`,
@@ -1549,7 +1932,11 @@ function classifyOnboardingDetail(line: string): OnboardingDetailEntry {
       current: /\(current\)\s*$/u.test(line),
     };
   }
-  if (/^(Press Enter|Type |Or type |Tip:|Onboarding input only)/u.test(line)) {
+  if (
+    /^(Choose |Finish |Onboarding input only|Or type |Press Enter|Tip:|Type )/u.test(
+      line,
+    )
+  ) {
     return { kind: "hint", text: line };
   }
   const kv = /^([A-Za-z][A-Za-z ]+):\s+(.*)$/u.exec(line);

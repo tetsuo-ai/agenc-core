@@ -38,8 +38,9 @@ enabled = false
 
 ## Runtime flow
 
-1. `agenc login` (or `/login`) stores the remote auth token under
-   `AGENC_HOME` (`auth.json` / session state).
+1. The first-run **Sign in or create an AgenC account** choice stores the
+   remote auth token under `AGENC_HOME` (`auth.json` / session state). The same
+   flow remains available later through `agenc login` or `/login`.
 2. With `auth.managedKeys.enabled` (default true), entitled sessions can
    request a short-lived managed OpenRouter credential from the auth backend.
 3. Free-tier accounts may use the **hosted free OpenRouter routes** only

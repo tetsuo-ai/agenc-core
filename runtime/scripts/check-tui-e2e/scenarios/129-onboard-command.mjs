@@ -30,16 +30,40 @@ export default async function (session) {
   // src/onboarding/Onboarding.tsx submitFirstRunOnboardingInput.)
   await session.waitFor(/Press Enter to continue/, { timeout: 60_000 });
 
-  const wizardInputs = [
+  const setupInputs = [
     "", // preflight: Enter → theme
     "1", // theme: dark → provider
-    "openai-compatible", // provider (mock server) → api-key
-    "", // api-key: Enter on keyless local provider → connection-test
+    "openai-compatible", // provider (mock server) → model access
+  ];
+  for (const input of setupInputs) {
+    await session.submit(input);
+    await session.waitForIdle({ timeout: 60_000 });
+  }
+
+  const accessFrame = session.latestFrame;
+  assert.match(
+    accessFrame,
+    /Sign in or create an AgenC account/u,
+    "model access must offer AgenC account sign-in/signup",
+  );
+  assert.match(
+    accessFrame,
+    /Sign in with X \/ xAI/u,
+    "model access must offer X / xAI sign-in",
+  );
+  assert.match(
+    accessFrame,
+    /Configure later/u,
+    "model access must offer a credential-free continuation",
+  );
+
+  const remainingWizardInputs = [
+    "", // model access: Enter configures later → connection-test
     "", // connection-test: Enter runs the mock-server check → security
     "", // security: Enter keeps defaults → terminal-setup
     "", // terminal-setup: Enter finishes onboarding
   ];
-  for (const input of wizardInputs) {
+  for (const input of remainingWizardInputs) {
     await session.submit(input);
     // Bytes-quiet is the only repaint-agnostic step barrier; a rejected
     // input stalls the wizard and the post-wizard asserts below fail loudly.

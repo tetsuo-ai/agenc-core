@@ -1,8 +1,10 @@
 # Sign in with X — Grok subscription access (no API key)
 
-`/grok-login` signs you into xAI with your X / xAI account and uses your
-**SuperGrok or X Premium subscription** for Grok inference — including
-`grok-4.5` — instead of a metered `XAI_API_KEY`.
+The first-run model-access step can sign you into xAI directly; choose
+**Sign in with X / xAI** without entering a slash command. The same flow is
+available later through `/grok-login`. It uses an eligible **SuperGrok or
+X Premium subscription** for Grok inference — including `grok-4.5` — instead
+of a metered `XAI_API_KEY`.
 
 ## Usage
 
