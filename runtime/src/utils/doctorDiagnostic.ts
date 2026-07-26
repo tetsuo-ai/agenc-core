@@ -1,7 +1,7 @@
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
-import { delimiter, join, posix, win32 } from 'path'
+import { delimiter, join, normalize, posix, resolve, win32 } from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
@@ -20,6 +20,11 @@ import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
+import {
+  GENERATED_WRAPPER_MAX_BYTES,
+  parseGeneratedWrapperContent,
+  type GeneratedWrapper,
+} from './generated-wrapper.js'
 import {
   getDetectedLocalInstallDir,
   getShellType,
@@ -121,7 +126,83 @@ function getNormalizedPaths(): [invokedPath: string, execPath: string] {
   return [invokedPath, execPath]
 }
 
-export async function getCurrentInstallationType(): Promise<InstallationType> {
+export type ActiveGeneratedWrapperOptions = {
+  readonly invokedPath?: string
+  /**
+   * Explicit command path for deterministic callers/tests. `undefined` looks
+   * up `agenc` on PATH; `null` deliberately skips wrapper discovery.
+   */
+  readonly commandPath?: string | null
+}
+
+/**
+ * Prove that the `agenc` command on PATH is a canonical standalone-installer
+ * wrapper for the exact runtime script executing Doctor.
+ */
+export async function findActiveGeneratedWrapper(
+  options: ActiveGeneratedWrapperOptions = {},
+): Promise<GeneratedWrapper | null> {
+  const invokedPath = options.invokedPath ?? process.argv[1] ?? ''
+  if (invokedPath.length === 0) return null
+
+  let commandPath = options.commandPath
+  if (commandPath === undefined) {
+    try {
+      commandPath = await which(getCliBinaryName())
+    } catch {
+      return null
+    }
+  }
+  if (commandPath === null || commandPath.length === 0) return null
+
+  const wrapperPath = resolve(commandPath)
+  const fs = getFsImplementation()
+  try {
+    const before = fs.lstatSync(wrapperPath)
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1 ||
+      before.size > GENERATED_WRAPPER_MAX_BYTES
+    ) {
+      return null
+    }
+    const bytes = await fs.readFileBytes(
+      wrapperPath,
+      GENERATED_WRAPPER_MAX_BYTES + 1,
+    )
+    if (bytes.length > GENERATED_WRAPPER_MAX_BYTES) return null
+    const after = fs.lstatSync(wrapperPath)
+    if (
+      !after.isFile() ||
+      after.isSymbolicLink() ||
+      after.nlink !== 1 ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size
+    ) {
+      return null
+    }
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    const wrapper = parseGeneratedWrapperContent(wrapperPath, content)
+    if (wrapper === null) return null
+    const [activeRuntime, declaredRuntime] = await Promise.all([
+      realpath(resolve(invokedPath)),
+      realpath(wrapper.runtimeBin),
+    ])
+    return activeRuntime === declaredRuntime ? wrapper : null
+  } catch {
+    return null
+  }
+}
+
+export type InstallationDetectionOptions = ActiveGeneratedWrapperOptions & {
+  readonly activeGeneratedWrapper?: GeneratedWrapper | null
+}
+
+export async function getCurrentInstallationType(
+  options: InstallationDetectionOptions = {},
+): Promise<InstallationType> {
   if (process.env.NODE_ENV === 'development') {
     return 'development'
   }
@@ -143,6 +224,16 @@ export async function getCurrentInstallationType(): Promise<InstallationType> {
     ) {
       return 'package-manager'
     }
+    return 'native'
+  }
+
+  const activeGeneratedWrapper = Object.hasOwn(
+    options,
+    'activeGeneratedWrapper',
+  )
+    ? (options.activeGeneratedWrapper ?? null)
+    : await findActiveGeneratedWrapper(options)
+  if (activeGeneratedWrapper !== null) {
     return 'native'
   }
 
@@ -185,9 +276,27 @@ export async function getCurrentInstallationType(): Promise<InstallationType> {
   return 'unknown'
 }
 
-async function getInstallationPath(): Promise<string> {
+export async function getInstallationPath(
+  options: {
+    readonly installationType?: InstallationType
+    readonly activeGeneratedWrapper?: GeneratedWrapper | null
+  } = {},
+): Promise<string> {
   if (process.env.NODE_ENV === 'development') {
     return getCwd()
+  }
+
+  const activeGeneratedWrapper = Object.hasOwn(
+    options,
+    'activeGeneratedWrapper',
+  )
+    ? (options.activeGeneratedWrapper ?? null)
+    : await findActiveGeneratedWrapper()
+  const installationType =
+    options.installationType ??
+    (await getCurrentInstallationType({ activeGeneratedWrapper }))
+  if (installationType === 'native' && activeGeneratedWrapper !== null) {
+    return activeGeneratedWrapper.path
   }
 
   // For bundled/native builds, show the binary location
@@ -224,9 +333,10 @@ async function getInstallationPath(): Promise<string> {
     return 'native'
   }
 
-  // For npm installations, use the path of the executable
+  // For script-based npm/unknown installations, show the invoked CLI script
+  // rather than the Node interpreter that happened to execute it.
   try {
-    return process.argv[0] || 'unknown'
+    return process.argv[1] || process.argv[0] || 'unknown'
   } catch {
     return 'unknown'
   }
@@ -246,9 +356,24 @@ export function getInvokedBinary(): string {
   }
 }
 
-async function detectMultipleInstallations(): Promise<
-  Array<{ type: string; path: string }>
-> {
+export function retainOnlyMultipleInstallations(
+  installations: ReadonlyArray<{ type: string; path: string }>,
+): Array<{ type: string; path: string }> {
+  const unique = new Map<string, { type: string; path: string }>()
+  for (const installation of installations) {
+    let key = normalize(resolve(installation.path))
+    if (getPlatform() === 'windows') key = key.toLowerCase()
+    // A later, more specific detector (notably a verified native wrapper)
+    // replaces an earlier heuristic classification of the same path.
+    unique.set(key, installation)
+  }
+  const result = [...unique.values()]
+  return result.length > 1 ? result : []
+}
+
+async function detectMultipleInstallations(
+  activeGeneratedWrapper: GeneratedWrapper | null,
+): Promise<Array<{ type: string; path: string }>> {
   const fs = getFsImplementation()
   const installations: Array<{ type: string; path: string }> = []
 
@@ -332,6 +457,13 @@ async function detectMultipleInstallations(): Promise<
 
   // Check for native installation
 
+  if (activeGeneratedWrapper !== null) {
+    installations.push({
+      type: 'native',
+      path: activeGeneratedWrapper.path,
+    })
+  }
+
   // Check common native installation paths
   const nativeBinPath = join(homedir(), '.local', 'bin', getCliBinaryName())
   try {
@@ -360,7 +492,7 @@ async function detectMultipleInstallations(): Promise<
     }
   }
 
-  return installations
+  return retainOnlyMultipleInstallations(installations)
 }
 
 async function detectConfigurationIssues(
@@ -488,7 +620,12 @@ async function detectConfigurationIssues(
       })
     }
 
-    if (type === 'native' && config.installMethod !== 'native') {
+    if (
+      type === 'native' &&
+      config.installMethod !== undefined &&
+      config.installMethod !== 'unknown' &&
+      config.installMethod !== 'native'
+    ) {
       warnings.push({
         issue: `Running native installation but config install method is '${config.installMethod}'`,
         fix: `Run ${getCliBinaryName()} install to update configuration`,
@@ -719,16 +856,24 @@ export function buildSandboxWarning(
 }
 
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
-  const installationType = await getCurrentInstallationType()
+  const activeGeneratedWrapper = await findActiveGeneratedWrapper()
+  const installationType = await getCurrentInstallationType({
+    activeGeneratedWrapper,
+  })
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
   // literal at build time, but never defines the bare `MACRO` identifier — so a
   // `typeof MACRO !== 'undefined'` guard always reports the global as undefined
   // under the built binary and falls through to 'unknown'. Read `MACRO.VERSION`
   // directly, the same canonical build-time source the `--version` path uses.
   const version = MACRO.VERSION || 'unknown'
-  const installationPath = await getInstallationPath()
+  const installationPath = await getInstallationPath({
+    installationType,
+    activeGeneratedWrapper,
+  })
   const invokedBinary = getInvokedBinary()
-  const multipleInstallations = await detectMultipleInstallations()
+  const multipleInstallations = await detectMultipleInstallations(
+    activeGeneratedWrapper,
+  )
   const warnings = await detectConfigurationIssues(installationType)
 
   // Add glob pattern warnings for Linux sandboxing

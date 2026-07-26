@@ -94,7 +94,7 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current release: 0.9.4.** Runtime and launcher are versioned `0.9.4`; the
+**Current release: 0.9.5.** Runtime and launcher are versioned `0.9.5`; the
 embedding SDK package is intentionally `0.2.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository

@@ -115,11 +115,14 @@ agenc init --force
 ```text
 agenc doctor
 agenc doctor --json
+agenc doctor --apparmor-profile
 ```
 
 Diagnoses installation and environment: version, install type, ripgrep, update
 permissions, transaction-guard, PATH/glob warnings, with suggested fixes.
-`--json` emits the raw diagnostic.
+`--json` emits the raw diagnostic. `--apparmor-profile` prints, but does not
+install, a narrow Ubuntu AppArmor user-namespace profile bound to the verified
+standalone `agenc` wrapper.
 
 MCP-specific diagnostics: `agenc mcp doctor`.
 

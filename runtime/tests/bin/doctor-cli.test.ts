@@ -38,6 +38,19 @@ describe("parseAgenCDoctorCliArgs", () => {
       kind: "doctor",
       json: true,
     });
+    expect(parseAgenCDoctorCliArgs(["doctor", "--apparmor-profile"])).toEqual({
+      kind: "apparmor-profile",
+    });
+  });
+
+  it("does not combine diagnostic JSON with AppArmor profile output", () => {
+    expect(
+      parseAgenCDoctorCliArgs(["doctor", "--json", "--apparmor-profile"]),
+    ).toEqual({
+      kind: "error",
+      message:
+        "doctor command cannot combine '--json' and '--apparmor-profile'",
+    });
   });
 
   it("rejects unknown flags instead of silently ignoring them", () => {
@@ -157,6 +170,7 @@ describe("formatAgenCDoctorCliHelpText", () => {
     const help = formatAgenCDoctorCliHelpText();
     expect(help).toContain("agenc doctor");
     expect(help).toContain("--json");
+    expect(help).toContain("--apparmor-profile");
     expect(help).toContain("agenc mcp doctor");
   });
 });

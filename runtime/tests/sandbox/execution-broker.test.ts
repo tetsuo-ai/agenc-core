@@ -16,6 +16,7 @@ import {
   SandboxExecutionBroker,
   SandboxExecutionError,
   attachSandboxExecutionBroker,
+  linuxSandboxProbeRemediation,
   probeSandboxExecutionStatus,
   readSandboxExecutionBroker,
   resolveDefaultLinuxSandboxExecutable,
@@ -52,6 +53,17 @@ afterEach(() => {
 });
 
 describe("SandboxExecutionBroker", () => {
+  it("turns Ubuntu's AppArmor bubblewrap denial into the exact profile fix", () => {
+    const diagnostic =
+      "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
+    expect(linuxSandboxProbeRemediation(diagnostic, "1")).toContain(
+      "agenc doctor --apparmor-profile",
+    );
+    expect(linuxSandboxProbeRemediation(diagnostic, "0")).toContain(
+      "Enable unprivileged user namespaces",
+    );
+  });
+
   it("rejects a privileged executable resolved from the writable workspace PATH", () => {
     const root = tempRoot("agenc-sandbox-broker-path-shim-");
     const executableName = process.platform === "win32" ? "git.cmd" : "git";

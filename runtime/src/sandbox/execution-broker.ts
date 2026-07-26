@@ -30,6 +30,10 @@ import {
   permissionProfileForSandboxMode,
   sandboxModeRequiresPlatformIsolation,
 } from "../tools/runtimes/sandboxing.js";
+import {
+  APPARMOR_USERNS_REMEDIATION,
+  isAppArmorUserNamespaceDenial,
+} from "./apparmor.js";
 import { sanitizeSandboxLauncherEnvironment } from "./launcher-environment.js";
 
 export type SandboxExecutionSurface =
@@ -482,6 +486,18 @@ export function probeSandboxExecutionStatus(options: {
   );
 }
 
+const GENERIC_LINUX_NAMESPACE_REMEDIATION =
+  "Enable unprivileged user namespaces or use a supported container/WSL2 host, then run `agenc doctor` again.";
+
+export function linuxSandboxProbeRemediation(
+  diagnostic: string,
+  appArmorRestriction?: string | null,
+): string {
+  return isAppArmorUserNamespaceDenial(diagnostic, appArmorRestriction)
+    ? APPARMOR_USERNS_REMEDIATION
+    : GENERIC_LINUX_NAMESPACE_REMEDIATION;
+}
+
 function probeLinuxSandbox(options: {
   readonly mode: SandboxMode;
   readonly cwd: string;
@@ -537,7 +553,7 @@ function probeLinuxSandbox(options: {
     return unavailableStatus(
       options,
       `probe: bubblewrap could not create the required namespaces${detail ? ` (${detail})` : ""}`,
-      "Enable unprivileged user namespaces or use a supported container/WSL2 host, then run `agenc doctor` again.",
+      linuxSandboxProbeRemediation(detail),
       helper.path,
       bwrap,
     );

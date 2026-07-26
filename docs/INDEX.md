@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.9.4**; embedding SDK
+Version in tree: **runtime / launcher 0.9.5**; embedding SDK
 **0.2.0**. Default provider **grok**; fresh-config session model **grok-4.5**
 (same as provider-map / managed-OpenRouter paid defaults — see [providers.md](reference/providers.md)).
 
@@ -81,6 +81,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.9.5.md](releases/0.9.5.md) | AgenC 0.9.5: accurate native-install diagnostics and an actionable Ubuntu AppArmor sandbox fix |
 | [releases/0.9.4.md](releases/0.9.4.md) | AgenC 0.9.4: first-run AgenC and X / xAI sign-in, free hosted models, and actionable onboarding |
 | [releases/0.9.3.md](releases/0.9.3.md) | AgenC 0.9.3: default wrapper-directory permission repair, concise installer failures, resumable exact-SHA releases, installer-only hotfix channel |
 | [releases/0.9.2.md](releases/0.9.2.md) | AgenC 0.9.2: swarm workers freed from implicit runtime limits, swarm status/transcript polish, shell-quote 1.10.0 permission-parser fix, assign_task prompt matches admission |
@@ -120,7 +121,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.9.4) |
+| [`../README.md`](../README.md) | Product README (0.9.5) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |
