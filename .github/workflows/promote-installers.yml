@@ -1,0 +1,185 @@
+# Promote one exact, locally verified main commit to the public installer
+# channel. get.agenc.ag redirects install.sh/install.ps1 to the dedicated
+# fast-forward-only installer-stable promotion branch, so this workflow can
+# ship an installer-only hotfix without rebuilding unchanged runtimes or
+# publishing a new npm package.
+#
+# The full lane runs at agenc-vX.Y.Z. The installer-hotfix lane runs at current
+# main and requires the package version to remain unchanged from the previously
+# promoted installer commit. Both lanes are resumable: promoting the same SHA
+# again is an idempotent verification result.
+
+name: promote-installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tested_sha:
+        description: Full exact-main commit verified locally
+        required: true
+        type: string
+      local_evidence_sha256:
+        description: SHA-256 of the exact-SHA release evidence record
+        required: true
+        type: string
+      lane:
+        description: Full release or installer-only hotfix
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - installer-hotfix
+
+concurrency:
+  group: promote-installers-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Bind promotion to exact reviewed source
+        env:
+          LANE: ${{ inputs.lane }}
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$TESTED_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          git merge-base --is-ancestor "$TESTED_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          version="$(node -p 'require("./package.json").version')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$version" = "$(node -p 'require("./runtime/package.json").version')"
+          test "$version" = "$(node -p 'require("./packages/agenc/package.json").version')"
+
+          case "$LANE" in
+            full)
+              test "$GITHUB_REF_TYPE" = tag
+              test "$GITHUB_REF" = "refs/tags/agenc-v${version}"
+              ;;
+            installer-hotfix)
+              test "$GITHUB_REF" = refs/heads/main
+              test "$(git rev-parse refs/remotes/origin/main)" = "$TESTED_SHA"
+              ;;
+            *)
+              echo "unsupported installer promotion lane: $LANE" >&2
+              exit 1
+              ;;
+          esac
+
+          node scripts/sync-installer-sqlite-lock.mjs --check
+          sh -n scripts/install/install.sh
+
+      - name: Verify fast-forward promotion
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ inputs.lane }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/installer-stable" \
+              --jq .object.sha 2>/dev/null || true
+          )"
+          if [[ "$LANE" = installer-hotfix && -z "$current" ]]; then
+            echo "installer-hotfix requires an existing full-release promotion" >&2
+            exit 1
+          fi
+          if [[ -n "$current" ]]; then
+            [[ "$current" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$current" "$TESTED_SHA"
+            if [[ "$LANE" = installer-hotfix ]]; then
+              previous_version="$(
+                git show "${current}:package.json" |
+                  node -e 'let input="";process.stdin.on("data",c=>input+=c).on("end",()=>process.stdout.write(JSON.parse(input).version))'
+              )"
+              current_version="$(node -p 'require("./package.json").version')"
+              test "$previous_version" = "$current_version"
+              if git diff --quiet "$current" "$TESTED_SHA" -- \
+                scripts/install/install.sh scripts/install/install.ps1; then
+                echo "installer-hotfix lane requires changed installer bytes" >&2
+                exit 1
+              fi
+            fi
+          fi
+          echo "previous-sha=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Promote installer-stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_SHA: ${{ steps.target.outputs.previous-sha }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PREVIOUS_SHA" = "$TESTED_SHA" ]]; then
+            echo "installer-stable already points to $TESTED_SHA"
+          elif [[ -n "$PREVIOUS_SHA" ]]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/git/refs/heads/installer-stable" \
+              --raw-field sha="$TESTED_SHA" \
+              -F force=false >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              --raw-field ref=refs/heads/installer-stable \
+              --raw-field sha="$TESTED_SHA" >/dev/null
+          fi
+          observed="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/installer-stable" \
+              --jq .object.sha
+          )"
+          test "$observed" = "$TESTED_SHA"
+
+      - name: Verify public installer bytes
+        env:
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in install.sh install.ps1; do
+            expected="$(sha256sum "scripts/install/$file" | cut -d ' ' -f 1)"
+            matched=false
+            for attempt in $(seq 1 30); do
+              observed="$(
+                curl --fail --silent --show-error --location \
+                  -H 'Cache-Control: no-cache' \
+                  "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/installer-stable/scripts/install/$file" |
+                  sha256sum | cut -d ' ' -f 1
+              )"
+              if [[ "$observed" = "$expected" ]]; then
+                matched=true
+                break
+              fi
+              sleep 2
+            done
+            test "$matched" = true
+          done
+          {
+            echo "### Installer promotion"
+            echo
+            echo "- source: \`$TESTED_SHA\`"
+            echo "- channel: \`installer-stable\`"
+            echo "- install.sh and install.ps1: byte-verified"
+          } >> "$GITHUB_STEP_SUMMARY"

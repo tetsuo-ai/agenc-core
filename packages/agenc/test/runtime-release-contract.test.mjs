@@ -32,13 +32,15 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
     {
       source: "/install.sh",
       destination:
-        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.sh",
+        "https://raw.githubusercontent.com/tetsuo-ai/agenc-core/" +
+        "installer-stable/scripts/install/install.sh",
       permanent: false,
     },
     {
       source: "/install.ps1",
       destination:
-        "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.ps1",
+        "https://raw.githubusercontent.com/tetsuo-ai/agenc-core/" +
+        "installer-stable/scripts/install/install.ps1",
       permanent: false,
     },
     {
@@ -103,6 +105,40 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
     );
     assert.match(contents, /^<svg\b/);
   }
+});
+
+test("installer promotion is exact-SHA, fast-forward-only, and lane-scoped", () => {
+  const workflow = readFileSync(
+    new URL(
+      "../../../.github/workflows/promote-installers.yml",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(workflow, /tested_sha:/u);
+  assert.match(workflow, /local_evidence_sha256:/u);
+  assert.match(workflow, /lane:/u);
+  assert.match(workflow, /contents: write/u);
+  assert.match(workflow, /installer-stable/u);
+  assert.match(workflow, /git merge-base --is-ancestor/u);
+  assert.match(workflow, /-F force=false/u);
+  assert.match(workflow, /test "\$TESTED_SHA" = "\$GITHUB_SHA"/u);
+  assert.match(
+    workflow,
+    /git merge-base --is-ancestor "\$TESTED_SHA" refs\/remotes\/origin\/main/u,
+  );
+  assert.match(
+    workflow,
+    /test "\$\(git rev-parse refs\/remotes\/origin\/main\)" = "\$TESTED_SHA"/u,
+  );
+  assert.match(
+    workflow,
+    /installer-hotfix requires an existing full-release promotion/u,
+  );
+  assert.match(workflow, /node scripts\/sync-installer-sqlite-lock\.mjs --check/u);
+  assert.match(workflow, /sh -n scripts\/install\/install\.sh/u);
+  assert.match(workflow, /raw\.githubusercontent\.com/u);
+  assert.doesNotMatch(workflow, /npm publish|check:clean-build/u);
 });
 
 test("consumer GitHub CLI pins exactly mirror the reviewed release toolchain", () => {

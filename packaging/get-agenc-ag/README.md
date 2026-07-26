@@ -12,7 +12,8 @@ grid background).
 - `public/assets/agenc-wordmark.svg` — wordmark (nav + hero, tinted black via
   `filter: brightness(0)`)
 - `public/robots.txt` — crawler policy
-- `vercel.json` — production security headers and stable release redirects
+- `vercel.json` — production security headers, stable installer-channel
+  redirects, and release-manifest redirects
 
 Fonts load from Google Fonts (Archivo, IBM Plex Mono). Self-host them if the
 page must respect a strict CSP (`font-src 'self'`).
@@ -20,6 +21,11 @@ page must respect a strict CSP (`font-src 'self'`).
 ## Behavior
 
 - Single install command: `curl -fsSL https://get.agenc.ag/install.sh | sh`
+- `install.sh` and `install.ps1` follow the exact commit promoted to the
+  dedicated, fast-forward-only `installer-stable` promotion branch; this lets
+  a reviewed bootstrap hotfix ship without rebuilding unchanged runtimes.
+- `manifest-v2.json` and `manifest.json` continue to follow the latest
+  immutable runtime release.
 - Click-to-copy with Clipboard API + `execCommand` fallback, "COPIED ✓" feedback
 - Dark mode: toggle in the nav, respects `prefers-color-scheme`, persisted in
   `localStorage` (`agenc-theme`), smooth transitions (CSS variables)

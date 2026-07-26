@@ -14,12 +14,12 @@
   "redirects": [
     {
       "source": "/install.sh",
-      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.sh",
+      "destination": "https://raw.githubusercontent.com/tetsuo-ai/agenc-core/installer-stable/scripts/install/install.sh",
       "permanent": false
     },
     {
       "source": "/install.ps1",
-      "destination": "https://github.com/tetsuo-ai/agenc-releases/releases/latest/download/install.ps1",
+      "destination": "https://raw.githubusercontent.com/tetsuo-ai/agenc-core/installer-stable/scripts/install/install.ps1",
       "permanent": false
     },
     {

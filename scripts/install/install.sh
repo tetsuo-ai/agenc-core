@@ -50,7 +50,9 @@ MANIFEST_URL="${AGENC_INSTALL_MANIFEST_URL:-}"
 MANIFEST_EXPLICIT=0
 [ -n "$MANIFEST_URL" ] && MANIFEST_EXPLICIT=1
 PIN_VERSION=""
-PREFIX="${HOME}/.local"
+DEFAULT_PREFIX="${HOME}/.local"
+PREFIX="$DEFAULT_PREFIX"
+PREFIX_EXPLICIT=0
 INSTALL_DAEMON=1
 SUPPORTED_NODE_MAJOR=25
 SUPPORTED_NODE_MINOR=9
@@ -73,7 +75,7 @@ while [ $# -gt 0 ]; do
     --version) PIN_VERSION="${2:?--version needs a value}"; shift 2 ;;
     --manifest-url) MANIFEST_URL="${2:?--manifest-url needs a value}"; MANIFEST_EXPLICIT=1; shift 2 ;;
     --repo) REPO="${2:?--repo needs a value}"; shift 2 ;;
-    --prefix) PREFIX="${2:?--prefix needs a value}"; shift 2 ;;
+    --prefix) PREFIX="${2:?--prefix needs a value}"; PREFIX_EXPLICIT=1; shift 2 ;;
     --no-daemon) INSTALL_DAEMON=0; shift ;;
     -h|--help) sed -n '2,30p' "$0" 2>/dev/null; exit 0 ;;
     *) fail "unknown option: $1 (see --help)" ;;
@@ -1038,7 +1040,7 @@ const { spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const {
   chmodSync: chmodLockSync, closeSync, constants: fsConstants, existsSync,
-  fchmodSync, fsyncSync, lstatSync, mkdirSync,
+  fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
   mkdtempSync, readFileSync,
   openSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
@@ -1054,7 +1056,9 @@ const [
   mode, archivePath, installDir, binRel, expectedSha, artifactPlatform,
   provenanceExpectationBase64 = "", provenanceReceiptBase64 = "", extractionTool = "",
 ] = process.argv.slice(2);
-if (!["recover", "install", "activate", "render-wrapper"].includes(mode)) throw new Error(`invalid runtime installer mode: ${mode}`);
+if (!["recover", "install", "activate", "render-wrapper", "prepare-wrapper-directories"].includes(mode)) {
+  throw new Error(`invalid runtime installer mode: ${mode}`);
+}
 const BLOCK_SIZE = 512;
 const MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_ENTRIES = 200_000;
@@ -1078,6 +1082,59 @@ function syncDirectory(path) {
   const descriptor = openSync(path, fsConstants.O_RDONLY);
   try { fsyncSync(descriptor); }
   finally { closeSync(descriptor); }
+}
+
+function secureOwnerDirectory(path, { repairWritable, ownerOnly }) {
+  const before = lstatSync(path, { bigint: true });
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new Error(`wrapper directory is not a real directory: ${path}`);
+  }
+  if (process.platform === "win32") return false;
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined || before.uid !== BigInt(currentUid)) {
+    throw new Error(`wrapper directory is not owned by the current user: ${path}`);
+  }
+  const shouldRepair = ownerOnly ||
+    (repairWritable && (before.mode & 0o022n) !== 0n);
+  if (!shouldRepair) return false;
+  if (
+    !Number.isInteger(fsConstants.O_DIRECTORY) ||
+    !Number.isInteger(fsConstants.O_NOFOLLOW)
+  ) {
+    throw new Error("secure wrapper directory repair is unsupported on this platform");
+  }
+  const descriptor = openSync(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isDirectory() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.uid !== before.uid
+    ) {
+      throw new Error(`wrapper directory identity changed during repair: ${path}`);
+    }
+    const targetMode = ownerOnly
+      ? 0o700
+      : Number((opened.mode & 0o7777n) & ~0o022n);
+    fchmodSync(descriptor, targetMode);
+    const secured = fstatSync(descriptor, { bigint: true });
+    if (
+      !secured.isDirectory() ||
+      secured.dev !== before.dev ||
+      secured.ino !== before.ino ||
+      secured.uid !== before.uid ||
+      (secured.mode & 0o022n) !== 0n
+    ) {
+      throw new Error(`wrapper directory could not be secured: ${path}`);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return true;
 }
 function writeFileDurably(path, content, { flag = "w", mode = 0o600 } = {}) {
   const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
@@ -1866,16 +1923,86 @@ async function renderWrapperMain() {
     mode: kind === "cmd" ? 0o644 : 0o755,
   });
 }
+async function prepareWrapperDirectoriesMain() {
+  const prefix = resolve(archivePath);
+  const wrapperDirectory = resolve(installDir);
+  const repairExisting = binRel === "true";
+  if (
+    !isAbsolute(archivePath) ||
+    !isAbsolute(installDir) ||
+    wrapperDirectory !== join(prefix, "bin") ||
+    !["true", "false"].includes(binRel)
+  ) {
+    throw new Error("invalid wrapper directory preparation arguments");
+  }
+
+  const prefixExisted = existsSync(prefix);
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  const prefixSecured = secureOwnerDirectory(prefix, {
+    repairWritable: repairExisting,
+    ownerOnly: !prefixExisted,
+  });
+  let repairedExisting = prefixExisted && prefixSecured;
+
+  const wrapperDirectoryExisted = existsSync(wrapperDirectory);
+  mkdirSync(wrapperDirectory, { recursive: true, mode: 0o700 });
+  const wrapperDirectorySecured = secureOwnerDirectory(wrapperDirectory, {
+    repairWritable: repairExisting,
+    ownerOnly: !wrapperDirectoryExisted,
+  });
+  repairedExisting =
+    (wrapperDirectoryExisted && wrapperDirectorySecured) || repairedExisting;
+
+  const { assertLocalPrivateDirectory } = await loadSqliteLockModule();
+  for (const path of [prefix, wrapperDirectory]) {
+    const canonical = await assertLocalPrivateDirectory(path, {
+      label: "wrapper directory preparation",
+      timeoutMs: 120_000,
+    });
+    if (canonical !== path) {
+      throw new Error(`wrapper directory must use its canonical path: ${path}`);
+    }
+  }
+  process.stdout.write(repairedExisting ? "repaired\n" : "ready\n");
+}
 async function main() {
   if (mode === "render-wrapper") await renderWrapperMain();
+  else if (mode === "prepare-wrapper-directories") await prepareWrapperDirectoriesMain();
   else if (mode === "activate") await activationMain();
   else await runtimeMain();
 }
+function installerErrorMessages(error, seen = new Set()) {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    if (seen.has(error)) return [];
+    seen.add(error);
+  }
+  if (error instanceof AggregateError) {
+    return [
+      error.message,
+      ...error.errors.flatMap((item) => installerErrorMessages(item, seen)),
+    ];
+  }
+  return [error instanceof Error ? error.message : String(error)];
+}
 main().catch((error) => {
-  console.error(error);
+  console.error(installerErrorMessages(error).join("\n"));
   process.exitCode = 1;
 });
 AGENC_RUNTIME_INSTALLER
+
+BIN_DIR="${PREFIX}/bin"
+WRAPPER="${BIN_DIR}/agenc"
+REPAIR_EXISTING_WRAPPER_DIRS=false
+[ "$PREFIX_EXPLICIT" -eq 0 ] && REPAIR_EXISTING_WRAPPER_DIRS=true
+WRAPPER_DIRECTORY_RESULT="$(node "$RUNTIME_INSTALLER_JS" prepare-wrapper-directories \
+  "$PREFIX" "$BIN_DIR" "$REPAIR_EXISTING_WRAPPER_DIRS")" || \
+  fail "could not prepare secure wrapper directory: $BIN_DIR"
+case "$WRAPPER_DIRECTORY_RESULT" in
+  ready) : ;;
+  repaired) log "secured existing default wrapper directories: ${PREFIX}, ${BIN_DIR}" ;;
+  *) fail "wrapper directory preparation returned an invalid result" ;;
+esac
+
 RECOVERY_STATE="$(node "$RUNTIME_INSTALLER_JS" recover - "$INSTALL_DIR" "$BIN_REL" "$ARTIFACT_SHA" "$OS" \
   "$PROVENANCE_EXPECTATION_BASE64" "")" || \
   fail "runtime crash recovery failed"
@@ -1918,19 +2045,6 @@ fi
 
 # --- wrapper -----------------------------------------------------------------
 
-BIN_DIR="${PREFIX}/bin"
-WRAPPER="${BIN_DIR}/agenc"
-PREFIX_WAS_PRESENT=0
-[ -e "$PREFIX" ] && PREFIX_WAS_PRESENT=1
-BIN_DIR_WAS_PRESENT=0
-[ -e "$BIN_DIR" ] && BIN_DIR_WAS_PRESENT=1
-mkdir -p "$BIN_DIR"
-if [ "$PREFIX_WAS_PRESENT" -eq 0 ]; then
-  chmod 700 "$PREFIX" || fail "could not secure new install prefix: $PREFIX"
-fi
-if [ "$BIN_DIR_WAS_PRESENT" -eq 0 ]; then
-  chmod 700 "$BIN_DIR" || fail "could not secure new wrapper directory: $BIN_DIR"
-fi
 # Bake absolute node + runtime paths: user services (systemd/launchd) run with
 # a minimal PATH where version-manager-installed node is not resolvable.
 WRAPPER_TMP="${WORK}/agenc-wrapper"

@@ -65,43 +65,60 @@ substitute for this exact-SHA reread.
 
 ## Current local release evidence protocol
 
-Create the immutable `agenc-v<version>` tag from reviewed `main`, then test a
-clean detached checkout of that tag. Store the authoritative record outside
-the repository at:
+After the release PR is squash-merged, fetch and verify clean exact
+`origin/main`. Run the repository release verifier before creating the tag:
 
-```text
-${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/agenc-v<version>-<40-character-sha>.json
+```bash
+npm run release:verify -- --lane full --version <version>
 ```
 
-The directory must be mode `0700` and the record mode `0600`. This is a
-human-reviewed local record, not a machine or GitHub attestation. Its JSON root
-must contain only `schemaVersion` (integer `1`), `repository`, `tag`, `testedSha`,
-`mainShaAtVerification`, `startedAt`, `finishedAt`, `nodeVersion`, `npmVersion`,
-an ordered `gates` array with command/result/exit code/log SHA-256, a `skips`
-array with reasons, the clean-tree result, the reviewer, and unresolved risks.
-SHAs use lowercase hex; timestamps use UTC RFC 3339; results are `pass` or
-`fail`; exit codes are non-negative integers. Retain the referenced private logs
-with the record. After final review, compute the SHA-256 of the exact record
-bytes and do not edit the file; any correction creates a new digest.
-Before dispatching either release workflow, require all of the following:
+The verifier owns a private directory under
+`${AGENC_RELEASE_STATE_DIR:-$HOME/.local/state/agenc-release}` with mode `0700`;
+state, evidence, and logs are mode `0600`. Its state identity contains the lane,
+version, exact 40-character SHA, ordered gate plan, and plan digest. It writes
+each gate result atomically and serializes operations with an exact-state lock.
+A rerun for the same SHA and plan re-hashes the retained log and skips only a
+still-valid passing gate.
+
+The evidence document uses `schemaVersion: 2` and contains `repository`, `lane`,
+`tag`, `testedSha`, `mainShaAtVerification`, timestamps, exact Node/npm
+versions, `planDigest`, the ordered passing gates with argv/exit code/timestamps
+and log SHA-256, skips, clean-tree result, reviewer identity, and unresolved
+risks. Its SHA-256 is computed from the final bytes and returned as
+`evidenceSha256`. Those bytes are never edited.
+
+The full plan runs once at the final main SHA: preflight, installer
+synchronization, typecheck, full tests, runtime startup smoke, and complete
+clean-build acceptance. Do not run the clean-build acceptance on the
+pre-squash branch and do not repeat it after creating a tag at the same SHA.
+
+Before dispatching a full release workflow, require:
 
 ```bash
 tag=agenc-v<version>
-tested_sha=<40-character SHA in the release evidence>
+tested_sha=<sha returned by release:verify>
+evidence_sha256=<evidenceSha256 returned by release:verify>
 git fetch origin main --tags
+test "$(git rev-parse refs/remotes/origin/main)" = "$tested_sha"
 test "$(git rev-parse --verify "refs/tags/${tag}^{commit}")" = "$tested_sha"
-git merge-base --is-ancestor "$tested_sha" refs/remotes/origin/main
-test -f "${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json"
-evidence_sha256="$(sha256sum "${AGENC_RELEASE_EVIDENCE_DIR:-$HOME/.agenc/release-evidence}/${tag}-${tested_sha}.json" | cut -d ' ' -f 1)"
 [[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
 ```
 
-Dispatch with `tested_sha` and `local_evidence_sha256` set to those exact
-values. The workflow rejects a tag at any other commit and records both values
-as explicit invocation inputs before artifact work. It repeats the tag,
-exact-SHA, clean-tree, and `main` ancestry binding. It deliberately cannot turn
-a local record into a remote test result; the operator retains the record and
-the remote invocation makes later record mutation detectable by digest.
+Dispatch `release-runtime.yml`, the full lane of
+`promote-installers.yml`, and `publish-npm.yml` with `tested_sha` and
+`local_evidence_sha256` set to those exact values. Each workflow rejects a
+different tag/SHA and records the digest as an invocation input.
+
+For an installer-only hotfix, run:
+
+```bash
+npm run release:verify -- --lane installer-hotfix
+```
+
+The targeted plan checks installer synchronization, shell syntax, the
+standalone installer suite, and launcher tests. Dispatch only
+`promote-installers.yml` at exact `main` with `lane=installer-hotfix`. It does
+not authorize runtime, manifest, landing-version, or npm publication.
 
 ## Inactive optional hardened enforcement design
 
@@ -763,17 +780,23 @@ exact SHA in its receipt; a prior SHA never authorizes a newer one.
 
 ## Current release-workflow source binding
 
-[`publish-npm.yml`](../.github/workflows/publish-npm.yml) and
-[`release-runtime.yml`](../.github/workflows/release-runtime.yml) continue to
-use GitHub-hosted jobs to produce release artifacts. They do not run tests.
-Before artifact work starts, each workflow:
+[`publish-npm.yml`](../.github/workflows/publish-npm.yml),
+[`release-runtime.yml`](../.github/workflows/release-runtime.yml), and
+[`promote-installers.yml`](../.github/workflows/promote-installers.yml) use
+GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
+repeat the local verification plan. Before artifact or promotion work starts,
+each workflow:
 
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
 2. normally requires `tested_sha` to equal the workflow's exact
    `GITHUB_SHA`;
-3. binds dispatch to the matching `agenc-v<version>` tag and `main`
-   ancestry; and
+3. binds full-release dispatch to the matching `agenc-v<version>` tag and
+   installer-hotfix dispatch to exact current `main`; and
 4. requires the checked-out tree to be clean before artifact work.
+
+The installer workflow additionally checks embedded lock synchronization,
+shell syntax, fast-forward ancestry, and public byte identity. Those cheap
+promotion guards do not duplicate the exact-SHA release acceptance.
 
 The npm workflow has one reviewed partial-release exception. If an immutable
 runtime release already exists but the tagged npm workflow failed before

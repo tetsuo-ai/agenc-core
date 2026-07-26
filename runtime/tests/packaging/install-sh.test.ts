@@ -612,6 +612,7 @@ function runInstaller(opts: {
   pathPrepend?: string[];
   envOverrides?: Record<string, string>;
   installerPath?: string;
+  useDefaultPrefix?: boolean;
 }): RunResult {
   mkdirSync(opts.home, { recursive: true, mode: 0o700 });
   chmodSync(opts.home, 0o700);
@@ -637,8 +638,7 @@ function runInstaller(opts: {
       ...(opts.repoDerived
         ? []
         : ["--manifest-url", opts.manifestUrl ?? pathToFileURL(opts.manifest!).href]),
-      "--prefix",
-      join(opts.home, ".local"),
+      ...(opts.useDefaultPrefix ? [] : ["--prefix", join(opts.home, ".local")]),
       ...(opts.args ?? []),
     ],
     { env, encoding: "utf8", ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }) },
@@ -739,6 +739,55 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     // The wrapper actually launches the installed runtime bin.
     const out = execFileSync(wrapper, ["--version"], { encoding: "utf8" });
     expect(out).toContain("ok --version");
+  });
+
+  test("default install repairs an existing owner-owned group-writable wrapper directory", () => {
+    const home = join(work, "group-writable-wrapper-home");
+    const prefix = join(home, ".local");
+    const wrapperDir = join(prefix, "bin");
+    mkdirSync(wrapperDir, { recursive: true });
+    chmodSync(home, 0o700);
+    chmodSync(prefix, 0o770);
+    chmodSync(wrapperDir, 0o770);
+    const artifact = makeSyntheticArtifact(work);
+    const manifest = writeManifest(work, artifact);
+
+    const result = runInstaller({
+      home,
+      manifest,
+      args: ["--no-daemon"],
+      useDefaultPrefix: true,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(statSync(prefix).mode & 0o022).toBe(0);
+    expect(statSync(wrapperDir).mode & 0o022).toBe(0);
+    expect(result.stderr).toContain("secured existing default wrapper directories");
+    expect(result.stderr).not.toContain("data:text/javascript");
+    expect(execFileSync(paths(home, artifact.sha).wrapper, ["--version"], {
+      encoding: "utf8",
+    })).toContain("ok --version");
+  });
+
+  test("rejects an unsafe explicit wrapper directory before artifact download with a concise error", () => {
+    const home = join(work, "unsafe-explicit-wrapper-home");
+    const prefix = join(home, ".local");
+    const wrapperDir = join(prefix, "bin");
+    mkdirSync(wrapperDir, { recursive: true });
+    chmodSync(home, 0o700);
+    chmodSync(prefix, 0o700);
+    chmodSync(wrapperDir, 0o770);
+    const artifact = makeSyntheticArtifact(work);
+    const manifest = writeManifest(work, artifact);
+    rmSync(artifact.tarball);
+
+    const result = runInstaller({ home, manifest, args: ["--no-daemon"] });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("protected directory chain permits untrusted mutation");
+    expect(result.stderr).not.toContain("downloading runtime");
+    expect(result.stderr).not.toContain("data:text/javascript");
+    expect(result.stderr).not.toMatch(/\n\s+at /u);
   });
 
   test("production installer ignores ambient Node preload and TLS-disable controls", () => {

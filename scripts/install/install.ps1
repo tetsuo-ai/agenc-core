@@ -909,7 +909,7 @@ const { spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const {
   chmodSync: chmodLockSync, closeSync, constants: fsConstants, existsSync,
-  fchmodSync, fsyncSync, lstatSync, mkdirSync,
+  fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
   mkdtempSync, readFileSync,
   openSync, readdirSync, realpathSync, renameSync, rmSync, statSync,
   writeFileSync, writeSync,
@@ -925,7 +925,9 @@ const [
   mode, archivePath, installDir, binRel, expectedSha, artifactPlatform,
   provenanceExpectationBase64 = "", provenanceReceiptBase64 = "", extractionTool = "",
 ] = process.argv.slice(2);
-if (!["recover", "install", "activate", "render-wrapper"].includes(mode)) throw new Error(`invalid runtime installer mode: ${mode}`);
+if (!["recover", "install", "activate", "render-wrapper", "prepare-wrapper-directories"].includes(mode)) {
+  throw new Error(`invalid runtime installer mode: ${mode}`);
+}
 const BLOCK_SIZE = 512;
 const MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_ENTRIES = 200_000;
@@ -949,6 +951,59 @@ function syncDirectory(path) {
   const descriptor = openSync(path, fsConstants.O_RDONLY);
   try { fsyncSync(descriptor); }
   finally { closeSync(descriptor); }
+}
+
+function secureOwnerDirectory(path, { repairWritable, ownerOnly }) {
+  const before = lstatSync(path, { bigint: true });
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new Error(`wrapper directory is not a real directory: ${path}`);
+  }
+  if (process.platform === "win32") return false;
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined || before.uid !== BigInt(currentUid)) {
+    throw new Error(`wrapper directory is not owned by the current user: ${path}`);
+  }
+  const shouldRepair = ownerOnly ||
+    (repairWritable && (before.mode & 0o022n) !== 0n);
+  if (!shouldRepair) return false;
+  if (
+    !Number.isInteger(fsConstants.O_DIRECTORY) ||
+    !Number.isInteger(fsConstants.O_NOFOLLOW)
+  ) {
+    throw new Error("secure wrapper directory repair is unsupported on this platform");
+  }
+  const descriptor = openSync(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isDirectory() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.uid !== before.uid
+    ) {
+      throw new Error(`wrapper directory identity changed during repair: ${path}`);
+    }
+    const targetMode = ownerOnly
+      ? 0o700
+      : Number((opened.mode & 0o7777n) & ~0o022n);
+    fchmodSync(descriptor, targetMode);
+    const secured = fstatSync(descriptor, { bigint: true });
+    if (
+      !secured.isDirectory() ||
+      secured.dev !== before.dev ||
+      secured.ino !== before.ino ||
+      secured.uid !== before.uid ||
+      (secured.mode & 0o022n) !== 0n
+    ) {
+      throw new Error(`wrapper directory could not be secured: ${path}`);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return true;
 }
 function writeFileDurably(path, content, { flag = "w", mode = 0o600 } = {}) {
   const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
@@ -1737,18 +1792,84 @@ async function renderWrapperMain() {
     mode: kind === "cmd" ? 0o644 : 0o755,
   });
 }
+async function prepareWrapperDirectoriesMain() {
+  const prefix = resolve(archivePath);
+  const wrapperDirectory = resolve(installDir);
+  const repairExisting = binRel === "true";
+  if (
+    !isAbsolute(archivePath) ||
+    !isAbsolute(installDir) ||
+    wrapperDirectory !== join(prefix, "bin") ||
+    !["true", "false"].includes(binRel)
+  ) {
+    throw new Error("invalid wrapper directory preparation arguments");
+  }
+
+  const prefixExisted = existsSync(prefix);
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  const prefixSecured = secureOwnerDirectory(prefix, {
+    repairWritable: repairExisting,
+    ownerOnly: !prefixExisted,
+  });
+  let repairedExisting = prefixExisted && prefixSecured;
+
+  const wrapperDirectoryExisted = existsSync(wrapperDirectory);
+  mkdirSync(wrapperDirectory, { recursive: true, mode: 0o700 });
+  const wrapperDirectorySecured = secureOwnerDirectory(wrapperDirectory, {
+    repairWritable: repairExisting,
+    ownerOnly: !wrapperDirectoryExisted,
+  });
+  repairedExisting =
+    (wrapperDirectoryExisted && wrapperDirectorySecured) || repairedExisting;
+
+  const { assertLocalPrivateDirectory } = await loadSqliteLockModule();
+  for (const path of [prefix, wrapperDirectory]) {
+    const canonical = await assertLocalPrivateDirectory(path, {
+      label: "wrapper directory preparation",
+      timeoutMs: 120_000,
+    });
+    if (canonical !== path) {
+      throw new Error(`wrapper directory must use its canonical path: ${path}`);
+    }
+  }
+  process.stdout.write(repairedExisting ? "repaired\n" : "ready\n");
+}
 async function main() {
   if (mode === "render-wrapper") await renderWrapperMain();
+  else if (mode === "prepare-wrapper-directories") await prepareWrapperDirectoriesMain();
   else if (mode === "activate") await activationMain();
   else await runtimeMain();
 }
+function installerErrorMessages(error, seen = new Set()) {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    if (seen.has(error)) return [];
+    seen.add(error);
+  }
+  if (error instanceof AggregateError) {
+    return [
+      error.message,
+      ...error.errors.flatMap((item) => installerErrorMessages(item, seen)),
+    ];
+  }
+  return [error instanceof Error ? error.message : String(error)];
+}
 main().catch((error) => {
-  console.error(error);
+  console.error(installerErrorMessages(error).join("\n"));
   process.exitCode = 1;
 });
 '@
   $runtimeInstallerPath = Join-Path $work "runtime-installer.cjs"
   Set-Content -LiteralPath $runtimeInstallerPath -Value $RuntimeInstaller -Encoding UTF8
+  $prefix = if ($env:AGENC_INSTALL_PREFIX) { $env:AGENC_INSTALL_PREFIX } else { Join-Path $env:LOCALAPPDATA "agenc" }
+  $prefix = [System.IO.Path]::GetFullPath($prefix)
+  $binDir = Join-Path $prefix "bin"
+  $wrapperDirectoryResult = (& node $runtimeInstallerPath prepare-wrapper-directories `
+    $prefix $binDir "false" | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0) { Fail "could not prepare secure wrapper directory: $binDir" }
+  if ($wrapperDirectoryResult -notin @("ready", "repaired")) {
+    Fail "wrapper directory preparation returned an invalid result"
+  }
+
   $recoveryState = (& node $runtimeInstallerPath recover - $installDir $binRel `
     ([string]$artifact.sha256) "win" $provenanceExpectationBase64 "" | Out-String).Trim()
   if ($LASTEXITCODE -ne 0) { Fail "runtime crash recovery failed" }
@@ -1790,20 +1911,6 @@ main().catch((error) => {
 
   # --- shim ------------------------------------------------------------------
 
-  $prefix = if ($env:AGENC_INSTALL_PREFIX) { $env:AGENC_INSTALL_PREFIX } else { Join-Path $env:LOCALAPPDATA "agenc" }
-  $prefix = [System.IO.Path]::GetFullPath($prefix)
-  $binDir = Join-Path $prefix "bin"
-  $prefixWasPresent = Test-Path -LiteralPath $prefix
-  $binDirWasPresent = Test-Path -LiteralPath $binDir
-  New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-  if (-not $prefixWasPresent) {
-    & node -e 'require("node:fs").chmodSync(process.argv[1], 0o700)' $prefix
-    if ($LASTEXITCODE -ne 0) { Fail "could not secure new install prefix: $prefix" }
-  }
-  if (-not $binDirWasPresent) {
-    & node -e 'require("node:fs").chmodSync(process.argv[1], 0o700)' $binDir
-    if ($LASTEXITCODE -ne 0) { Fail "could not secure new wrapper directory: $binDir" }
-  }
   $shim = Join-Path $binDir "agenc.cmd"
   $shimTemp = Join-Path $work "agenc-wrapper.cmd"
   & node $runtimeInstallerPath render-wrapper $shimTemp ([string]$node.Source) $runtimeBin $agencHome "cmd"

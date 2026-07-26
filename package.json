@@ -1,6 +1,6 @@
 {
   "name": "agenc-core",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "license": "MIT",
   "private": true,
   "packageManager": "npm@11.17.0",
@@ -26,6 +26,9 @@
     "test:required-gates": "node --test scripts/run-required-gates.test.mjs scripts/local-gate-github-app.test.mjs scripts/local-gate-context-seed.test.mjs scripts/local-gatekeeper.test.mjs scripts/local-gate-ruleset.test.mjs runtime/scripts/check-tui-runtime-startup.test.mjs",
     "check:clean-build": "node scripts/check-clean-build.mjs",
     "release:preflight": "node scripts/check-release-version-available.mjs",
+    "release:verify": "node scripts/release-state.mjs verify",
+    "release:status": "node scripts/release-state.mjs status",
+    "release:checkpoint": "node scripts/release-state.mjs checkpoint",
     "check:installer-sqlite-lock": "node scripts/sync-installer-sqlite-lock.mjs --check",
     "npm:release": "node scripts/npm-release.mjs",
     "sbom": "node scripts/generate-spdx-sbom.mjs",
