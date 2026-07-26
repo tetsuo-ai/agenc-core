@@ -38,6 +38,7 @@ import type {
   LLMStreamChunk,
   LLMTool,
   LLMToolCall,
+  LLMToolChoice,
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
 import {
@@ -109,6 +110,7 @@ export interface StreamModelRequestContract {
   readonly tools: ReadonlyArray<LLMTool>;
   readonly parallelToolCalls: boolean;
   readonly baseInstructions: string;
+  readonly toolChoice?: LLMToolChoice;
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
   readonly skipCacheWrite?: boolean;
@@ -216,9 +218,11 @@ function buildProviderOptions(
     ...(request.skipCacheWrite !== undefined
       ? { skipCacheWrite: request.skipCacheWrite }
       : {}),
-    ...(planMode && request.tools.length > 0
-      ? { toolChoice: "required" as const }
-      : {}),
+    ...(request.toolChoice !== undefined
+      ? { toolChoice: request.toolChoice }
+      : planMode && request.tools.length > 0
+        ? { toolChoice: "required" as const }
+        : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveSessionReasoningEffort(ctx.reasoningEffort),
     reasoningSummary: ctx.reasoningSummary,

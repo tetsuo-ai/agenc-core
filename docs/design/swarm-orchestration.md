@@ -9,7 +9,8 @@ the local evaluation needed before changing routing defaults.
 
 ```text
 /swarm setting
-  → per-turn routing guidance + model-facing audit receipt
+  → per-turn routing decision + model-facing audit receipt
+  → required initial spawn_agent tool choice for parallel routes
   → spawn_agent / assign_task / send_message / wait_agent / close_agent
   → AgentControl admission, identity, role provenance, and mailboxes
   → delegate isolation + fork-context boundary
@@ -27,16 +28,21 @@ through that state machine. Do not add a third agent lifecycle.
 
 ## What is advisory and what is enforced
 
-`/swarm` changes a root agent's model-facing instructions. It does not itself
-spawn a worker, reserve capacity, approve a tool, create a worktree, or merge a
+`/swarm` classifies each eligible root turn. A parallel decision force-selects
+`spawn_agent` for the first provider request so the model must attempt real
+delegation instead of merely describing it. The model still supplies the
+bounded assignment, and the existing tool path still owns admission. `/swarm`
+does not reserve capacity, approve a tool, create a worktree, or merge a
 change.
 
 | Boundary | Runtime truth |
 | --- | --- |
-| `mode`, `recommended_max_agents`, isolation, and integration in `agenc.swarm.route.v1` | Advisory. The model may use fewer workers or remain sequential. These fields are not spawn-admission controls. |
+| `delegation_enforcement: "require_initial_spawn"` in `agenc.swarm.route.v2` | Enforced at the first provider request for an exact parallel root turn by selecting `spawn_agent`. Reconnects reuse that request; tool-result follow-ups do not force replacement workers. |
+| `recommended_max_agents`, isolation, and integration | Model-facing topology guidance. The first spawn is required, but the model may use fewer workers than the ceiling after considering dependencies. These fields are not spawn-admission controls. |
 | User instruction not to delegate | Emitted as high-priority model guidance and expected to be honored; it is not a new OS sandbox primitive. |
 | Agent depth, live-slot/concurrency capacity, role provenance, execution admission, and budgets | Enforced by the existing control and admission paths at spawn time. |
 | Tool availability, permission mode, approval rules, and sandbox policy | Enforced normally. Swarm mode grants no additional tool or filesystem authority. |
+| Plan mode or an unavailable `spawn_agent` tool | No forced spawn. Plan mode remains non-mutating; an unavailable tool is reported honestly and work continues locally. |
 | `assign_task` eligibility | Enforced atomically: the target must be a live, idle, reusable descendant with no outstanding assignment. |
 | `isolation: "worktree"` | Enforced only when explicitly requested on `spawn_agent`; a routing recommendation alone does not create one. |
 | Worktree integration | Never automatic. Only the captured immutable `base_commit..integration_ref` evidence range is eligible for review; a path, branch name, worker claim, or successful task outcome is not. |
@@ -49,10 +55,11 @@ eligible root turn:
 
 - `sequential` is the default. One rollout owns a coupled critical path.
 - `parallel` requires either explicit parallel/concurrent delegation language,
-  or explicit independence language together with a syntactic list. List
-  formatting, vague plurality, task length, or broad “audit/research” wording
-  alone stays sequential. A parallel decision recommends two workers normally
-  and a guidance ceiling of four for four or more listed items.
+  explicit independence language together with a syntactic list, or a
+  multi-domain review/research request with a syntactic list. List formatting,
+  vague plurality, or task length alone stays sequential. A parallel decision
+  requires one initial worker-spawn attempt, then permits two workers normally
+  and a ceiling of four for four or more listed items.
 - High-risk work that is otherwise parallelizable is capped at two workers.
   Coupling or an explicit no-delegation instruction still keeps it sequential.
 - `coordinate` is used when there is no matching new root-human task, including
@@ -69,19 +76,20 @@ routed as `coordinate` with zero replacement workers.
 
 The model-facing `<swarm_routing_receipt>` contains:
 
-- policy version `agenc.swarm.route.v1`;
+- policy version `agenc.swarm.route.v2`;
 - a SHA-256 fingerprint of the exact trusted root-human input, including
   policy-relevant layout/newlines, while never exposing that text in the
   receipt;
 - `sequential`, `parallel`, or `coordinate`;
+- `none` or `require_initial_spawn` delegation enforcement;
 - recommended maximum agents, isolation, and integration mode;
 - the conservative explicit-parallelism, independence/list, coupling, write,
   and risk signals that produced the decision.
 
 This receipt is derived from trusted turn provenance, but it is still an
-ephemeral prompt attachment. It is not written as a durable event-log record,
-is not a replay boundary, and is not proof that the model followed the
-recommendation.
+ephemeral prompt attachment. It is not written as a durable event-log record
+or a replay boundary. The provider request enforces the initial tool selection;
+the actual tool result is the evidence that admission succeeded or failed.
 
 Actual delegation goes through `spawn_agent`, where the normal permission,
 sandbox, tool-policy, capacity, execution-admission, and budget checks remain
@@ -382,7 +390,7 @@ cross-study leaderboard entries.
 | CAID, workspace-isolation ablation | PaperBench score: single agent `57.2`; multi-agent soft/shared isolation `55.5`; CAID worktree isolation `63.3` | PaperBench Code-Dev, Claude Sonnet 4.5, 20-paper aggregate | Table 3, PDF p. 6; per-paper Table 7, p. 21 | One framework, model, judge, task set, and fixed budget; it isolates neither every CAID component nor AgenC's implementation |
 | Scaling Agent Systems, sequential planning | Relative to single-agent mean `0.568`: Independent `-70.0%` (`0.170`), Centralized `-50.3%` (`0.282`), Decentralized `-41.5%` (`0.332`), Hybrid `-39.1%` (`0.346`) | PlanCraft, 100 instances per configuration | Figure 2, PDF p. 11; §4.2, p. 13 | Architecture means over the paper's models and matched-compute setup; not an agent-count-only ablation |
 | Scaling Agent Systems, software engineering | Relative to single-agent mean `0.522`: Independent `-14.9%` (`0.444`), Decentralized `-5.4%` (`0.494`), Centralized `-3.1%` (`0.506`), Hybrid `-2.1%` (`0.511`) | SWE-bench Verified, 20-instance subset per configuration | §4.2, PDF p. 14; per-model 95% bootstrap CIs in Table 16, p. 43 | The 20-instance cells have wide intervals; aggregate directional means do not make every model comparison significant |
-| MASBENCH, controlled axis coverage | Axis values `2–12`; train/test splits: Depth `3,993/1,195`, Horizon `2,174/567`, Breadth `2,000/676`, Parallel `1,807/567`, Robustness `3,000/600` | Dependency-graph tasks controlling depth, carried intermediates, fan-in, independent components, and adversarial notes | §4.2, PDF p. 6 | Primarily synthetic iGSM-derived reasoning tasks; Robustness is instantiated only on Depth `4`; the evaluated system trains an orchestrator rather than applying AgenC's static advisory policy |
+| MASBENCH, controlled axis coverage | Axis values `2–12`; train/test splits: Depth `3,993/1,195`, Horizon `2,174/567`, Breadth `2,000/676`, Parallel `1,807/567`, Robustness `3,000/600` | Dependency-graph tasks controlling depth, carried intermediates, fan-in, independent components, and adversarial notes | §4.2, PDF p. 6 | Primarily synthetic iGSM-derived reasoning tasks; Robustness is instantiated only on Depth `4`; the evaluated system trains an orchestrator rather than applying AgenC's routing policy |
 | Multi-Agent Teams Hold Experts Back, strong-synergy gap | Relative gap to the At-Least-One-Correct oracle: `6.3%` MMLU Pro, `14.4%` GPQA Diamond, `18.1%` SimpleQA, `41.1%` HLE Text-Only, `20.3%` MATH-500 | 100 problems per benchmark; heterogeneous four-model deliberative teams | Table 2, PDF p. 7 | The comparator is an oracle over member answers, and conversational self-organization is not dependency-decomposed software execution |
 | TeamBench, enforcement and verifier audit | Verifier edit attempts `256` prompt-only vs `72` enforced (`3.6×`); pass rate `42.7% [34.7, 50.0]` vs `40.5% [32.4, 48.6]`, adjusted outcome-test `p=0.907`; pooled verifier false-accept rate `49.4%` | Enforcement comparison: 148 paired observations from a 25-task, two-seed, three-family design; false accepts: 1,083 role-mixing runs with valid attestation and grader result | §3.6, PDF p. 7; Table 6, p. 17; Table 18, p. 30 | Pass rate was statistically indistinguishable; 942 role-mixing runs lacked valid attestations, and counting those as failures lowers the effective false-accept rate to `22.3%` |
 | PerspectiveGap, prompt-boundary quality | Mean combined strict pass `17.2%` (best model `62.0%`); all-model mean overall leakage `217.9%` | 33 models × 110 scenarios × two shuffle seeds × two prompt-construction tasks = 14,520 evaluations | §1, PDF p. 2; §5, p. 6; Table 5, p. 8 | It evaluates generated prompt artifacts, not worker execution; leakage is an event count per scenario and may exceed 100%, not a probability |

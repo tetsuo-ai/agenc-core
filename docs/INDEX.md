@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.9.5**; embedding SDK
+Version in tree: **runtime / launcher 0.10.0**; embedding SDK
 **0.2.0**. Default provider **grok**; fresh-config session model **grok-4.5**
 (same as provider-map / managed-OpenRouter paid defaults — see [providers.md](reference/providers.md)).
 
@@ -74,13 +74,14 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [design/fail-closed-sandbox-execution.md](design/fail-closed-sandbox-execution.md) | Required process isolation boundary, platform probes, failure semantics, and research |
 | [design/execution-admission-kernel.md](design/execution-admission-kernel.md) | M3 daemon admission, durable budgets/queue/cancellation, evidence, rollout, and rollback |
 | [design/durable-runs-effects-events.md](design/durable-runs-effects-events.md) | M4 canonical run journal, honest effects, terminal results, replay-safe cursors, crash matrix, and rollback |
-| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Advisory adaptive routing vs enforced admission, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
+| [design/swarm-orchestration.md](design/swarm-orchestration.md) | Enforced initial delegation for parallel routing, durable task outcomes, immutable worktree evidence, external research, and local evaluation gate |
 | [roadmap.md](roadmap.md) | Shipped vs open backlog (current product truth) |
 
 ## Releases
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.10.0.md](releases/0.10.0.md) | AgenC 0.10.0: parallel `/swarm` routes now perform a real initial worker-spawn attempt |
 | [releases/0.9.5.md](releases/0.9.5.md) | AgenC 0.9.5: accurate native-install diagnostics and an actionable Ubuntu AppArmor sandbox fix |
 | [releases/0.9.4.md](releases/0.9.4.md) | AgenC 0.9.4: first-run AgenC and X / xAI sign-in, free hosted models, and actionable onboarding |
 | [releases/0.9.3.md](releases/0.9.3.md) | AgenC 0.9.3: default wrapper-directory permission repair, concise installer failures, resumable exact-SHA releases, installer-only hotfix channel |
@@ -121,7 +122,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.9.5) |
+| [`../README.md`](../README.md) | Product README (0.10.0) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

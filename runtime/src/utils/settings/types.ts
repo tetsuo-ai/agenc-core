@@ -720,7 +720,7 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe(
-          'Persisted swarm mode: conservatively recommend up to four sub-agents for independent work.',
+          'Persisted swarm mode: conservatively route independent work through an initial worker spawn, capped at four agents.',
         ),
       advisorModel: z
         .string()

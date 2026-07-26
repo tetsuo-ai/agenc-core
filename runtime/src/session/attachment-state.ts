@@ -25,6 +25,8 @@
  * @module
  */
 
+import type { SwarmRoutingDecision } from "../agents/swarm-routing.js";
+
 /**
  * Tracking fields owned by the per-turn attachments orchestrator.
  *
@@ -38,6 +40,13 @@ export interface AttachmentTrackingState {
   swarmRoutingDecisionCount: number;
   /** Exact turn ID for the most recently emitted `/swarm` routing receipt. */
   lastSwarmRoutingTurnId?: string;
+  /** Routing decision paired with `lastSwarmRoutingTurnId`. */
+  lastSwarmRoutingDecision?: SwarmRoutingDecision;
+  /**
+   * Exact turn ID whose required initial `spawn_agent` tool choice has
+   * already been attached to a provider request.
+   */
+  lastSwarmSpawnToolChoiceTurnId?: string;
   /** Last local-calendar-date the date_change attachment fired for. */
   lastEmittedDate?: string;
   /** Hash of the deferred-tools set last announced. */

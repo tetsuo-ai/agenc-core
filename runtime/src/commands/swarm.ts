@@ -1,10 +1,10 @@
 /**
  * /swarm — toggle swarm mode.
  *
- * Swarm mode enables conservative per-turn routing guidance. The runtime
- * creates a model-facing audit receipt and recommends one agent unless it
- * finds positive evidence of independent work; parallel guidance recommends
- * no more than four workers.
+ * Swarm mode enables conservative per-turn routing. The runtime creates a
+ * model-facing audit receipt and keeps work local unless it finds positive
+ * evidence of independent work; qualifying parallel routes require an initial
+ * `spawn_agent` attempt and cap fan-out at four workers.
  *
  * /swarm          → show status
  * /swarm on|off   → set explicitly
@@ -56,7 +56,7 @@ function setSwarmMode(ctx: SlashCommandContext, on: boolean): void {
 
 export const swarmCommand: SlashCommand = {
   name: "swarm",
-  description: "Enable adaptive multi-agent guidance — /swarm on|off",
+  description: "Enable adaptive multi-agent routing — /swarm on|off",
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx) =>
@@ -71,8 +71,8 @@ export const swarmCommand: SlashCommand = {
           `swarm mode: ${on ? "ON" : "off"}${persisted !== undefined ? ` (${persisted ? "saved on" : "saved off"})` : ""}`,
           `agents: ${agents.active} active, ${agents.idle} idle/reusable`,
           on
-            ? "Adaptive guidance is active: sequential by default, with 2–4 workers recommended only for independent work."
-            : "Use /swarm on for conservative adaptive routing guidance.",
+            ? "Adaptive routing is active: sequential by default; qualifying parallel work requires an initial worker-spawn attempt."
+            : "Use /swarm on for conservative adaptive multi-agent routing.",
         ];
         return { kind: "text", text: lines.join("\n") };
       }
@@ -81,7 +81,7 @@ export const swarmCommand: SlashCommand = {
         setSwarmMode(ctx, true);
         return {
           kind: "text",
-          text: "swarm mode ON — adaptive guidance is sequential by default and recommends no more than four workers for independent fan-out (spawns still follow approval policy).",
+          text: "swarm mode ON — adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy).",
         };
       }
       if (arg === "off") {

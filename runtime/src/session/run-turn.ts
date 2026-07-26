@@ -100,6 +100,8 @@ import {
   postSampleRecovery,
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
+import { getAttachmentTrackingState } from "./attachment-state.js";
+import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
@@ -2685,10 +2687,24 @@ async function prepareSamplingRequestBoundary(
     }
   }
 
+  const request = buildSamplingRequestContract(state, session, ctx);
+  const swarmToolChoice = claimRequiredSwarmToolChoice({
+    trackingState: getAttachmentTrackingState(session),
+    turnId: ctx.subId,
+    subagentDepth: ctx.depth,
+    planMode: planModeHelpers.isPlanMode(ctx),
+    toolNames: request.tools.map((tool) => tool.function.name),
+  });
+
   return {
     kind: "request",
     request: snapshotSamplingRequestContract(
-      buildSamplingRequestContract(state, session, ctx),
+      {
+        ...request,
+        ...(swarmToolChoice !== undefined
+          ? { toolChoice: swarmToolChoice }
+          : {}),
+      },
     ),
   };
 }

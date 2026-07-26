@@ -93,6 +93,7 @@ import type {
   LLMProvider,
   LLMResponse,
   LLMTool,
+  LLMToolChoice,
   LLMToolCall,
   StreamProgressCallback,
 } from "../llm/types.js";
@@ -3606,6 +3607,92 @@ describe("runTurn — model request context ordering", () => {
     } finally {
       updateSettingsForSource("userSettings", { swarmMode: false });
     }
+  });
+
+  test("force-selects one initial spawn for a parallel swarm route", async () => {
+    const toolChoices: Array<LLMToolChoice | undefined> = [];
+    let providerCalls = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (_messages, _onChunk, options) => {
+        providerCalls += 1;
+        toolChoices.push(options?.toolChoice);
+        return providerCalls === 1
+          ? {
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool-spawn-1",
+                  name: "spawn_agent",
+                  arguments: JSON.stringify({
+                    task_name: "review_api",
+                    message: "Review the API behavior independently.",
+                  }),
+                },
+              ],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "tool_calls",
+            }
+          : {
+              content: "integrated",
+              toolCalls: [],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "test-model",
+              finishReason: "stop",
+            };
+      },
+    };
+    const spawnTool: Tool = {
+      name: "spawn_agent",
+      description: "Spawn a bounded worker",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_name: { type: "string" },
+          message: { type: "string" },
+        },
+        required: ["task_name", "message"],
+        additionalProperties: false,
+      },
+      requiresApproval: false,
+      execute: async () => ({ content: "worker spawned", isError: false }),
+    };
+    const registry = {
+      tools: [spawnTool],
+      toLLMTools: () => [
+        {
+          type: "function" as const,
+          function: {
+            name: spawnTool.name,
+            description: spawnTool.description,
+            parameters: spawnTool.inputSchema,
+          },
+        },
+      ],
+      dispatch: async () => ({ content: "worker spawned", isError: false }),
+    } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+
+    updateSettingsForSource("userSettings", { swarmMode: true });
+    try {
+      await drain(
+        session.runTurn(
+          "Review these areas:\n- API behavior\n- TUI behavior",
+          { ctx: { ...mkCtx(), subId: "turn-enforced-swarm" } },
+        ),
+      );
+    } finally {
+      updateSettingsForSource("userSettings", { swarmMode: false });
+    }
+
+    expect(toolChoices).toEqual([
+      { type: "function", name: "spawn_agent" },
+      undefined,
+    ]);
+    expect(
+      getAttachmentTrackingState(session).lastSwarmSpawnToolChoiceTurnId,
+    ).toBe("turn-enforced-swarm");
   });
 });
 

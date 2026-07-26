@@ -480,6 +480,56 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(seenOptions[0]?.toolChoice).toBeUndefined();
   });
 
+  test("forwards an exact request-level named tool choice outside plan mode", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const registry = mkRegistry([
+      {
+        name: "spawn_agent",
+        description: "spawns a bounded worker",
+        inputSchema: { type: "object" },
+        execute: async () => ({ content: "spawned" }),
+      },
+    ]);
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = mkProvider(async (_messages, _onChunk, options) => {
+      seenOptions.push(options ?? {});
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-spawn",
+            name: "spawn_agent",
+            arguments: JSON.stringify({
+              task_name: "review_api",
+              message: "Review the API surface",
+            }),
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    });
+    const { session } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "review in parallel" }]),
+        tools: registry.toLLMTools(),
+        toolChoice: { type: "function", name: "spawn_agent" },
+      },
+    );
+
+    expect(seenOptions[0]?.toolChoice).toEqual({
+      type: "function",
+      name: "spawn_agent",
+    });
+  });
+
   test("dispatches streamed tool calls before chatStream resolves", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

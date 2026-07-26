@@ -73,24 +73,26 @@ Sources: `runtime/src/commands/*.ts(x)` modules imported by the registry
 | Invocation | Effect |
 | --- | --- |
 | `/swarm` or `/swarm status` | Show the effective and saved mode plus active and idle/reusable local-agent counts |
-| `/swarm on` | Persist swarm mode and enable root-turn adaptive guidance |
+| `/swarm on` | Persist swarm mode and enable root-turn adaptive routing |
 | `/swarm off` | Persist swarm mode off |
 
 The no-argument form reports status; it does not toggle. The status count
 classifies `local_agent` tasks in `pending`/`running` as active and `idle` as
 reusable.
 
-When enabled, the next eligible root turn receives one conservative
-model-facing routing reminder. Sequential remains the default; independent
-work may receive a recommendation for two workers or a ceiling of four.
+When enabled, the next eligible root turn receives one conservative routing
+decision. Sequential remains the default. Qualifying parallel work
+force-selects `spawn_agent` for the first provider request, requiring at least
+one real worker-spawn attempt and allowing two workers or a ceiling of four.
 Synthetic/mailbox follow-up turns coordinate existing receipts instead of
 recursively spawning replacements.
 
-This is guidance, not execution. `/swarm on` does not spawn agents, force the
-recommended count, create worktrees, approve tools, or bypass permission,
-sandbox, capacity, admission, or budget controls. Turning it off does not
-disable explicit use of the multi-agent tools. Full routing, receipt, and
-integration semantics:
+The forced tool selection does not force admission or the maximum count,
+create worktrees, approve tools, or bypass permission, sandbox, capacity,
+admission, or budget controls. Plan mode remains non-mutating. If
+`spawn_agent` is unavailable, AgenC reports that boundary and continues
+locally. Turning swarm mode off does not disable explicit use of the
+multi-agent tools. Full routing, receipt, and integration semantics:
 [swarm-orchestration.md](../design/swarm-orchestration.md).
 
 ---

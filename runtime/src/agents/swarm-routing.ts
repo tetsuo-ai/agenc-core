@@ -9,9 +9,12 @@
 
 import { createHash } from "node:crypto";
 
-export const SWARM_ROUTING_POLICY_VERSION = "agenc.swarm.route.v1" as const;
+export const SWARM_ROUTING_POLICY_VERSION = "agenc.swarm.route.v2" as const;
 
 export type SwarmRoutingMode = "parallel" | "sequential" | "coordinate";
+export type SwarmDelegationEnforcement =
+  | "none"
+  | "require_initial_spawn";
 export type SwarmIsolationRecommendation = "none" | "worktree";
 export type SwarmIntegrationRecommendation =
   "synthesize_results" | "verify_then_integrate" | "continue_coordination";
@@ -32,6 +35,7 @@ export interface SwarmRoutingDecision {
   /** Fingerprint only; the receipt never duplicates raw user text. */
   readonly inputFingerprint: string;
   readonly mode: SwarmRoutingMode;
+  readonly delegationEnforcement: SwarmDelegationEnforcement;
   readonly maxAgents: 0 | 1 | 2 | 4;
   readonly isolation: SwarmIsolationRecommendation;
   readonly integration: SwarmIntegrationRecommendation;
@@ -109,6 +113,7 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
       policyVersion: SWARM_ROUTING_POLICY_VERSION,
       inputFingerprint,
       mode: "coordinate",
+      delegationEnforcement: "none",
       maxAgents: 0,
       isolation: "none",
       integration: "continue_coordination",
@@ -136,6 +141,8 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
   const positiveEvidence =
     signals.has("explicit_parallelism") ||
     (signals.has("explicit_independence") &&
+      signals.has("independent_list")) ||
+    (signals.has("multi_domain_analysis") &&
       signals.has("independent_list"));
   const explicitlyLocal = signals.has("explicit_no_delegation");
   const coupled = signals.has("shared_state_coupling");
@@ -145,6 +152,7 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
       policyVersion: SWARM_ROUTING_POLICY_VERSION,
       inputFingerprint,
       mode: "sequential",
+      delegationEnforcement: "none",
       maxAgents: 1,
       isolation: "none",
       integration: "synthesize_results",
@@ -164,6 +172,7 @@ export function routeSwarmTask(userInput: string | null): SwarmRoutingDecision {
     policyVersion: SWARM_ROUTING_POLICY_VERSION,
     inputFingerprint,
     mode: "parallel",
+    delegationEnforcement: "require_initial_spawn",
     maxAgents,
     isolation: writes ? "worktree" : "none",
     integration: writes ? "verify_then_integrate" : "synthesize_results",
@@ -181,6 +190,7 @@ export function swarmRoutingReceipt(
     policy_version: decision.policyVersion,
     input_fingerprint: decision.inputFingerprint,
     mode: decision.mode,
+    delegation_enforcement: decision.delegationEnforcement,
     recommended_max_agents: decision.maxAgents,
     recommended_isolation: decision.isolation,
     recommended_integration: decision.integration,

@@ -184,13 +184,15 @@ before the turn ends; never recover it later from the mutable worktree path.
 
 `/swarm on` enables the conservative routing policy documented in
 [swarm-orchestration.md](../design/swarm-orchestration.md). One agent remains
-the default. Parallel routing requires explicit parallelism, or explicit
-independence plus a syntactic list; a list alone stays sequential. Qualifying
-work can recommend two workers, or a guidance ceiling of four for four or more
-listed items. Writable parallel work is advised to use worktrees. Root-turn
-model guidance includes an `agenc.swarm.route.v1` audit receipt without copying
-the raw prompt; the receipt is not a persisted event-log record or an enforced
-admission limit.
+the default. Parallel routing requires explicit parallelism, explicit
+independence plus a syntactic list, or a multi-domain review/research list; a
+list alone stays sequential. A parallel decision force-selects `spawn_agent`
+for its first provider request, requiring a real spawn attempt while leaving
+approval, capacity, sandbox, and admission checks intact. Qualifying work can
+use two workers, or a ceiling of four for four or more listed items. Writable
+parallel work is advised to use worktrees. Root-turn model guidance includes an
+`agenc.swarm.route.v2` audit receipt without copying the raw prompt; the receipt
+is not a persisted event-log record.
 
 ### Coordinator mode
 
