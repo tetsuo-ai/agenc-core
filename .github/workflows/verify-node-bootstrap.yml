@@ -62,8 +62,13 @@ jobs:
           test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
           test "$REPOSITORY_VISIBILITY" = public
           test "$GITHUB_REF" = refs/heads/main
-          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          source_root="$(pwd -P)"
+          # actions/checkout registers this bind-mounted path only in its
+          # temporary HOME. Keep Git's ownership check enabled everywhere else
+          # and register only the exact reviewed workspace for container steps.
+          git config --global --add safe.directory "$source_root"
+          test "$(git -C "$source_root" rev-parse HEAD)" = "$TESTED_SHA"
+          test -z "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all)"
       - name: Reproduce the immutable compatibility bootstrap
         env:
           AGENC_RELEASE_SLUG: ${{ matrix.slug }}

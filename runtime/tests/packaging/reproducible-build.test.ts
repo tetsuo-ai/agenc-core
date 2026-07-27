@@ -543,6 +543,12 @@ describe("reproducible install and release contract", () => {
     expect(pretagWorkflow).toContain("test \"$TESTED_SHA\" = \"$GITHUB_SHA\"");
     expect(pretagWorkflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
     expect(pretagWorkflow).toContain(
+      'git config --global --add safe.directory "$source_root"',
+    );
+    expect(pretagWorkflow).toContain(
+      'git -C "$source_root" status --porcelain=v1 --untracked-files=all',
+    );
+    expect(pretagWorkflow).toContain(
       "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
     );
     expect(pretagWorkflow).toContain("runner: ubuntu-24.04");
