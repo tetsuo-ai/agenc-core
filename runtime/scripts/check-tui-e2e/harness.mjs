@@ -15,21 +15,26 @@
  *   - The startup smoke at `scripts/check-tui-runtime-startup.mjs` already
  *     uses node-pty directly. Reuse that pattern; build on top.
  *
- * Scope:
- *   - Phase A scenarios assume the user has a real provider configured in
- *     `~/.agenc/config.toml` (currently LMStudio). We do NOT run a fake
- *     provider; the gate exercises the real wire path.
- *   - Each scenario runs against the user's real `$HOME`. Sessions
- *     accumulate in the daemon. Phase B will introduce per-scenario
- *     temp-HOME isolation.
+ * Every scenario runs against private gate-owned HOME/AGENC_HOME state. The
+ * runner supplies a local mock provider and a daemon on an ephemeral port, so
+ * neither scenario startup nor teardown can target the operator's daemon.
  */
-import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  configureTuiGateSandbox,
+  createTuiGateState,
+  environmentForTuiGateState,
+  startTuiGateDaemon,
+  stopTuiGateDaemon,
+  teardownTuiGateHome,
+  writeTuiGateTrust,
+  tuiGateEnvironment,
+} from "../tui-gate-state.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
@@ -37,13 +42,6 @@ const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 
 const require = createRequire(path.join(RUNTIME_DIR, "package.json"));
 const pty = require("node-pty");
-
-const TEMP_HOME_DAEMON_START_ATTEMPTS = 3;
-const TEMP_HOME_DAEMON_READY_TIMEOUT_MS = 20_000;
-
-function randomTempDaemonWebSocketPort() {
-  return 17_766 + Math.floor(Math.random() * 10_000);
-}
 
 export function resolveHarnessAgencHome(
   env = process.env,
@@ -56,13 +54,7 @@ export function resolveHarnessAgencHome(
 }
 
 export function isolatedHomeEnv(home, baseEnv = process.env) {
-  const agencHome = path.join(home, ".agenc");
-  return {
-    ...baseEnv,
-    HOME: home,
-    AGENC_CONFIG_DIR: agencHome,
-    AGENC_HOME: agencHome,
-  };
+  return tuiGateEnvironment(home, baseEnv);
 }
 
 export function tuiE2eGateEnv(baseEnv = process.env) {
@@ -77,213 +69,60 @@ export function tuiE2eGateEnv(baseEnv = process.env) {
   };
 }
 
-export function tempDaemonEnv(home, wsPort, baseEnv = process.env) {
-  return {
-    ...isolatedHomeEnv(home, baseEnv),
-    AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
-  };
-}
-
-async function waitForTempDaemonReady(env, timeoutMs = TEMP_HOME_DAEMON_READY_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const status = spawnSync(
-      process.execPath,
-      [BIN_AGENC, "daemon", "status"],
-      { encoding: "utf8", env, timeout: 5_000 },
-    );
-    if (status.status === 0 && /\brunning\b/.test(status.stdout)) {
-      return true;
-    }
-    await sleep(200);
-  }
-  return false;
+export function tempDaemonEnv(home, _wsPort = 0, baseEnv = process.env) {
+  return isolatedHomeEnv(home, baseEnv);
 }
 
 /**
- * Ensure the given absolute path is in `~/.agenc/trusted-projects.json`. The
- * file is additive: we never remove entries. Without this, the TUI shows a
- * "Trust this project?" dialog at cold start and the harness's XTVERSION
- * reply gets fed to that dialog as input, which causes the TUI to exit
- * before the prompt renders.
- *
- * Schema (per AGENC.md gotcha note): the `version` field is REQUIRED. The
- * trust check uses realpath, so we add both the input path and its realpath
- * form so symlinked roots match on either side.
+ * Seed deterministic trust in the private gate state. Without this, the TUI
+ * shows a project-trust dialog and can consume the terminal capability reply
+ * as dialog input before the prompt renders.
  */
 async function ensureProjectTrusted(projectPath, env = process.env) {
-  const trustFile = path.join(
-    resolveHarnessAgencHome(env),
-    "trusted-projects.json",
-  );
-  await mkdir(path.dirname(trustFile), { recursive: true });
-  let trust = { version: 1, trustedProjects: [] };
-  if (existsSync(trustFile)) {
-    try {
-      const raw = await readFile(trustFile, "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && Array.isArray(parsed.trustedProjects)) {
-        trust = parsed;
-        if (!Number.isFinite(trust.version)) trust.version = 1;
-      }
-    } catch {
-      // Corrupt or missing: rebuild from scratch.
-    }
-  }
-  const candidates = new Set();
-  candidates.add(path.resolve(projectPath));
-  try {
-    candidates.add(await realpath(projectPath));
-  } catch {
-    // Path may not exist or be inaccessible; skip realpath form.
-  }
-  let mutated = false;
-  const have = new Set(
-    (trust.trustedProjects ?? []).map((entry) => entry?.path).filter(Boolean),
-  );
-  for (const candidate of candidates) {
-    if (!have.has(candidate)) {
-      trust.trustedProjects.push({
-        path: candidate,
-        trustedAt: new Date().toISOString(),
-      });
-      mutated = true;
-    }
-  }
-  if (mutated) {
-    await writeFile(trustFile, JSON.stringify(trust, null, 2), "utf8");
-  }
+  await writeTuiGateTrust(env, [projectPath]);
 }
 
 /**
- * Create a fresh `$HOME` for one scenario and copy the minimum config the
- * runtime needs to start a fresh daemon there. This isolates daemon
- * sockets, permission policy, session registries, and audit logs from
- * the user's real `~/.agenc` so that mutating scenarios (always-allow,
- * Write tool, etc.) don't pollute later scenarios or the operator's
- * actual setup.
- *
- * What we copy:
- *   - `config.toml` — provider / model / base URL settings.
- *   - `auth.json` — vended credentials (may be absent on first-run boxes).
- *
- * What we deliberately don't copy: trust-projects (we'll trust the cwd
- * fresh), permission policy, session state. Anything else should be
- * stateless across daemon spawns.
+ * Create a standalone private home for scenarios that launch a non-PTY child.
+ * The home contains no copied operator configuration or credentials.
  */
-export async function createTempHome({ sandboxMode } = {}) {
-  const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
-  const agencDir = resolveHarnessAgencHome({ HOME: home });
-  await mkdir(agencDir, { recursive: true });
-  // Files to clone from the user's real ~/.agenc so the spawned agenc
-  // doesn't fire onboarding, ask for an API key, or stall on trust.
-  const cloneFiles = [
-    "config.toml",
-    "auth.json",
-    "onboarding.json",
-    "settings.json",
-  ];
-  for (const name of cloneFiles) {
-    const source = path.join(resolveHarnessAgencHome(), name);
-    if (existsSync(source)) {
-      await copyFile(source, path.join(agencDir, name));
-    }
-  }
-  if (sandboxMode !== undefined) {
-    if (sandboxMode !== "danger-full-access") {
-      throw new Error(`unsupported TUI E2E sandbox mode: ${sandboxMode}`);
-    }
-    // Approval-overlay scenarios must remain in permission mode `default`, so
-    // --yolo would invalidate what they exercise. Set only the sandbox policy
-    // in the throwaway HOME before its daemon starts; production startup stays
-    // fail-closed and the scenario still asks for tool approval.
-    const configSet = spawnSync(
-      process.execPath,
-      [BIN_AGENC, "config", "set", "sandbox_mode", sandboxMode],
-      {
-        encoding: "utf8",
-        env: isolatedHomeEnv(home),
-        timeout: 10_000,
-      },
-    );
-    if (configSet.status !== 0) {
-      throw new Error(
-        `failed to configure temporary TUI E2E sandbox mode: ${configSet.stderr || configSet.stdout}`,
+export async function createTempHome({
+  sandboxMode,
+  baseEnv = process.env,
+  injectedEnv = {},
+} = {}) {
+  const state = await createTuiGateState({
+    baseEnv,
+    injectedEnv,
+    prefix: "agenc-tui-e2e-home-",
+  });
+  try {
+    await configureTuiGateSandbox(state, BIN_AGENC, sandboxMode);
+    await startTuiGateDaemon(state, BIN_AGENC);
+    return { home: state.home, wsPort: 0 };
+  } catch (error) {
+    try {
+      await teardownTuiGateHome(state.home, BIN_AGENC, state.env);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "temporary TUI home startup and cleanup both failed",
       );
     }
+    throw error;
   }
-  // Pre-start the daemon and wait for status to report running. Without
-  // this, the spawned agenc CLI can connect before the daemon has finished
-  // writing its cookie/socket readiness markers and fail autostart.
-  //
-  // The daemon also binds a WebSocket on AGENC_DAEMON_WEBSOCKET_PORT
-  // (default 7766) for portal/IDE clients. The user's main daemon is
-  // already on 7766, so each temp HOME daemon must use a different
-  // port. Random in 17766–27765 to avoid collisions with each other
-  // and with anything else on the dev box.
-  let lastStart = null;
-  for (let attempt = 1; attempt <= TEMP_HOME_DAEMON_START_ATTEMPTS; attempt += 1) {
-    const wsPort = randomTempDaemonWebSocketPort();
-    const daemonEnv = tempDaemonEnv(home, wsPort);
-    lastStart = spawnSync(
-      process.execPath,
-      [BIN_AGENC, "daemon", "start"],
-      { encoding: "utf8", env: daemonEnv, timeout: 30_000 },
-    );
-    if (await waitForTempDaemonReady(daemonEnv)) {
-      return { home, wsPort };
-    }
-    spawnSync(
-      process.execPath,
-      [BIN_AGENC, "daemon", "stop"],
-      { encoding: "utf8", env: daemonEnv, timeout: 10_000 },
-    );
-    await rm(path.join(agencDir, "daemon.pid"), { force: true });
-    await rm(path.join(agencDir, "daemon.sock"), { force: true });
-  }
-  throw new Error(
-    [
-      "temp HOME daemon did not become ready",
-      `start status: ${lastStart?.status ?? "unknown"}`,
-      `stdout: ${lastStart?.stdout ?? ""}`,
-      `stderr: ${lastStart?.stderr ?? ""}`,
-    ].join("\n"),
-  );
 }
 
 /**
- * Tear down a temp HOME: stop any daemon bound to its socket, delete the
- * directory tree. Best-effort; failures are logged but don't block the
- * scenario teardown.
+ * Tear down a standalone private home and prove its daemon, socket, and state
+ * root are gone. A cleanup failure fails the scenario.
  */
 export async function teardownTempHome(home) {
-  if (!home) return;
-  try {
-    spawnSync(
-      process.execPath,
-      [BIN_AGENC, "daemon", "stop"],
-      { encoding: "utf8", env: isolatedHomeEnv(home), timeout: 10_000 },
-    );
-  } catch {
-    // best-effort
-  }
-  try {
-    await rm(home, { recursive: true, force: true });
-  } catch {
-    // best-effort
-  }
+  await teardownTuiGateHome(home, BIN_AGENC);
 }
 
 export async function trustProjectForHome(home, projectPath) {
-  const tempTrust = path.join(home, ".agenc", "trusted-projects.json");
-  await writeFile(
-    tempTrust,
-    JSON.stringify({
-      version: 1,
-      trustedProjects: [{ path: projectPath, trustedAt: new Date().toISOString() }],
-    }, null, 2),
-    "utf8",
-  );
+  await writeTuiGateTrust(isolatedHomeEnv(home), [projectPath]);
 }
 
 async function walkFiles(dir) {
@@ -300,8 +139,8 @@ async function walkFiles(dir) {
   return files;
 }
 
-async function latestRolloutFilesForHome(home) {
-  const projectsDir = path.join(home, ".agenc", "projects");
+async function latestRolloutFilesForAgencHome(agencHome) {
+  const projectsDir = path.join(agencHome, "projects");
   let files = [];
   try {
     files = await walkFiles(projectsDir);
@@ -320,8 +159,8 @@ async function latestRolloutFilesForHome(home) {
     .map((entry) => entry.file);
 }
 
-async function readRolloutItemsForHome(home) {
-  const files = await latestRolloutFilesForHome(home);
+async function readRolloutItemsForAgencHome(agencHome) {
+  const files = await latestRolloutFilesForAgencHome(agencHome);
   const items = [];
   for (const file of files) {
     const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
@@ -629,6 +468,7 @@ export class TuiSession {
     rows = 40,
     env = {},
     cwd,
+    gateState,
     useTempHome = false,
     sandboxMode,
   } = {}) {
@@ -637,10 +477,16 @@ export class TuiSession {
     this.rows = rows;
     this.envOverrides = { ...env };
     this.cwd = cwd ?? process.cwd();
+    this.gateState = gateState ?? null;
     this.useTempHome = useTempHome;
     this.sandboxMode = sandboxMode;
     this.tempHome = null;
+    this.ownsTempHome = false;
+    this.runtimeEnv = null;
     this.term = null;
+    this.childRecords = new Map();
+    this.abortError = null;
+    this.cleanupPromise = null;
     this.buffer = "";
     this.exited = false;
     this.exitInfo = null;
@@ -660,6 +506,192 @@ export class TuiSession {
     this.watermark = this.buffer.length;
   }
 
+  throwIfAborted() {
+    if (this.abortError !== null) throw this.abortError;
+  }
+
+  /**
+   * Resolve the exact private environment used by this session and seed
+   * deterministic trust. Non-PTY scenarios use this before spawning their
+   * own tracked CLI child.
+   */
+  async prepare() {
+    this.throwIfAborted();
+    if (this.runtimeEnv !== null) return this.runtimeEnv;
+    if (this.gateState === null && !this.useTempHome) {
+      throw new Error(
+        "TuiSession requires runner-owned gate state or useTempHome isolation",
+      );
+    }
+    if (this.gateState !== null && this.useTempHome) {
+      throw new Error(
+        "TuiSession cannot nest useTempHome inside runner-owned gate state",
+      );
+    }
+    let env = this.gateState === null
+      ? { ...process.env, ...this.envOverrides }
+      : environmentForTuiGateState(this.gateState, this.envOverrides);
+    if (this.gateState !== null) {
+      this.tempHome = this.gateState.home;
+    }
+    if (this.useTempHome) {
+      const { home } = await createTempHome({
+        sandboxMode: this.sandboxMode,
+        baseEnv: env,
+        injectedEnv: this.envOverrides,
+      });
+      this.tempHome = home;
+      this.ownsTempHome = true;
+      env = tuiGateEnvironment(home, env, this.envOverrides);
+    }
+    await ensureProjectTrusted(this.cwd, env);
+    this.throwIfAborted();
+    this.runtimeEnv = env;
+    return env;
+  }
+
+  trackChild(child) {
+    const record = {
+      child,
+      closed: false,
+      close: null,
+      closePromise: null,
+    };
+    record.closePromise = new Promise((resolve) => {
+      const finish = (value) => {
+        if (record.closed) return;
+        record.closed = true;
+        record.close = value;
+        resolve(value);
+      };
+      child.once("close", (code, signal) => finish({ code, signal }));
+      child.once("error", (error) => finish({ code: null, signal: null, error }));
+    });
+    this.childRecords.set(child, record);
+    return child;
+  }
+
+  async spawnTracked(command, args, options = {}) {
+    const env = await this.prepare();
+    this.throwIfAborted();
+    const childEnv = options.env === undefined
+      ? env
+      : this.gateState === null
+        ? tuiGateEnvironment(this.tempHome, env, {
+            ...this.envOverrides,
+            ...options.env,
+          })
+        : environmentForTuiGateState(this.gateState, {
+            ...this.envOverrides,
+            ...options.env,
+          });
+    return this.trackChild(spawn(command, args, {
+      ...options,
+      // Gate isolation cannot be overridden by a scenario's spawn options.
+      cwd: options.cwd ?? this.cwd,
+      env: childEnv,
+    }));
+  }
+
+  async waitForChildClose(child, timeoutMs) {
+    const record = this.childRecords.get(child);
+    if (record === undefined) {
+      throw new Error("cannot wait for an untracked child process");
+    }
+    if (record.closed) return record.close;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), timeoutMs);
+      record.closePromise.then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+  }
+
+  async terminateTrackedChild(child, {
+    graceMs = 2_000,
+    forceKillGraceMs = 2_000,
+  } = {}) {
+    const record = this.childRecords.get(child);
+    if (record === undefined || record.closed) return record?.close ?? null;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // The close observer remains authoritative.
+    }
+    let result = await this.waitForChildClose(child, graceMs);
+    if (result !== null) return result;
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The close observer remains authoritative.
+    }
+    result = await this.waitForChildClose(child, forceKillGraceMs);
+    if (result !== null) return result;
+    throw new Error(`tracked child survived SIGKILL (pid ${child.pid ?? "unknown"})`);
+  }
+
+  async runAgenc(args, {
+    cwd = this.cwd,
+    env,
+    input,
+    timeoutMs = 30_000,
+  } = {}) {
+    const child = await this.spawnTracked(
+      process.execPath,
+      [BIN_AGENC, ...args],
+      {
+        cwd,
+        env,
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    if (input !== undefined) {
+      child.stdin.end(input);
+    }
+    const result = await this.waitForChildClose(child, timeoutMs);
+    if (result === null) {
+      await this.terminateTrackedChild(child);
+      throw new Error(`agenc ${args.join(" ")} exceeded ${timeoutMs}ms`);
+    }
+    if (result.error) throw result.error;
+    return { code: result.code, signal: result.signal, stdout, stderr };
+  }
+
+  async startGateDaemon() {
+    if (this.gateState === null) {
+      throw new Error("cannot start a gate daemon without runner-owned state");
+    }
+    return startTuiGateDaemon(this.gateState, BIN_AGENC);
+  }
+
+  async restartGateDaemon() {
+    if (this.gateState === null) {
+      throw new Error("cannot restart a gate daemon without runner-owned state");
+    }
+    await stopTuiGateDaemon(this.gateState);
+    return startTuiGateDaemon(this.gateState, BIN_AGENC);
+  }
+
+  async abort(reason = new Error("TUI scenario aborted")) {
+    if (this.abortError === null) {
+      this.abortError = reason instanceof Error ? reason : new Error(String(reason));
+    }
+    this.kill("SIGKILL");
+    await Promise.allSettled(
+      [...this.childRecords.keys()].map((child) =>
+        this.terminateTrackedChild(child, { graceMs: 250 })),
+    );
+  }
+
   /**
    * Spawn the TUI under PTY and wait until the cold-start handshake is done
    * (XTVERSION + DA1 replies sent, post-reply tick elapsed). Does not wait
@@ -669,27 +701,8 @@ export class TuiSession {
     if (this.term !== null) {
       throw new Error("TuiSession already started");
     }
-    let env = { ...process.env, ...this.envOverrides };
-    if (this.useTempHome) {
-      const { home, wsPort } = await createTempHome({
-        sandboxMode: this.sandboxMode,
-      });
-      this.tempHome = home;
-      env = tempDaemonEnv(home, wsPort, env);
-      // Trust file lives under HOME — recompute under the temp HOME so
-      // the trust dialog doesn't fire.
-      const tempTrust = path.join(home, ".agenc", "trusted-projects.json");
-      await writeFile(
-        tempTrust,
-        JSON.stringify({
-          version: 1,
-          trustedProjects: [{ path: this.cwd, trustedAt: new Date().toISOString() }],
-        }, null, 2),
-        "utf8",
-      );
-    } else {
-      await ensureProjectTrusted(this.cwd, env);
-    }
+    const env = await this.prepare();
+    this.throwIfAborted();
     this.term = pty.spawn(process.execPath, [BIN_AGENC, ...this.args], {
       name: "xterm-256color",
       cols: this.cols,
@@ -711,7 +724,9 @@ export class TuiSession {
       this.exitInfo = { exitCode, signal };
     });
     await sleep(firstPaintMs);
+    this.throwIfAborted();
     await sleep(postReplyMs);
+    this.throwIfAborted();
   }
 
   /**
@@ -721,6 +736,7 @@ export class TuiSession {
    */
   async type(text, { perCharMs = 30 } = {}) {
     for (const ch of text) {
+      this.throwIfAborted();
       this.term.write(ch);
       await sleep(perCharMs);
     }
@@ -731,6 +747,7 @@ export class TuiSession {
    * Ctrl+C, arrow keys, etc.
    */
   send(bytes) {
+    this.throwIfAborted();
     this.term.write(bytes);
   }
 
@@ -738,6 +755,7 @@ export class TuiSession {
    * Type-and-submit shortcut. Optional `text` lets you pre-fill before Enter.
    */
   async submit(text = "") {
+    this.throwIfAborted();
     if (text) await this.type(text);
     await sleep(80);
     this.mark();
@@ -752,6 +770,7 @@ export class TuiSession {
     const re = pattern instanceof RegExp ? pattern : new RegExp(pattern);
     const start = Date.now();
     while (Date.now() - start < timeout) {
+      this.throwIfAborted();
       const slice = normalizePtyOutput(this.buffer.slice(this.watermark), {
         cols: this.cols,
         rows: this.rows,
@@ -795,6 +814,7 @@ export class TuiSession {
     let lastSize = this.buffer.length;
     let stableSince = Date.now();
     while (Date.now() - start < timeout) {
+      this.throwIfAborted();
       if (this.buffer.length === lastSize) {
         const frame = this.latestFrame;
         if (frameLooksBusy(frame)) {
@@ -826,12 +846,13 @@ export class TuiSession {
   }
 
   /**
-   * Read rollout entries for this scenario's HOME. Temp-HOME scenarios use
-   * their isolated daemon state; default-HOME scenarios fall back to the
-   * operator's HOME, so callers should use unique markers.
+   * Read rollout entries from the exact private AGENC_HOME used by the PTY.
    */
   async readRolloutItems() {
-    return readRolloutItemsForHome(this.tempHome ?? homedir());
+    const agencHome = this.runtimeEnv === null
+      ? resolveHarnessAgencHome()
+      : resolveHarnessAgencHome(this.runtimeEnv);
+    return readRolloutItemsForAgencHome(agencHome);
   }
 
   async completedRolloutToolCalls({ toolName } = {}) {
@@ -980,6 +1001,7 @@ export class TuiSession {
    * the slash menu.
    */
   async submitSlashCommand(command) {
+    this.throwIfAborted();
     if (!command.startsWith("/")) {
       throw new Error(`submitSlashCommand expects a leading slash: ${command}`);
     }
@@ -1005,6 +1027,7 @@ export class TuiSession {
   async waitForAssistantReply({ timeout = 60_000 } = {}) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
+      this.throwIfAborted();
       const rows = renderPtyRows(this.buffer.slice(this.watermark), {
         cols: this.cols,
         rows: this.rows,
@@ -1028,39 +1051,79 @@ export class TuiSession {
    * TUI does not exit within the grace window.
    */
   async exitGracefully({ timeout = 5_000 } = {}) {
-    if (this.exited) return;
-    this.term.write("/exit\r");
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-      if (this.exited) return;
-      await sleep(50);
+    if (this.exited || this.term === null) return;
+    if (this.abortError !== null) {
+      this.kill("SIGKILL");
+      if (await this.waitForExit(1_000)) return;
+      throw new Error("aborted TUI PTY survived SIGKILL during cleanup");
     }
-    this.kill();
+    this.term.write("/exit\r");
+    if (await this.waitForExit(timeout)) return;
+    this.kill("SIGTERM");
+    if (await this.waitForExit(1_000)) return;
+    this.kill("SIGKILL");
+    if (await this.waitForExit(1_000)) return;
+    throw new Error("TUI PTY survived SIGKILL during cleanup");
+  }
+
+  async waitForExit(timeout = 1_000) {
+    if (this.exited || this.term === null) return true;
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (this.exited) return true;
+      await sleep(25);
+    }
+    return this.exited;
   }
 
   /**
    * Force-terminate the PTY. Use as teardown safety; prefer `exitGracefully`.
    */
-  kill() {
+  kill(signal = "SIGTERM") {
     if (this.exited || this.term === null) return;
     try {
-      this.term.kill("SIGTERM");
+      this.term.kill(signal);
     } catch {
-      // Already dead
+      // The exit observer remains authoritative.
     }
   }
 
   /**
-   * Tear down per-scenario resources. Safe to call multiple times.
-   * If `useTempHome` was set, stops the daemon bound to the temp HOME and
-   * removes the directory tree.
+   * Tear down resources owned by this session. Runner-provided gate state is
+   * intentionally left to the runner, which stops the daemon only after the
+   * PTY has been proven dead.
    */
   async cleanup() {
-    if (this.tempHome !== null) {
-      const home = this.tempHome;
-      this.tempHome = null;
-      await teardownTempHome(home);
-    }
+    if (this.cleanupPromise !== null) return this.cleanupPromise;
+    this.cleanupPromise = (async () => {
+      const errors = [];
+      try {
+        await this.exitGracefully({ timeout: 2_000 });
+      } catch (error) {
+        errors.push(error);
+      }
+      const childResults = await Promise.allSettled(
+        [...this.childRecords.keys()].map((child) =>
+          this.terminateTrackedChild(child)),
+      );
+      for (const result of childResults) {
+        if (result.status === "rejected") errors.push(result.reason);
+      }
+      if (this.ownsTempHome && this.tempHome !== null) {
+        const home = this.tempHome;
+        this.tempHome = null;
+        this.ownsTempHome = false;
+        try {
+          await teardownTempHome(home);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "TUI session cleanup failed");
+      }
+    })();
+    return this.cleanupPromise;
   }
 
   /**

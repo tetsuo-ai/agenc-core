@@ -159,6 +159,7 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/scripts/check-sdk-generated-types.mjs",
   "runtime/scripts/check-tui-runtime-startup.mjs",
   "runtime/scripts/check-tui-runtime-startup.test.mjs",
+  "runtime/scripts/tui-gate-state.mjs",
   "runtime/scripts/hermetic-docker-seccomp.json",
   "runtime/scripts/hermetic-network-boundary.c",
   "runtime/scripts/run-hermetic-test-boundary.mjs",

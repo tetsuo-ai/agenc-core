@@ -54,6 +54,13 @@ function toolResultCount(messages) {
 }
 
 function completionForPrompt(prompt) {
+  if (/\bWORKBENCH-TRANSCRIPT-SCROLL\b/i.test(prompt)) {
+    const lines = Array.from(
+      { length: 120 },
+      (_, index) => `WBANCHOR-${String(index + 1).padStart(3, "0")}`,
+    );
+    return `\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+  }
   const singleWord =
     /\b(?:reply with|say only)\s+(?:the\s+)?(?:single\s+)?word\s+([A-Za-z0-9_-]+)/i
       .exec(prompt)?.[1];

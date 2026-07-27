@@ -21,7 +21,6 @@ export const meta = {
   ],
   timeoutMs: 60_000,
   slimCwd: true,
-  useTempHome: true,
   sandboxMode: "danger-full-access",
 };
 

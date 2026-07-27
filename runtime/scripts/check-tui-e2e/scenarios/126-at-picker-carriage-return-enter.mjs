@@ -21,7 +21,6 @@ export const meta = {
   description: "@ files/resources picker accepts carriage-return Enter.",
   slimCwd: true,
   timeoutMs: 45_000,
-  useTempHome: true,
 };
 
 export default async function (session) {

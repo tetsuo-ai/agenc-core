@@ -160,6 +160,34 @@ describe("selectStripSegments degradation", () => {
 });
 
 describe("WorkbenchStatusBar context strip rendering", () => {
+  test("keeps the fixed title row under tall transcript pressure", async () => {
+    const pressured = await renderToString(
+      <AppStateProvider initialState={stateWith()}>
+        <Box flexDirection="column" height={3} overflow="hidden">
+          <WorkbenchStatusBar columns={80} />
+          <Box height={3} flexShrink={0}>
+            <Text>TRANSCRIPT BODY</Text>
+          </Box>
+        </Box>
+      </AppStateProvider>,
+      { columns: 80, rows: 3 },
+    );
+    const shrinkableControl = await renderToString(
+      <Box flexDirection="column" height={3} overflow="hidden">
+        <Box height={1}>
+          <Text>SHRINKABLE TITLE</Text>
+        </Box>
+        <Box height={3} flexShrink={0}>
+          <Text>TRANSCRIPT BODY</Text>
+        </Box>
+      </Box>,
+      { columns: 80, rows: 3 },
+    );
+
+    expect(pressured).toContain("AgenC Workbench");
+    expect(shrinkableControl).not.toContain("SHRINKABLE TITLE");
+  });
+
   test("shows model, a non-default permission mode, and a compact cwd at a wide width", async () => {
     const { getCwdState } = await import("../../src/bootstrap/state.js");
     const out = await renderStatusBar(120, { mode: "plan" });

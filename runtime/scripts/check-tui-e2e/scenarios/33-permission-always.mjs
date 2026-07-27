@@ -2,10 +2,10 @@
  * Permission overlay "always allow" scenario.
  *
  * Default mode. Triggers Bash, hits the overlay, sends "2" to accept
- * for the current session. The harness uses temp HOME isolation so the
+ * for the current session. The runner uses private HOME isolation so the
  * session-scoped policy entry doesn't leak.
  *
- * Uses a SLIM cwd (mkdtemp under /tmp with a single trivial file) so
+ * Uses a runner-owned slim cwd with a single trivial file so
  * the daemon's project-context auto-load doesn't bloat the token
  * budget. With agenc-core's runtime/ as cwd, AGENC.md and surrounding
  * files pushed >237k tokens and starved compaction; in /tmp/<empty>
@@ -15,13 +15,6 @@
  * completed without depending on the model echoing stdout in its final
  * assistant message.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-
-const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-always-"));
-writeFileSync(path.join(slimCwd, "README.md"), "permission always cwd\n", "utf8");
-writeFileSync(path.join(slimCwd, "package.json"), '{"private":true}\n', "utf8");
 
 const marker = "agenc-permission-always-marker-bc42";
 const prompt = [
@@ -36,10 +29,9 @@ function shellQuote(value) {
 export const meta = {
   description: "Permission overlay (default mode): session approval runs the tool.",
   timeoutMs: 120_000,
-  useTempHome: true,
+  slimCwd: true,
   sandboxMode: "danger-full-access",
   args: ["--permission-mode", "default"],
-  cwd: slimCwd,
 };
 
 export default async function (session) {

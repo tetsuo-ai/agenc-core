@@ -1,9 +1,9 @@
 /**
  * /commit scenario.
  *
- * Creates a git commit. Run from a repo where there are no staged changes
- * — should report "nothing to commit" and idle, not crash. This scenario
- * only asserts no crash.
+ * Runs in the runner-owned clean git fixture, so it can never consume or
+ * commit changes staged in the source checkout. It should report "nothing to
+ * commit" and idle, not crash.
  */
 export const meta = {
   description: "/commit handles no-staged-changes gracefully without crash.",

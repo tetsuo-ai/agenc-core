@@ -12,7 +12,6 @@ export const meta = {
     AGENC_TUI_WORKBENCH: "1",
     AGENC_TUI_GLYPHS: "ascii",
   },
-  useTempHome: true,
 };
 
 function sleep(ms) {

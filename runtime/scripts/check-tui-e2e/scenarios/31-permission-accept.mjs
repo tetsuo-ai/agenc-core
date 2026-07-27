@@ -6,13 +6,6 @@
  * completed Bash stdout marker. This keeps the scenario scoped to tool
  * approval rather than sandbox file-write policy or assistant echo behavior.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-
-const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-permission-"));
-writeFileSync(path.join(slimCwd, "README.md"), "permission accept cwd\n", "utf8");
-writeFileSync(path.join(slimCwd, "package.json"), '{"private":true}\n', "utf8");
 
 const marker = "agenc-permission-accept-marker-3a9c";
 const prompt = [
@@ -27,10 +20,9 @@ function shellQuote(value) {
 export const meta = {
   description: "Permission overlay (default mode): accept path runs the tool.",
   timeoutMs: 120_000,
-  useTempHome: true,
+  slimCwd: true,
   sandboxMode: "danger-full-access",
   args: ["--permission-mode", "default"],
-  cwd: slimCwd,
 };
 
 export default async function (session) {

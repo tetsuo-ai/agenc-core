@@ -17,14 +17,6 @@
  * no auto-reconnect path. Filed as GAP-DMN-PERSISTENT-RECONNECT.
  * Unskip when reconnect (or graceful-error-with-retry) lands.
  */
-import { spawnSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..", "..");
-const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
-
 export const meta = {
   description:
     "TUI survives a daemon restart between turns (or fails cleanly).",
@@ -43,10 +35,7 @@ export default async function (session) {
   // Restart the daemon out-of-band — same operation that any external
   // tool, upgrade script, or `agenc daemon restart` invocation would
   // perform.
-  spawnSync(process.execPath, [BIN_AGENC, "daemon", "restart"], {
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+  await session.restartGateDaemon();
 
   await session.type("and again");
   await session.submit();

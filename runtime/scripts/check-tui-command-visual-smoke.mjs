@@ -7,7 +7,29 @@
  * frame. It catches transient rich commands, missing hint spacing, and menu
  * content that starts below the viewport.
  */
-import { TuiSession, renderPtyRows } from "./check-tui-e2e/harness.mjs";
+import { fileURLToPath } from "node:url";
+
+import {
+  TuiSession,
+  renderPtyRows,
+  tuiE2eGateEnv,
+} from "./check-tui-e2e/harness.mjs";
+import {
+  buildMockProviderEnv,
+  startMockModelServer,
+} from "./local-openai-compatible-mock.mjs";
+import {
+  configureTuiGateSandbox,
+  createTuiGateProject,
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+} from "./tui-gate-state.mjs";
+
+const BIN_AGENC = fileURLToPath(
+  new URL("../dist/bin/agenc.js", import.meta.url),
+);
 
 const DIMENSIONS = [
   { cols: 148, rows: 40 },
@@ -48,9 +70,9 @@ const COMMANDS = [
   },
   {
     command: "/hooks",
-    anchors: ["HOOKS", "hooks runtime", "runtime bridge missing"],
-    supporting: ["hooks"],
-    requiresFooter: true,
+    anchors: ["AgenC Hooks", "Commands: /hooks"],
+    supporting: ["Configured hooks:", "PreToolUse: 0 hooks", "/hooks diagnostics"],
+    requiresLiveSession: true,
   },
   {
     command: "/mcp",
@@ -61,7 +83,7 @@ const COMMANDS = [
   {
     command: "/agents",
     anchors: ["AGENTS"],
-    supporting: ["delegate-capable", "registered"],
+    supporting: ["Built-in agents"],
     requiresFooter: true,
   },
   {
@@ -95,7 +117,7 @@ const COMMANDS = [
   {
     command: "/diff",
     anchors: ["DIFF", "git diff HEAD", "modified", "deleted"],
-    supporting: ["git diff HEAD", "no uncommitted changes", "runtime/src"],
+    supporting: ["diff-fixture.txt"],
     requiresFooter: true,
   },
 ];
@@ -131,6 +153,66 @@ function forceKillSession(session) {
     } catch {
       // best-effort teardown
     }
+  }
+}
+
+function trackActiveSession(lifecycle, session) {
+  if (lifecycle.activeSession !== null) {
+    throw new Error("command visual smoke already has an active TUI session");
+  }
+  lifecycle.activeSession = session;
+  lifecycle.activeSessionCleanup = null;
+}
+
+async function cleanupActiveSession(lifecycle) {
+  const session = lifecycle.activeSession;
+  if (session === null) return;
+
+  if (lifecycle.activeSessionCleanup === null) {
+    forceKillSession(session);
+    lifecycle.activeSessionCleanup = session.cleanup();
+  }
+  const cleanupPromise = lifecycle.activeSessionCleanup;
+  try {
+    await cleanupPromise;
+  } finally {
+    if (
+      lifecycle.activeSession === session &&
+      lifecycle.activeSessionCleanup === cleanupPromise
+    ) {
+      lifecycle.activeSession = null;
+      lifecycle.activeSessionCleanup = null;
+    }
+  }
+}
+
+async function cleanupLifecycle(lifecycle) {
+  const errors = [];
+  try {
+    await cleanupActiveSession(lifecycle);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    const gateState =
+      lifecycle.gateState ?? await lifecycle.pendingGateState;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    await teardownTuiGateState(gateState, BIN_AGENC);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (lifecycle.mockClosePromise === null) {
+    lifecycle.mockClosePromise = lifecycle.mockServer.close();
+  }
+  try {
+    await lifecycle.mockClosePromise;
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "command visual smoke cleanup failed");
   }
 }
 
@@ -227,54 +309,113 @@ function assertSurfaceVisible(session, spec, dimension) {
   }
 }
 
-async function runOne(spec, dimension) {
+async function runOne(spec, dimension, lifecycle) {
   const session = new TuiSession({
     cols: dimension.cols,
     rows: dimension.rows,
+    cwd: lifecycle.cwd,
+    gateState: lifecycle.gateState,
   });
+  trackActiveSession(lifecycle, session);
   const label = `${spec.command} ${dimension.cols}x${dimension.rows}`;
   try {
     await session.start({ firstPaintMs: 1_000, postReplyMs: 1_000 });
     await session.waitForPrompt({ timeout: 20_000 });
     assertNoMalformedHints(session.latestFrame, `${label} cold-start`);
 
+    if (spec.requiresLiveSession) {
+      await session.type("hello");
+      await session.submit();
+      await session.waitForAssistantReply({ timeout: 45_000 });
+      await session.waitForPrompt({ timeout: 30_000 });
+    }
     await session.submitSlashCommand(spec.command);
     await session.waitForIdle({ idleWindow: 900, timeout: 20_000 });
     if (spec.settleMs) await sleep(spec.settleMs);
     assertSurfaceVisible(session, spec, dimension);
     session.assertNoCrash();
   } finally {
-    forceKillSession(session);
-    await session.cleanup();
+    await cleanupActiveSession(lifecycle);
   }
 }
 
 async function main() {
-  const failures = [];
-  for (const dimension of DIMENSIONS) {
-    for (const spec of COMMANDS) {
-      const label = `${spec.command} ${dimension.cols}x${dimension.rows}`;
-      process.stdout.write(`command visual smoke: ${label} ... `);
-      try {
-        await runOne(spec, dimension);
-        process.stdout.write("ok\n");
-      } catch (error) {
-        process.stdout.write("failed\n");
-        failures.push({ label, error });
+  const mockServer = await startMockModelServer();
+  const gateStatePromise = createTuiGateState({
+    injectedEnv: tuiE2eGateEnv(
+      buildMockProviderEnv(mockServer.baseUrl, {}),
+    ),
+    prefix: "agenc-tui-command-visual-",
+  });
+  const lifecycle = {
+    gateState: null,
+    pendingGateState: gateStatePromise,
+    cwd: null,
+    activeSession: null,
+    activeSessionCleanup: null,
+    aborted: false,
+    mockServer,
+    mockClosePromise: null,
+  };
+  let uninstallSignalHandlers = () => {};
+  try {
+    uninstallSignalHandlers = installTuiGateSignalHandlers(async () => {
+      lifecycle.aborted = true;
+      await cleanupLifecycle(lifecycle);
+    });
+    const gateState = await gateStatePromise;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    lifecycle.cwd = createTuiGateProject(gateState, { dirty: true });
+    // The hooks surface needs one live mock turn. Avoid depending on the
+    // host's optional bubblewrap/user-namespace support for that precondition.
+    await configureTuiGateSandbox(
+      gateState,
+      BIN_AGENC,
+      "danger-full-access",
+    );
+    if (lifecycle.aborted) return 1;
+    await startTuiGateDaemon(gateState, BIN_AGENC);
+    if (lifecycle.aborted) return 1;
+
+    const failures = [];
+    for (const dimension of DIMENSIONS) {
+      for (const spec of COMMANDS) {
+        if (lifecycle.aborted) return 1;
+        const label = `${spec.command} ${dimension.cols}x${dimension.rows}`;
+        process.stdout.write(`command visual smoke: ${label} ... `);
+        try {
+          await runOne(spec, dimension, lifecycle);
+          process.stdout.write("ok\n");
+        } catch (error) {
+          process.stdout.write("failed\n");
+          failures.push({ label, error });
+        }
+        if (lifecycle.aborted) return 1;
       }
     }
-  }
 
-  if (failures.length > 0) {
-    for (const failure of failures) {
-      console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
+      }
+      return 1;
     }
-    process.exit(1);
+    return 0;
+  } finally {
+    try {
+      await cleanupLifecycle(lifecycle);
+    } finally {
+      uninstallSignalHandlers();
+    }
   }
-  process.exit(0);
 }
 
-main().catch((error) => {
-  console.error(error?.stack ?? error?.message ?? String(error));
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(error?.stack ?? error?.message ?? String(error));
+    process.exitCode = 1;
+  });

@@ -8,7 +8,6 @@ export const meta = {
   description: "/skills renders skill list, returns to idle without crash.",
   timeoutMs: 30_000,
   slimCwd: true,
-  useTempHome: true,
 };
 
 export default async function (session) {

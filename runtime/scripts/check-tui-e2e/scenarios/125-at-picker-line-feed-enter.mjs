@@ -13,18 +13,22 @@ export const meta = {
   description: "@ files/resources picker accepts line-feed Enter.",
   slimCwd: true,
   timeoutMs: 45_000,
-  useTempHome: true,
 };
 
 export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
 
-  await session.type("@", { perCharMs: 60 });
+  await session.type("@READ", { perCharMs: 60 });
   await session.waitFor(/FILES & RESOURCES/u, {
     timeout: 15_000,
     label: "files/resources picker",
   });
+  await waitForFrameText(
+    session,
+    /❯ \+ README\.md/u,
+    "filtered README.md picker selection",
+  );
 
   session.send("\n");
   await waitForFrameText(

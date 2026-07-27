@@ -1,5 +1,19 @@
 #!/usr/bin/env node
+import { fileURLToPath } from "node:url";
+
 import { TuiSession, renderPtyRows } from "./check-tui-e2e/harness.mjs";
+import {
+  configureTuiGateSandbox,
+  createTuiGateProject,
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+} from "./tui-gate-state.mjs";
+
+const BIN_AGENC = fileURLToPath(
+  new URL("../dist/bin/agenc.js", import.meta.url),
+);
 
 const DIMENSIONS = [
   { cols: 148, rows: 40 },
@@ -10,6 +24,58 @@ const DIMENSIONS = [
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trackActiveSession(lifecycle, session) {
+  if (lifecycle.activeSession !== null) {
+    throw new Error("workbench visual smoke already has an active TUI session");
+  }
+  lifecycle.activeSession = session;
+  lifecycle.activeSessionCleanup = null;
+}
+
+async function cleanupActiveSession(lifecycle) {
+  const session = lifecycle.activeSession;
+  if (session === null) return;
+
+  if (lifecycle.activeSessionCleanup === null) {
+    session.kill();
+    lifecycle.activeSessionCleanup = session.cleanup();
+  }
+  const cleanupPromise = lifecycle.activeSessionCleanup;
+  try {
+    await cleanupPromise;
+  } finally {
+    if (
+      lifecycle.activeSession === session &&
+      lifecycle.activeSessionCleanup === cleanupPromise
+    ) {
+      lifecycle.activeSession = null;
+      lifecycle.activeSessionCleanup = null;
+    }
+  }
+}
+
+async function cleanupLifecycle(lifecycle) {
+  const errors = [];
+  try {
+    await cleanupActiveSession(lifecycle);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    const gateState =
+      lifecycle.gateState ?? await lifecycle.pendingGateState;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    await teardownTuiGateState(gateState, BIN_AGENC);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "workbench visual smoke cleanup failed");
+  }
 }
 
 function fail(message, details = {}) {
@@ -120,15 +186,18 @@ function assertFrame(session, dimension, label, anchors) {
   }
 }
 
-async function runOne(dimension) {
+async function runOne(dimension, lifecycle) {
   const session = new TuiSession({
     cols: dimension.cols,
     rows: dimension.rows,
+    cwd: lifecycle.cwd,
+    gateState: lifecycle.gateState,
     env: {
       AGENC_TUI_WORKBENCH: "1",
       AGENC_OAUTH_TOKEN: "test-workbench-visual-token",
     },
   });
+  trackActiveSession(lifecycle, session);
   const label = `${dimension.cols}x${dimension.rows}`;
   try {
     await session.start({ firstPaintMs: 1_000, postReplyMs: 1_000 });
@@ -139,41 +208,100 @@ async function runOne(dimension) {
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     assertFrame(session, dimension, `${label} explorer focus`, ["WORKSPACE", "WORKSPA"]);
 
-    session.send("\x17l");
+    // Ctrl-W j is the documented composer-focus shortcut at every responsive
+    // layout. Moving right from the explorer is ambiguous once panes collapse.
+    session.send("\x17j");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     await session.submitSlashCommand("/diff");
     await session.waitForIdle({ idleWindow: 900, timeout: 20_000 });
     await sleep(300);
-    assertFrame(session, dimension, `${label} diff surface`, ["DIFF", "git diff HEAD", "[q] close"]);
+    assertFrame(
+      session,
+      dimension,
+      `${label} diff surface`,
+      ["AgenC Workbench | DIFF"],
+    );
+    assertFrame(
+      session,
+      dimension,
+      `${label} diff command`,
+      ["git diff HEAD"],
+    );
+    assertFrame(
+      session,
+      dimension,
+      `${label} diff fixture`,
+      ["M diff-fixture.txt"],
+    );
     session.assertNoCrash();
   } finally {
-    session.kill();
-    await session.cleanup();
+    await cleanupActiveSession(lifecycle);
   }
 }
 
 async function main() {
-  const failures = [];
-  for (const dimension of DIMENSIONS) {
-    const label = `${dimension.cols}x${dimension.rows}`;
-    process.stdout.write(`workbench visual smoke: ${label} ... `);
+  const gateStatePromise = createTuiGateState({
+    prefix: "agenc-tui-workbench-visual-",
+  });
+  const lifecycle = {
+    gateState: null,
+    pendingGateState: gateStatePromise,
+    cwd: null,
+    activeSession: null,
+    activeSessionCleanup: null,
+    aborted: false,
+  };
+  let uninstallSignalHandlers = () => {};
+  try {
+    uninstallSignalHandlers = installTuiGateSignalHandlers(async () => {
+      lifecycle.aborted = true;
+      await cleanupLifecycle(lifecycle);
+    });
+    const gateState = await gateStatePromise;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    lifecycle.cwd = createTuiGateProject(gateState, { dirty: true });
+    await configureTuiGateSandbox(gateState, BIN_AGENC, undefined);
+    if (lifecycle.aborted) return 1;
+    await startTuiGateDaemon(gateState, BIN_AGENC);
+    if (lifecycle.aborted) return 1;
+
+    const failures = [];
+    for (const dimension of DIMENSIONS) {
+      if (lifecycle.aborted) return 1;
+      const label = `${dimension.cols}x${dimension.rows}`;
+      process.stdout.write(`workbench visual smoke: ${label} ... `);
+      try {
+        await runOne(dimension, lifecycle);
+        process.stdout.write("ok\n");
+      } catch (error) {
+        process.stdout.write("failed\n");
+        failures.push({ label, error });
+      }
+      if (lifecycle.aborted) return 1;
+    }
+
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
+      }
+      return 1;
+    }
+    return 0;
+  } finally {
     try {
-      await runOne(dimension);
-      process.stdout.write("ok\n");
-    } catch (error) {
-      process.stdout.write("failed\n");
-      failures.push({ label, error });
+      await cleanupLifecycle(lifecycle);
+    } finally {
+      uninstallSignalHandlers();
     }
-  }
-  if (failures.length > 0) {
-    for (const failure of failures) {
-      console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
-    }
-    process.exit(1);
   }
 }
 
-main().catch((error) => {
-  console.error(error?.stack ?? error?.message ?? String(error));
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(error?.stack ?? error?.message ?? String(error));
+    process.exitCode = 1;
+  });

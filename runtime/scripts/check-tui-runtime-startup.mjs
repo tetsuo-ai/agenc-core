@@ -16,6 +16,14 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+  writeTuiGateTrust,
+} from "./tui-gate-state.mjs";
+
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const TRUSTED_REPOSITORY_ROOT = path.resolve(SCRIPT_DIR, "../..");
@@ -28,10 +36,9 @@ const MAX_PTY_OUTPUT_BYTES = 1024 * 1024;
 // timeout, but leave enough headroom that the pre-commit build immediately
 // followed by this smoke does not fail a healthy first viewport.
 const FIRST_PAINT_MS = 3_000;
-// A rebuild makes the next CLI reap a build-skewed daemon for up to 5s before
-// starting its replacement. The throwaway warmup must outlive that reap
-// window plus the ordinary first-paint budget; otherwise it kills the CLI
-// midway through recovery and hands the measured probe the same cold start.
+// The first CLI in a private gate home must cold-start its daemon before it can
+// paint. Keep the throwaway warmup comfortably above the measured first-paint
+// budget so every measured viewport exercises warm runtime/daemon caches.
 export const COLD_WARMUP_FIRST_PAINT_MS = 5_000 + FIRST_PAINT_MS;
 const POST_REPLY_MS = 1_500;
 const SIGTERM_GRACE_MS = 1_000;
@@ -424,42 +431,6 @@ function scanOutput(buffer) {
   return matches;
 }
 
-function ptyEnvironment() {
-  const allowed = [
-    "AGENC_AUTH_BACKEND",
-    "AGENC_CONFIG_DIR",
-    "AGENC_HOME",
-    "CI",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LOGNAME",
-    "NO_COLOR",
-    "PATH",
-    "SHELL",
-    "TEMP",
-    "TERM",
-    "TMP",
-    "TMPDIR",
-    "TZ",
-    "USER",
-    "USERPROFILE",
-    "XDG_CACHE_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-  ];
-  const environment = Object.fromEntries(
-    allowed.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]),
-  );
-  return {
-    ...environment,
-    AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    NODE_OPTIONS: "",
-    TERM: "xterm-256color",
-  };
-}
-
 function safePtyKill(term, signal) {
   try {
     if (process.platform === "win32") term.kill();
@@ -507,8 +478,9 @@ export async function observePtySession(term, {
   });
   let exited = false;
   let exitValue;
+  let exitSubscription;
   const exitPromise = new Promise((resolve) => {
-    term.onExit((value) => {
+    exitSubscription = term.onExit((value) => {
       exited = true;
       exitValue = value;
       resolve(value);
@@ -540,10 +512,12 @@ export async function observePtySession(term, {
       ? { kind: "exit", exit: exitValue }
       : await waitForPhaseOrExit(exitPromise, sigtermGraceMs);
     let survivedTermination = false;
+    let survivedForceKill = false;
     if (graceful.kind !== "exit") {
       survivedTermination = true;
       safePtyKill(term, "SIGKILL");
-      await waitForPhaseOrExit(exitPromise, forceKillGraceMs);
+      const forced = await waitForPhaseOrExit(exitPromise, forceKillGraceMs);
+      survivedForceKill = forced.kind !== "exit";
     }
     const gracefulExit = graceful.kind === "exit" ? graceful.exit : null;
     const invalidTerminationExit = terminationRequested && gracefulExit !== null && !(
@@ -560,6 +534,7 @@ export async function observePtySession(term, {
       earlyFailure === null &&
       !overflow &&
       !survivedTermination &&
+      !survivedForceKill &&
       !invalidTerminationExit &&
       semanticReadiness &&
       matches.length === 0
@@ -567,7 +542,11 @@ export async function observePtySession(term, {
       console.log(green(`[3/4] ${label} ${viewport.cols}x${viewport.rows}: clean startup`));
       return true;
     }
-    if (resultIgnored === true) {
+    if (
+      resultIgnored === true &&
+      !survivedTermination &&
+      !survivedForceKill
+    ) {
       console.log(
         `[3/4] ${label} ${viewport.cols}x${viewport.rows}: cold start absorbed (result ignored)`,
       );
@@ -577,6 +556,7 @@ export async function observePtySession(term, {
     if (earlyFailure !== null) console.error(red(`        ${earlyFailure}`));
     if (overflow) console.error(red("        PTY output exceeded 1 MiB"));
     if (survivedTermination) console.error(red("        PTY survived the SIGTERM grace period"));
+    if (survivedForceKill) console.error(red("        PTY survived the SIGKILL grace period"));
     if (!semanticReadiness) {
       console.error(red("        PTY never rendered the AgenC interactive screen invariant"));
     }
@@ -592,12 +572,29 @@ export async function observePtySession(term, {
     if (tail !== "") console.error(tail);
     return false;
   } finally {
-    dataSubscription.dispose();
-    if (!exited) safePtyKill(term, "SIGKILL");
+    try {
+      if (!exited) {
+        safePtyKill(term, "SIGKILL");
+        const finalExit = await waitForPhaseOrExit(exitPromise, forceKillGraceMs);
+        if (finalExit.kind !== "exit") {
+          throw new Error(`${label ?? "TUI"} PTY survived the final SIGKILL grace period`);
+        }
+      }
+    } finally {
+      dataSubscription.dispose();
+      exitSubscription?.dispose?.();
+    }
   }
 }
 
-async function ptyStartupSmoke(label, args, viewport, opts = {}) {
+async function ptyStartupSmoke(
+  label,
+  args,
+  viewport,
+  env,
+  opts = {},
+  activeTerms = null,
+) {
   const pty = loadPtyModule();
   console.log(
     `[3/4] PTY spawn ${label} ${viewport.cols}x${viewport.rows}: ${args.join(" ") || "(no args)"}`,
@@ -607,9 +604,48 @@ async function ptyStartupSmoke(label, args, viewport, opts = {}) {
     cols: viewport.cols,
     rows: viewport.rows,
     cwd: RUNTIME_DIR,
-    env: ptyEnvironment(),
+    env,
   });
-  return observePtySession(term, { label, viewport, ...opts });
+  let signalRecord = null;
+  if (activeTerms !== null) {
+    signalRecord = {
+      term,
+      exited: false,
+      exitPromise: null,
+      subscription: null,
+    };
+    signalRecord.exitPromise = new Promise((resolve) => {
+      signalRecord.subscription = term.onExit((value) => {
+        signalRecord.exited = true;
+        resolve(value);
+      });
+    });
+    activeTerms.add(signalRecord);
+  }
+  try {
+    return await observePtySession(term, { label, viewport, ...opts });
+  } finally {
+    if (signalRecord !== null) {
+      activeTerms.delete(signalRecord);
+      signalRecord.subscription?.dispose?.();
+    }
+  }
+}
+
+async function terminateStartupPty(record) {
+  if (record.exited) return;
+  safePtyKill(record.term, "SIGTERM");
+  const graceful = await Promise.race([
+    record.exitPromise.then(() => true),
+    delay(SIGTERM_GRACE_MS).then(() => record.exited),
+  ]);
+  if (graceful) return;
+  safePtyKill(record.term, "SIGKILL");
+  const forced = await Promise.race([
+    record.exitPromise.then(() => true),
+    delay(FORCE_KILL_GRACE_MS).then(() => record.exited),
+  ]);
+  if (!forced) throw new Error("startup PTY survived signal cleanup SIGKILL");
 }
 
 async function main() {
@@ -639,27 +675,97 @@ async function main() {
   }
   console.log(green("[2/4] built TUI artifact returned a verified import proof"));
 
-  // Warmup: the very first PTY spawn after a fresh `npm run build` pays cold
-  // module/daemon-attach caches and may also spend 5s reaping a build-skewed
-  // daemon. Give this throwaway spawn enough time to finish that recovery so
-  // every MEASURED scenario asserts the real first-paint budget against warm
-  // caches; only the warmup result is deliberately ignored.
-  await ptyStartupSmoke("warmup", [], VIEWPORTS[0], {
-    firstPaintMs: COLD_WARMUP_FIRST_PAINT_MS,
-    resultIgnored: true,
+  const gateStatePromise = createTuiGateState({
+    prefix: "agenc-tui-startup-",
   });
+  let gateState = null;
+  const activeTerms = new Set();
+  let interrupted = false;
+  const uninstallSignalHandlers = installTuiGateSignalHandlers(async () => {
+    interrupted = true;
+    const termResults = await Promise.allSettled(
+      [...activeTerms].map(terminateStartupPty),
+    );
+    const errors = termResults
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    try {
+      const state = gateState ?? await gateStatePromise;
+      await teardownTuiGateState(state, BIN_AGENC_PATH);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "TUI startup signal cleanup failed");
+    }
+  });
+  try {
+    gateState = await gateStatePromise;
+    await writeTuiGateTrust(gateState.env, [RUNTIME_DIR]);
+    if (interrupted) return 1;
+    await startTuiGateDaemon(gateState, BIN_AGENC_PATH);
+    if (interrupted) return 1;
 
-  const results = [];
-  for (const viewport of VIEWPORTS) {
-    results.push(await ptyStartupSmoke("agenc", [], viewport));
-    results.push(await ptyStartupSmoke("agenc --yolo", ["--yolo"], viewport));
+    // Warmup: the first PTY in this invocation pays cold module and private
+    // daemon startup costs. Only its functional result is ignored; teardown
+    // and process-exit invariants remain mandatory.
+    const warmupCleanedUp = await ptyStartupSmoke(
+      "warmup",
+      [],
+      VIEWPORTS[0],
+      gateState.env,
+      {
+        firstPaintMs: COLD_WARMUP_FIRST_PAINT_MS,
+        resultIgnored: true,
+      },
+      activeTerms,
+    );
+    if (interrupted) return 1;
+    if (!warmupCleanedUp) {
+      console.error(red("[4/4] TUI runtime startup smoke FAILED"));
+      return 1;
+    }
+
+    const results = [];
+    for (const viewport of VIEWPORTS) {
+      if (interrupted) return 1;
+      results.push(
+        await ptyStartupSmoke(
+          "agenc",
+          [],
+          viewport,
+          gateState.env,
+          {},
+          activeTerms,
+        ),
+      );
+      if (interrupted) return 1;
+      results.push(
+        await ptyStartupSmoke(
+          "agenc --yolo",
+          ["--yolo"],
+          viewport,
+          gateState.env,
+          {},
+          activeTerms,
+        ),
+      );
+      if (interrupted) return 1;
+    }
+    if (results.every(Boolean)) {
+      console.log(green("[4/4] TUI runtime startup smoke passed"));
+      return 0;
+    }
+    console.error(red("[4/4] TUI runtime startup smoke FAILED"));
+    return 1;
+  } finally {
+    try {
+      const state = gateState ?? await gateStatePromise;
+      await teardownTuiGateState(state, BIN_AGENC_PATH);
+    } finally {
+      uninstallSignalHandlers();
+    }
   }
-  if (results.every(Boolean)) {
-    console.log(green("[4/4] TUI runtime startup smoke passed"));
-    return 0;
-  }
-  console.error(red("[4/4] TUI runtime startup smoke FAILED"));
-  return 1;
 }
 
 function isEntrypoint() {

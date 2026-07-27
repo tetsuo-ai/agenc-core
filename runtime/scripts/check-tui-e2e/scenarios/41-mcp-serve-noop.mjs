@@ -8,7 +8,6 @@
  * Per GAP-MCP-02 the `mcp` CLI only supports `serve` today; the other
  * subcommands fail. This scenario validates the one that works.
  */
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,29 +22,37 @@ export const meta = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export default async function () {
-  const child = spawn(process.execPath, [BIN_AGENC, "mcp", "serve"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
-  });
+export default async function (session) {
+  const child = await session.spawnTracked(
+    process.execPath,
+    [BIN_AGENC, "mcp", "serve"],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
   let stdout = "";
   let stderr = "";
   let earlyExit = null;
+  let childError = null;
   child.stdout.on("data", (d) => (stdout += d.toString()));
   child.stderr.on("data", (d) => (stderr += d.toString()));
   child.on("close", (code) => (earlyExit = code));
+  child.on("error", (error) => (childError = error));
   // 3 seconds is enough for a bind error to surface.
   await sleep(3_000);
+  if (childError !== null) {
+    throw childError;
+  }
   if (earlyExit !== null && earlyExit !== 0) {
     throw new Error(
       `agenc mcp serve exited early code=${earlyExit}; stderr: ${stderr.slice(0, 400)}`,
     );
   }
-  child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((r) => child.on("close", r)),
-    sleep(2_000).then(() => child.kill("SIGKILL")),
-  ]);
+  const termination = await session.terminateTrackedChild(child, {
+    graceMs: 2_000,
+    forceKillGraceMs: 2_000,
+  });
+  if (termination?.error) {
+    throw termination.error;
+  }
   // Crash patterns in stderr (the server writes status to stderr).
   if (/Cannot find module|TypeError|ReferenceError|UnhandledPromiseRejection/.test(stderr)) {
     throw new Error(`mcp serve emitted crash pattern: ${stderr.slice(0, 400)}`);

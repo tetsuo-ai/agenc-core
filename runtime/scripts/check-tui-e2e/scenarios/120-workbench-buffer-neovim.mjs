@@ -13,6 +13,8 @@ import {
 } from "../helpers/workbench-buffer-neovim.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const NORMAL_MODE_FRAME =
+  /NORMAL|embedded Neovim[^\n]*normal, ready/iu;
 
 export const meta = {
   description: "Workbench BUFFER embedded Neovim provider opens, edits, saves, quits, and cleans child process.",
@@ -60,7 +62,7 @@ export default async function (session) {
     await sleep(80);
     await session.type("E2E_MARK", { perCharMs: 20 });
     session.send("\x1b");
-    await waitForFrameText(session, /NORMAL/u, "normal mode after E2E_MARK insert", 10_000);
+    await waitForFrameText(session, NORMAL_MODE_FRAME, "normal mode after E2E_MARK insert", 10_000);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     session.send(":");
     await sleep(80);
@@ -100,7 +102,7 @@ export default async function (session) {
     await session.type("o", { perCharMs: 60 });
     await session.type("REGISTER_MARK", { perCharMs: 15 });
     session.send("\x1b");
-    await waitForFrameText(session, /NORMAL/u, "normal mode after register marker insert", 10_000);
+    await waitForFrameText(session, NORMAL_MODE_FRAME, "normal mode after register marker insert", 10_000);
     await session.type("\"ayy", { perCharMs: 60 });
     await sleep(120);
     await session.type("G", { perCharMs: 60 });
@@ -115,7 +117,7 @@ export default async function (session) {
     await session.type("o", { perCharMs: 60 });
     await session.type("MACRO_MARK", { perCharMs: 15 });
     session.send("\x1b");
-    await waitForFrameText(session, /NORMAL/u, "normal mode before stopping macro recording", 10_000);
+    await waitForFrameText(session, NORMAL_MODE_FRAME, "normal mode before stopping macro recording", 10_000);
     await session.type("q", { perCharMs: 60 });
     await sleep(80);
     await session.type("@a", { perCharMs: 60 });
@@ -132,9 +134,18 @@ export default async function (session) {
       await session.type("_AFTER", { perCharMs: 15 });
       await waitForFrameText(session, /RESIZE_MARK_AFTER/u, "resized Neovim grid");
       session.send("\x1b");
-      await waitForFrameText(session, /NORMAL/u, "normal mode after resized insert", 10_000);
+      await waitForFrameText(
+        session,
+        NORMAL_MODE_FRAME,
+        "normal mode after resized insert",
+        10_000,
+      );
       await session.waitForIdle({ idleWindow: 400, timeout: 10_000 });
-      await waitForFrameText(session, /NORMAL[\s\S]*RESIZE_MARK_AFTER|RESIZE_MARK_AFTER[\s\S]*NORMAL/u, "normal mode after resized grid");
+      await waitForFrameText(
+        session,
+        /normal[\s\S]*RESIZE_MARK_AFTER|RESIZE_MARK_AFTER[\s\S]*normal/iu,
+        "normal mode after resized grid",
+      );
       session.send(":");
       await sleep(80);
       await session.type("call writefile([getline('.'), string(col('.'))], 'resize-cursor.txt')", { perCharMs: 10 });
@@ -183,7 +194,7 @@ export default async function (session) {
     }
     await session.type("iCLICK_ROUTE_", { perCharMs: 15 });
     session.send("\x1b");
-    await waitForFrameText(session, /NORMAL/u, "normal mode after click-route insert", 10_000);
+    await waitForFrameText(session, NORMAL_MODE_FRAME, "normal mode after click-route insert", 10_000);
     await session.waitForIdle({ idleWindow: 400, timeout: 10_000 });
 
     session.send(":");
@@ -232,7 +243,7 @@ export default async function (session) {
     await sleep(80);
     await session.type("DIRTY_MARK", { perCharMs: 20 });
     session.send("\x1b");
-    await waitForFrameText(session, /NORMAL/u, "normal mode after dirty marker insert", 10_000);
+    await waitForFrameText(session, NORMAL_MODE_FRAME, "normal mode after dirty marker insert", 10_000);
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
     session.send(":");
     await sleep(80);

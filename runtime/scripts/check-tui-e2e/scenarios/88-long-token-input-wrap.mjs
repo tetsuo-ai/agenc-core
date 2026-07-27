@@ -1,7 +1,6 @@
 export const meta = {
   description: "long unbroken prompt input wraps inside the prompt box",
   args: ["--yolo"],
-  useTempHome: true,
   timeoutMs: 30_000,
 };
 

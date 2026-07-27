@@ -5,14 +5,12 @@
  * failures, dumps full PTY output to `/tmp/tui-e2e-failure-<scenario>.log`
  * on failure, and exits non-zero if any scenario failed.
  *
- * Scenarios run serially. They share the user's daemon and HOME, so
- * parallelism would cause cross-contamination. Phase B will introduce
- * temp-HOME isolation and enable parallel execution.
+ * Scenarios run serially within one runner. Each scenario owns a private
+ * HOME/AGENC_HOME, daemon, ephemeral WebSocket endpoint, and temp tree, so
+ * independent filtered runners can be sharded safely.
  */
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TuiSession, tuiE2eGateEnv } from "./harness.mjs";
@@ -21,130 +19,27 @@ import {
   buildMockProviderEnv,
   startMockModelServer,
 } from "../local-openai-compatible-mock.mjs";
+import {
+  configureTuiGateSandbox,
+  createTuiGateProject,
+  createTuiGateState,
+  environmentForTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+} from "../tui-gate-state.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.join(SCRIPT_DIR, "scenarios");
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
-const DEFAULT_DAEMON_SOCKET = path.join(
-  process.env.AGENC_HOME ?? path.join(homedir(), ".agenc"),
-  "daemon.sock",
-);
 const DEFAULT_TIMEOUT_MS = 60_000;
-const PROVIDER_ENV_KEYS = [
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-  "AGENC_XAI_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-  "OPENAI_MODEL",
-  "AGENC_PROVIDER",
-  "AGENC_MODEL",
-  "OPENAI_COMPATIBLE_MODEL",
-  "OPENAI_COMPATIBLE_BASE_URL",
-  "OPENAI_COMPATIBLE_API_KEY",
-  "API_TIMEOUT_MS",
-  "AGENC_AUTH_MANAGED_KEYS_ENABLED",
-  "AGENC_ONBOARDING",
-];
-
-function applyProcessEnv(nextEnv) {
-  for (const key of PROVIDER_ENV_KEYS) {
-    if (!(key in nextEnv)) delete process.env[key];
+const ABORT_QUIESCE_MS = 10_000;
+export function replaceProcessEnvironment(nextEnv) {
+  for (const key of Object.keys(process.env)) {
+    delete process.env[key];
   }
   Object.assign(process.env, nextEnv);
-}
-
-function restoreProcessEnv(originalEnv) {
-  for (const key of PROVIDER_ENV_KEYS) {
-    if (key in originalEnv) {
-      process.env[key] = originalEnv[key];
-    } else {
-      delete process.env[key];
-    }
-  }
-}
-
-/**
- * Restart the user's daemon so each gate run starts from a clean session
- * registry, fresh permission policy cache, no accumulated state from
- * earlier runs. Without this, scenarios near the end of a multi-scenario
- * run start failing with `Timed out waiting for daemon response` because
- * the daemon's session/permission state has drifted.
- */
-function restartDaemon() {
-  spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "stop"],
-    { encoding: "utf8", timeout: 15_000 },
-  );
-  let stopped = false;
-  for (let i = 0; i < 60; i += 1) {
-    if (!isDefaultDaemonAlive()) {
-      stopped = true;
-      break;
-    }
-    spawnSync("sleep", ["0.25"]);
-  }
-  if (!stopped) return false;
-  const result = spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "start"],
-    { encoding: "utf8", timeout: 30_000 },
-  );
-  if (result.status !== 0 && !isDefaultDaemonAlive()) return false;
-  for (let i = 0; i < 60; i += 1) {
-    if (isDefaultDaemonAlive()) return true;
-    spawnSync("sleep", ["0.25"]);
-  }
-  return false;
-}
-
-/**
- * Probe the user's default daemon socket. Returns true if the daemon is up
- * and responsive. Some scenarios (notably the `useTempHome` ones) tear down
- * a temp daemon, and on rare timing the user's main daemon ends up
- * unreachable for the next scenario; without this probe the next
- * default-HOME scenario fails with ECONNREFUSED. Cheap (`agenc daemon
- * status` exits in <500ms when the daemon is alive).
- */
-function isDefaultDaemonAlive() {
-  const result = spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "status"],
-    { encoding: "utf8", timeout: 5_000 },
-  );
-  return result.status === 0 && existsSync(DEFAULT_DAEMON_SOCKET);
-}
-
-function ensureDefaultDaemon() {
-  if (isDefaultDaemonAlive()) return true;
-  // Auto-respawn the default daemon. First attempt: plain `daemon start`.
-  // If that doesn't come up within 15s, stop any zombie state and retry —
-  // a stale pid file or wedged socket can otherwise keep the next
-  // attempt from binding cleanly.
-  const tryStart = () => {
-    spawnSync(
-      process.execPath,
-      [BIN_AGENC, "daemon", "start"],
-      { encoding: "utf8", timeout: 20_000 },
-    );
-    for (let i = 0; i < 60; i += 1) {
-      if (isDefaultDaemonAlive()) return true;
-      spawnSync("sleep", ["0.25"]);
-    }
-    return false;
-  };
-  if (tryStart()) return true;
-  // Hard reset: stop any half-up daemon, clear sentinel files, then start
-  // fresh. This handles the case where an earlier scenario left the
-  // daemon in a transitional state that `daemon start` can't recover from.
-  spawnSync(
-    process.execPath,
-    [BIN_AGENC, "daemon", "stop"],
-    { encoding: "utf8", timeout: 10_000 },
-  );
-  return tryStart();
 }
 
 const COLORS = {
@@ -200,41 +95,28 @@ function applyScenarioFilters(names, argv) {
   return filtered;
 }
 
-function createSlimCwd() {
-  const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-slim-"));
-  writeFileSync(path.join(slimCwd, "README.md"), "test cwd\n", "utf8");
-  // Anchor project-root discovery inside the scenario directory. Otherwise
-  // an unrelated marker in a shared ancestor such as /tmp/package.json can
-  // make the trust preflight target the entire temp root.
-  writeFileSync(
-    path.join(slimCwd, "package.json"),
-    '{"private":true}\n',
-    "utf8",
-  );
-  return slimCwd;
-}
-
-function createScenarioSession(scenario, slimCwd) {
+function createScenarioSession(scenario, scenarioCwd, gateState) {
   return new TuiSession({
     args: scenario.meta.args ?? [],
-    useTempHome: scenario.meta.useTempHome === true,
+    gateState,
     ...(scenario.meta.sandboxMode
       ? { sandboxMode: scenario.meta.sandboxMode }
       : {}),
     ...(scenario.meta.env ? { env: scenario.meta.env } : {}),
     ...(scenario.meta.cwd
       ? { cwd: scenario.meta.cwd }
-      : slimCwd
-        ? { cwd: slimCwd }
-        : {}),
+      : { cwd: scenarioCwd }),
   });
 }
 
 function createScenarioTimeout(timeoutMs) {
   let timer;
-  const promise = new Promise((_, reject) => {
+  const promise = new Promise((resolve) => {
     timer = setTimeout(
-      () => reject(new Error(`scenario timeout after ${timeoutMs}ms`)),
+      () => resolve({
+        kind: "timeout",
+        error: new Error(`scenario timeout after ${timeoutMs}ms`),
+      }),
       timeoutMs,
     );
   });
@@ -244,57 +126,86 @@ function createScenarioTimeout(timeoutMs) {
   };
 }
 
-async function cleanupSession(session) {
-  try {
-    await session.exitGracefully({ timeout: 2_000 });
-  } catch {
-    session.kill();
-  }
-  try {
-    await session.cleanup();
-  } catch {
-    // best-effort
-  }
+function combineErrors(primary, cleanup, message) {
+  if (primary && cleanup) return new AggregateError([primary, cleanup], message);
+  return primary ?? cleanup ?? null;
 }
 
-async function runScenario(scenario) {
+function waitForScenarioQuiescence(scenarioSettled) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(
+      () => resolve({ kind: "unquiesced" }),
+      ABORT_QUIESCE_MS,
+    );
+    scenarioSettled.then((result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+export async function runScenario(scenario, gateState, lifecycle = null) {
   const startedAt = Date.now();
-  // Slim cwd: when meta.slimCwd === true, mkdtemp a fresh empty
-  // directory under /tmp and spawn agenc there. Avoids the daemon's
-  // project-context auto-load swamping the model with hundreds of K of
-  // tokens (which was making yolo-tool scenarios time out even though
-  // the bypass mode was working). Each tool round-trip can opt in by
-  // setting `slimCwd: true` in its meta.
-  const slimCwd = scenario.meta.slimCwd === true && !scenario.meta.cwd
-    ? createSlimCwd()
-    : undefined;
-  const session = createScenarioSession(scenario, slimCwd);
+  // Every scenario gets a small private git fixture. This keeps project
+  // discovery fast, makes git-oriented slash commands realistic, and makes
+  // filtered runners safe to shard against the same source checkout.
+  const scenarioCwd = createTuiGateProject(gateState, {
+    dirty: scenario.meta.dirtyCwd === true,
+  });
+  const session = createScenarioSession(scenario, scenarioCwd, gateState);
+  if (lifecycle !== null) lifecycle.activeSession = session;
   const debug = process.env.TUI_E2E_DEBUG === "1";
   const timeoutMs = scenario.meta.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeout = createScenarioTimeout(timeoutMs);
+  const scenarioSettled = Promise.resolve()
+    .then(() => scenario.run(session))
+    .then(
+      () => ({ kind: "settled", error: null }),
+      (error) => ({ kind: "settled", error }),
+    );
+  let scenarioError = null;
+  let quiesced = true;
   try {
-    await Promise.race([scenario.run(session), timeout.promise]);
-    session.assertNoCrash();
-    return {
-      ok: true,
-      durationMs: Date.now() - startedAt,
-      capturedOutput: debug ? session.raw : undefined,
-    };
+    const outcome = await Promise.race([scenarioSettled, timeout.promise]);
+    if (outcome.kind === "timeout") {
+      scenarioError = outcome.error;
+      await session.abort(outcome.error);
+      const quiescence = await waitForScenarioQuiescence(scenarioSettled);
+      quiesced = quiescence.kind === "settled";
+    } else {
+      scenarioError = outcome.error;
+    }
+    if (scenarioError === null) session.assertNoCrash();
   } catch (error) {
-    return {
-      ok: false,
-      durationMs: Date.now() - startedAt,
-      error,
-      capturedOutput: session.raw,
-    };
+    scenarioError = error;
   } finally {
     timeout.clear();
-    await cleanupSession(session);
   }
+  let cleanupError = null;
+  try {
+    await session.cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (lifecycle?.activeSession === session) lifecycle.activeSession = null;
+  const error = combineErrors(
+    scenarioError,
+    cleanupError,
+    `scenario ${scenario.name} and its cleanup both failed`,
+  );
+  return {
+    ok: error === null,
+    quiesced,
+    session,
+    durationMs: Date.now() - startedAt,
+    ...(error === null ? {} : { error }),
+    capturedOutput: error === null && !debug ? undefined : session.raw,
+  };
 }
 
 async function dumpFailureLog(scenario, result) {
-  const logPath = `/tmp/tui-e2e-failure-${scenario.name.replace(/\.mjs$/, "")}.log`;
+  const logPath =
+    `/tmp/tui-e2e-failure-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`;
   const header = [
     `# TUI E2E failure: ${scenario.name}`,
     `# Description: ${scenario.meta.description ?? "(none)"}`,
@@ -310,10 +221,12 @@ async function dumpFailureLog(scenario, result) {
 
 async function startMockedGate() {
   const mockServer = await startMockModelServer();
-  applyProcessEnv(
-    tuiE2eGateEnv(buildMockProviderEnv(mockServer.baseUrl, process.env)),
-  );
-  return mockServer;
+  return {
+    mockServer,
+    injectedEnv: tuiE2eGateEnv(
+      buildMockProviderEnv(mockServer.baseUrl, {}),
+    ),
+  };
 }
 
 function printGateHeader(names, mockServer) {
@@ -323,25 +236,8 @@ function printGateHeader(names, mockServer) {
   console.log(
     color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`),
   );
-  process.stdout.write(color("dim", "  restarting daemon for clean baseline ... "));
-  const restarted = restartDaemon();
-  console.log(color("dim", restarted ? "ok" : "skipped"));
+  console.log(color("dim", "  state: private HOME/AGENC_HOME + ephemeral daemon per scenario"));
   console.log("");
-}
-
-function scenarioDaemonError(scenario) {
-  // Scenarios that don't isolate via temp HOME share the user's default
-  // daemon. If a prior scenario killed it (autostart hiccup, lock
-  // contention, or a temp-HOME teardown that mis-targeted the default
-  // socket), respawn before continuing. useTempHome scenarios spawn
-  // their own daemon and must not be touched here.
-  if (scenario.meta.restartDaemonBefore === true && !restartDaemon()) {
-    return new Error("default daemon not reachable after restart");
-  }
-  if (scenario.meta.useTempHome !== true && !ensureDefaultDaemon()) {
-    return new Error("default daemon not reachable; respawn failed");
-  }
-  return null;
 }
 
 function recordPreflightFailure(state, name, error) {
@@ -354,7 +250,8 @@ async function recordScenarioResult(state, scenario, result) {
     state.passed += 1;
     console.log(`${color("green", "PASS")} ${color("dim", `(${result.durationMs}ms)`)}`);
     if (process.env.TUI_E2E_DEBUG === "1" && result.capturedOutput) {
-      const logPath = `/tmp/tui-e2e-pass-${scenario.name.replace(/\.mjs$/, "")}.log`;
+      const logPath =
+        `/tmp/tui-e2e-pass-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`;
       await writeFile(logPath, result.capturedOutput, "utf8");
       console.log(`      ${color("dim", `debug log: ${logPath}`)}`);
     }
@@ -368,20 +265,111 @@ async function recordScenarioResult(state, scenario, result) {
   state.failed.push({ name: scenario.name, error: result.error, logPath });
 }
 
-async function runScenarioEntry(name, state) {
-  const scenario = await loadScenario(name);
-  process.stdout.write(`  ${color("dim", "→")} ${name} … `);
-  if (scenario.meta.skip) {
-    console.log(`${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`);
-    state.skipped.push({ name, reason: scenario.meta.skip });
+async function runScenarioEntry(
+  name,
+  state,
+  gateBaseEnv,
+  gateInjectedEnv,
+  lifecycle,
+) {
+  const originalEnv = { ...process.env };
+  const gateStatePromise = createTuiGateState({
+    baseEnv: gateBaseEnv,
+    injectedEnv: gateInjectedEnv,
+    prefix: `agenc-tui-e2e-${name.replace(/\.mjs$/u, "")}-`,
+  });
+  lifecycle.pendingGateState = gateStatePromise;
+  const gateState = await gateStatePromise;
+  if (lifecycle.pendingGateState === gateStatePromise) {
+    lifecycle.pendingGateState = null;
+  }
+  lifecycle.activeGateState = gateState;
+  let scenario = null;
+  let result = null;
+  replaceProcessEnvironment(gateState.env);
+  try {
+    if (lifecycle.interrupted) {
+      throw new Error("TUI E2E gate interrupted before scenario startup");
+    }
+    scenario = await loadScenario(name);
+    process.stdout.write(`  ${color("dim", "→")} ${name} … `);
+    if (scenario.meta.skip) {
+      console.log(`${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`);
+      state.skipped.push({ name, reason: scenario.meta.skip });
+    } else {
+      gateState.env = environmentForTuiGateState(
+        gateState,
+        scenario.meta.env ?? {},
+      );
+      replaceProcessEnvironment(gateState.env);
+      await configureTuiGateSandbox(
+        gateState,
+        BIN_AGENC,
+        scenario.meta.sandboxMode,
+      );
+      if (lifecycle.interrupted) {
+        throw new Error("TUI E2E gate interrupted before daemon startup");
+      }
+      await startTuiGateDaemon(gateState, BIN_AGENC);
+      if (lifecycle.interrupted) {
+        throw new Error("TUI E2E gate interrupted before scenario execution");
+      }
+      result = await runScenario(scenario, gateState, lifecycle);
+    }
+  } catch (error) {
+    result = {
+      ok: false,
+      durationMs: 0,
+      error,
+      capturedOutput: "",
+    };
+  } finally {
+    let cleanupError = null;
+    try {
+      await teardownTuiGateState(gateState, BIN_AGENC);
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (result?.quiesced !== false) {
+      replaceProcessEnvironment(originalEnv);
+    }
+    if (lifecycle.activeGateState === gateState) {
+      lifecycle.activeGateState = null;
+    }
+    if (cleanupError !== null) {
+      if (result === null) {
+        result = {
+          ok: false,
+          durationMs: 0,
+          error: cleanupError,
+          capturedOutput: "",
+        };
+      } else {
+        result = {
+          ...result,
+          ok: false,
+          error: combineErrors(
+            result.ok ? null : result.error,
+            cleanupError,
+            `scenario ${name} and private-state cleanup both failed`,
+          ),
+        };
+      }
+    }
+  }
+  if (result?.quiesced === false) {
+    const error = new Error(
+      `scenario ${name} did not quiesce after cancellation; terminating runner`,
+    );
+    error.fatalIsolationFailure = true;
+    throw error;
+  }
+  if (scenario === null) {
+    recordPreflightFailure(state, name, result.error);
     return;
   }
-  const daemonError = scenarioDaemonError(scenario);
-  if (daemonError) {
-    recordPreflightFailure(state, name, daemonError);
-    return;
-  }
-  await recordScenarioResult(state, scenario, await runScenario(scenario));
+  if (scenario.meta.skip && result === null) return;
+  await recordScenarioResult(state, scenario, result);
 }
 
 function printSummary(state) {
@@ -412,32 +400,104 @@ function printSummary(state) {
 }
 
 async function main() {
-  const originalEnv = { ...process.env };
-  const mockServer = await startMockedGate();
-  let ranScenarios = false;
+  const gateBaseEnv = { ...process.env };
+  const { mockServer, injectedEnv } = await startMockedGate();
+  const lifecycle = {
+    activeGateState: null,
+    activeSession: null,
+    interrupted: false,
+    mockClosePromise: null,
+    pendingGateState: null,
+  };
+  const closeMock = async () => {
+    if (lifecycle.mockClosePromise === null) {
+      lifecycle.mockClosePromise = mockServer.close();
+    }
+    await lifecycle.mockClosePromise;
+  };
+  const uninstallSignalHandlers = installTuiGateSignalHandlers(async () => {
+    lifecycle.interrupted = true;
+    const errors = [];
+    if (lifecycle.activeSession !== null) {
+      try {
+        await lifecycle.activeSession.abort(new Error("TUI gate interrupted"));
+        await lifecycle.activeSession.cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (lifecycle.activeGateState !== null) {
+      try {
+        await teardownTuiGateState(lifecycle.activeGateState, BIN_AGENC);
+      } catch (error) {
+        errors.push(error);
+      }
+    } else if (lifecycle.pendingGateState !== null) {
+      try {
+        const pendingState = await lifecycle.pendingGateState;
+        lifecycle.activeGateState = pendingState;
+        await teardownTuiGateState(pendingState, BIN_AGENC);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      await closeMock();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "TUI E2E signal cleanup failed");
+    }
+  });
   try {
     const names = applyScenarioFilters(await discoverScenarios(), process.argv.slice(2));
     if (names.length === 0) {
-      console.log(color("yellow", "no scenarios found under scenarios/"));
-      return 0;
+      console.error(color("red", "no scenarios matched the requested selection"));
+      return 1;
     }
-    ranScenarios = true;
     printGateHeader(names, mockServer);
     const state = { failed: [], skipped: [], passed: 0 };
     for (const name of names) {
-      await runScenarioEntry(name, state);
+      if (lifecycle.interrupted) return 1;
+      await runScenarioEntry(
+        name,
+        state,
+        gateBaseEnv,
+        injectedEnv,
+        lifecycle,
+      );
+      if (lifecycle.interrupted) return 1;
     }
     return printSummary(state);
   } finally {
-    restoreProcessEnv(originalEnv);
-    if (ranScenarios) restartDaemon();
-    await mockServer.close();
+    try {
+      await closeMock();
+    } finally {
+      uninstallSignalHandlers();
+    }
   }
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((error) => {
-    console.error(color("red", `runner crashed: ${error?.stack ?? error}`));
-    process.exit(2);
-  });
+function isEntrypoint() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint()) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error(color("red", `runner crashed: ${error?.stack ?? error}`));
+      if (error?.fatalIsolationFailure === true) {
+        process.exit(2);
+      }
+      process.exitCode = 2;
+    });
+}

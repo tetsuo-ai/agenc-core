@@ -44,7 +44,7 @@ export function WorkbenchStatusBar({
   const stripAvailable =
     typeof columns === "number" ? columns - leftLabelWidth - contextPctWidth - 1 : 0;
   return (
-    <Box height={1} width="100%" flexDirection="row">
+    <Box height={1} width="100%" flexDirection="row" flexShrink={0}>
       <Text color="text2" wrap="truncate-end">AgenC Workbench</Text>
       <Text dimColor wrap="truncate-end"> | {active}</Text>
       <WorkbenchActivityIndicator mode={activityMode} />

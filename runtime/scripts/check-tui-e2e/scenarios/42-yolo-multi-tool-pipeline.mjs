@@ -10,7 +10,6 @@ export const meta = {
   args: ["--yolo"],
   timeoutMs: 120_000,
   slimCwd: true,
-  useTempHome: true,
 };
 
 export default async function (session) {

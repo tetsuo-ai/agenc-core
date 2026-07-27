@@ -1,13 +1,14 @@
 /**
  * /init scenario.
  *
- * Generates AGENC.md for the current project. May write a file as a
- * side-effect; we only assert no crash and idle return. Per-scenario
- * temp HOME (Tier C) will let us assert the file content directly.
+ * Generates AGENC.md for the current project. The runner-owned slim cwd keeps
+ * that side effect out of the source checkout and is removed with the private
+ * scenario state.
  */
 export const meta = {
   description: "/init runs without crash and returns to idle.",
   timeoutMs: 60_000,
+  slimCwd: true,
 };
 
 export default async function (session) {

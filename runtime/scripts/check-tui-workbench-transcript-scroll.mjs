@@ -1,5 +1,27 @@
 #!/usr/bin/env node
-import { TuiSession, renderPtyRows } from "./check-tui-e2e/harness.mjs";
+import { fileURLToPath } from "node:url";
+
+import {
+  TuiSession,
+  renderPtyRows,
+  tuiE2eGateEnv,
+} from "./check-tui-e2e/harness.mjs";
+import {
+  buildMockProviderEnv,
+  startMockModelServer,
+} from "./local-openai-compatible-mock.mjs";
+import {
+  configureTuiGateSandbox,
+  createTuiGateProject,
+  createTuiGateState,
+  installTuiGateSignalHandlers,
+  startTuiGateDaemon,
+  teardownTuiGateState,
+} from "./tui-gate-state.mjs";
+
+const BIN_AGENC = fileURLToPath(
+  new URL("../dist/bin/agenc.js", import.meta.url),
+);
 
 const DIMENSIONS = [
   { cols: 148, rows: 40 },
@@ -13,10 +35,76 @@ const WORKBENCH_ENV = {
   AGENC_TUI_WORKBENCH: "1",
 };
 
-const LONG_OUTPUT_COMMAND = "!seq -f WBANCHOR-%03g 1 120 #";
+const LONG_OUTPUT_PROMPT =
+  "WORKBENCH-TRANSCRIPT-SCROLL: return the deterministic fixture.";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trackActiveSession(lifecycle, session) {
+  if (lifecycle.activeSession !== null) {
+    throw new Error(
+      "workbench transcript scroll already has an active TUI session",
+    );
+  }
+  lifecycle.activeSession = session;
+  lifecycle.activeSessionCleanup = null;
+}
+
+async function cleanupActiveSession(lifecycle) {
+  const session = lifecycle.activeSession;
+  if (session === null) return;
+
+  if (lifecycle.activeSessionCleanup === null) {
+    session.kill();
+    lifecycle.activeSessionCleanup = session.cleanup();
+  }
+  const cleanupPromise = lifecycle.activeSessionCleanup;
+  try {
+    await cleanupPromise;
+  } finally {
+    if (
+      lifecycle.activeSession === session &&
+      lifecycle.activeSessionCleanup === cleanupPromise
+    ) {
+      lifecycle.activeSession = null;
+      lifecycle.activeSessionCleanup = null;
+    }
+  }
+}
+
+async function cleanupLifecycle(lifecycle) {
+  const errors = [];
+  try {
+    await cleanupActiveSession(lifecycle);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    const gateState =
+      lifecycle.gateState ?? await lifecycle.pendingGateState;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    await teardownTuiGateState(gateState, BIN_AGENC);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (lifecycle.mockClosePromise === null) {
+    lifecycle.mockClosePromise = lifecycle.mockServer.close();
+  }
+  try {
+    await lifecycle.mockClosePromise;
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(
+      errors,
+      "workbench transcript scroll cleanup failed",
+    );
+  }
 }
 
 function fail(message, details = {}) {
@@ -63,7 +151,9 @@ function assertExplorerRailVisible(session, dimension, label) {
   if (dimension.cols < 100) return;
   const rows = frameRows(session, dimension);
   const frame = rows.join("\n");
-  const hasTreeRow = rows.some((row) => /^\s+[v>] \S/u.test(row.slice(0, 26)));
+  const hasTreeRow = rows.some((row) =>
+    /^\s+(?:\[[-+]\]|[v>])\s+\S/u.test(row.slice(0, 26))
+  );
   if (!frame.includes("WORKSPACE") || !hasTreeRow) {
     fail("workspace explorer rail disappeared during transcript scroll", {
       label,
@@ -99,13 +189,16 @@ function sgrWheel(button, dimension) {
   return `\x1b[<${button};${col};${row}M`;
 }
 
-async function runOne(dimension) {
+async function runOne(dimension, lifecycle) {
   const session = new TuiSession({
+    args: ["--yolo"],
     cols: dimension.cols,
     rows: dimension.rows,
+    cwd: lifecycle.cwd,
     env: WORKBENCH_ENV,
-    useTempHome: true,
+    gateState: lifecycle.gateState,
   });
+  trackActiveSession(lifecycle, session);
   const label = `${dimension.cols}x${dimension.rows}`;
 
   try {
@@ -113,7 +206,9 @@ async function runOne(dimension) {
     await session.waitForPrompt({ timeout: 20_000 });
     assertFrameShape(session, dimension, `${label} cold start`);
 
-    await session.submit(LONG_OUTPUT_COMMAND);
+    // The loopback model returns 120 deterministic anchor lines for this
+    // prompt, avoiding shell admission and host command dependencies.
+    await session.submit(LONG_OUTPUT_PROMPT);
     await session.waitFor(/WBANCHOR-120/, {
       timeout: 20_000,
       label: `${label} tail anchor`,
@@ -174,34 +269,86 @@ async function runOne(dimension) {
 
     session.assertNoCrash();
   } finally {
-    session.kill();
-    await session.cleanup();
+    await cleanupActiveSession(lifecycle);
   }
 }
 
 async function main() {
-  const failures = [];
-  for (const dimension of DIMENSIONS) {
-    const label = `${dimension.cols}x${dimension.rows}`;
-    process.stdout.write(`workbench transcript scroll: ${label} ... `);
-    try {
-      await runOne(dimension);
-      process.stdout.write("ok\n");
-    } catch (error) {
-      process.stdout.write("failed\n");
-      failures.push({ label, error });
-    }
-  }
+  const mockServer = await startMockModelServer();
+  const gateStatePromise = createTuiGateState({
+    injectedEnv: tuiE2eGateEnv(
+      buildMockProviderEnv(mockServer.baseUrl, {}),
+    ),
+    prefix: "agenc-tui-transcript-scroll-",
+  });
+  const lifecycle = {
+    gateState: null,
+    pendingGateState: gateStatePromise,
+    cwd: null,
+    activeSession: null,
+    activeSessionCleanup: null,
+    aborted: false,
+    mockServer,
+    mockClosePromise: null,
+  };
+  let uninstallSignalHandlers = () => {};
+  try {
+    uninstallSignalHandlers = installTuiGateSignalHandlers(async () => {
+      lifecycle.aborted = true;
+      await cleanupLifecycle(lifecycle);
+    });
+    const gateState = await gateStatePromise;
+    lifecycle.gateState = gateState;
+    lifecycle.pendingGateState = null;
+    lifecycle.cwd = createTuiGateProject(gateState);
+    // The transcript fixture intentionally runs a local `!seq` command.
+    // Make its sandbox policy explicit instead of depending on host support
+    // for optional bubblewrap/user namespaces.
+    await configureTuiGateSandbox(
+      gateState,
+      BIN_AGENC,
+      "danger-full-access",
+    );
+    if (lifecycle.aborted) return 1;
+    await startTuiGateDaemon(gateState, BIN_AGENC);
+    if (lifecycle.aborted) return 1;
 
-  if (failures.length > 0) {
-    for (const failure of failures) {
-      console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
+    const failures = [];
+    for (const dimension of DIMENSIONS) {
+      if (lifecycle.aborted) return 1;
+      const label = `${dimension.cols}x${dimension.rows}`;
+      process.stdout.write(`workbench transcript scroll: ${label} ... `);
+      try {
+        await runOne(dimension, lifecycle);
+        process.stdout.write("ok\n");
+      } catch (error) {
+        process.stdout.write("failed\n");
+        failures.push({ label, error });
+      }
+      if (lifecycle.aborted) return 1;
     }
-    process.exit(1);
+
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        console.error(`\n${failure.label}: ${failure.error?.message ?? failure.error}`);
+      }
+      return 1;
+    }
+    return 0;
+  } finally {
+    try {
+      await cleanupLifecycle(lifecycle);
+    } finally {
+      uninstallSignalHandlers();
+    }
   }
 }
 
-main().catch((error) => {
-  console.error(error?.stack ?? error?.message ?? String(error));
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(error?.stack ?? error?.message ?? String(error));
+    process.exitCode = 1;
+  });

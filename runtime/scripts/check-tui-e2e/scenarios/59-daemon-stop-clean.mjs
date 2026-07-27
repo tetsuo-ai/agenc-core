@@ -4,40 +4,16 @@
  * Catches: stop command leaves the daemon zombie, status command
  * misreports state after stop.
  */
-import { spawn } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..", "..");
-const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function spawnSyncAgenc(args, timeoutMs = 15_000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [BIN_AGENC, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.on("error", reject);
-    setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`${args.join(" ")} timeout`));
-    }, timeoutMs).unref();
-  });
-}
-
-async function waitForStoppedStatus(timeoutMs = 10_000) {
+async function waitForStoppedStatus(session, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let lastStatus = null;
   while (Date.now() < deadline) {
-    lastStatus = await spawnSyncAgenc(["daemon", "status"]);
+    lastStatus = await session.runAgenc(
+      ["daemon", "status"],
+      { timeoutMs: 15_000 },
+    );
     if (lastStatus.code !== 0 || !/running/.test(lastStatus.stdout)) {
       return lastStatus;
     }
@@ -50,31 +26,34 @@ async function waitForStoppedStatus(timeoutMs = 10_000) {
 
 export const meta = {
   description: "daemon stop → status reports stopped, then start works.",
-  timeoutMs: 30_000,
+  timeoutMs: 90_000,
 };
 
-export default async function () {
+export default async function (session) {
   // Stop
-  const stopResult = await spawnSyncAgenc(["daemon", "stop"], 20_000);
+  const stopResult = await session.runAgenc(
+    ["daemon", "stop"],
+    { timeoutMs: 20_000 },
+  );
   if (stopResult.code !== 0) {
     throw new Error(
       `daemon stop failed (${stopResult.code}): ${stopResult.stderr}${stopResult.stdout}`,
     );
   }
   // Status should report stopped (exit non-zero or message)
-  const stoppedStatus = await waitForStoppedStatus();
+  const stoppedStatus = await waitForStoppedStatus(session);
   if (stoppedStatus.code === 0 && /running/.test(stoppedStatus.stdout)) {
     throw new Error(
       `daemon status shows running after stop: ${stoppedStatus.stdout}`,
     );
   }
-  // Start back up so the rest of the gate keeps working.
-  const startResult = await spawnSyncAgenc(["daemon", "start"]);
-  if (startResult.code !== 0) {
-    throw new Error(`daemon start failed: ${startResult.stderr}`);
-  }
+  // Restore the runner's foreground ownership before continuing.
+  await session.startGateDaemon();
   await sleep(5_000);
-  const runStatus = await spawnSyncAgenc(["daemon", "status"]);
+  const runStatus = await session.runAgenc(
+    ["daemon", "status"],
+    { timeoutMs: 15_000 },
+  );
   if (!/running/.test(runStatus.stdout)) {
     throw new Error(`daemon didn't restart cleanly: ${runStatus.stdout}`);
   }

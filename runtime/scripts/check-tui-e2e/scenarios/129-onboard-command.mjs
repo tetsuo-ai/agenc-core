@@ -14,7 +14,6 @@ export const meta = {
   description:
     "agenc onboard forces the setup wizard; completing it reaches a first model turn.",
   timeoutMs: 180_000,
-  useTempHome: true,
   slimCwd: true,
   sandboxMode: "danger-full-access",
   args: ["onboard"],
