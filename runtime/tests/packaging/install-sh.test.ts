@@ -377,12 +377,12 @@ function writeBootstrapFixtureInstallSh(
   );
   source = replaceExactlyOnce(
     source,
-    'NODE_COMPAT_SHA="5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6"',
+    'NODE_COMPAT_SHA="1f7bafeb33c504e59e0143d917354f70d40989e286e651ecabafbb9ad4c31833"',
     `NODE_COMPAT_SHA="${sha256(readFileSync(compatibility.archive))}"`,
   );
   source = replaceExactlyOnce(
     source,
-    "NODE_COMPAT_BYTES=26073",
+    "NODE_COMPAT_BYTES=26074",
     `NODE_COMPAT_BYTES=${statSync(compatibility.archive).size}`,
   );
   source = replaceExactlyOnce(
@@ -2350,7 +2350,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(ps1).toContain(`$nodeDistributionBytes = ${windows.bytes}`);
 
     const bootstrap = toolchain.nodeBootstrap;
-    expect(bootstrap.minimumRuntimeVersion).toBe("0.11.1");
+    expect(bootstrap.minimumRuntimeVersion).toBe("0.11.2");
     expect(bootstrap.releaseTag).toBe(
       `agenc-v${bootstrap.minimumRuntimeVersion}`,
     );
@@ -2460,14 +2460,14 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     const pinned = runInstaller({
       home,
       repoDerived: true,
-      args: ["--version", "0.11.0", "--no-daemon"],
+      args: ["--version", "0.11.1", "--no-daemon"],
     });
     expect(pinned.status).not.toBe(0);
     expect(pinned.stderr).toContain(
-      "runtime 0.11.0 has no supported standalone activation contract",
+      "runtime 0.11.1 has no supported standalone activation contract",
     );
     expect(pinned.stderr).toContain(
-      "0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
+      "0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node",
     );
     expect(pinned.stderr).not.toContain("fetching release manifest");
 
@@ -2476,7 +2476,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract",
     );
     expect(ps1).toContain(
-      "0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
+      "0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node",
     );
   });
 
@@ -2486,15 +2486,15 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     const artifact = makeSyntheticArtifact(work);
     const manifestPath = writeManifest(work, artifact);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.runtimeVersion = "0.11.0";
-    manifest.releaseTag = "agenc-v0.11.0";
-    manifest.artifacts[0].runtimeVersion = "0.11.0";
+    manifest.runtimeVersion = "0.11.1";
+    manifest.releaseTag = "agenc-v0.11.1";
+    manifest.artifacts[0].runtimeVersion = "0.11.1";
     writeFileSync(manifestPath, JSON.stringify(manifest));
 
     const result = runInstaller({ home, manifest: manifestPath, args: ["--no-daemon"] });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      "runtime 0.11.0 has no supported standalone activation contract",
+      "runtime 0.11.1 has no supported standalone activation contract",
     );
     expect(result.stderr).not.toContain("manifest artifact identity is invalid");
   });

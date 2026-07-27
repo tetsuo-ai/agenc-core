@@ -92,7 +92,11 @@ synchronization, typecheck, full tests, runtime startup smoke, and complete
 clean-build acceptance. Do not run the clean-build acceptance on the
 pre-squash branch and do not repeat it after creating a tag at the same SHA.
 
-Before dispatching a full release workflow, require:
+Before creating a full-release source tag, dispatch
+`verify-node-bootstrap.yml` at exact current `main` with the verifier's
+`tested_sha` and `local_evidence_sha256`. Require both native Rocky matrix jobs
+to succeed; they invoke the same bootstrap builder as the tagged release.
+Then require:
 
 ```bash
 tag=agenc-v<version>
@@ -104,7 +108,8 @@ test "$(git rev-parse --verify "refs/tags/${tag}^{commit}")" = "$tested_sha"
 [[ "$evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
 ```
 
-Dispatch `release-runtime.yml`, the full lane of
+After the pre-tag workflow passes and the tag is created, dispatch
+`release-runtime.yml`, the full lane of
 `promote-installers.yml`, and `publish-npm.yml` with `tested_sha` and
 `local_evidence_sha256` set to those exact values. Each workflow rejects a
 different tag/SHA and records the digest as an invocation input.
@@ -780,6 +785,7 @@ exact SHA in its receipt; a prior SHA never authorizes a newer one.
 
 ## Current release-workflow source binding
 
+[`verify-node-bootstrap.yml`](../.github/workflows/verify-node-bootstrap.yml),
 [`publish-npm.yml`](../.github/workflows/publish-npm.yml),
 [`release-runtime.yml`](../.github/workflows/release-runtime.yml), and
 [`promote-installers.yml`](../.github/workflows/promote-installers.yml) use
@@ -790,8 +796,8 @@ each workflow:
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
 2. normally requires `tested_sha` to equal the workflow's exact
    `GITHUB_SHA`;
-3. binds full-release dispatch to the matching `agenc-v<version>` tag and
-   installer-hotfix dispatch to exact current `main`; and
+3. binds the bootstrap precheck and installer-hotfix dispatch to exact current
+   `main`, and full-release dispatch to the matching `agenc-v<version>` tag; and
 4. requires the checked-out tree to be clean before artifact work.
 
 The installer workflow additionally checks embedded lock synchronization,

@@ -1164,7 +1164,7 @@ describe("agenc update CLI", () => {
     expect(code).toBe(1);
     expect(fetched).toBe(false);
     expect(err.join("\n")).toContain("no supported standalone activation contract");
-    expect(err.join("\n")).toContain("0.11.1 and newer");
+    expect(err.join("\n")).toContain("0.11.2 and newer");
     expect(existsSync(join(agencHome, "runtime"))).toBe(false);
   });
 

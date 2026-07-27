@@ -11,7 +11,7 @@ dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
 wired and have topic help but may not appear in the top-level usage block).
 This page documents the **dispatched** surface.
 
-Version: **0.11.1**. Default session provider **grok**, fresh-config session model
+Version: **0.11.2**. Default session provider **grok**, fresh-config session model
 **grok-4.5** (see [providers.md](providers.md)).
 
 ---
@@ -168,7 +168,7 @@ agenc update --pin <x.y.z>
 | --- | --- |
 | `--check` | Report whether an update is available; no downloads or writes |
 | `--json` | Machine-readable result on stdout |
-| `--pin <x.y.z>` | Install a private-Node release (`0.11.1` or newer) instead of latest |
+| `--pin <x.y.z>` | Install a private-Node release (`0.11.2` or newer) instead of latest |
 | `--repo <owner/name>` | Release repository override |
 | `--manifest-url <url>` | Manifest override (`file://` allowed for testing) |
 | `--wrapper <path>` | Explicit wrapper script to repoint |

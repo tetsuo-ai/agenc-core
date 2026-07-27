@@ -61,7 +61,7 @@ INSTALL_DAEMON=1
 SUPPORTED_NODE_MAJOR=26
 SUPPORTED_NODE_MINOR=5
 SUPPORTED_NODE_VERSION=26.5.0
-NODE_COMPAT_RELEASE_TAG="agenc-v0.11.1"
+NODE_COMPAT_RELEASE_TAG="agenc-v0.11.2"
 LEGACY_BRIDGE_NODE_MAJOR=25
 LEGACY_BRIDGE_NODE_MINOR=9
 MAX_MANIFEST_BYTES=1048576
@@ -158,8 +158,8 @@ bootstrap_modern_node() {
       NODE_DIST_SHA="22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677"
       NODE_DIST_BYTES=61529729
       NODE_COMPAT_FILE="agenc-node-bootstrap-libatomic-linux-x64.tar.gz"
-      NODE_COMPAT_SHA="5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6"
-      NODE_COMPAT_BYTES=26073
+      NODE_COMPAT_SHA="1f7bafeb33c504e59e0143d917354f70d40989e286e651ecabafbb9ad4c31833"
+      NODE_COMPAT_BYTES=26074
       NODE_COMPAT_LIBRARY_SHA="5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd"
       NODE_COMPAT_LIBRARY_BYTES=28920
       ;;
@@ -168,7 +168,7 @@ bootstrap_modern_node() {
       NODE_DIST_SHA="308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1"
       NODE_DIST_BYTES=61388036
       NODE_COMPAT_FILE="agenc-node-bootstrap-libatomic-linux-arm64.tar.gz"
-      NODE_COMPAT_SHA="645433551bd872a59e55e4f490ba0df36184b855dce2d3e798a4526c3dfb828c"
+      NODE_COMPAT_SHA="327f0db1f8b6f2c2d787a1d95e20a76f0b94146785d1499f1d23c50186ad9d13"
       NODE_COMPAT_BYTES=27660
       NODE_COMPAT_LIBRARY_SHA="d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2"
       NODE_COMPAT_LIBRARY_BYTES=70232
@@ -394,14 +394,14 @@ if [ -n "$PIN_VERSION" ]; then
     const version = process.argv[1];
     if (version === "0.7.2") process.exit(0);
     const actual = version.split("-", 1)[0].split(".").map(BigInt);
-    const minimum = [0n, 11n, 1n];
+    const minimum = [0n, 11n, 2n];
     for (let index = 0; index < minimum.length; index += 1) {
       if (actual[index] > minimum[index]) process.exit(0);
       if (actual[index] < minimum[index]) process.exit(1);
     }
     process.exit(0);
   ' "$PIN_VERSION" || fail \
-    "runtime ${PIN_VERSION} has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node"
+    "runtime ${PIN_VERSION} has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node"
 fi
 
 # --- platform ----------------------------------------------------------------
@@ -1004,7 +1004,7 @@ SELECTED="$(node -e '
       .split("-", 1)[0]
       .split(".")
       .map(BigInt);
-    const minimumRuntime = [0n, 11n, 1n];
+    const minimumRuntime = [0n, 11n, 2n];
     const runtimeSupported = actualRuntime.some((part, index) =>
       part > minimumRuntime[index] &&
       actualRuntime.slice(0, index).every((prior, priorIndex) =>
@@ -1014,7 +1014,7 @@ SELECTED="$(node -e '
     if (!runtimeSupported) {
       reject(
         `runtime ${m.runtimeVersion} has no supported standalone activation contract; ` +
-        "use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
+        "use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node",
         2,
       );
     }

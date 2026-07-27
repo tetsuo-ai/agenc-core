@@ -316,26 +316,10 @@ jobs:
           AGENC_RELEASE_SLUG: ${{ matrix.slug }}
         run: |
           set -euo pipefail
-          bootstrap_root="$RUNNER_TEMP/node-bootstrap-${AGENC_RELEASE_SLUG}"
           bootstrap_file="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
           bootstrap_archive="$RUNNER_TEMP/$bootstrap_file"
-          umask 022
-          mkdir -p "$bootstrap_root/LICENSES" "$bootstrap_root/lib"
-          cp /usr/share/licenses/libgcc/COPYING3 "$bootstrap_root/LICENSES/COPYING3"
-          cp /usr/share/licenses/libgcc/COPYING.RUNTIME "$bootstrap_root/LICENSES/COPYING.RUNTIME"
-          cp "$(readlink -f /usr/lib64/libatomic.so.1)" "$bootstrap_root/lib/libatomic.so.1"
-          chmod 0644 "$bootstrap_root"/LICENSES/* "$bootstrap_root/lib/libatomic.so.1"
-          chmod 0755 "$bootstrap_root" "$bootstrap_root/LICENSES" "$bootstrap_root/lib"
-          (
-            cd "$bootstrap_root"
-            tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
-              --numeric-owner --pax-option=delete=atime,delete=ctime \
-              -cf - LICENSES lib | gzip -n -9 > "$bootstrap_archive"
-          )
-          expected_sha="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
-          expected_bytes="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"])')"
-          test "$(sha256sum "$bootstrap_archive" | awk '{print $1}')" = "$expected_sha"
-          test "$(stat -c %s "$bootstrap_archive")" = "$expected_bytes"
+          packages/agenc/scripts/build-node-bootstrap.sh \
+            "$AGENC_RELEASE_SLUG" "$bootstrap_archive"
           echo "AGENC_NODE_BOOTSTRAP_PATH=$bootstrap_archive" >> "$GITHUB_ENV"
       - name: Build from two isolated worktrees and compare bytes
         env:

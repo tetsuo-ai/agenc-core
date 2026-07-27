@@ -723,7 +723,7 @@ if ($env:AGENC_INSTALL_VERSION -and $env:AGENC_INSTALL_VERSION -cne "0.7.2") {
   & $nodeBin -e @'
 const version = process.argv[1];
 const actual = version.split("-", 1)[0].split(".").map(BigInt);
-const minimum = [0n, 11n, 1n];
+const minimum = [0n, 11n, 2n];
 for (let index = 0; index < minimum.length; index += 1) {
   if (actual[index] > minimum[index]) process.exit(0);
   if (actual[index] < minimum[index]) process.exit(1);
@@ -731,7 +731,7 @@ for (let index = 0; index < minimum.length; index += 1) {
 process.exit(0);
 '@ $env:AGENC_INSTALL_VERSION
   if ($LASTEXITCODE -ne 0) {
-    Fail "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node"
+    Fail "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node"
   }
 }
 
@@ -987,8 +987,8 @@ try {
     if ($runtimeMajor -eq [System.Numerics.BigInteger]::Zero -and
         ($runtimeMinor -lt [System.Numerics.BigInteger]::Parse("11") -or
          ($runtimeMinor -eq [System.Numerics.BigInteger]::Parse("11") -and
-          $runtimePatch -lt [System.Numerics.BigInteger]::One))) {
-      Fail "runtime $($manifest.runtimeVersion) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node"
+          $runtimePatch -lt [System.Numerics.BigInteger]::Parse("2")))) {
+      Fail "runtime $($manifest.runtimeVersion) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.2 and newer with private Node"
     }
     if ($expectedManifestRepo -and [string]$manifest.releaseRepository -cne $expectedManifestRepo) {
       Fail "runtime manifest releaseRepository $($manifest.releaseRepository) does not match requested $expectedManifestRepo"

@@ -1,0 +1,79 @@
+name: Verify Node bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      tested_sha:
+        description: Exact agenc-core commit that passed the local release verifier
+        required: true
+        type: string
+      local_evidence_sha256:
+        description: SHA-256 of the exact local release evidence JSON
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-node-bootstrap-${{ inputs.tested_sha }}
+  cancel-in-progress: false
+
+jobs:
+  rocky-bootstrap:
+    name: rocky-bootstrap (${{ matrix.slug }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            slug: linux-x64
+          - runner: ubuntu-24.04-arm
+            slug: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c
+    timeout-minutes: 20
+    steps:
+      - name: Install the pinned Rocky bootstrap toolchain
+        run: |
+          dnf install -y --setopt=gpgcheck=1 \
+            libatomic-8.5.0-28.el8_10 \
+            libgcc-8.5.0-28.el8_10 \
+            python3.12-3.12.13-2.el8_10 \
+            git-2.43.7-1.el8_10 \
+            tar-1.30-11.el8_10 \
+            gzip-1.9-13.el8_5
+          dnf clean all
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Bind the pre-tag check to reviewed main
+        env:
+          LOCAL_EVIDENCE_SHA256: ${{ inputs.local_evidence_sha256 }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$LOCAL_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$TESTED_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_REPOSITORY" = tetsuo-ai/agenc-core
+          test "$REPOSITORY_VISIBILITY" = public
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Reproduce the immutable compatibility bootstrap
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap_file="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
+          bootstrap_archive="$RUNNER_TEMP/$bootstrap_file"
+          packages/agenc/scripts/build-node-bootstrap.sh \
+            "$AGENC_RELEASE_SLUG" "$bootstrap_archive"
+          test -s "$bootstrap_archive"
+          rm -f -- "$bootstrap_archive"
+          test ! -e "$bootstrap_archive"

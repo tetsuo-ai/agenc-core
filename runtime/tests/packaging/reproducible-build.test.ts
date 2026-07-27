@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
@@ -202,7 +202,6 @@ describe("reproducible install and release contract", () => {
     expect(linuxInstall).toContain("COPYING.RUNTIME");
     expect(linuxInstall).toContain("COPYING3");
     expect(linuxInstall).toContain("nodeBootstrap");
-    expect(linuxInstall).toContain("lib/libatomic.so.1");
     expect(linuxInstall).toContain('ldd "$node_root/bin/node"');
     expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
     expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
@@ -437,8 +436,8 @@ describe("reproducible install and release contract", () => {
     );
     expect(nativeContract.nodeBootstrap).toMatchObject({
       schemaVersion: 1,
-      minimumRuntimeVersion: "0.11.1",
-      releaseTag: "agenc-v0.11.1",
+      minimumRuntimeVersion: "0.11.2",
+      releaseTag: "agenc-v0.11.2",
       licenseExpression: "GPL-3.0-or-later WITH GCC-exception-3.1",
       licenses: {
         copying3Sha256: "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
@@ -447,13 +446,13 @@ describe("reproducible install and release contract", () => {
         combinedSha256: "df7743d494c078043b24385b7e214c13afb0067b43d9b385b4be64e5b872326c",
       },
       "linux-x64": {
-        sha256: "5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6",
-        bytes: 26_073,
+        sha256: "1f7bafeb33c504e59e0143d917354f70d40989e286e651ecabafbb9ad4c31833",
+        bytes: 26_074,
         librarySha256:
           "5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd",
       },
       "linux-arm64": {
-        sha256: "645433551bd872a59e55e4f490ba0df36184b855dce2d3e798a4526c3dfb828c",
+        sha256: "327f0db1f8b6f2c2d787a1d95e20a76f0b94146785d1499f1d23c50186ad9d13",
         bytes: 27_660,
         librarySha256:
           "d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2",
@@ -514,6 +513,59 @@ describe("reproducible install and release contract", () => {
         arm64: "3739ba86a1767e0ed5cc94eaf235ae3d1d9709ab45880c7dca366283068f8e19",
       },
     });
+  });
+
+  test("the pre-tag Rocky check and release builders share one bootstrap derivation", () => {
+    const releaseWorkflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
+      "utf8",
+    );
+    const pretagWorkflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/verify-node-bootstrap.yml"),
+      "utf8",
+    );
+    const builderPath = join(
+      REPO_ROOT,
+      "packages/agenc/scripts/build-node-bootstrap.sh",
+    );
+    const builder = readFileSync(builderPath, "utf8");
+
+    expect(statSync(builderPath).mode & 0o111).not.toBe(0);
+    expect(releaseWorkflow.match(/packages\/agenc\/scripts\/build-node-bootstrap\.sh/g))
+      .toHaveLength(1);
+    expect(pretagWorkflow.match(/packages\/agenc\/scripts\/build-node-bootstrap\.sh/g))
+      .toHaveLength(1);
+    expect(releaseWorkflow).not.toContain(
+      "/usr/bin/tar --sort=name --format=posix",
+    );
+
+    expect(pretagWorkflow).toContain("workflow_dispatch:");
+    expect(pretagWorkflow).toContain("test \"$TESTED_SHA\" = \"$GITHUB_SHA\"");
+    expect(pretagWorkflow).toContain("test \"$GITHUB_REF\" = refs/heads/main");
+    expect(pretagWorkflow).toContain(
+      "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
+    );
+    expect(pretagWorkflow).toContain("runner: ubuntu-24.04");
+    expect(pretagWorkflow).toContain("runner: ubuntu-24.04-arm");
+    expect(pretagWorkflow).toContain("tar-1.30-11.el8_10");
+    expect(pretagWorkflow).toContain("gzip-1.9-13.el8_5");
+    expect(pretagWorkflow).not.toContain("actions/upload-artifact");
+    expect(pretagWorkflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
+    expectArtifactWorkflowWithoutHostedTests(pretagWorkflow);
+
+    for (const packageName of ["libatomic", "libgcc", "tar", "gzip"]) {
+      expect(builder).toContain(
+        `rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' ${packageName}`,
+      );
+    }
+    expect(builder).toContain("build_archive \"$work/first\" \"$first\"");
+    expect(builder).toContain("build_archive \"$work/second\" \"$second\"");
+    expect(builder).toContain("Node bootstrap archive is not byte-reproducible");
+    expect(builder).toContain("/usr/bin/tar --sort=name --format=posix");
+    expect(builder).toContain("/usr/bin/gzip -n -9");
+    expect(builder).toContain('"lib/libatomic.so.1"');
+    expect(builder).toContain("Node bootstrap archive member order or inventory is invalid");
+    expect(builder).toContain("Node bootstrap identity drift for ${slug}");
   });
 
   test("npm trusted publishing transfers and publishes only attested reviewed bytes", () => {

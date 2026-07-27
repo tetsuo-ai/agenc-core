@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.11.1**; embedding SDK
+Version in tree: **runtime / launcher 0.11.2**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session model **grok-4.5**
 (same as provider-map / managed-OpenRouter paid defaults — see [providers.md](reference/providers.md)).
 
@@ -81,8 +81,9 @@ explanation. Prefer linked pages over archive notes when they disagree.
 
 | Doc | Summary |
 | --- | --- |
-| [releases/0.11.1.md](releases/0.11.1.md) | AgenC 0.11.1: first published self-contained Node 26 runtime, with refreshed signed Rocky inventories |
-| [releases/0.11.0.md](releases/0.11.0.md) | AgenC 0.11.0 source tag: unpublished Node 26 release attempt, superseded by 0.11.1 |
+| [releases/0.11.2.md](releases/0.11.2.md) | AgenC 0.11.2: first published self-contained Node 26 runtime, with Rocky-built compatibility bootstraps |
+| [releases/0.11.1.md](releases/0.11.1.md) | AgenC 0.11.1 source tag: unpublished bootstrap-identity correction attempt, superseded by 0.11.2 |
+| [releases/0.11.0.md](releases/0.11.0.md) | AgenC 0.11.0 source tag: unpublished Rocky-inventory correction attempt, superseded by 0.11.2 |
 | [releases/0.10.0.md](releases/0.10.0.md) | AgenC 0.10.0: parallel `/swarm` routes now perform a real initial worker-spawn attempt |
 | [releases/0.9.5.md](releases/0.9.5.md) | AgenC 0.9.5: accurate native-install diagnostics and an actionable Ubuntu AppArmor sandbox fix |
 | [releases/0.9.4.md](releases/0.9.4.md) | AgenC 0.9.4: first-run AgenC and X / xAI sign-in, free hosted models, and actionable onboarding |
@@ -124,7 +125,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.11.1) |
+| [`../README.md`](../README.md) | Product README (0.11.2) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

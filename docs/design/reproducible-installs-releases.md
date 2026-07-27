@@ -219,7 +219,7 @@ integrity receipt. Existing mutable release state is never silently repaired.
 Before npm packing, the downstream job proves that the immutable release API,
 canonical `SHA256SUMS`, complete five-platform tar/metadata/attestation matrix,
 source-exact installers, SBOM, and locally re-prepared release asset directory
-have identical names, sizes, and SHA-256 digests. The `0.11.1` private-Node
+have identical names, sizes, and SHA-256 digests. The `0.11.2` private-Node
 anchor contains 23 files, including its two immutable Linux compatibility
 bootstraps; later releases contain 21 and reuse those anchored bootstraps. An
 incomplete, substituted, or extra immutable asset therefore blocks launcher

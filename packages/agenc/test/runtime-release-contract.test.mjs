@@ -405,13 +405,17 @@ test("official release trust is fixed to the AgenC release repository", () => {
 
 test("modern v2 artifacts bind the platform-specific private Node entrypoint", () => {
   assert.equal(FROZEN_LEGACY_RUNTIME_VERSION, "0.7.2");
-  assert.equal(MINIMUM_PRIVATE_NODE_RUNTIME_VERSION, "0.11.1");
-  assert.equal(PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG, "agenc-v0.11.1");
+  assert.equal(MINIMUM_PRIVATE_NODE_RUNTIME_VERSION, "0.11.2");
+  assert.equal(PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG, "agenc-v0.11.2");
   assert.equal(requireSupportedRuntimeVersion("0.7.2"), "0.7.2");
-  assert.equal(requireSupportedRuntimeVersion("0.11.1"), "0.11.1");
   assert.equal(requireSupportedRuntimeVersion("0.11.2"), "0.11.2");
+  assert.equal(requireSupportedRuntimeVersion("0.11.3"), "0.11.3");
   assert.throws(
     () => requireSupportedRuntimeVersion("0.11.0"),
+    /no supported standalone activation contract/,
+  );
+  assert.throws(
+    () => requireSupportedRuntimeVersion("0.11.1"),
     /no supported standalone activation contract/,
   );
   assert.equal(canonicalRuntimeNodeBin("linux"), "node_modules/.agenc-node/bin/node");
@@ -444,8 +448,8 @@ test("published declarations expose the private Node release contract", () => {
   );
   for (const expected of [
     'FROZEN_LEGACY_RUNTIME_VERSION: "0.7.2"',
-    'MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.1"',
-    'PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.1"',
+    'MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.2"',
+    'PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.2"',
     "readonly node?: string",
     "readonly nodeLibrary?: string",
     "canonicalRuntimeNodeBin(platform: string): string",
@@ -460,7 +464,7 @@ test("retired host-Node manifests fail with an actionable compatibility diagnost
   const retired = attachCanonicalAttestation(remoteManifest({ version: "0.10.0" }));
   assert.throws(
     () => validateRuntimeReleaseManifest(retired, { trustMode: "official" }),
-    /use the frozen 0\.7\.2 bridge with host Node 25\.9, or 0\.11\.1 and newer/,
+    /use the frozen 0\.7\.2 bridge with host Node 25\.9, or 0\.11\.2 and newer/,
   );
 });
 

@@ -201,12 +201,12 @@ export function formatAgenCUpdateCliHelpText(): string {
     "Usage:",
     "  agenc update                    Download, verify, and install the latest runtime",
     "  agenc update --check            Report whether an update is available (no writes)",
-    "  agenc update --pin <x.y.z>      Install a private-Node release (0.11.1 or newer)",
+    "  agenc update --pin <x.y.z>      Install a private-Node release (0.11.2 or newer)",
     "",
     "Options:",
     "  --check               Check only; never downloads or writes",
     "  --json                Machine-readable result on stdout",
-    "  --pin <x.y.z>         Pin a private-Node release (0.11.1 or newer)",
+    "  --pin <x.y.z>         Pin a private-Node release (0.11.2 or newer)",
     "  --repo <owner/name>   Release repository (default: " +
       DEFAULT_RELEASE_REPO +
       ")",
