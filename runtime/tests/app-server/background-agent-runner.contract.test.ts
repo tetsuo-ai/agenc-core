@@ -73,7 +73,7 @@ export { eventFromProgress };
     loader: "ts",
     sourcefile: backgroundAgentRunnerSourcePath.pathname,
     sourcemap: "inline",
-    target: "node25",
+    target: "node26",
   });
   const module = { exports: {} as Record<string, unknown> };
   vm.runInNewContext(

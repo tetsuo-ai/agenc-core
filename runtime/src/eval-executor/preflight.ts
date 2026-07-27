@@ -41,11 +41,13 @@ export const DEFAULT_PREFLIGHT_TIMEOUTS: PreflightTimeouts = {
 /**
  * Some task images (the .NET pilot candidates) ship no python3, so the
  * frozen log parser cannot run inside them. It then runs in this auxiliary
- * offline container instead — never on the host. The node bookworm image is
- * already an executor dependency (phase-2 agent overlay) and carries
- * python3; operators may override per environment.
+ * offline container instead — never on the host. The digest-pinned Node
+ * bookworm image is already an executor dependency (phase-2 agent overlay)
+ * and carries python3; operators may override it with another digest-pinned
+ * image per environment.
  */
-export const DEFAULT_PARSER_FALLBACK_IMAGE = "node:25.9.0-bookworm";
+export const DEFAULT_PARSER_FALLBACK_IMAGE =
+  "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271";
 
 export interface PreflightExecutionOptions {
   readonly parserFallbackImage?: string;
@@ -107,7 +109,14 @@ async function runPhase(
     handle = await runner.createTaskContainer(inputs.task.image);
   } catch (error) {
     return {
-      transcript: { phase, imageDigest: "", appliedPatches: [], commands: [], testResults: null },
+      transcript: {
+        phase,
+        imageDigest: "",
+        parserImageDigest: null,
+        appliedPatches: [],
+        commands: [],
+        testResults: null,
+      },
       results: null,
       failure: {
         reason: "infrastructure_error",
@@ -116,6 +125,7 @@ async function runPhase(
     };
   }
   let results: Readonly<Record<string, string>> | null = null;
+  let parserImageDigest: string | null = null;
   let failure: PhaseOutcome["failure"] = null;
   try {
     const exec = async (
@@ -217,6 +227,7 @@ async function runPhase(
     const probe = await exec("probe-python3", "command -v python3", timeouts.patchMs);
     let parsed: ContainerExecResult;
     if (probe.exitCode === 0) {
+      parserImageDigest = handle.imageDigest;
       await runner.writeFile(handle, `${HELPER_DIR}/parse-log.py`, parserProgram);
       parsed = await exec(
         "parse-log", parserScript, timeouts.parserMs, handle, EVAL_EXECUTOR_MAXIMUM_PARSER_OUTPUT_BYTES,
@@ -229,6 +240,7 @@ async function runPhase(
       const aux = await runner.createAuxiliaryContainer(
         options.parserFallbackImage ?? DEFAULT_PARSER_FALLBACK_IMAGE,
       );
+      parserImageDigest = aux.imageDigest;
       try {
         await runner.writeFile(aux, `${HELPER_DIR}/parse-log.py`, parserProgram);
         for (const file of ["parser-input.log", "captured-test-output.log"]) {
@@ -275,6 +287,7 @@ async function runPhase(
     transcript: {
       phase,
       imageDigest: handle.imageDigest,
+      parserImageDigest,
       appliedPatches,
       commands,
       testResults: results,

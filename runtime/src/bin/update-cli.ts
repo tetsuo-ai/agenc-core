@@ -55,17 +55,22 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { gt as semverGt, lt as semverLt } from "../utils/semver.js";
+import { gt as semverGt } from "../utils/semver.js";
 import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { resolveAgencHome } from "../config/env.js";
 import { VERSION } from "../version.js";
-import { validateRuntimeArchive } from "../utils/runtime-archive.js";
+import {
+  validateEmbeddedNodeRuntimeArchive,
+  type EmbeddedNodeIdentity,
+} from "../utils/runtime-archive.js";
 import {
   MAX_RUNTIME_ARTIFACT_BYTES,
   MAX_RUNTIME_ATTESTATION_BYTES,
   MAX_RUNTIME_MANIFEST_BYTES,
+  FROZEN_LEGACY_RUNTIME_VERSION,
+  MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
   OFFICIAL_RELEASE_WORKFLOW,
   OFFICIAL_RELEASE_REPOSITORY,
   OFFICIAL_SOURCE_REPOSITORY,
@@ -73,6 +78,7 @@ import {
   PINNED_GITHUB_CLI_VERSION,
   canonicalRuntimeAttestationVerificationArgs,
   canonicalLocalFileUrlToPath,
+  requireSupportedRuntimeVersion,
   validateRuntimeReleaseManifest,
   type RuntimeManifestTrustMode,
   type RuntimeReleaseManifest,
@@ -97,10 +103,14 @@ import {
 } from "../utils/sqlite-lock.js";
 
 export const DEFAULT_RELEASE_REPO = OFFICIAL_RELEASE_REPOSITORY;
-export const MINIMUM_MODERN_UPDATE_VERSION = "0.7.2";
+export const MINIMUM_PRIVATE_NODE_UPDATE_VERSION =
+  MINIMUM_PRIVATE_NODE_RUNTIME_VERSION;
 const RUNTIME_MARKER = ".agenc-runtime-ok";
 const OFFICIAL_PROVENANCE_RECEIPT = ".agenc-official-provenance-v1.json";
+const PRIVATE_NODE_IDENTITY_REL = "node_modules/.agenc-node/identity.json";
 const DEFAULT_UPDATE_FETCH_TIMEOUT_MS = 120_000;
+const DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS = 15_000;
+const STAGED_PRIVATE_NODE_MAX_OUTPUT_BYTES = 16 * 1024;
 const WINDOWS_SYSTEM_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot`;
 
 /**
@@ -191,12 +201,12 @@ export function formatAgenCUpdateCliHelpText(): string {
     "Usage:",
     "  agenc update                    Download, verify, and install the latest runtime",
     "  agenc update --check            Report whether an update is available (no writes)",
-    "  agenc update --pin <x.y.z>      Install a specific release instead of latest",
+    "  agenc update --pin <x.y.z>      Install a private-Node release (0.11.0 or newer)",
     "",
     "Options:",
     "  --check               Check only; never downloads or writes",
     "  --json                Machine-readable result on stdout",
-    "  --pin <x.y.z>         Pin a release version",
+    "  --pin <x.y.z>         Pin a private-Node release (0.11.0 or newer)",
     "  --repo <owner/name>   Release repository (default: " +
       DEFAULT_RELEASE_REPO +
       ")",
@@ -303,7 +313,11 @@ export interface RuntimeManifestArtifact {
   readonly attestationUrl?: string;
   readonly attestationSha256?: string;
   readonly attestationBytes?: number;
-  readonly bins?: { readonly agenc?: string };
+  readonly bins?: {
+    readonly agenc?: string;
+    readonly node?: string;
+    readonly nodeLibrary?: string;
+  };
 }
 
 export interface UpdateRuntimeCompatibility {
@@ -391,11 +405,6 @@ function assertUpdateArtifactCompatible(
   artifact: RuntimeManifestArtifact,
   runtime: UpdateRuntimeCompatibility,
 ): void {
-  if (artifact.nodeMajor !== runtime.nodeMajor) {
-    throw new Error(
-      `runtime requires Node ${artifact.nodeMajor}.x; current Node is ${runtime.nodeMajor}.x`,
-    );
-  }
   const dotted = /^\d+\.\d+(?:\.\d+)?$/;
   if (runtime.platform === "darwin") {
     if (!dotted.test(artifact.minimumMacosVersion ?? "") ||
@@ -457,6 +466,80 @@ export interface RuntimeManifest {
   readonly artifacts: readonly RuntimeManifestArtifact[];
 }
 
+export function assertEmbeddedNodeIdentityMatchesManifest(
+  identity: Readonly<EmbeddedNodeIdentity>,
+  manifest: RuntimeManifest,
+  artifact: RuntimeManifestArtifact,
+): void {
+  const mismatches: string[] = [];
+  const compare = (
+    field: "nodeVersion" | "nodeMajor" | "nodeModuleAbi" | "nodeApiVersion",
+    actual: string | number,
+    expected: string | number,
+    source: string,
+  ): void => {
+    if (actual !== expected) {
+      mismatches.push(
+        `${field} expected ${JSON.stringify(expected)} from ${source}, ` +
+          `received ${JSON.stringify(actual)}`,
+      );
+    }
+  };
+  compare("nodeMajor", identity.nodeMajor, artifact.nodeMajor, "manifest artifact");
+  compare(
+    "nodeModuleAbi",
+    identity.nodeModuleAbi,
+    artifact.nodeModuleAbi,
+    "manifest artifact",
+  );
+  compare(
+    "nodeApiVersion",
+    identity.nodeApiVersion,
+    artifact.nodeApiVersion,
+    "manifest artifact",
+  );
+
+  if (manifest.build !== undefined) {
+    const build = manifest.build;
+    if (
+      typeof build.nodeVersion !== "string" ||
+      !/^v[1-9][0-9]*\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(build.nodeVersion) ||
+      !Number.isSafeInteger(build.nodeMajor) ||
+      typeof build.nodeModuleAbi !== "string" ||
+      !/^[1-9][0-9]*$/.test(build.nodeModuleAbi) ||
+      typeof build.nodeApiVersion !== "string" ||
+      !/^[1-9][0-9]*$/.test(build.nodeApiVersion)
+    ) {
+      throw new Error("runtime manifest build has an invalid private Node identity");
+    }
+    compare("nodeVersion", identity.nodeVersion, build.nodeVersion, "manifest build");
+    compare(
+      "nodeMajor",
+      identity.nodeMajor,
+      build.nodeMajor as number,
+      "manifest build",
+    );
+    compare(
+      "nodeModuleAbi",
+      identity.nodeModuleAbi,
+      build.nodeModuleAbi,
+      "manifest build",
+    );
+    compare(
+      "nodeApiVersion",
+      identity.nodeApiVersion,
+      build.nodeApiVersion,
+      "manifest build",
+    );
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `runtime archive private Node identity disagrees with the manifest: ` +
+        mismatches.join("; "),
+    );
+  }
+}
+
 export interface ResolvedUpdateManifestRequest {
   readonly url: string;
   readonly trustMode: RuntimeManifestTrustMode;
@@ -488,14 +571,16 @@ export function resolveUpdateManifestRequest(options: {
   readonly env?: Readonly<Record<string, string | undefined>>;
 }): ResolvedUpdateManifestRequest {
   const env = options.env ?? process.env;
-  if (
-    options.pinVersion !== undefined &&
-    semverLt(options.pinVersion, MINIMUM_MODERN_UPDATE_VERSION)
-  ) {
-    throw new Error(
-      `agenc update supports pinned releases ${MINIMUM_MODERN_UPDATE_VERSION} or newer; ` +
-      `${options.pinVersion} has no published modern v2 update contract`,
-    );
+  if (options.pinVersion !== undefined) {
+    requireSupportedRuntimeVersion(options.pinVersion);
+    if (options.pinVersion === FROZEN_LEGACY_RUNTIME_VERSION) {
+      throw new Error(
+        `agenc update cannot activate the frozen ${FROZEN_LEGACY_RUNTIME_VERSION} ` +
+          `host-Node bridge; rerun the standalone installer with --version ` +
+          `${FROZEN_LEGACY_RUNTIME_VERSION} under Node 25.9, or pin ` +
+          `${MINIMUM_PRIVATE_NODE_UPDATE_VERSION} and newer`,
+      );
+    }
   }
   if (options.manifestUrl !== undefined) {
     return {
@@ -1109,11 +1194,9 @@ export async function fetchRuntimeManifest(
 export function selectUpdateArtifact(
   manifest: RuntimeManifest,
   slug: { os: string; arch: string } = updatePlatformSlug(),
-  nodeModuleAbi: string = process.versions.modules,
   runtime: UpdateRuntimeCompatibility = currentUpdateRuntimeCompatibility(
     slug.os === "win" ? "win32" : slug.os as NodeJS.Platform,
     slug.arch,
-    nodeModuleAbi,
   ),
 ): RuntimeManifestArtifact {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.runtimeVersion)) {
@@ -1125,12 +1208,11 @@ export function selectUpdateArtifact(
   const matches = manifest.artifacts.filter(
     (a) =>
       a.platform === slug.os &&
-      a.arch === slug.arch &&
-      a.nodeModuleAbi === nodeModuleAbi,
+      a.arch === slug.arch,
   );
   if (matches.length > 1) {
     throw new Error(
-      `manifest contains multiple builds for ${slug.os}-${slug.arch}/abi${nodeModuleAbi}`,
+      `manifest contains multiple builds for ${slug.os}-${slug.arch}`,
     );
   }
   const match = matches[0];
@@ -1139,8 +1221,8 @@ export function selectUpdateArtifact(
       .map((a) => `${a.platform}-${a.arch}/abi${a.nodeModuleAbi}`)
       .join(", ");
     throw new Error(
-      `no runtime build for ${slug.os}-${slug.arch}/abi${nodeModuleAbi} ` +
-        `(Node ${process.version}; available: ${have || "none"})`,
+      `no runtime build for ${slug.os}-${slug.arch} ` +
+        `(available: ${have || "none"})`,
     );
   }
   if (!/^[0-9a-f]{64}$/.test(match.sha256 ?? "")) {
@@ -1149,11 +1231,23 @@ export function selectUpdateArtifact(
   if (
     match.runtimeVersion !== manifest.runtimeVersion ||
     !Number.isSafeInteger(match.nodeMajor) ||
+    match.nodeMajor <= 0 ||
+    !/^\d+$/.test(match.nodeModuleAbi ?? "") ||
     !/^\d+$/.test(match.nodeApiVersion ?? "") ||
     !Number.isSafeInteger(match.bytes) ||
     match.bytes <= 0 ||
     match.bytes > MAX_RUNTIME_ARTIFACT_BYTES ||
-    match.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc"
+    match.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc" ||
+    match.bins?.node !== (
+      match.platform === "win"
+        ? "node_modules/.agenc-node/node.exe"
+        : "node_modules/.agenc-node/bin/node"
+    ) ||
+    match.bins?.nodeLibrary !== (
+      match.platform === "linux"
+        ? "node_modules/.agenc-node/lib"
+        : undefined
+    )
   ) {
     throw new Error("manifest artifact identity is invalid");
   }
@@ -1200,6 +1294,7 @@ export function renderGeneratedWrapper(wrapper: {
   readonly nodeBin: string;
   readonly runtimeBin: string;
   readonly agencHome: string;
+  readonly nodeLibraryPath?: string;
 }): string {
   return renderGeneratedWrapperContent(wrapper);
 }
@@ -1416,6 +1511,8 @@ function canonicalizeAgenCHome(requested: string): string {
 
 export interface InstallRuntimeResult {
   readonly binPath: string;
+  readonly nodeBinPath: string;
+  readonly nodeLibraryPath?: string;
   readonly downloaded: boolean;
 }
 
@@ -1510,6 +1607,8 @@ function strictProvenanceReceiptMatches(
 function runtimeInstallReadyAt(
   path: string,
   binRel: string,
+  nodeBinRel: string,
+  nodeLibraryRel: string | undefined,
   expectedSha: string,
   expectedProvenanceReceipt?: string,
 ): boolean {
@@ -1517,6 +1616,11 @@ function runtimeInstallReadyAt(
     const root = lstatSync(path);
     return root.isDirectory() && !root.isSymbolicLink() &&
       strictRelativeRuntimeFile(path, binRel) &&
+      strictRelativeRuntimeFile(path, nodeBinRel) &&
+      (
+        nodeLibraryRel === undefined ||
+        strictRelativeRuntimeFile(path, join(nodeLibraryRel, "libatomic.so.1"))
+      ) &&
       strictRuntimeMarkerMatches(path, expectedSha) &&
       strictProvenanceReceiptMatches(path, expectedProvenanceReceipt);
   } catch {
@@ -1585,6 +1689,8 @@ function reconcileRuntimeInstall(
   versionDir: string,
   installDir: string,
   binRel: string,
+  nodeBinRel: string,
+  nodeLibraryRel: string | undefined,
   expectedSha: string,
   expectedProvenanceReceipt?: string,
 ): boolean {
@@ -1596,6 +1702,8 @@ function reconcileRuntimeInstall(
     .filter((path) => runtimeInstallReadyAt(
       path,
       binRel,
+      nodeBinRel,
+      nodeLibraryRel,
       expectedSha,
       expectedProvenanceReceipt,
     ))
@@ -1604,6 +1712,8 @@ function reconcileRuntimeInstall(
   if (!runtimeInstallReadyAt(
     installDir,
     binRel,
+    nodeBinRel,
+    nodeLibraryRel,
     expectedSha,
     expectedProvenanceReceipt,
   )) {
@@ -1613,6 +1723,8 @@ function reconcileRuntimeInstall(
   if (!runtimeInstallReadyAt(
     installDir,
     binRel,
+    nodeBinRel,
+    nodeLibraryRel,
     expectedSha,
     expectedProvenanceReceipt,
   )) return false;
@@ -1977,6 +2089,131 @@ export function runBoundedProcess(
       terminateAndFinish(error);
     }, timeout);
   });
+}
+
+export interface StagedPrivateNodeVerificationOptions {
+  readonly nodeBinPath: string;
+  readonly nodeLibraryPath?: string;
+  readonly stagingDir: string;
+  readonly identity: Pick<
+    Readonly<EmbeddedNodeIdentity>,
+    "nodeVersion" | "nodeMajor" | "nodeModuleAbi" | "nodeApiVersion"
+  >;
+  readonly artifact: Pick<
+    RuntimeManifestArtifact,
+    "platform" | "arch" | "nodeMajor" | "nodeModuleAbi" | "nodeApiVersion"
+  >;
+  readonly timeoutMs?: number;
+  readonly runProcess?: OfficialProvenanceProcessRunner;
+}
+
+export type StagedPrivateNodeVerifier = (
+  options: StagedPrivateNodeVerificationOptions,
+) => Promise<void>;
+
+const STAGED_PRIVATE_NODE_IDENTITY_PROBE = [
+  '"use strict";',
+  'const platform=process.platform==="win32"?"win":process.platform;',
+  "process.stdout.write(JSON.stringify({",
+  "nodeVersion:process.version,",
+  'nodeMajor:Number(process.versions.node.split(".")[0]),',
+  "nodeModuleAbi:process.versions.modules,",
+  "nodeApiVersion:process.versions.napi,",
+  "platform,",
+  "arch:process.arch",
+  "}));",
+].join("");
+
+function stagedPrivateNodeEnvironment(
+  options: StagedPrivateNodeVerificationOptions,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    HOME: options.stagingDir,
+    USERPROFILE: options.stagingDir,
+    LANG: "C",
+    LC_ALL: "C",
+    NO_COLOR: "1",
+    PATH: dirname(options.nodeBinPath),
+    TEMP: options.stagingDir,
+    TMP: options.stagingDir,
+    TMPDIR: options.stagingDir,
+  };
+  if (options.artifact.platform === "linux") {
+    if (options.nodeLibraryPath === undefined) {
+      throw new Error("staged private Node identity probe is missing its Linux library path");
+    }
+    environment.LD_LIBRARY_PATH = options.nodeLibraryPath;
+  } else if (options.nodeLibraryPath !== undefined) {
+    throw new Error("staged private Node identity probe received an unexpected library path");
+  }
+  if (options.artifact.platform === "win") {
+    const system32 = win32.join(WINDOWS_SYSTEM_ROOT, "System32");
+    environment.COMSPEC = win32.join(system32, "cmd.exe");
+    environment.PATHEXT = ".COM;.EXE";
+    environment.SystemRoot = WINDOWS_SYSTEM_ROOT;
+    environment.WINDIR = WINDOWS_SYSTEM_ROOT;
+    environment.PATH = `${dirname(options.nodeBinPath)};${system32}`;
+  }
+  return environment;
+}
+
+export async function verifyStagedPrivateNodeIdentity(
+  options: StagedPrivateNodeVerificationOptions,
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError(
+      "staged private Node identity probe timeout must be a positive safe integer",
+    );
+  }
+  const expected = {
+    nodeVersion: options.identity.nodeVersion,
+    nodeMajor: options.artifact.nodeMajor,
+    nodeModuleAbi: options.artifact.nodeModuleAbi,
+    nodeApiVersion: options.artifact.nodeApiVersion,
+    platform: options.artifact.platform,
+    arch: options.artifact.arch,
+  };
+  const result = await (options.runProcess ?? runBoundedProcess)(
+    options.nodeBinPath,
+    ["-e", STAGED_PRIVATE_NODE_IDENTITY_PROBE],
+    {
+      cwd: options.stagingDir,
+      encoding: "utf8",
+      env: stagedPrivateNodeEnvironment(options),
+      maxBuffer: STAGED_PRIVATE_NODE_MAX_OUTPUT_BYTES,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+      windowsHide: true,
+    },
+  );
+  if (result.error !== undefined) {
+    throw new Error(
+      "staged private Node identity probe could not run: " +
+        sanitizeTerminalText(result.error.message, 2_048),
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `staged private Node identity probe failed ` +
+        `(status ${result.status ?? result.signal})${processFailureDetail(result)}`,
+    );
+  }
+  let actual: unknown;
+  try {
+    actual = JSON.parse(result.stdout ?? "");
+  } catch (error) {
+    throw new Error("staged private Node identity probe returned invalid output", {
+      cause: error,
+    });
+  }
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      "staged private Node identity disagrees with the selected artifact " +
+        `(expected ${JSON.stringify(expected)}, received ` +
+        `${sanitizeTerminalText(JSON.stringify(actual), 2_048)})`,
+    );
+  }
 }
 
 export interface OfficialRuntimeArtifactProvenanceOptions {
@@ -2435,6 +2672,7 @@ export async function installRuntimeFromManifest(options: {
   readonly fetchImpl?: typeof fetch;
   readonly manifestTrust: RuntimeManifestTrustMode;
   readonly verifyOfficialProvenance?: typeof verifyOfficialRuntimeArtifactProvenance;
+  readonly verifyStagedPrivateNode?: StagedPrivateNodeVerifier;
   readonly remove?: (
     path: string,
     options: { readonly recursive: true; readonly force: true },
@@ -2480,7 +2718,27 @@ export async function installRuntimeFromManifest(options: {
     updateInstallKey(artifact),
   );
   const binRel = artifact.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc";
+  const nodeBinRel = artifact.bins?.node;
+  const nodeLibraryRel = artifact.bins?.nodeLibrary;
+  if (
+    nodeBinRel === undefined ||
+    (artifact.platform === "linux"
+      ? nodeLibraryRel === undefined
+      : nodeLibraryRel !== undefined)
+  ) {
+    throw new Error("runtime artifact is missing its embedded Node layout");
+  }
   const binPath = join(installDir, binRel);
+  const nodeBinPath = join(installDir, nodeBinRel);
+  const nodeLibraryPath = nodeLibraryRel === undefined
+    ? undefined
+    : join(installDir, nodeLibraryRel);
+  const result = (downloaded: boolean): InstallRuntimeResult => ({
+    binPath,
+    nodeBinPath,
+    ...(nodeLibraryPath === undefined ? {} : { nodeLibraryPath }),
+    downloaded,
+  });
   const versionDir = dirname(installDir);
   mkdirSync(versionDir, { recursive: true, mode: 0o700 });
   chmodSync(versionDir, 0o700);
@@ -2490,12 +2748,14 @@ export async function installRuntimeFromManifest(options: {
     runtimeInstallReadyAt(
       installDir,
       binRel,
+      nodeBinRel,
+      nodeLibraryRel,
       artifact.sha256,
       expectedProvenanceReceipt,
     ) &&
     !hasRuntimeInstallResidue(versionDir, basename(installDir))
   ) {
-    return { binPath, downloaded: false };
+    return result(false);
   }
 
   // Recover any fully prepared tree left at a promotion rename boundary before
@@ -2513,10 +2773,12 @@ export async function installRuntimeFromManifest(options: {
       versionDir,
       installDir,
       binRel,
+      nodeBinRel,
+      nodeLibraryRel,
       artifact.sha256,
       expectedProvenanceReceipt,
     )) {
-      return { binPath, downloaded: false };
+      return result(false);
     }
     releaseLock();
     releaseLock = undefined;
@@ -2578,7 +2840,13 @@ export async function installRuntimeFromManifest(options: {
       verificationTimeoutMs,
       "runtime archive validation",
     );
-    validateRuntimeArchive(tmp, artifact.platform);
+    const archiveInventory = validateEmbeddedNodeRuntimeArchive(tmp, artifact.platform);
+    const embeddedNodeIdentity = archiveInventory.embeddedNodeIdentity;
+    assertEmbeddedNodeIdentityMatchesManifest(
+      embeddedNodeIdentity,
+      manifest,
+      artifact,
+    );
     remainingProvenanceTimeout(
       verificationGuard.deadline,
       verificationTimeoutMs,
@@ -2592,10 +2860,12 @@ export async function installRuntimeFromManifest(options: {
       versionDir,
       installDir,
       binRel,
+      nodeBinRel,
+      nodeLibraryRel,
       artifact.sha256,
       expectedProvenanceReceipt,
     )) {
-      return { binPath, downloaded: false };
+      return result(false);
     }
     stagingDir = mkdtempSync(join(versionDir, `.${basename(installDir)}.install-`));
     try { chmodSync(stagingDir, 0o700); } catch { /* best effort */ }
@@ -2619,9 +2889,41 @@ export async function installRuntimeFromManifest(options: {
     );
     assertTarExtractionSucceeded(res);
     const stagedBin = join(stagingDir, binRel);
-    if (!existsSync(stagedBin)) {
-      throw new Error(`runtime extracted but entry missing: ${stagedBin}`);
+    if (!strictRelativeRuntimeFile(stagingDir, binRel)) {
+      throw new Error(`runtime extracted but entry missing or unsafe: ${stagedBin}`);
     }
+    const stagedNodeBin = join(stagingDir, nodeBinRel);
+    if (!strictRelativeRuntimeFile(stagingDir, nodeBinRel)) {
+      throw new Error(`runtime extracted but private Node is missing or unsafe: ${stagedNodeBin}`);
+    }
+    if (!strictRelativeRuntimeFile(stagingDir, PRIVATE_NODE_IDENTITY_REL)) {
+      throw new Error(
+        "runtime extracted but private Node identity is missing or unsafe: " +
+          join(stagingDir, PRIVATE_NODE_IDENTITY_REL),
+      );
+    }
+    if (
+      nodeLibraryRel !== undefined &&
+      !strictRelativeRuntimeFile(stagingDir, join(nodeLibraryRel, "libatomic.so.1"))
+    ) {
+      throw new Error(
+        `runtime extracted but private Node libatomic.so.1 is missing or unsafe: ` +
+        `${join(stagingDir, nodeLibraryRel)}`,
+      );
+    }
+    await (options.verifyStagedPrivateNode ?? verifyStagedPrivateNodeIdentity)({
+      nodeBinPath: stagedNodeBin,
+      ...(nodeLibraryRel === undefined
+        ? {}
+        : { nodeLibraryPath: join(stagingDir, nodeLibraryRel) }),
+      stagingDir,
+      identity: embeddedNodeIdentity,
+      artifact,
+      timeoutMs: Math.min(
+        options.downloadTimeoutMs ?? DEFAULT_UPDATE_FETCH_TIMEOUT_MS,
+        DEFAULT_STAGED_PRIVATE_NODE_TIMEOUT_MS,
+      ),
+    });
     writeFileSync(join(stagingDir, RUNTIME_MARKER), artifact.sha256, {
       flag: "wx",
       mode: 0o600,
@@ -2639,12 +2941,14 @@ export async function installRuntimeFromManifest(options: {
       versionDir,
       installDir,
       binRel,
+      nodeBinRel,
+      nodeLibraryRel,
       artifact.sha256,
       expectedProvenanceReceipt,
     )) {
       throw new Error("promoted runtime did not satisfy the marker contract");
     }
-    return { binPath, downloaded: true };
+    return result(true);
   } catch (error) {
     operationError = error;
     throw error;
@@ -2806,9 +3110,45 @@ function runtimeVersionFromBin(runtimeBin: string, agencHome: string): string | 
     : undefined;
 }
 
+function contentAddressedRuntimeTreeForTarget(
+  target: string,
+  agencHome: string,
+  targetVersion: string,
+  label: string,
+): string {
+  if (!isAbsolute(target)) {
+    throw new Error(`${label} must be an absolute path`);
+  }
+  const runtimeRoot = resolve(agencHome, "runtime");
+  const candidate = resolve(target);
+  const within = relative(runtimeRoot, candidate);
+  if (
+    within.length === 0 ||
+    within === ".." ||
+    within.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(within)
+  ) {
+    throw new Error(`${label} is outside its AGENC_HOME runtime tree`);
+  }
+  const parts = within.split(/[\\/]/);
+  const installKey = parts[1];
+  if (
+    parts.length < 3 ||
+    parts[0] !== targetVersion ||
+    installKey === undefined ||
+    !/^(?:linux|darwin|win)-(?:x64|arm64)-(?:glibc|native)-node-abi-\d+-sha256-[0-9a-f]{64}$/
+      .test(installKey)
+  ) {
+    throw new Error(`${label} is not inside the target content-addressed runtime tree`);
+  }
+  return join(runtimeRoot, targetVersion, installKey);
+}
+
 export async function activateGeneratedWrappers(options: {
   readonly wrappers: readonly GeneratedWrapper[];
   readonly runtimeBin: string;
+  readonly nodeBin: string;
+  readonly nodeLibraryPath?: string;
   readonly targetVersion: string;
   readonly agencHome: string;
   readonly allowDowngrade: boolean;
@@ -2817,6 +3157,35 @@ export async function activateGeneratedWrappers(options: {
   const agencHomeIdentity = existingAgenCHomeIdentity(agencHome);
   if (agencHomeIdentity === undefined) {
     throw new Error(`cannot establish canonical AGENC_HOME identity: ${agencHome}`);
+  }
+  const targetRuntimeTree = contentAddressedRuntimeTreeForTarget(
+    options.runtimeBin,
+    agencHome,
+    options.targetVersion,
+    "runtime entrypoint",
+  );
+  const targetNodeTree = contentAddressedRuntimeTreeForTarget(
+    options.nodeBin,
+    agencHome,
+    options.targetVersion,
+    "private Node entrypoint",
+  );
+  const targetNodeLibraryTree = options.nodeLibraryPath === undefined
+    ? undefined
+    : contentAddressedRuntimeTreeForTarget(
+        options.nodeLibraryPath,
+        agencHome,
+        options.targetVersion,
+        "private Node library directory",
+      );
+  if (
+    targetNodeTree !== targetRuntimeTree ||
+    (
+      targetNodeLibraryTree !== undefined &&
+      targetNodeLibraryTree !== targetRuntimeTree
+    )
+  ) {
+    throw new Error("wrapper targets must share one content-addressed runtime tree");
   }
   const runtimeRoot = join(agencHome, "runtime");
   mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 });
@@ -2916,9 +3285,13 @@ export async function activateGeneratedWrappers(options: {
       path: wrapper.path,
       original: readFileSync(wrapper.path, "utf8"),
       desired: renderGeneratedWrapper({
-        ...wrapper,
+        kind: wrapper.kind,
         agencHome,
         runtimeBin: options.runtimeBin,
+        nodeBin: options.nodeBin,
+        ...(options.nodeLibraryPath === undefined
+          ? {}
+          : { nodeLibraryPath: options.nodeLibraryPath }),
       }),
       mode: wrapper.kind === "cmd" ? 0o644 : 0o755,
     }));
@@ -2963,6 +3336,8 @@ export async function activateGeneratedWrappers(options: {
 export async function activateInstallShWrappers(options: {
   readonly wrappers: readonly InstallShWrapper[];
   readonly runtimeBin: string;
+  readonly nodeBin: string;
+  readonly nodeLibraryPath?: string;
   readonly targetVersion: string;
   readonly agencHome: string;
   readonly allowDowngrade: boolean;
@@ -2983,6 +3358,7 @@ export interface UpdateCliDeps {
   readonly nodeModuleAbi?: string;
   readonly runtimeCompatibility?: UpdateRuntimeCompatibility;
   readonly userHome?: string;
+  readonly verifyStagedPrivateNode?: StagedPrivateNodeVerifier;
 }
 
 export async function runAgenCUpdateCli(
@@ -3040,7 +3416,6 @@ export async function runAgenCUpdateCli(
     artifact = selectUpdateArtifact(
       manifest,
       updatePlatformSlug(deps.platform, deps.arch),
-      deps.nodeModuleAbi ?? process.versions.modules,
       deps.runtimeCompatibility ?? currentUpdateRuntimeCompatibility(
         deps.platform,
         deps.arch,
@@ -3178,6 +3553,9 @@ export async function runAgenCUpdateCli(
       agencHome,
       manifestTrust: manifestRequest.trustMode,
       ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+      ...(deps.verifyStagedPrivateNode === undefined
+        ? {}
+        : { verifyStagedPrivateNode: deps.verifyStagedPrivateNode }),
     });
   } catch (error) {
     stderr(`agenc: update failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -3189,6 +3567,10 @@ export async function runAgenCUpdateCli(
     activation = await activateGeneratedWrappers({
       wrappers,
       runtimeBin: result.binPath,
+      nodeBin: result.nodeBinPath,
+      ...(result.nodeLibraryPath === undefined
+        ? {}
+        : { nodeLibraryPath: result.nodeLibraryPath }),
       targetVersion: latestVersion,
       agencHome,
       allowDowngrade: pinned,
@@ -3209,6 +3591,10 @@ export async function runAgenCUpdateCli(
         installed: true,
         downloaded: result.downloaded,
         runtimeBin: result.binPath,
+        nodeBin: result.nodeBinPath,
+        ...(result.nodeLibraryPath === undefined
+          ? {}
+          : { nodeLibraryPath: result.nodeLibraryPath }),
         activated: activation.activated,
         ...(activation.retainedVersion !== undefined
           ? { retainedVersion: activation.retainedVersion }

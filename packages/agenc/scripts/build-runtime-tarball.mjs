@@ -12,9 +12,14 @@
 //
 //   node_modules/@tetsuo-ai/runtime/{bin,dist,package.json,README.md}
 //   node_modules/<every production dep, natively built for this platform>/...
+//   node_modules/.agenc-node/{bin/node|node.exe,LICENSE,identity.json}
+//   node_modules/.agenc-node/{lib/libatomic.so.1,LIBATOMIC-LICENSE}  (Linux)
 //
 // So the runtime entry after extraction is:
 //   <root>/node_modules/@tetsuo-ai/runtime/bin/agenc
+// and the private Node runtime is:
+//   <root>/node_modules/.agenc-node/bin/node   (POSIX)
+//   <root>/node_modules/.agenc-node/node.exe   (Windows)
 //
 // Steps: build runtime → `npm pack` it (respects its `files`) → recreate the
 // runtime workspace in a staging root containing the COMMITTED root lock →
@@ -49,7 +54,7 @@ import { dirname, isAbsolute, join, resolve, sep, win32 as win32Path } from "nod
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { create as createTar, extract as extractTar } from "tar";
-import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
+import { validateEmbeddedNodeRuntimeArchive } from "../lib/runtime-archive.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const launcherDir = resolve(__dirname, "..");
@@ -127,6 +132,159 @@ function requireAbsoluteRegularFile(value, label) {
     throw new Error(`${label} must name an absolute regular file`);
   }
   return realpathSync(value);
+}
+
+export function embeddedNodeLayout(platform = process.platform) {
+  const windows = platform === "win32" || platform === "win";
+  const linux = platform === "linux";
+  return Object.freeze({
+    executable: windows ? "node.exe" : "bin/node",
+    bin: windows
+      ? "node_modules/.agenc-node/node.exe"
+      : "node_modules/.agenc-node/bin/node",
+    ...(linux
+      ? {
+          libatomic: "lib/libatomic.so.1",
+          libatomicLicense: "LIBATOMIC-LICENSE",
+          nodeLibrary: "node_modules/.agenc-node/lib",
+        }
+      : {}),
+    license: "LICENSE",
+    identity: "identity.json",
+  });
+}
+
+export function resolveEmbeddedNodeSource({
+  nodeExecutablePath,
+  nodeLicensePath,
+  platform = process.platform,
+}) {
+  const executable = requireAbsoluteRegularFile(
+    nodeExecutablePath,
+    "embedded Node executable",
+  );
+  const layout = embeddedNodeLayout(platform);
+  const distributionRoot = layout.executable === "node.exe"
+    ? dirname(executable)
+    : resolve(dirname(executable), "..");
+  const license = requireAbsoluteRegularFile(
+    nodeLicensePath || join(distributionRoot, layout.license),
+    "embedded Node LICENSE",
+  );
+  return { executable, license, layout };
+}
+
+export function stageEmbeddedNode({
+  nodeModules,
+  nodeExecutablePath,
+  nodeLicensePath,
+  libatomicPath,
+  libatomicLicensePath,
+  nodeVersion,
+  nodeMajor,
+  nodeModuleAbi,
+  nodeApiVersion,
+  requireLibatomic = false,
+  platform = process.platform,
+}) {
+  const source = resolveEmbeddedNodeSource({
+    nodeExecutablePath,
+    nodeLicensePath,
+    platform,
+  });
+  const root = join(nodeModules, ".agenc-node");
+  const executablePath = join(root, ...source.layout.executable.split("/"));
+  const licensePath = join(root, source.layout.license);
+  const identityPath = join(root, source.layout.identity);
+  mkdirSync(dirname(executablePath), { recursive: true });
+  copyFileSync(source.executable, executablePath);
+  copyFileSync(source.license, licensePath);
+  chmodSync(executablePath, 0o755);
+  chmodSync(licensePath, 0o644);
+  let libatomic;
+  if (source.layout.libatomic !== undefined) {
+    const detected = libatomicPath || captureOptional("ldd", [source.executable])
+      ?.split(/\r?\n/)
+      .map((line) => /^\s*libatomic\.so\.1\s+=>\s+(\S+)/.exec(line)?.[1])
+      .find(Boolean);
+    if (detected === undefined && requireLibatomic) {
+      throw new Error("release Linux artifacts require a verified libatomic.so.1");
+    }
+    if (detected !== undefined) {
+      const sourceLibrary = requireAbsoluteRegularFile(
+        detected,
+        "embedded Node libatomic.so.1",
+      );
+      const libraryPath = join(root, ...source.layout.libatomic.split("/"));
+      mkdirSync(dirname(libraryPath), { recursive: true });
+      copyFileSync(sourceLibrary, libraryPath);
+      chmodSync(libraryPath, 0o644);
+      const detectedLicense = [
+        libatomicLicensePath,
+        ...(
+          captureOptional("rpm", ["-ql", "libatomic"])
+            ?.split(/\r?\n/)
+            .filter((path) => path.includes("/licenses/")) ?? []
+        ),
+        "/usr/share/licenses/libatomic/COPYING.RUNTIME",
+        "/usr/share/licenses/libatomic/COPYING3",
+        "/usr/share/doc/libatomic1/copyright",
+      ].find((path) =>
+        typeof path === "string" &&
+        isAbsolute(path) &&
+        existsSync(path) &&
+        statSync(path).isFile()
+      );
+      if (detectedLicense === undefined && requireLibatomic) {
+        throw new Error("release Linux artifacts require libatomic license attribution");
+      }
+      const licenseIdentity = {};
+      if (detectedLicense !== undefined) {
+        const sourceLicense = requireAbsoluteRegularFile(
+          detectedLicense,
+          "embedded libatomic license",
+        );
+        const libraryLicensePath = join(root, source.layout.libatomicLicense);
+        copyFileSync(sourceLicense, libraryLicensePath);
+        chmodSync(libraryLicensePath, 0o644);
+        Object.assign(licenseIdentity, {
+          libatomicLicense: source.layout.libatomicLicense,
+          libatomicLicenseSha256: sha256Bytes(readFileSync(libraryLicensePath)),
+          libatomicLicenseBytes: statSync(libraryLicensePath).size,
+        });
+      }
+      libatomic = {
+        libatomic: source.layout.libatomic,
+        libatomicSha256: sha256Bytes(readFileSync(libraryPath)),
+        libatomicBytes: statSync(libraryPath).size,
+        ...licenseIdentity,
+      };
+    }
+  }
+  const identity = {
+    schemaVersion: 1,
+    nodeVersion,
+    nodeMajor,
+    nodeModuleAbi,
+    nodeApiVersion,
+    executable: source.layout.executable,
+    executableSha256: sha256Bytes(readFileSync(executablePath)),
+    executableBytes: statSync(executablePath).size,
+    license: source.layout.license,
+    licenseSha256: sha256Bytes(readFileSync(licensePath)),
+    licenseBytes: statSync(licensePath).size,
+    ...libatomic,
+  };
+  writeFileSync(identityPath, `${JSON.stringify(identity, null, 2)}\n`);
+  chmodSync(identityPath, 0o644);
+  return {
+    ...source.layout,
+    executablePath,
+    ...(libatomic === undefined
+      ? {}
+      : { libraryPath: join(root, dirname(source.layout.libatomic)) }),
+    identity,
+  };
 }
 
 export function resolveBuildExecutables({
@@ -832,7 +990,11 @@ function installedPackageInventory(nodeModules) {
   };
   const visitNodeModules = (directory, displayDirectory) => {
     for (const entry of readdirSync(directory).sort(utf8Compare)) {
-      if (entry === ".bin" || entry === ".package-lock.json") continue;
+      if (
+        entry === ".agenc-node" ||
+        entry === ".bin" ||
+        entry === ".package-lock.json"
+      ) continue;
       const entryPath = join(directory, entry);
       if (entry.startsWith("@")) {
         if (!lstatSync(entryPath).isDirectory()) {
@@ -1130,7 +1292,7 @@ export function installedNativeModuleSmokeProgram(platform = process.platform) {
     const childEnvironment = {};
     if (${JSON.stringify(windowsSmoke)}) {
       // node-pty passes an exact custom environment block to CreateProcessW,
-      // bypassing libuv's restoration of these Node 25.9 required variables.
+      // bypassing libuv's restoration of these Node 26.5 required variables.
       const requiredNames = [
         "HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "PATH", "SYSTEMDRIVE",
         "SYSTEMROOT", "TEMP", "USERDOMAIN", "USERNAME", "USERPROFILE", "WINDIR",
@@ -1198,6 +1360,46 @@ export function installedNativeModuleSmokeProgram(platform = process.platform) {
 function smokeInstalledNativeModules(installRoot, env) {
   const script = installedNativeModuleSmokeProgram();
   run(process.execPath, ["-e", script], { cwd: installRoot, env });
+}
+
+export function embeddedNodeIdentitySmokeProgram({
+  nodeVersion,
+  nodeModuleAbi,
+  nodeApiVersion,
+}) {
+  return `
+    const expected = ${JSON.stringify({
+      nodeVersion,
+      nodeModuleAbi,
+      nodeApiVersion,
+    })};
+    const actual = {
+      nodeVersion: process.version,
+      nodeModuleAbi: process.versions.modules,
+      nodeApiVersion: process.versions.napi,
+    };
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      process.stderr.write("embedded Node identity mismatch: " +
+        JSON.stringify({ expected, actual }) + "\\n");
+      process.exit(25);
+    }
+  `;
+}
+
+function smokeEmbeddedNodeRuntime(installRoot, embeddedNode, env) {
+  const embeddedEnvironment = embeddedNode.libraryPath === undefined
+    ? env
+    : { ...env, LD_LIBRARY_PATH: embeddedNode.libraryPath };
+  run(
+    embeddedNode.executablePath,
+    ["-e", embeddedNodeIdentitySmokeProgram(embeddedNode.identity)],
+    { cwd: installRoot, env: embeddedEnvironment },
+  );
+  run(
+    embeddedNode.executablePath,
+    ["-e", installedNativeModuleSmokeProgram()],
+    { cwd: installRoot, env: embeddedEnvironment },
+  );
 }
 
 function isDeveloperSpecificPath(value) {
@@ -1289,16 +1491,24 @@ export async function writeCanonicalArchive({ installRoot, artifactPath, epoch }
     {
       cwd: installRoot,
       file: artifactPath,
-      filter(_path, metadata) {
+      filter(path, metadata) {
         metadata.mtime = fixedTime;
         // fs.Stats predicates derive the entry type from the high mode bits.
         // Preserve those bits while normalizing only permissions; clearing
         // them makes node-tar silently treat every selected path as unsupported.
         const entryType = metadata.mode & 0o170000;
+        // Windows fs.Stat/chmod does not model POSIX execute bits for regular
+        // files, so node.exe commonly arrives here as 0666 even after chmod.
+        // The archive contract is platform-neutral and requires its private
+        // Node entrypoint to be executable; bind that canonical path explicitly.
+        const normalizedPath = path.replaceAll("\\", "/").replace(/^\.\//, "");
+        const privateNodeExecutable =
+          normalizedPath === "node_modules/.agenc-node/bin/node" ||
+          normalizedPath === "node_modules/.agenc-node/node.exe";
         const permissions =
           metadata.isDirectory() ? 0o755
           : metadata.isSymbolicLink() ? 0o777
-          : metadata.mode & 0o111 ? 0o755
+          : privateNodeExecutable || metadata.mode & 0o111 ? 0o755
           : 0o644;
         metadata.mode = entryType | permissions;
         return true;
@@ -1539,6 +1749,36 @@ async function main() {
     rmSync(installedRuntime, { recursive: true, force: true });
     renameSync(stagedRuntime, installedRuntime);
     pruneNativeBuildIntermediates(nodeModules);
+    const embeddedNode = stageEmbeddedNode({
+      nodeModules,
+      nodeExecutablePath: buildExecutables.nodeExecutablePath,
+      nodeLicensePath: process.env.AGENC_NODE_LICENSE_PATH?.trim(),
+      libatomicPath: process.env.AGENC_NODE_LIBATOMIC_PATH?.trim(),
+      libatomicLicensePath: process.env.AGENC_LIBATOMIC_LICENSE_PATH?.trim(),
+      nodeVersion: process.version,
+      nodeMajor,
+      nodeModuleAbi,
+      nodeApiVersion: process.versions.napi,
+      requireLibatomic: artifactProfile === "release" && process.platform === "linux",
+    });
+    if (artifactProfile === "release" && process.platform === "linux") {
+      const bootstrap = releaseToolchain.nodeBootstrap;
+      const expected = bootstrap?.[slug];
+      const licenses = bootstrap?.licenses;
+      if (
+        bootstrap?.schemaVersion !== 1 ||
+        bootstrap.libatomicPackage !== releaseToolchain.linux.builderPackages.libatomic ||
+        expected?.librarySha256 !== embeddedNode.identity.libatomicSha256 ||
+        expected?.libraryBytes !== embeddedNode.identity.libatomicBytes ||
+        licenses?.combinedSha256 !== embeddedNode.identity.libatomicLicenseSha256 ||
+        licenses?.combinedBytes !== embeddedNode.identity.libatomicLicenseBytes
+      ) {
+        throw new Error(
+          `release embedded Node compatibility payload does not match ` +
+          `release-toolchain.json for ${slug}`,
+        );
+      }
+    }
     const nativeCompatibility = {
       ...linuxNativeCompatibility(
         nodeModules,
@@ -1570,6 +1810,7 @@ async function main() {
     const inventory = installedPackageInventory(nodeModules);
     const dependencyTreeSha256 = sha256Bytes(`${JSON.stringify(inventory)}\n`);
     smokeInstalledNativeModules(installRoot, releaseEnv);
+    smokeEmbeddedNodeRuntime(installRoot, embeddedNode, releaseEnv);
 
     // 4. Tar node_modules into the release artifact.
     const artifactName =
@@ -1583,7 +1824,7 @@ async function main() {
 
     // Validate the exact final bytes with the same policy used by every
     // installer before hashing or exposing them as a release artifact.
-    const validatedArchive = validateRuntimeArchive(artifactPath, os);
+    const validatedArchive = validateEmbeddedNodeRuntimeArchive(artifactPath, os);
     const archiveValidation = {
       policy: "agenc-runtime-archive-v1",
       entries: validatedArchive.entries,
@@ -1618,6 +1859,10 @@ async function main() {
       archiveValidation,
       bins: {
         agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc",
+        node: embeddedNode.bin,
+        ...(embeddedNode.nodeLibrary === undefined
+          ? {}
+          : { nodeLibrary: embeddedNode.nodeLibrary }),
       },
     };
     // Sidecar meta so gen-manifest.mjs can assemble the manifest by globbing

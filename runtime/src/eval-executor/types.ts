@@ -202,6 +202,8 @@ export interface PreflightCommandRecord {
 export interface PreflightPhaseTranscript {
   readonly phase: "base" | "reference";
   readonly imageDigest: string;
+  /** Image that executed the parser: the task image or resolved auxiliary digest. */
+  readonly parserImageDigest: string | null;
   readonly appliedPatches: readonly string[];
   readonly commands: readonly PreflightCommandRecord[];
   /** Parsed test name -> upstream status string, when parsing succeeded. */

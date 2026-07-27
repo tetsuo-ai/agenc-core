@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "25.9.0"
+  NODE_VERSION: "26.5.0"
   NPM_VERSION: "11.17.0"
 
 jobs:
@@ -157,6 +157,7 @@ jobs:
           set -euo pipefail
           node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
           node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          node_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["bytes"])')"
           npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
           npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
           npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
@@ -170,6 +171,7 @@ jobs:
             "$npm_url" --output "$npm_archive"
           test "$(sha256sum "$node_archive" | cut -d ' ' -f 1)" = "$node_sha"
           test "$(sha256sum "$npm_archive" | cut -d ' ' -f 1)" = "$npm_sha"
+          test "$(stat -c '%s' "$node_archive")" = "$node_bytes"
           node_root="$RUNNER_TEMP/node-distribution"
           mkdir -p "$node_root"
           tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
@@ -217,10 +219,17 @@ jobs:
             gh release verify-asset "$RELEASE_TAG" "$release_root/$asset" \
               --repo tetsuo-ai/agenc-releases --format json > "$release_root/$asset.verify.json"
           done
+          runtime_patterns=(
+            --pattern 'agenc-runtime-*.tar.gz'
+            --pattern 'agenc-runtime-*.tar.gz.sigstore.json'
+            --pattern 'agenc-runtime-*.meta.json'
+          )
+          bootstrap_tag="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeBootstrap"]["releaseTag"])')"
+          if test "$RELEASE_TAG" = "$bootstrap_tag"; then
+            runtime_patterns+=(--pattern 'agenc-node-bootstrap-libatomic-*.tar.gz')
+          fi
           gh release download "$RELEASE_TAG" --repo tetsuo-ai/agenc-releases \
-            --pattern 'agenc-runtime-*.tar.gz' \
-            --pattern 'agenc-runtime-*.tar.gz.sigstore.json' \
-            --pattern 'agenc-runtime-*.meta.json' --dir "$release_root"
+            "${runtime_patterns[@]}" --dir "$release_root"
           release_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -395,6 +404,7 @@ jobs:
           set -euo pipefail
           node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
           node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          node_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["bytes"])')"
           npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
           npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
           npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
@@ -408,6 +418,7 @@ jobs:
             "$npm_url" --output "$npm_archive"
           test "$(sha256sum "$node_archive" | cut -d ' ' -f 1)" = "$node_sha"
           test "$(sha256sum "$npm_archive" | cut -d ' ' -f 1)" = "$npm_sha"
+          test "$(stat -c '%s' "$node_archive")" = "$node_bytes"
           node_root="$RUNNER_TEMP/node-distribution"
           mkdir -p "$node_root"
           tar -xzf "$node_archive" --strip-components=1 -C "$node_root"

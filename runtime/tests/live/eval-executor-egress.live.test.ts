@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { DockerContainerRunner } from "../../src/eval-executor/index.js";
+import { PINNED_DOCKER_RUNTIME_IMAGE } from "../helpers/release-toolchain.js";
 
 const OVERLAY = process.env.AGENC_EVAL_AGENT_OVERLAY;
 const HOOK_TIMEOUT_MS = 300_000;
@@ -37,7 +38,7 @@ describe.skipIf(!OVERLAY)("eval executor egress lane (tier 3, docker, no interne
     // A glibc task image with bash and the shared libs the overlay's node
     // needs (libatomic etc.). A node base image is the simplest guarantee;
     // real pilot images are fuller still.
-    const base = process.env.AGENC_EVAL_E2E_BASE_IMAGE ?? "node:25.9.0-bookworm-slim";
+    const base = process.env.AGENC_EVAL_E2E_BASE_IMAGE ?? PINNED_DOCKER_RUNTIME_IMAGE;
     buildContext = await mkdtemp(path.join(tmpdir(), "agenc-egress-img-"));
     await writeFile(path.join(buildContext, "Dockerfile"), `FROM ${base}\nWORKDIR /testbed\n`);
     imageId = execFileSync("docker", ["build", "-q", buildContext], { encoding: "utf8" }).trim();

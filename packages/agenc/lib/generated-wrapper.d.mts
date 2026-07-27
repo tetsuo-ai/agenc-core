@@ -6,6 +6,7 @@ export interface GeneratedWrapper {
   readonly nodeBin: string;
   readonly runtimeBin: string;
   readonly agencHome: string;
+  readonly nodeLibraryPath?: string;
 }
 
 export const GENERATED_WRAPPER_MAX_BYTES: number;
@@ -15,6 +16,7 @@ export function renderGeneratedWrapperContent(wrapper: {
   readonly nodeBin: string;
   readonly runtimeBin: string;
   readonly agencHome: string;
+  readonly nodeLibraryPath?: string;
 }): string;
 
 export function parseGeneratedWrapperContent(

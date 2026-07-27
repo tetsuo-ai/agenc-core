@@ -29,6 +29,7 @@ STATIC_CHECKSUM_ASSETS = {
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 CHECKSUM_LINE = re.compile(rb"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)\Z")
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -57,6 +58,46 @@ def load_json(path: pathlib.Path, maximum: int, label: str) -> tuple[dict[str, A
     if not isinstance(parsed, dict):
         raise ValueError(f"{label} root must be an object")
     return parsed, raw
+
+
+def node_bootstrap_contract(
+    toolchain: dict[str, Any],
+) -> tuple[str, dict[str, tuple[str, int]]]:
+    bootstrap = toolchain.get("nodeBootstrap")
+    if (
+        not isinstance(bootstrap, dict)
+        or bootstrap.get("schemaVersion") != 1
+    ):
+        raise ValueError("release toolchain has no reviewed Node bootstrap contract")
+    minimum_version = bootstrap.get("minimumRuntimeVersion")
+    release_tag = bootstrap.get("releaseTag")
+    if (
+        not isinstance(minimum_version, str)
+        or SEMVER.fullmatch(minimum_version) is None
+        or release_tag != f"agenc-v{minimum_version}"
+    ):
+        raise ValueError("Node bootstrap is not anchored to its minimum runtime version")
+
+    assets: dict[str, tuple[str, int]] = {}
+    for key in ("linux-arm64", "linux-x64"):
+        entry = bootstrap.get(key)
+        expected_file = f"agenc-node-bootstrap-libatomic-{key}.tar.gz"
+        expected_url = (
+            "https://github.com/tetsuo-ai/agenc-releases/releases/download/"
+            f"{release_tag}/{expected_file}"
+        )
+        if (
+            not isinstance(entry, dict)
+            or entry.get("file") != expected_file
+            or entry.get("url") != expected_url
+            or not isinstance(entry.get("sha256"), str)
+            or SHA256.fullmatch(entry["sha256"]) is None
+            or type(entry.get("bytes")) is not int
+            or entry["bytes"] <= 0
+        ):
+            raise ValueError(f"invalid reviewed Node bootstrap asset: {key}")
+        assets[expected_file] = (entry["sha256"], entry["bytes"])
+    return release_tag, assets
 
 
 def parse_checksums(path: pathlib.Path) -> tuple[dict[str, str], bytes]:
@@ -141,6 +182,8 @@ def validate(
     checksum_bytes: bytes,
     tag: str,
     asset_root: pathlib.Path,
+    bootstrap_release_tag: str,
+    reviewed_bootstrap_assets: dict[str, tuple[str, int]],
     prepared_root: pathlib.Path | None = None,
 ) -> None:
     for root, label in ((asset_root, "download root"), (prepared_root, "prepared root")):
@@ -159,9 +202,16 @@ def validate(
         raise ValueError("runtime release must be published, stable, and immutable")
 
     runtime_assets = runtime_asset_names(manifest, tag)
-    checksum_names = runtime_assets | STATIC_CHECKSUM_ASSETS
+    bootstrap_contract = (
+        reviewed_bootstrap_assets if tag == bootstrap_release_tag else {}
+    )
+    bootstrap_assets = set(bootstrap_contract)
+    checksum_names = runtime_assets | STATIC_CHECKSUM_ASSETS | bootstrap_assets
     if set(checksums) != checksum_names:
         raise ValueError("SHA256SUMS asset inventory is incomplete or has extras")
+    for name, (expected_sha256, _) in bootstrap_contract.items():
+        if checksums[name] != expected_sha256:
+            raise ValueError(f"Node bootstrap checksum is detached from the toolchain: {name}")
     release_names = checksum_names | {"SHA256SUMS"}
 
     assets = release.get("assets")
@@ -191,8 +241,10 @@ def validate(
             or size <= 0
         ):
             raise ValueError(f"release asset digest, state, or size mismatch: {name}")
+        if name in bootstrap_contract and size != bootstrap_contract[name][1]:
+            raise ValueError(f"Node bootstrap byte count is detached from the toolchain: {name}")
 
-    locally_required = runtime_assets | {
+    locally_required = runtime_assets | bootstrap_assets | {
         "agenc-runtime-manifest-v2.json",
         "agenc-runtime-manifest.json",
         "SHA256SUMS",
@@ -231,6 +283,11 @@ def main() -> None:
     parser.add_argument("--checksums", required=True, type=pathlib.Path)
     parser.add_argument("--asset-root", required=True, type=pathlib.Path)
     parser.add_argument("--prepared-root", type=pathlib.Path)
+    parser.add_argument(
+        "--toolchain",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parent.parent / "release-toolchain.json",
+    )
     parser.add_argument("--tag", required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"agenc-v[0-9]+\.[0-9]+\.[0-9]+", args.tag):
@@ -243,6 +300,8 @@ def main() -> None:
             raise ValueError("SHA256SUMS must be the canonical downloaded release asset")
         release, _ = load_json(args.release_json, 16 * 1024 * 1024, "release JSON")
         manifest, _ = load_json(args.manifest, 1024 * 1024, "v2 manifest")
+        toolchain, _ = load_json(args.toolchain, 1024 * 1024, "release toolchain")
+        bootstrap_release_tag, bootstrap_assets = node_bootstrap_contract(toolchain)
         checksums, checksum_bytes = parse_checksums(args.checksums)
         validate(
             release,
@@ -251,6 +310,8 @@ def main() -> None:
             checksum_bytes,
             args.tag,
             asset_root,
+            bootstrap_release_tag,
+            bootstrap_assets,
             canonical_directory(args.prepared_root, "prepared root")
             if args.prepared_root else None,
         )

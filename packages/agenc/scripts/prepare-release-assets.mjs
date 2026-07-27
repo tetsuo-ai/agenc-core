@@ -22,6 +22,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateLauncherManifest } from "./check-package-ready.mjs";
 import {
   canonicalRuntimeAttestationVerificationArgs,
+  MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+  PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
   RUNTIME_ATTESTATION_POLICY,
 } from "../lib/runtime-release-contract.mjs";
 import {
@@ -188,10 +190,16 @@ function expectedSbomBytes(manifest, readSourceFile) {
   const work = mkdtempSync(join(tmpdir(), "agenc-release-sbom-"));
   try {
     const lockfile = join(work, "package-lock.json");
+    const toolchain = join(work, "release-toolchain.json");
     const output = join(work, "agenc-core.spdx.json");
     writeFileSync(
       lockfile,
       readSourceFile(manifest.build.sourceCommit, "package-lock.json"),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      toolchain,
+      readSourceFile(manifest.build.sourceCommit, "release-toolchain.json"),
       { mode: 0o600 },
     );
     const generated = spawnSync(
@@ -199,6 +207,7 @@ function expectedSbomBytes(manifest, readSourceFile) {
       [
         join(repoRoot, "scripts", "generate-spdx-sbom.mjs"),
         "--lockfile", lockfile,
+        "--toolchain", toolchain,
         "--output", output,
         "--source-commit", manifest.build.sourceCommit,
       ],
@@ -218,6 +227,92 @@ function expectedSbomBytes(manifest, readSourceFile) {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+function exactSourceReleaseToolchain(manifest, readSourceFile) {
+  const bytes = readSourceFile(manifest.build.sourceCommit, "release-toolchain.json");
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    throw new Error("exact-source release-toolchain.json bytes are unavailable");
+  }
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("root is not an object");
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error("exact-source release-toolchain.json is invalid JSON", {
+      cause: error,
+    });
+  }
+}
+
+const NODE_BOOTSTRAP_KEYS = Object.freeze(["linux-arm64", "linux-x64"]);
+
+export function nodeBootstrapReleaseAssets({
+  releaseToolchain,
+  manifest,
+  downloaded,
+}) {
+  const bootstrapContract = releaseToolchain?.nodeBootstrap;
+  if (
+    bootstrapContract === null ||
+    typeof bootstrapContract !== "object" ||
+    Array.isArray(bootstrapContract) ||
+    bootstrapContract.schemaVersion !== 1 ||
+    bootstrapContract.minimumRuntimeVersion !== MINIMUM_PRIVATE_NODE_RUNTIME_VERSION ||
+    bootstrapContract.releaseTag !== PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG
+  ) {
+    throw new Error(
+      "Node bootstrap must remain anchored to the minimum private-Node runtime release",
+    );
+  }
+
+  const reviewed = [];
+  for (const key of NODE_BOOTSTRAP_KEYS) {
+    const bootstrap = bootstrapContract[key];
+    const expectedFile = `agenc-node-bootstrap-libatomic-${key}.tar.gz`;
+    if (
+      bootstrap === null ||
+      typeof bootstrap !== "object" ||
+      Array.isArray(bootstrap) ||
+      bootstrap.file !== expectedFile ||
+      bootstrap.url !==
+        `https://github.com/${manifest.releaseRepository}/releases/download/` +
+        `${PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG}/${expectedFile}` ||
+      !/^[0-9a-f]{64}$/.test(bootstrap.sha256 ?? "") ||
+      !Number.isSafeInteger(bootstrap.bytes) ||
+      bootstrap.bytes <= 0
+    ) {
+      throw new Error(`Node bootstrap asset contract is invalid for ${key}`);
+    }
+    reviewed.push(bootstrap);
+  }
+
+  if (manifest.releaseTag !== PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG) {
+    return [];
+  }
+  if (manifest.runtimeVersion !== MINIMUM_PRIVATE_NODE_RUNTIME_VERSION) {
+    throw new Error("Node bootstrap release tag is detached from its runtime version");
+  }
+  if (!(downloaded instanceof Map)) {
+    throw new TypeError("downloaded Node bootstrap assets are required for the anchor release");
+  }
+
+  return reviewed.map((bootstrap) => {
+    const source = downloaded.get(bootstrap.file);
+    if (source === undefined) {
+      throw new Error(`Node bootstrap release asset is missing: ${bootstrap.file}`);
+    }
+    const bytes = readFileSync(source);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length !== bootstrap.bytes || digest !== bootstrap.sha256) {
+      throw new Error(
+        `Node bootstrap asset identity mismatch for ${bootstrap.file}`,
+      );
+    }
+    return [bootstrap.file, source];
+  });
 }
 
 function verifyCanonicalAttestation(
@@ -279,7 +374,6 @@ export function prepareReleaseAssets({
   legacyManifestPath = join(launcherDir, "release-manifests", LEGACY_MANIFEST_FILENAME),
   frozenLegacySha256,
   frozenLegacyBytes,
-  releaseToolchainPath = join(repoRoot, "release-toolchain.json"),
   sbomPath,
   requireCleanCheckout = true,
   verifySourceTag = true,
@@ -308,6 +402,7 @@ export function prepareReleaseAssets({
 
   const manifest = validateLauncherManifest({ manifestPath: resolvedManifest });
   if (verifySourceTag) assertReleaseSource(manifest, requireCleanCheckout);
+  const releaseToolchain = exactSourceReleaseToolchain(manifest, readSourceFile);
 
   let legacyManifestBytes;
   if (manifest.runtimeVersion === LEGACY_BRIDGE_CONTRACT.runtimeVersion) {
@@ -329,9 +424,8 @@ export function prepareReleaseAssets({
     }
   } else {
     if (frozenLegacySha256 === undefined && frozenLegacyBytes === undefined) {
-      const toolchain = JSON.parse(readFileSync(resolve(releaseToolchainPath), "utf8"));
       ({ sha256: frozenLegacySha256, bytes: frozenLegacyBytes } =
-        reviewedLegacyBridgeIdentity(toolchain));
+        reviewedLegacyBridgeIdentity(releaseToolchain));
     } else if (frozenLegacySha256 === undefined || frozenLegacyBytes === undefined) {
       throw new Error(
         `post-v${LEGACY_BRIDGE_CONTRACT.runtimeVersion} legacy bridge identity must include ` +
@@ -414,6 +508,12 @@ export function prepareReleaseAssets({
       });
     }
   }
+
+  selected.push(...nodeBootstrapReleaseAssets({
+    releaseToolchain,
+    manifest,
+    downloaded,
+  }));
 
   selected.push(
     [V2_MANIFEST_FILENAME, resolvedManifest],

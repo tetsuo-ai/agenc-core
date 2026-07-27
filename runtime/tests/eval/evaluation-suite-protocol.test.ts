@@ -178,14 +178,14 @@ describe("versioned evaluation suite protocol", () => {
       taskDocumentDigest: suite.tasks[7].documentDigest,
       taskWallTimeMs: 60_000,
       seedSlot: 101,
-      delayAfterAcceptanceMs: 14_323,
+      delayAfterAcceptanceMs: 20_523,
       maximumDelayAfterAcceptanceMs: 29_000,
       recoveryWindowMs: 30_000,
       maximumInjectionJitterMs: 1_000,
       target: "coordinator_process_group",
       operation: "sigkill",
       recovery: "adapter_restart_and_attach",
-      planDigest: "sha256:83c60c6c0a67a2584b227c491d6c161febcb5f8abb175d5b0560763a8d220439",
+      planDigest: "sha256:f93b74e8d77899e11f739ce6ffc73c097102ef8139b8424d6a948fb8ce04156f",
     });
     expect(compileCompetitiveFaultPlan(competitive, suite, {
       condition: "coordinator_process_kill",

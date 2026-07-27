@@ -142,9 +142,12 @@ describe("reproducible install and release contract", () => {
     ).toHaveLength(2);
     expect(workflow).not.toContain('require(\\"./runtime/package.json');
     expect(workflow).not.toMatch(/run:\s+npm install(?! --global)/);
-    expect(workflow).toContain('NODE_VERSION: "25.9.0"');
+    expect(workflow).toContain('NODE_VERSION: "26.5.0"');
     expect(workflow).toContain('NPM_VERSION: "11.17.0"');
+    expect(workflow.match(/-node26-abi147\.tar\.gz/g)).toHaveLength(2);
+    expect(workflow).not.toContain("-node25-abi141.tar.gz");
     expect(workflow).toContain("libatomic-8.5.0-28.el8_10");
+    expect(workflow).toContain("libgcc-8.5.0-28.el8_10");
     expect(workflow).toContain("gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10");
     expect(workflow).toContain("python3.12-3.12.13-2.el8_10");
     expect(workflow).toContain('["rpmContentInventory"]');
@@ -161,12 +164,19 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("AGENC_NPM_DISTRIBUTION_SHA256=");
     expect(workflow).toContain("AGENC_NODE_EXECUTABLE_PATH=");
     expect(workflow).toContain("AGENC_NPM_CLI_PATH=");
+    expect(workflow).toContain("AGENC_NODE_BOOTSTRAP_PATH=");
+    expect(workflow).toContain("AGENC_NODE_LIBATOMIC_PATH=");
+    expect(workflow).toContain("AGENC_LIBATOMIC_LICENSE_PATH=");
     expect(workflow).toContain("npm_config_nodedir=");
     expect(workflow).toContain("nodeDistributions");
     expect(workflow).toContain("nodeHeaders");
     expect(workflow).toContain("Get-FileHash -Algorithm SHA256");
     expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_SHA256=");
     expect(workflow).toContain("AGENC_NODE_IMPORT_LIBRARY_BYTES=");
+    expect(workflow).toContain('["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"]');
+    expect(workflow).toContain('["nodeHeaders"]["bytes"]');
+    expect(workflow).toContain("Assert-Bytes $nodeArchive $distribution.bytes");
+    expect(workflow).toContain("Assert-Bytes $headersArchive $toolchain.nodeHeaders.bytes");
     expect(workflow).toContain("Invoke-WebRequest -Uri $importLibrary.url");
     expect(workflow).toContain("Validate the reviewed macOS runner and native toolchain");
     expect(workflow).toContain("Validate and activate the reviewed Windows runner and native toolchain");
@@ -174,11 +184,25 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain("Assert-Exact 'ImageVersion'");
     expect(workflow).toContain("Assert-Exact 'active MSVC tools version'");
     expect(workflow).toContain("MSVC compiler identity");
+    expect(workflow).toContain('["nodeBootstrap"]["minimumRuntimeVersion"]');
+    expect(workflow).toContain('test "$bootstrap_tag" = "agenc-v${bootstrap_version}"');
+    expect(workflow).toContain(
+      'test "$GITHUB_REF" = "refs/tags/${bootstrap_tag}"',
+    );
+    expect(
+      workflow.match(
+        /if: steps\.node_bootstrap_release\.outputs\.publish == 'true'/g,
+      ),
+    ).toHaveLength(3);
     const linuxInstall = workflow.slice(
       workflow.indexOf("Install digest-pinned Node, headers, and npm"),
       workflow.indexOf("Build from two isolated worktrees and compare bytes"),
     );
     expect(linuxInstall).toContain("rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic");
+    expect(linuxInstall).toContain("COPYING.RUNTIME");
+    expect(linuxInstall).toContain("COPYING3");
+    expect(linuxInstall).toContain("nodeBootstrap");
+    expect(linuxInstall).toContain("lib/libatomic.so.1");
     expect(linuxInstall).toContain('ldd "$node_root/bin/node"');
     expect(linuxInstall).toContain("portable Node has unresolved shared libraries");
     expect(linuxInstall.indexOf('ldd "$node_root/bin/node"')).toBeLessThan(
@@ -192,6 +216,32 @@ describe("reproducible install and release contract", () => {
     expect(linuxBuild).not.toContain("safe.directory '*'");
     expect(linuxBuild.indexOf("safe.directory")).toBeLessThan(
       linuxBuild.indexOf("git worktree add"),
+    );
+    expect(linuxBuild).toContain(
+      "Stage the immutable Node compatibility bootstrap",
+    );
+    const selectRuntime = workflow.slice(
+      workflow.indexOf("Select the canonical runtime subject and bundle path"),
+      workflow.indexOf("Attest runtime artifact provenance"),
+    );
+    expect(selectRuntime).toContain(
+      'if test "$AGENC_PUBLISH_NODE_BOOTSTRAP" = true',
+    );
+    expect(selectRuntime).toContain('test "${#bootstraps[@]}" -eq 0');
+    const runtimeAttestation = workflow.slice(
+      workflow.indexOf("Attest runtime artifact provenance"),
+      workflow.indexOf("Attest the immutable Node compatibility bootstrap"),
+    );
+    expect(runtimeAttestation).not.toContain("outputs.bootstrap");
+    const bootstrapAttestation = workflow.slice(
+      workflow.indexOf("Attest the immutable Node compatibility bootstrap"),
+      workflow.indexOf("Bind the action-produced bundle"),
+    );
+    expect(bootstrapAttestation).toContain(
+      "if: steps.node_bootstrap_release.outputs.publish == 'true'",
+    );
+    expect(bootstrapAttestation).toContain(
+      "steps.runtime-artifact.outputs.bootstrap",
     );
     const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
     const macosValidation = nativeJob.slice(
@@ -315,7 +365,14 @@ describe("reproducible install and release contract", () => {
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
       hostedRunners: Record<string, Record<string, string>>;
+      nodeDistributions: Record<
+        string,
+        { file: string; sha256: string; bytes: number }
+      >;
       nodeHeaders: {
+        file: string;
+        sha256: string;
+        bytes: number;
         windowsCommonGypi: {
           schemaVersion: number;
           path: string;
@@ -328,6 +385,15 @@ describe("reproducible install and release contract", () => {
         string,
         { file: string; url: string; sha256: string; bytes: number }
       >;
+      nodeBootstrap: {
+        schemaVersion: number;
+        minimumRuntimeVersion: string;
+        releaseTag: string;
+        licenseExpression: string;
+        licenses: Record<string, string | number>;
+        "linux-x64": Record<string, string | number>;
+        "linux-arm64": Record<string, string | number>;
+      };
       linux: {
         builderPackages: Record<string, string>;
         rpmContentInventory: {
@@ -366,17 +432,76 @@ describe("reproducible install and release contract", () => {
     expect(nativeContract.linux.builderPackages.libatomic).toBe(
       "libatomic-8.5.0-28.el8_10",
     );
+    expect(nativeContract.linux.builderPackages.libgcc).toBe(
+      "libgcc-8.5.0-28.el8_10",
+    );
+    expect(nativeContract.nodeBootstrap).toMatchObject({
+      schemaVersion: 1,
+      minimumRuntimeVersion: "0.11.0",
+      releaseTag: "agenc-v0.11.0",
+      licenseExpression: "GPL-3.0-or-later WITH GCC-exception-3.1",
+      licenses: {
+        copying3Sha256: "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        runtimeExceptionSha256:
+          "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+        combinedSha256: "df7743d494c078043b24385b7e214c13afb0067b43d9b385b4be64e5b872326c",
+      },
+      "linux-x64": {
+        sha256: "5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6",
+        bytes: 26_073,
+        librarySha256:
+          "5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd",
+      },
+      "linux-arm64": {
+        sha256: "645433551bd872a59e55e4f490ba0df36184b855dce2d3e798a4526c3dfb828c",
+        bytes: 27_660,
+        librarySha256:
+          "d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2",
+      },
+    });
+    expect(nativeContract.nodeDistributions).toEqual({
+      "linux-x64": {
+        file: "node-v26.5.0-linux-x64.tar.gz",
+        sha256: "22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677",
+        bytes: 61_529_729,
+      },
+      "linux-arm64": {
+        file: "node-v26.5.0-linux-arm64.tar.gz",
+        sha256: "308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1",
+        bytes: 61_388_036,
+      },
+      "darwin-x64": {
+        file: "node-v26.5.0-darwin-x64.tar.gz",
+        sha256: "98293394c945a24e64e00b4177bf075ec963ea70b34d1d2e24bd4a71716d334f",
+        bytes: 58_480_209,
+      },
+      "darwin-arm64": {
+        file: "node-v26.5.0-darwin-arm64.tar.gz",
+        sha256: "ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9",
+        bytes: 57_181_366,
+      },
+      "win-x64": {
+        file: "node-v26.5.0-win-x64.zip",
+        sha256: "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6",
+        bytes: 41_113_391,
+      },
+    });
+    expect(nativeContract.nodeHeaders).toMatchObject({
+      file: "node-v26.5.0-headers.tar.gz",
+      sha256: "b02b9c5922e7fd7bae30d9e97c293059175aa9d267b81d2866d52696445b5cbd",
+      bytes: 9_963_460,
+    });
     expect(nativeContract.nodeImportLibraries["win-x64"]).toEqual({
       file: "node.lib",
-      url: "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
-      sha256: "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
-      bytes: 2_995_712,
+      url: "https://nodejs.org/dist/v26.5.0/win-x64/node.lib",
+      sha256: "56f06350037085fce04930befd98327afc86ee46f52af6f6f8a68a03630e8380",
+      bytes: 3_026_982,
     });
     expect(nativeContract.nodeHeaders.windowsCommonGypi).toEqual({
       schemaVersion: 1,
       path: "include/node/common.gypi",
-      sourceSha256: "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
-      releaseSha256: "8a9331b700e6cdd52e611d249a78e02513d70dd45f4be314bf6f1e301d4bbd2d",
+      sourceSha256: "48c0c45ddfcf0de738fd7d9fc23c02768f2816686e099027af6373bd062e53b7",
+      releaseSha256: "ddeb29bbdbcd29a167aa4799794c4a5c56222184f06361d8a2c0bfc310d9b266",
       transformation: "disable-debug-information-and-full-paths",
     });
     expect(nativeContract.linux.rpmContentInventory).toEqual({
@@ -397,7 +522,9 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(workflow).toContain("environment: npm-production");
-    expect(workflow).toContain('NODE_VERSION: "25.9.0"');
+    expect(workflow).toContain('NODE_VERSION: "26.5.0"');
+    expect(workflow.match(/nodeDistributions"\]\["linux-x64"\]\["bytes"\]/g)).toHaveLength(2);
+    expect(workflow.match(/stat -c '%s' "\$node_archive"/g)).toHaveLength(2);
     expect(workflow.match(/id-token: write/g)).toHaveLength(1);
     const releaseSourceJob = workflow.slice(
       workflow.indexOf("\n  release-source:"),
@@ -441,6 +568,15 @@ describe("reproducible install and release contract", () => {
     expect(workflow).toContain('--prepared-root "$owned_root/verified-release"');
     expect(workflow).toContain("agenc-runtime-manifest-v2.json");
     expect(workflow).toContain("--legacy-manifest");
+    expect(workflow).toContain(
+      "--pattern 'agenc-node-bootstrap-libatomic-*.tar.gz'",
+    );
+    expect(workflow).toContain(
+      '["nodeBootstrap"]["releaseTag"]',
+    );
+    expect(workflow).toContain(
+      'if test "$RELEASE_TAG" = "$bootstrap_tag"',
+    );
     expect(workflow).not.toContain("npm test --workspace=@tetsuo-ai/agenc");
     expect(workflow).toContain("git worktree add --detach");
     expect(workflow).toMatch(/\(\n\s+cd \"\$source\"[\s\S]+node \"\$release_tool\" pack/);
@@ -621,9 +757,9 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(toolchain).toMatchObject({
-      nodeVersion: "25.9.0",
-      nodeMajor: 25,
-      nodeModuleAbi: "141",
+      nodeVersion: "26.5.0",
+      nodeMajor: 26,
+      nodeModuleAbi: "147",
       nodeApiVersion: "10",
     });
     const images = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map((match) => match[1]);
@@ -641,6 +777,12 @@ describe("reproducible install and release contract", () => {
       compatibilityVersion: "30",
     });
     expect(images).toEqual([toolchain.docker.buildImage, toolchain.docker.runtimeImage]);
+    expect(toolchain.docker.buildImage).toBe(
+      "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271",
+    );
+    expect(toolchain.docker.runtimeImage).toBe(
+      "node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
+    );
     expect(toolchain.docker.debianSnapshot.timestamp).toMatch(/^[0-9]{8}T[0-9]{6}Z$/);
     expect(toolchain.docker.debianSnapshot.repositories).toEqual([
       { archive: "debian", suite: "bookworm", components: ["main"] },

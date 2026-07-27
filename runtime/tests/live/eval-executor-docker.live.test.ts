@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
+  DEFAULT_PARSER_FALLBACK_IMAGE,
   DockerContainerRunner,
   mintUpstreamPreflightEvidence,
   runAgentOnTask,
@@ -27,7 +28,7 @@ import {
  */
 const AGENT_OVERLAY = process.env.AGENC_EVAL_AGENT_OVERLAY;
 
-const BASE_IMAGE = process.env.AGENC_EVAL_E2E_BASE_IMAGE ?? "node:25.9.0-bookworm";
+const BASE_IMAGE = process.env.AGENC_EVAL_E2E_BASE_IMAGE ?? DEFAULT_PARSER_FALLBACK_IMAGE;
 const HOOK_TIMEOUT_MS = 900_000;
 const TEST_TIMEOUT_MS = 600_000;
 

@@ -4,8 +4,8 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.7.2-blue)
-![node](https://img.shields.io/badge/node-25.9.x-339933?logo=node.js&logoColor=white)
+![version](https://img.shields.io/badge/version-0.11.0-blue)
+![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
 **AgenC Core** is the implementation repository for the `agenc` CLI. A local
@@ -15,9 +15,9 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.7.2` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.7.2` | `runtime/` | Daemon, TUI, tools, providers, tests |
-| `@tetsuo-ai/agenc-sdk` `0.2.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
+| `@tetsuo-ai/agenc` `0.11.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.11.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc-sdk` `0.3.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). CLI reference:
@@ -94,8 +94,8 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current release: 0.10.0.** Runtime and launcher are versioned `0.10.0`; the
-embedding SDK package is intentionally `0.2.0`. The public launcher is
+**Current version in tree: 0.11.0.** Runtime and launcher are versioned
+`0.11.0`; the embedding SDK package is `0.3.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**
@@ -108,8 +108,9 @@ onboard acts 2–3, `agenc update`, remote pairing, Grok OAuth, SDK.
 
 ## Requirements
 
-- **Node.js `>=25.9 <26`** (`runtime/package.json` engines). Release artifacts
-  are built with exactly Node.js `25.9.0`; see the
+- Standalone installations carry a private, verified **Node.js 26.5.0** runtime
+  (module ABI 147); no host Node installation is required. Source checkouts,
+  the npm launcher, and the SDK require Node.js `>=26.5 <27`; see the
   [supported-host matrix](docs/install.md#supported-hosts).
 - **npm `11.17.0`** (exactly pinned by `packageManager` and `devEngines`).
 - **ripgrep (`rg`)** on `PATH` for file search (`agenc doctor` reports status).
@@ -324,7 +325,7 @@ check:e2e-all
 check:unused                # knip (informational)
 ```
 
-The required `npm test` gate runs on a Linux Docker host in a pinned Node 25.9.0
+The required `npm test` gate runs on a Linux Docker host in a pinned Node 26.5.0
 image with no external network interface (private loopback only), a recursively
 read-only checkout, private IPC/tmpfs state, and a seccomp/ptrace process-tree
 supervisor. Before repository code executes, both the client and a trusted

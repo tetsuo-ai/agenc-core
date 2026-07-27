@@ -90,32 +90,55 @@ export function detectAsdf(): boolean {
   return false
 }
 
+type HomebrewDetectionOptions = {
+  readonly platform?: ReturnType<typeof getPlatform>
+  readonly executablePaths?: readonly string[]
+}
+
+function homebrewAgenCPathKind(path: string): 'cask' | 'formula' | null {
+  const normalized = path.replaceAll('\\', '/')
+  if (normalized.includes('/Caskroom/')) {
+    return 'cask'
+  }
+  if (
+    /\/(?:Cellar\/agenc\/[^/]+|opt\/agenc)\/(?:bin\/agenc|libexec\/node_modules\/(?:\.agenc-node\/bin\/node|@tetsuo-ai\/runtime\/bin\/agenc))$/.test(
+      normalized,
+    )
+  ) {
+    return 'formula'
+  }
+  return null
+}
+
 /**
- * Detects if the currently running AgenC instance was installed via Homebrew
- * by checking if the executable path is within a Homebrew Caskroom directory.
+ * Detects if the currently running AgenC instance was installed via Homebrew.
  *
- * Note: We specifically check for Caskroom because npm can also be installed via
- * Homebrew, which would place npm global packages under the same Homebrew prefix
- * (e.g., /opt/homebrew/lib/node_modules). We need to distinguish between:
- * - Homebrew cask: /opt/homebrew/Caskroom/agenc-code/...
- * - npm-global (via Homebrew's npm): /opt/homebrew/lib/node_modules/@anthropic-ai/...
+ * The restored formula runs the runtime with its private Node from
+ * `<prefix>/Cellar/agenc/<version>/libexec/node_modules/.agenc-node/bin/node`.
+ * Matching the complete AgenC-owned suffix keeps a Node or npm installation
+ * that merely came from Homebrew from being misclassified as the AgenC
+ * formula.
  */
-export function detectHomebrew(): boolean {
-  const platform = getPlatform()
+export function detectHomebrew(
+  options: HomebrewDetectionOptions = {},
+): boolean {
+  const platform = options.platform ?? getPlatform()
 
   // Homebrew is only for macOS and Linux
   if (platform !== 'macos' && platform !== 'linux' && platform !== 'wsl') {
     return false
   }
 
-  // Get the path of the currently running executable
-  const execPath = process.execPath || process.argv[0] || ''
-
-  // Check if the executable is within a Homebrew Caskroom directory
-  // This is specific to Homebrew cask installations
-  if (execPath.includes('/Caskroom/')) {
-    logForDebugging(`Detected Homebrew cask installation: ${execPath}`)
-    return true
+  const executablePaths = options.executablePaths ?? [
+    process.execPath || process.argv[0] || '',
+    process.argv[1] || '',
+  ]
+  for (const path of executablePaths) {
+    const kind = homebrewAgenCPathKind(path)
+    if (kind !== null) {
+      logForDebugging(`Detected Homebrew ${kind} installation: ${path}`)
+      return true
+    }
   }
 
   return false

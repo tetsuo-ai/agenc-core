@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/runtime",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "AgenC lean coding CLI",
   "type": "module",
@@ -159,7 +159,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/lodash-es": "^4.17.12",
-    "@types/node": "^25.0.0",
+    "@types/node": "^26.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.0.0",
     "@types/turndown": "^5.0.6",
@@ -173,6 +173,6 @@
     "vitest": "^4.1.9"
   },
   "engines": {
-    "node": ">=25.9.0 <26.0.0"
+    "node": ">=26.5.0 <27.0.0"
   }
 }

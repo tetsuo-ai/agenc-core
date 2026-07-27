@@ -212,6 +212,7 @@ function ripGrepRaw(
 
   // For embedded ripgrep, use spawn with argv0 (execFile doesn't support argv0 properly)
   if (argv0) {
+    const command = [rgPath, ...fullArgs].join(' ')
     const child = spawn(rgPath, fullArgs, {
       argv0,
       signal: abortSignal,
@@ -271,8 +272,9 @@ function ripGrepRaw(
         // 0 = matches found, 1 = no matches (both are success)
         callback(null, stdout, stderr)
       } else {
-        const error: ExecFileException = new Error(
-          `ripgrep exited with code ${code}`,
+        const error: ExecFileException = Object.assign(
+          new Error(`ripgrep exited with code ${code}`),
+          { cmd: command },
         )
         error.code = code ?? undefined
         error.signal = signal ?? undefined
@@ -285,7 +287,7 @@ function ripGrepRaw(
       settled = true
       clearTimeout(timeoutId)
       clearTimeout(killTimeoutId)
-      const error: ExecFileException = err
+      const error: ExecFileException = Object.assign(err, { cmd: command })
       callback(error, stdout, stderr)
     })
 

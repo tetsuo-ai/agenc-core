@@ -118,7 +118,7 @@ sandbox, and junction/reparse coverage remains a platform-gated test target.
 
 Primary sources reviewed 2026-07-16:
 
-- [Node.js 25 filesystem API](https://nodejs.org/docs/latest-v25.x/api/fs.html)
+- [Node.js 26 filesystem API](https://nodejs.org/docs/latest-v26.x/api/fs.html)
 - [Linux `openat2(2)`](https://man7.org/linux/man-pages/man2/openat2.2.html)
 - [Linux `open(2)` / `O_NOFOLLOW`](https://man7.org/linux/man-pages/man2/open.2.html)
 - [Linux symlink and hard-link semantics](https://man7.org/linux/man-pages/man7/symlink.7.html)

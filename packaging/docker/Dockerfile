@@ -39,7 +39,7 @@
 ARG SOURCE_DATE_EPOCH
 
 # --- build stage --------------------------------------------------------------
-FROM node:25.9.0-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b AS build
+FROM node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271 AS build
 ARG AGENC_BUILD_COMMIT
 ARG SOURCE_DATE_EPOCH
 ARG AGENC_BUILD_TIME
@@ -86,7 +86,7 @@ RUN node --input-type=module -e \
        'const p=JSON.parse(await import("node:fs").then(m=>m.readFileSync("/opt/agenc/node_modules/@tetsuo-ai/runtime/dist/VERSION","utf8"))); if(p.commit!==process.env.AGENC_BUILD_COMMIT||p.buildTime!==process.env.AGENC_BUILD_TIME||p.runtimeVersion!==process.env.AGENC_VERSION) throw new Error("embedded runtime VERSION is detached from Docker metadata");'
 
 # --- runtime stage ------------------------------------------------------------
-FROM node:25.9.0-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
+FROM node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
 ARG AGENC_BUILD_COMMIT
 ARG SOURCE_DATE_EPOCH
 ARG AGENC_BUILD_TIME

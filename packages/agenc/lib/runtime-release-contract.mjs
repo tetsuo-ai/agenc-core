@@ -10,6 +10,10 @@ export const MAX_RUNTIME_ARTIFACT_BYTES = 256 * 1024 * 1024;
 export const MAX_RUNTIME_ATTESTATION_BYTES = 4 * 1024 * 1024;
 export const OFFICIAL_RELEASE_REPOSITORY = "tetsuo-ai/agenc-releases";
 export const OFFICIAL_SOURCE_REPOSITORY = "tetsuo-ai/agenc-core";
+export const FROZEN_LEGACY_RUNTIME_VERSION = "0.7.2";
+export const MINIMUM_PRIVATE_NODE_RUNTIME_VERSION = "0.11.0";
+export const PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG =
+  `agenc-v${MINIMUM_PRIVATE_NODE_RUNTIME_VERSION}`;
 export const OFFICIAL_RELEASE_WORKFLOW =
   "tetsuo-ai/agenc-core/.github/workflows/release-runtime.yml";
 export const RUNTIME_ATTESTATION_POLICY = Object.freeze({
@@ -113,6 +117,49 @@ export function requireRuntimeManifestTrustMode(trustMode) {
 export function canonicalRuntimeArtifactName(manifest, artifact) {
   return `agenc-runtime-${manifest.runtimeVersion}-${artifact.platform}-${artifact.arch}` +
     `-node${artifact.nodeMajor}-abi${artifact.nodeModuleAbi}.tar.gz`;
+}
+
+export function canonicalRuntimeNodeBin(platform) {
+  if (platform === "win" || platform === "win32") {
+    return "node_modules/.agenc-node/node.exe";
+  }
+  if (platform === "linux" || platform === "darwin") {
+    return "node_modules/.agenc-node/bin/node";
+  }
+  throw new Error(`agenc: unsupported runtime Node platform ${String(platform)}`);
+}
+
+export function canonicalRuntimeNodeLibrary(platform) {
+  if (platform === "linux") {
+    return "node_modules/.agenc-node/lib";
+  }
+  if (platform === "darwin" || platform === "win" || platform === "win32") {
+    return undefined;
+  }
+  throw new Error(`agenc: unsupported runtime Node platform ${String(platform)}`);
+}
+
+export function requireSupportedRuntimeVersion(version) {
+  if (version === FROZEN_LEGACY_RUNTIME_VERSION) {
+    return version;
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(version ?? "");
+  if (match === null) {
+    throw new Error("agenc: runtime version is not a canonical semantic version");
+  }
+  const actual = match.slice(1, 4).map(Number);
+  const minimum = MINIMUM_PRIVATE_NODE_RUNTIME_VERSION.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] > minimum[index]) return version;
+    if (actual[index] < minimum[index]) {
+      throw new Error(
+        `agenc: runtime ${version} has no supported standalone activation contract; ` +
+          `use the frozen ${FROZEN_LEGACY_RUNTIME_VERSION} bridge with host Node 25.9, ` +
+          `or ${MINIMUM_PRIVATE_NODE_RUNTIME_VERSION} and newer with private Node`,
+      );
+    }
+  }
+  return version;
 }
 
 function localFileUrlUsesWindowsPaths(platform) {
@@ -289,6 +336,7 @@ export function validateRuntimeReleaseManifest(
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.runtimeVersion ?? "")) {
     throw new Error("agenc: runtime manifest has an invalid runtimeVersion");
   }
+  requireSupportedRuntimeVersion(manifest.runtimeVersion);
   if (manifest.releaseTag !== `agenc-v${manifest.runtimeVersion}`) {
     throw new Error("agenc: runtime manifest releaseTag does not match runtimeVersion");
   }
@@ -345,7 +393,14 @@ export function validateRuntimeReleaseManifest(
       !Number.isSafeInteger(artifact.bytes) ||
       artifact.bytes <= 0 ||
       artifact.bytes > MAX_RUNTIME_ARTIFACT_BYTES ||
-      artifact.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc"
+      artifact.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc" ||
+      (
+        manifest.runtimeVersion !== FROZEN_LEGACY_RUNTIME_VERSION &&
+        (
+          artifact.bins?.node !== canonicalRuntimeNodeBin(artifact.platform) ||
+          artifact.bins?.nodeLibrary !== canonicalRuntimeNodeLibrary(artifact.platform)
+        )
+      )
     ) {
       throw new Error(`agenc: runtime manifest artifact identity is invalid (${identity})`);
     }

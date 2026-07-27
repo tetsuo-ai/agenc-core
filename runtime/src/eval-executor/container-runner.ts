@@ -233,9 +233,10 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const created = await spawnBounded(
       "docker",
-      ["create", "--network", "none", "--entrypoint", "sleep", imageReference, "infinity"],
+      ["create", "--network", "none", "--entrypoint", "sleep", dockerReference, "infinity"],
       { timeoutMs: DOCKER_COMMAND_TIMEOUT_MS },
     );
     if (created.exitCode !== 0 || created.stdout.trim().length === 0) {
@@ -253,7 +254,7 @@ export class DockerContainerRunner implements ContainerRunner {
         `docker start failed for auxiliary image ${imageReference}: ${started.stderr.trim()}`,
       ]);
     }
-    return { id, imageDigest: imageReference, workdir: "/" };
+    return { id, imageDigest, workdir: "/" };
   }
 
   /**

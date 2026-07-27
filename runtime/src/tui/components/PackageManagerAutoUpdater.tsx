@@ -101,7 +101,7 @@ export function PackageManagerAutoUpdater(t0: Props): React.ReactNode {
   if (!updateAvailable) {
     return null;
   }
-  const updateCommand = packageManager === "homebrew" ? "brew upgrade agenc-code" : packageManager === "winget" ? "winget upgrade AgenC.AgenCCode" : packageManager === "apk" ? "apk upgrade agenc-code" : "your package manager update command";
+  const updateCommand = packageManager === "homebrew" ? "brew upgrade agenc" : packageManager === "winget" ? "winget upgrade AgenC.AgenCCode" : packageManager === "apk" ? "apk upgrade agenc" : "your package manager update command";
   let t6;
   if ($[3] !== verbose) {
     t6 = verbose && <Text dimColor={true} wrap="truncate">currentVersion: {MACRO.VERSION}</Text>;

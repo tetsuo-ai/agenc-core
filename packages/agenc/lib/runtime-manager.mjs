@@ -44,9 +44,13 @@ import {
   currentRuntimeCompatibility,
   runtimeArtifactKey,
 } from "./runtime-compatibility.mjs";
-import { validateRuntimeArchive } from "./runtime-archive.mjs";
+import {
+  validateEmbeddedNodeRuntimeArchive,
+  validateRuntimeArchive,
+} from "./runtime-archive.mjs";
 import {
   canonicalLocalFileUrlToPath,
+  FROZEN_LEGACY_RUNTIME_VERSION,
   MAX_RUNTIME_ARTIFACT_BYTES,
   MAX_RUNTIME_MANIFEST_BYTES,
   validateRuntimeReleaseManifest,
@@ -201,31 +205,45 @@ export function selectArtifact(
     trustMode,
     expectedRuntimeVersion: trustMode === "official" ? LAUNCHER_VERSION : undefined,
   });
+  const legacy = manifest.runtimeVersion === FROZEN_LEGACY_RUNTIME_VERSION;
   const matches = manifest.artifacts.filter(
     (a) =>
       a.platform === slug.os &&
       a.arch === slug.arch &&
-      a.nodeModuleAbi === nodeModuleAbi,
+      (!legacy || a.nodeModuleAbi === nodeModuleAbi),
   );
   if (matches.length !== 1) {
     const have = manifest.artifacts
       .map((a) => `${a.platform}-${a.arch}/abi${a.nodeModuleAbi ?? "?"}`)
       .join(", ");
+    const requested = legacy
+      ? `${slug.os}-${slug.arch}/abi${nodeModuleAbi}`
+      : `${slug.os}-${slug.arch}`;
     if (matches.length > 1) {
       throw new Error(
         `agenc: runtime manifest contains multiple builds for ` +
-          `${slug.os}-${slug.arch}/abi${nodeModuleAbi}`,
+          requested,
       );
     }
     throw new Error(
-      `agenc: no runtime build for ${slug.os}-${slug.arch}/abi${nodeModuleAbi} ` +
-        `(Node ${process.version}; available: ${have || "none"}). ` +
-        `Use a Node.js version supported by @tetsuo-ai/agenc ${LAUNCHER_VERSION}, ` +
-        "then reinstall @tetsuo-ai/agenc before retrying; no runtime was downloaded",
+      `agenc: no runtime build for ${requested} ` +
+        `(available: ${have || "none"}); no runtime was downloaded`,
     );
   }
   const [match] = matches;
-  return assertArtifactCompatible(match, runtime);
+  // Modern artifacts carry the exact Node executable and native ABI they were
+  // built for. The npm host only bootstraps the launcher, so its Node
+  // major/ABI must never influence artifact selection or compatibility.
+  const artifactRuntime = legacy
+    ? runtime
+    : {
+        ...runtime,
+        platform: slug.os,
+        arch: slug.arch,
+        nodeMajor: match.nodeMajor,
+        nodeModuleAbi: match.nodeModuleAbi,
+      };
+  return assertArtifactCompatible(match, artifactRuntime);
 }
 
 // Directory the artifact extracts to, and the runtime bin inside it.
@@ -244,6 +262,30 @@ export function runtimeInstallDir(
 export function runtimeBinPath(home, version, artifact) {
   const rel = artifact?.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc";
   return join(runtimeInstallDir(home, version, artifact), rel);
+}
+
+export function runtimeLaunchPaths(
+  home,
+  version,
+  artifact,
+  { legacyNodeBin = process.execPath } = {},
+) {
+  const installDir = runtimeInstallDir(home, version, artifact);
+  const legacy = artifact?.runtimeVersion === FROZEN_LEGACY_RUNTIME_VERSION;
+  const runtimeBin = join(
+    installDir,
+    artifact?.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc",
+  );
+  const nodeBin = legacy || artifact?.bins?.node === undefined
+    ? legacyNodeBin
+    : join(installDir, artifact.bins.node);
+  return {
+    runtimeBin,
+    nodeBin,
+    ...(legacy || artifact?.bins?.nodeLibrary === undefined
+      ? {}
+      : { nodeLibraryPath: join(installDir, artifact.bins.nodeLibrary) }),
+  };
 }
 
 function markerPath(installDir) {
@@ -276,6 +318,32 @@ function strictRelativeRegularFile(root, relativePath) {
   }
 }
 
+function installRequirements(artifact) {
+  const legacy = artifact?.runtimeVersion === FROZEN_LEGACY_RUNTIME_VERSION;
+  const regularFiles = [
+    artifact?.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc",
+  ];
+  const executableFiles = [];
+  if (!legacy && artifact?.bins?.node !== undefined) {
+    regularFiles.push(artifact.bins.node);
+    executableFiles.push(artifact.bins.node);
+  }
+  if (!legacy && artifact?.bins?.nodeLibrary !== undefined) {
+    regularFiles.push(`${artifact.bins.nodeLibrary}/libatomic.so.1`);
+  }
+  return { regularFiles, executableFiles };
+}
+
+function installPayloadReady(path, requirements) {
+  if (!requirements.regularFiles.every((relativePath) =>
+    strictRelativeRegularFile(path, relativePath))) {
+    return false;
+  }
+  return process.platform === "win32" ||
+    requirements.executableFiles.every((relativePath) =>
+      (lstatSync(join(path, relativePath)).mode & 0o111) !== 0);
+}
+
 function strictMarkerMatches(installDir, expectedSha) {
   try {
     const marker = markerPath(installDir);
@@ -304,12 +372,12 @@ export function isInstalled(installDir, expectedSha, expectedBin) {
   }
 }
 
-function readyInstallAt(path, expectedSha, binRel) {
+function readyInstallAt(path, expectedSha, requirements) {
   try {
     const root = lstatSync(path);
     return root.isDirectory() &&
       !root.isSymbolicLink() &&
-      strictRelativeRegularFile(path, binRel) &&
+      installPayloadReady(path, requirements) &&
       strictMarkerMatches(path, expectedSha);
   } catch {
     return false;
@@ -443,21 +511,27 @@ function durableRemoveDirectory(path, parent, hook) {
   syncDirectory(parent, "sync-parent-after-remove", hook);
 }
 
-function reconcileInstallState(versionDir, installDir, expectedSha, binRel, durabilityHook) {
+function reconcileInstallState(
+  versionDir,
+  installDir,
+  expectedSha,
+  requirements,
+  durabilityHook,
+) {
   const base = basename(installDir);
   const entries = readdirSync(versionDir);
   const readyStages = entries
     .filter((name) => name.startsWith(`.${base}.install-`))
     .map((name) => join(versionDir, name))
-    .filter((path) => readyInstallAt(path, expectedSha, binRel))
+    .filter((path) => readyInstallAt(path, expectedSha, requirements))
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
   const readyBackups = entries
     .filter((name) => name.startsWith(`${base}.old-`))
     .map((name) => join(versionDir, name))
-    .filter((path) => readyInstallAt(path, expectedSha, binRel))
+    .filter((path) => readyInstallAt(path, expectedSha, requirements))
     .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
 
-  if (!readyInstallAt(installDir, expectedSha, binRel)) {
+  if (!readyInstallAt(installDir, expectedSha, requirements)) {
     // A staged tree is written and marked before the first promotion rename,
     // so it is the newest intended state. Prefer it over a backup, then use a
     // verified backup as the fallback. promoteInstall quarantines any invalid
@@ -468,7 +542,7 @@ function reconcileInstallState(versionDir, installDir, expectedSha, binRel, dura
       promoteInstall(recoveryCandidate, installDir, durabilityHook);
     }
   }
-  const ready = readyInstallAt(installDir, expectedSha, binRel);
+  const ready = readyInstallAt(installDir, expectedSha, requirements);
   // Never destroy crash evidence or the only recoverable tree until a fully
   // verified canonical installation exists.
   if (!ready) return false;
@@ -1104,9 +1178,10 @@ function extractTarGz(archive, destDir) {
   }
 }
 
-// Ensure the runtime for `manifest.runtimeVersion` is present; returns the bin
-// path. Idempotent: a verified existing install short-circuits the download.
-export async function ensureRuntime({
+// Ensure the runtime for `manifest.runtimeVersion` is present and return every
+// path needed to launch it with the artifact's private Node. Idempotent: a
+// verified existing install short-circuits the download.
+export async function ensureRuntimeLaunch({
   env = process.env,
   userHome = homedir(),
   manifest = readManifest(),
@@ -1139,8 +1214,8 @@ export async function ensureRuntime({
     /* ignore */
   }
   const installDir = runtimeInstallDir(home, version, artifact);
-  const bin = runtimeBinPath(home, version, artifact);
-  const binRel = artifact?.bins?.agenc ?? "node_modules/@tetsuo-ai/runtime/bin/agenc";
+  const launch = runtimeLaunchPaths(home, version, artifact);
+  const requirements = installRequirements(artifact);
   const versionDir = dirname(installDir);
   mkdirSync(versionDir, { recursive: true, mode: 0o700 });
   // Repair every owner-owned segment between the version dir and the home
@@ -1176,9 +1251,9 @@ export async function ensureRuntime({
   const lockPath = `${installDir}.agenc-lock.sqlite`;
 
   if (
-    readyInstallAt(installDir, artifact.sha256, binRel) &&
+    readyInstallAt(installDir, artifact.sha256, requirements) &&
     !hasInstallResidue(versionDir, basename(installDir))
-  ) return bin;
+  ) return launch;
 
   // Reconcile a prior crash before doing network I/O. A process killed between
   // the two promotion renames leaves a complete backup that can be restored
@@ -1198,10 +1273,10 @@ export async function ensureRuntime({
       versionDir,
       installDir,
       artifact.sha256,
-      binRel,
+      requirements,
       durabilityHook,
     )) {
-      return bin;
+      return launch;
     }
     // Network I/O must not hold the filesystem lock. Keep the release handle
     // registered until it succeeds so the outer cleanup can retry a failed
@@ -1228,7 +1303,11 @@ export async function ensureRuntime({
     if (archiveIdentity.size !== BigInt(artifact.bytes)) {
       throw new Error("agenc: bounded runtime download violated its byte-count invariant");
     }
-    validateRuntimeArchive(tmp, artifact.platform);
+    if (version === FROZEN_LEGACY_RUNTIME_VERSION) {
+      validateRuntimeArchive(tmp, artifact.platform);
+    } else {
+      validateEmbeddedNodeRuntimeArchive(tmp, artifact.platform);
+    }
     assertRegularFileIdentity(tmp, archiveIdentity, "runtime archive");
     releaseLock = await acquireLock(lockPath, {
       label: "runtime install",
@@ -1239,9 +1318,9 @@ export async function ensureRuntime({
       versionDir,
       installDir,
       artifact.sha256,
-      binRel,
+      requirements,
       durabilityHook,
-    )) return bin;
+    )) return launch;
     ({ path: stagingDir, identity: stagingDirIdentity } =
       createPrivateTemporaryDirectory(
         versionDir,
@@ -1250,9 +1329,13 @@ export async function ensureRuntime({
     assertRegularFileIdentity(tmp, archiveIdentity, "runtime archive");
     extractTarGz(tmp, stagingDir);
     assertRegularFileIdentity(tmp, archiveIdentity, "runtime archive");
-    const stagedBin = join(stagingDir, binRel);
-    if (!existsSync(stagedBin)) {
-      throw new Error(`agenc: runtime extracted but entry missing: ${stagedBin}`);
+    const missingFile = requirements.regularFiles.find((relativePath) =>
+      !strictRelativeRegularFile(stagingDir, relativePath));
+    if (missingFile !== undefined) {
+      throw new Error(`agenc: runtime extracted but entry missing: ${missingFile}`);
+    }
+    if (!installPayloadReady(stagingDir, requirements)) {
+      throw new Error("agenc: runtime extracted but its private Node is not executable");
     }
     durableWriteMarker(markerPath(stagingDir), artifact.sha256, durabilityHook);
     syncExtractedTree(stagingDir, durabilityHook);
@@ -1263,13 +1346,13 @@ export async function ensureRuntime({
       versionDir,
       installDir,
       artifact.sha256,
-      binRel,
+      requirements,
       durabilityHook,
     )) {
       throw new Error("agenc: promoted runtime did not satisfy the marker contract");
     }
     log(`agenc: runtime ${version} ready`);
-    return bin;
+    return launch;
   } catch (error) {
     operationError = error;
     throw error;
@@ -1306,4 +1389,10 @@ export async function ensureRuntime({
       );
     }
   }
+}
+
+// Backward-compatible install-only surface used by npm postinstall and callers
+// that only need the runtime entrypoint.
+export async function ensureRuntime(options) {
+  return (await ensureRuntimeLaunch(options)).runtimeBin;
 }

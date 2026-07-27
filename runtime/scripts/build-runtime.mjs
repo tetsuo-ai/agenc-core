@@ -24,7 +24,7 @@ async function loadConfig() {
     platform: "node",
     sourcefile: configPath,
     sourcemap: "inline",
-    target: "node24",
+    target: "node26",
   });
 
   const tempDir = await mkdtemp(join(tmpdir(), "agenc-build-config-"));

@@ -20,7 +20,10 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
+import {
+  validateEmbeddedNodeRuntimeArchive,
+  validateRuntimeArchive,
+} from "../lib/runtime-archive.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const launcherDir = resolve(__dirname, "..");
@@ -46,6 +49,34 @@ const SUPPORTED_PLATFORMS = Object.freeze([
   "linux-x64",
   "win-x64",
 ]);
+const NODE_BOOTSTRAP_ARCHIVES = Object.freeze({
+  "linux-arm64": "agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
+  "linux-x64": "agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
+});
+
+function nodeBootstrapArchiveNamesForTag(nodeBootstrap, tag) {
+  if (nodeBootstrap?.releaseTag !== tag) return new Set();
+  for (const [platform, archive] of Object.entries(NODE_BOOTSTRAP_ARCHIVES)) {
+    if (nodeBootstrap?.[platform]?.file !== archive) {
+      throw new Error(
+        `${platform} Node bootstrap archive must be exactly ${archive}`,
+      );
+    }
+  }
+  return new Set(Object.values(NODE_BOOTSTRAP_ARCHIVES));
+}
+
+function canonicalRuntimeNodeBin(platform) {
+  return platform === "win"
+    ? "node_modules/.agenc-node/node.exe"
+    : "node_modules/.agenc-node/bin/node";
+}
+
+function canonicalRuntimeNodeLibrary(platform) {
+  return platform === "linux"
+    ? "node_modules/.agenc-node/lib"
+    : undefined;
+}
 
 function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -118,6 +149,7 @@ function assertBridgeV2Manifest(manifest) {
   exactPlatformMatrix(manifest.artifacts, "legacy bridge source");
   for (const artifact of manifest.artifacts) {
     const key = `${artifact.platform}-${artifact.arch}`;
+    requireExactKeys(artifact.bins, ["agenc"], `legacy bridge source artifact ${key} bins`);
     const artifactName =
       `agenc-runtime-${bridge.runtimeVersion}-${key}-node${bridge.nodeMajor}` +
       `-abi${bridge.nodeModuleAbi}.tar.gz`;
@@ -461,6 +493,7 @@ function expectedBuildContract() {
     nodeDistributions: releaseToolchain.nodeDistributions,
     nodeHeaders: releaseToolchain.nodeHeaders,
     nodeImportLibraries: releaseToolchain.nodeImportLibraries,
+    nodeBootstrap: releaseToolchain.nodeBootstrap,
     npmDistribution: releaseToolchain.npmDistribution,
     linux: releaseToolchain.linux,
     macos: releaseToolchain.macos,
@@ -473,6 +506,66 @@ function requireExpectedBuildValue(actual, expected, label) {
     throw new Error(`${label} ${String(actual)} does not match checkout/toolchain ${String(expected)}`);
   }
   return actual;
+}
+
+function requireEmbeddedNodeIdentityBinding({
+  identity,
+  meta,
+  key,
+  platform,
+  artifactProfile,
+  expectedBuild,
+  nodeBootstrap,
+}) {
+  for (const [field, label] of [
+    ["nodeVersion", "Node version"],
+    ["nodeMajor", "Node major"],
+    ["nodeModuleAbi", "native module ABI"],
+    ["nodeApiVersion", "Node-API version"],
+  ]) {
+    if (identity[field] !== meta[field]) {
+      throw new Error(
+        `${key} embedded Node ${label} ${String(identity[field])} ` +
+          `does not match provenance sidecar ${String(meta[field])}`,
+      );
+    }
+  }
+
+  if (artifactProfile !== "release" || platform !== "linux") return;
+  const bootstrap = nodeBootstrap;
+  const expected = bootstrap?.[key];
+  const licenses = bootstrap?.licenses;
+  if (
+    bootstrap?.schemaVersion !== 1 ||
+    bootstrap.libatomicPackage !== expectedBuild.linux?.builderPackages?.libatomic ||
+    expected === undefined ||
+    licenses === undefined
+  ) {
+    throw new Error(
+      `${key} release-toolchain private Node compatibility contract is invalid`,
+    );
+  }
+  for (const [field, expectedValue, label] of [
+    ["libatomicSha256", expected.librarySha256, "libatomic SHA256"],
+    ["libatomicBytes", expected.libraryBytes, "libatomic byte count"],
+    [
+      "libatomicLicenseSha256",
+      licenses.combinedSha256,
+      "libatomic license SHA256",
+    ],
+    [
+      "libatomicLicenseBytes",
+      licenses.combinedBytes,
+      "libatomic license byte count",
+    ],
+  ]) {
+    if (identity[field] !== expectedValue) {
+      throw new Error(
+        `${key} embedded Node ${label} ${String(identity[field])} ` +
+          `does not match release-toolchain.json ${String(expectedValue)}`,
+      );
+    }
+  }
 }
 
 function requireNativeToolchain(value, key, artifactProfile, platform) {
@@ -697,6 +790,7 @@ export async function generateManifest({
   frozenLegacySha256,
   frozenLegacyBytes,
   resolveSourceTagCommit = resolveGitTagCommit,
+  nodeBootstrapContract,
 } = {}) {
   requireString(repo, "release repository", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
   requireString(tag, "release tag", /^agenc-v[0-9]+\.[0-9]+\.[0-9]+$/);
@@ -717,6 +811,12 @@ export async function generateManifest({
     throw new Error(`tag ${tag} does not match runtime ${runtimeVersion}`);
   }
   const expectedBuild = expectedBuildContract();
+  const expectedNodeBootstrap =
+    nodeBootstrapContract ?? expectedBuild.nodeBootstrap;
+  const nodeBootstrapArchiveNames = nodeBootstrapArchiveNamesForTag(
+    expectedBuild.nodeBootstrap,
+    tag,
+  );
 
   const resolvedBaseUrl =
     baseUrl ?? `https://github.com/${repo}/releases/download/${tag}`;
@@ -875,6 +975,14 @@ export async function generateManifest({
     if (meta.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc") {
       throw new Error(`${key} has an invalid agenc entrypoint`);
     }
+    const expectedNodeBin = canonicalRuntimeNodeBin(platform);
+    if (meta.bins?.node !== expectedNodeBin) {
+      throw new Error(`${key} has an invalid embedded Node entrypoint`);
+    }
+    const expectedNodeLibrary = canonicalRuntimeNodeLibrary(platform);
+    if (meta.bins?.nodeLibrary !== expectedNodeLibrary) {
+      throw new Error(`${key} has an invalid embedded Node library path`);
+    }
     const nativeToolchain = requireNativeToolchain(
       meta.nativeToolchain,
       key,
@@ -944,7 +1052,16 @@ export async function generateManifest({
       `${key} archive format`,
       /^[^\r\n]{1,256}$/,
     );
-    const validatedArchive = validateRuntimeArchive(artifactPath, platform);
+    const validatedArchive = validateEmbeddedNodeRuntimeArchive(artifactPath, platform);
+    requireEmbeddedNodeIdentityBinding({
+      identity: validatedArchive.embeddedNodeIdentity,
+      meta,
+      key,
+      platform,
+      artifactProfile,
+      expectedBuild,
+      nodeBootstrap: expectedNodeBootstrap,
+    });
     if (
       meta.archiveValidation?.policy !== "agenc-runtime-archive-v1" ||
       meta.archiveValidation?.entries !== validatedArchive.entries ||
@@ -1060,7 +1177,13 @@ export async function generateManifest({
       archiveFormat,
       archiveValidation,
       ...platformCompatibility,
-      bins: { agenc: meta.bins.agenc },
+      bins: {
+        agenc: meta.bins.agenc,
+        node: meta.bins.node,
+        ...(meta.bins.nodeLibrary === undefined
+          ? {}
+          : { nodeLibrary: meta.bins.nodeLibrary }),
+      },
     });
   }
 
@@ -1071,14 +1194,18 @@ export async function generateManifest({
     );
   }
 
+  const runtimeArtifactNames = new Set(metas.map((meta) => meta.artifact));
   for (const name of names.filter((entry) => entry.endsWith(".tar.gz"))) {
-    if (!metas.some((meta) => meta.artifact === name)) {
+    if (
+      !runtimeArtifactNames.has(name) &&
+      !nodeBootstrapArchiveNames.has(name)
+    ) {
       throw new Error(`runtime artifact has no sidecar: ${name}`);
     }
   }
   for (const name of names.filter((entry) => entry.endsWith(".tar.gz.sigstore.json"))) {
     const artifactName = name.slice(0, -".sigstore.json".length);
-    if (!metas.some((meta) => meta.artifact === artifactName)) {
+    if (!runtimeArtifactNames.has(artifactName)) {
       throw new Error(`canonical Sigstore bundle has no runtime artifact: ${name}`);
     }
   }

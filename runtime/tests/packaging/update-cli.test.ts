@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
@@ -53,6 +53,7 @@ import {
   officialRuntimeAttestationVerificationArgs,
   validateAndParseGeneratedWrapper,
   verifyOfficialRuntimeArtifactProvenance,
+  verifyStagedPrivateNodeIdentity,
   type RuntimeManifest,
   type RuntimeManifestArtifact,
 } from "../../src/bin/update-cli.js";
@@ -72,6 +73,9 @@ import {
 const NEW_VERSION = "9.9.9-test";
 const OLD_VERSION = "9.9.8-test";
 const BIN_REL = "node_modules/@tetsuo-ai/runtime/bin/agenc";
+const NODE_BIN_REL = "node_modules/.agenc-node/bin/node";
+const WINDOWS_NODE_BIN_REL = "node_modules/.agenc-node/node.exe";
+const NODE_LIBRARY_REL = "node_modules/.agenc-node/lib";
 const NODE_ABI = process.versions.modules;
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
 const LINUX_COMPATIBILITY = {
@@ -84,6 +88,32 @@ const LINUX_ARTIFACT_KEY = `linux-x64-glibc-node-abi-${NODE_ABI}`;
 
 function linuxInstallKey(artifactSha: string): string {
   return `${LINUX_ARTIFACT_KEY}-sha256-${artifactSha}`;
+}
+
+function activationTarget(
+  agencHome: string,
+  version: string,
+  relativePath: string,
+): string {
+  return join(
+    agencHome,
+    "runtime",
+    version,
+    linuxInstallKey("1".repeat(64)),
+    relativePath,
+  );
+}
+
+function runtimeBins(platform = "linux"): {
+  readonly agenc: string;
+  readonly node: string;
+  readonly nodeLibrary?: string;
+} {
+  return {
+    agenc: BIN_REL,
+    node: platform === "win" ? WINDOWS_NODE_BIN_REL : NODE_BIN_REL,
+    ...(platform === "linux" ? { nodeLibrary: NODE_LIBRARY_REL } : {}),
+  };
 }
 
 function sha256(buf: Buffer): string {
@@ -111,15 +141,91 @@ function removePersistentWrapperLocks(root: string): void {
   }
 }
 
-function makeSyntheticArtifact(dir: string): { tarball: string; sha: string } {
+function makeSyntheticArtifact(
+  dir: string,
+  options: {
+    readonly identity?: "valid" | "missing" | "tampered";
+    readonly identityNodeModuleAbi?: string;
+    readonly nodeBehavior?: "host" | "wrong-identity" | "fail";
+    readonly platform?: "linux" | "win";
+  } = {},
+): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
   const binDir = join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin");
+  const nodeRoot = join(tree, "node_modules", ".agenc-node");
+  const nodeBinDir = join(tree, dirname(NODE_BIN_REL));
+  const nodeLibraryDir = join(tree, NODE_LIBRARY_REL);
   mkdirSync(binDir, { recursive: true });
+  mkdirSync(nodeBinDir, { recursive: true });
+  mkdirSync(nodeLibraryDir, { recursive: true });
   chmodSync(binDir, 0o700);
   writeFileSync(
     join(binDir, "agenc"),
     'console.log("ok " + process.argv.slice(2).join(" "));\n',
   );
+  const nodeShim = options.nodeBehavior === "wrong-identity"
+    ? [
+        "#!/bin/sh",
+        "printf '%s\\n' " +
+          `'{"nodeVersion":"v1.0.0","nodeMajor":1,` +
+          `"nodeModuleAbi":"1","nodeApiVersion":"1",` +
+          `"platform":"linux","arch":"x64"}'`,
+        "",
+      ].join("\n")
+    : options.nodeBehavior === "fail"
+      ? "#!/bin/sh\nexit 23\n"
+      : [
+          "#!/bin/sh",
+          "unset LD_LIBRARY_PATH",
+          `exec ${JSON.stringify(process.execPath)} "$@"`,
+          "",
+        ].join("\n");
+  const nodeShimBytes = Buffer.from(nodeShim);
+  const nodePath = join(tree, NODE_BIN_REL);
+  writeFileSync(nodePath, nodeShimBytes, { mode: 0o755 });
+  writeFileSync(join(tree, WINDOWS_NODE_BIN_REL), nodeShim, { mode: 0o755 });
+  const nodeLicense = Buffer.from("synthetic Node license\n");
+  const nodeLicensePath = join(nodeRoot, "LICENSE");
+  writeFileSync(nodeLicensePath, nodeLicense, { mode: 0o600 });
+  const libatomic = Buffer.from("fixture\n");
+  const libatomicPath = join(nodeLibraryDir, "libatomic.so.1");
+  writeFileSync(libatomicPath, libatomic, { mode: 0o600 });
+  const libatomicLicense = Buffer.from("synthetic libatomic license\n");
+  const libatomicLicensePath = join(nodeRoot, "LIBATOMIC-LICENSE");
+  writeFileSync(libatomicLicensePath, libatomicLicense, { mode: 0o600 });
+  if (options.identity !== "missing") {
+    const windows = options.platform === "win";
+    const executableSha256 = options.identity === "tampered"
+      ? "0".repeat(64)
+      : sha256(nodeShimBytes);
+    writeFileSync(
+      join(nodeRoot, "identity.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        nodeVersion: process.version,
+        nodeMajor: NODE_MAJOR,
+        nodeModuleAbi: options.identityNodeModuleAbi ?? NODE_ABI,
+        nodeApiVersion: process.versions.napi,
+        executable: windows ? "node.exe" : "bin/node",
+        executableSha256,
+        executableBytes: nodeShimBytes.length,
+        license: "LICENSE",
+        licenseSha256: sha256(nodeLicense),
+        licenseBytes: nodeLicense.length,
+        ...(windows
+          ? {}
+          : {
+              libatomic: "lib/libatomic.so.1",
+              libatomicSha256: sha256(libatomic),
+              libatomicBytes: libatomic.length,
+              libatomicLicense: "LIBATOMIC-LICENSE",
+              libatomicLicenseSha256: sha256(libatomicLicense),
+              libatomicLicenseBytes: libatomicLicense.length,
+            }),
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  }
   const tarball = join(dir, `agenc-runtime-${NEW_VERSION}-test.tar.gz`);
   const res = spawnSync("tar", ["-czf", tarball, "-C", tree, "node_modules"]);
   expect(res.status).toBe(0);
@@ -148,7 +254,7 @@ function writeManifest(
         url: `file://${artifact.tarball}`,
         sha256: artifact.sha,
         bytes: statSync(artifact.tarball).size,
-        bins: { agenc: BIN_REL },
+        bins: runtimeBins(),
       },
     ],
     ...overrides,
@@ -203,7 +309,7 @@ function makeRemoteManifest(
           `${releaseTag}/${artifactName}.sigstore.json`,
         attestationSha256: "f".repeat(64),
         attestationBytes: 1,
-        bins: { agenc: BIN_REL },
+        bins: runtimeBins(),
       },
     ],
     ...overrides,
@@ -255,7 +361,7 @@ function makeRemoteArtifact(
       `agenc-v9.9.9/agenc-runtime-9.9.9-linux-x64-node${NODE_MAJOR}-abi${NODE_ABI}.tar.gz`,
     sha256: sha256Value,
     bytes,
-    bins: { agenc: BIN_REL },
+    bins: runtimeBins(),
   };
 }
 
@@ -470,6 +576,7 @@ describe("agenc update CLI", () => {
       "rem Generated by AgenC install.ps1 - rewritten on every install/upgrade.",
       `rem AgenC wrapper metadata v1: ${metadata}`,
       `if not defined AGENC_HOME set "AGENC_HOME=${values.agencHome.replaceAll("%", "%%")}"`,
+      `set "PATH=${win32.dirname(values.nodeBin).replaceAll("%", "%%")};%PATH%"`,
       `"${values.nodeBin.replaceAll("%", "%%")}" "${values.runtimeBin.replaceAll("%", "%%")}" %*`,
       "",
     ].join("\r\n");
@@ -503,12 +610,46 @@ describe("agenc update CLI", () => {
     expect(content).toContain(
       '--diagnostic-dir="${AGENC_HOME}/oom-snapshots"',
     );
+    expect(content).toContain(
+      `export PATH='${posix.dirname(values.nodeBin).replaceAll("'", `'"'"'`)}':"$PATH"`,
+    );
     expect(content).not.toContain('NODE_OPTIONS="--heapsnapshot-near-heap-limit');
     expect(parseGeneratedWrapper(path)).toEqual({
       kind: "posix",
       path,
       ...values,
     });
+  });
+
+  test("binds a private Linux Node library directory into canonical wrapper metadata", () => {
+    const values = {
+      nodeBin: join(work, "runtime", "node_modules", ".agenc-node", "bin", "node"),
+      nodeLibraryPath: join(
+        work,
+        "runtime",
+        "node_modules",
+        ".agenc-node",
+        "lib",
+      ),
+      runtimeBin: join(agencHome, "runtime", OLD_VERSION, BIN_REL),
+      agencHome,
+    };
+    const path = join(binDir, "agenc");
+    mkdirSync(binDir, { recursive: true });
+    const content = renderGeneratedWrapper({ kind: "posix", ...values });
+    writeFileSync(path, content, { mode: 0o755 });
+
+    expect(content).toContain(
+      `LD_LIBRARY_PATH='${values.nodeLibraryPath}' exec '${values.nodeBin}'`,
+    );
+    expect(content).not.toContain("${LD_LIBRARY_PATH");
+    expect(parseGeneratedWrapper(path)).toEqual({
+      kind: "posix",
+      path,
+      ...values,
+    });
+    expect(() => renderGeneratedWrapper({ kind: "cmd", ...values }))
+      .toThrow(/do not support nodeLibraryPath/);
   });
 
   test("rejects unsafe or non-canonical modern wrapper bytes", () => {
@@ -704,7 +845,8 @@ describe("agenc update CLI", () => {
           .rejects.toThrow(/protected file is group\/world-writable/);
         await expect(activateGeneratedWrappers({
           wrappers: [parseGeneratedWrapper(wrapperPath)!],
-          runtimeBin: join(agencHome, "runtime", NEW_VERSION, LINUX_ARTIFACT_KEY, BIN_REL),
+          runtimeBin: activationTarget(agencHome, NEW_VERSION, BIN_REL),
+          nodeBin: activationTarget(agencHome, NEW_VERSION, NODE_BIN_REL),
           targetVersion: NEW_VERSION,
           agencHome,
           allowDowngrade: false,
@@ -718,7 +860,8 @@ describe("agenc update CLI", () => {
 
   test("activates mixed POSIX and CMD wrappers with their native bytes and modes", async () => {
     const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
-    const targetBin = join(agencHome, "runtime", NEW_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+    const targetBin = activationTarget(agencHome, NEW_VERSION, BIN_REL);
+    const targetNode = activationTarget(agencHome, NEW_VERSION, NODE_BIN_REL);
     const posixPath = writeInstallShWrapper(join(work, "posix-bin"), agencHome, oldBin);
     const cmdPath = writeInstallPs1Wrapper(join(work, "cmd-bin"), agencHome, oldBin);
     const wrappers = [parseGeneratedWrapper(posixPath)!, parseGeneratedWrapper(cmdPath)!];
@@ -726,15 +869,72 @@ describe("agenc update CLI", () => {
     await activateGeneratedWrappers({
       wrappers,
       runtimeBin: targetBin,
+      nodeBin: targetNode,
       targetVersion: NEW_VERSION,
       agencHome,
       allowDowngrade: false,
     });
 
-    expect(parseGeneratedWrapper(posixPath)).toMatchObject({ kind: "posix", runtimeBin: targetBin });
-    expect(parseGeneratedWrapper(cmdPath)).toMatchObject({ kind: "cmd", runtimeBin: targetBin });
+    expect(parseGeneratedWrapper(posixPath)).toMatchObject({
+      kind: "posix", runtimeBin: targetBin, nodeBin: targetNode,
+    });
+    expect(parseGeneratedWrapper(cmdPath)).toMatchObject({
+      kind: "cmd", runtimeBin: targetBin, nodeBin: targetNode,
+    });
     expect(statSync(posixPath).mode & 0o777).toBe(0o755);
     expect(statSync(cmdPath).mode & 0o777).toBe(0o644);
+  });
+
+  test("atomically repoints runtime, private Node, and Linux library metadata together", async () => {
+    const oldBin = join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL);
+    const wrapperPath = writeInstallShWrapper(binDir, agencHome, oldBin);
+    const runtimeBin = activationTarget(agencHome, NEW_VERSION, BIN_REL);
+    const nodeBin = activationTarget(agencHome, NEW_VERSION, NODE_BIN_REL);
+    const nodeLibraryPath = activationTarget(
+      agencHome,
+      NEW_VERSION,
+      NODE_LIBRARY_REL,
+    );
+
+    await activateGeneratedWrappers({
+      wrappers: [parseGeneratedWrapper(wrapperPath)!],
+      runtimeBin,
+      nodeBin,
+      nodeLibraryPath,
+      targetVersion: NEW_VERSION,
+      agencHome,
+      allowDowngrade: false,
+    });
+
+    expect(parseGeneratedWrapper(wrapperPath)).toMatchObject({
+      kind: "posix",
+      runtimeBin,
+      nodeBin,
+      nodeLibraryPath,
+      agencHome,
+    });
+  });
+
+  test("rejects wrapper targets split across content-addressed runtime trees", async () => {
+    const wrapperPath = writeInstallShWrapper(
+      binDir,
+      agencHome,
+      join(agencHome, "runtime", OLD_VERSION, LINUX_ARTIFACT_KEY, BIN_REL),
+    );
+    await expect(activateGeneratedWrappers({
+      wrappers: [parseGeneratedWrapper(wrapperPath)!],
+      runtimeBin: activationTarget(agencHome, NEW_VERSION, BIN_REL),
+      nodeBin: join(
+        agencHome,
+        "runtime",
+        NEW_VERSION,
+        linuxInstallKey("2".repeat(64)),
+        NODE_BIN_REL,
+      ),
+      targetVersion: NEW_VERSION,
+      agencHome,
+      allowDowngrade: false,
+    })).rejects.toThrow(/must share one content-addressed runtime tree/);
   });
 
   test("activation rejects an untrusted wrapper ancestor before rewriting the wrapper", async () => {
@@ -749,7 +949,8 @@ describe("agenc update CLI", () => {
     try {
       await expect(activateGeneratedWrappers({
         wrappers: [parseGeneratedWrapper(wrapperPath)!],
-        runtimeBin: join(agencHome, "runtime", NEW_VERSION, LINUX_ARTIFACT_KEY, BIN_REL),
+        runtimeBin: activationTarget(agencHome, NEW_VERSION, BIN_REL),
+        nodeBin: activationTarget(agencHome, NEW_VERSION, NODE_BIN_REL),
         targetVersion: NEW_VERSION,
         agencHome,
         allowDowngrade: false,
@@ -775,7 +976,8 @@ describe("agenc update CLI", () => {
       const before = readFileSync(wrapperPath, "utf8");
       await expect(activateGeneratedWrappers({
         wrappers: [parseGeneratedWrapper(aliasPath)!],
-        runtimeBin: join(agencHome, "runtime", NEW_VERSION, LINUX_ARTIFACT_KEY, BIN_REL),
+        runtimeBin: activationTarget(agencHome, NEW_VERSION, BIN_REL),
+        nodeBin: activationTarget(agencHome, NEW_VERSION, NODE_BIN_REL),
         targetVersion: NEW_VERSION,
         agencHome,
         allowDowngrade: false,
@@ -785,7 +987,7 @@ describe("agenc update CLI", () => {
   );
 
   test("runs a complete Windows update through an explicit .cmd wrapper on a Linux test host", async () => {
-    const artifact = makeSyntheticArtifact(work);
+    const artifact = makeSyntheticArtifact(work, { platform: "win" });
     const winArtifact = {
       platform: "win",
       arch: "x64",
@@ -796,7 +998,7 @@ describe("agenc update CLI", () => {
       url: `file://${artifact.tarball}`,
       sha256: artifact.sha,
       bytes: statSync(artifact.tarball).size,
-      bins: { agenc: BIN_REL },
+      bins: runtimeBins("win"),
     };
     const manifestPath = writeManifest(work, artifact, { artifacts: [winArtifact] });
     const oldBin = join(
@@ -807,6 +1009,7 @@ describe("agenc update CLI", () => {
       BIN_REL,
     );
     const wrapper = writeInstallPs1Wrapper(binDir, agencHome, oldBin);
+    let stagedNodeVerified = false;
 
     const code = await runAgenCUpdateCli({
       kind: "update",
@@ -823,11 +1026,34 @@ describe("agenc update CLI", () => {
         nodeMajor: NODE_MAJOR,
         nodeModuleAbi: NODE_ABI,
       },
+      verifyStagedPrivateNode: async (verification) => {
+        stagedNodeVerified = true;
+        expect(verification.artifact).toMatchObject({
+          platform: "win",
+          arch: "x64",
+          nodeMajor: NODE_MAJOR,
+          nodeModuleAbi: NODE_ABI,
+          nodeApiVersion: process.versions.napi,
+        });
+        expect(verification.identity.nodeVersion).toBe(process.version);
+        expect(verification.nodeBinPath).toBe(
+          join(verification.stagingDir, WINDOWS_NODE_BIN_REL),
+        );
+        expect(verification.nodeLibraryPath).toBeUndefined();
+      },
     });
 
     expect(code).toBe(0);
+    expect(stagedNodeVerified).toBe(true);
     expect(parseGeneratedWrapper(wrapper)).toMatchObject({
       kind: "cmd",
+      nodeBin: join(
+        agencHome,
+        "runtime",
+        NEW_VERSION,
+        `win-x64-native-node-abi-${NODE_ABI}-sha256-${artifact.sha}`,
+        WINDOWS_NODE_BIN_REL,
+      ),
       runtimeBin: join(
         agencHome,
         "runtime",
@@ -918,14 +1144,14 @@ describe("agenc update CLI", () => {
     }
   });
 
-  test("rejects an unpublished or pre-modern pin before network or filesystem mutation", async () => {
+  test("rejects a retired host-Node pin before network or filesystem mutation", async () => {
     let fetched = false;
     const code = await runAgenCUpdateCli(
       {
         kind: "update",
         check: true,
         json: false,
-        pinVersion: "0.7.1",
+        pinVersion: "0.10.0",
       },
       {
         ...deps,
@@ -937,8 +1163,33 @@ describe("agenc update CLI", () => {
     );
     expect(code).toBe(1);
     expect(fetched).toBe(false);
-    expect(err.join("\n")).toContain("0.7.2 or newer");
-    expect(err.join("\n")).toContain("has no published modern v2 update contract");
+    expect(err.join("\n")).toContain("no supported standalone activation contract");
+    expect(err.join("\n")).toContain("0.11.0 and newer");
+    expect(existsSync(join(agencHome, "runtime"))).toBe(false);
+  });
+
+  test("routes the frozen bridge through its host-Node installer instead of updater activation", async () => {
+    let fetched = false;
+    const code = await runAgenCUpdateCli(
+      {
+        kind: "update",
+        check: true,
+        json: false,
+        pinVersion: "0.7.2",
+      },
+      {
+        ...deps,
+        fetchImpl: (async () => {
+          fetched = true;
+          throw new Error("network must not be reached");
+        }) as typeof fetch,
+      },
+    );
+    expect(code).toBe(1);
+    expect(fetched).toBe(false);
+    expect(err.join("\n")).toContain(
+      "rerun the standalone installer with --version 0.7.2 under Node 25.9",
+    );
     expect(existsSync(join(agencHome, "runtime"))).toBe(false);
   });
 
@@ -1145,6 +1396,96 @@ describe("agenc update CLI", () => {
     expect(result.downloaded).toBe(true);
     expect(verifierCalled).toBe(false);
   });
+
+  test.each(["missing", "tampered"] as const)(
+    "rejects an archive with %s private Node identity before extraction",
+    async (identity) => {
+      const source = makeSyntheticArtifact(work, { identity });
+      const content = readFileSync(source.tarball);
+      const artifact = makeRemoteArtifact(content.length, source.sha);
+      const manifest = manifestForArtifact(artifact);
+      await expect(installRuntimeFromManifest({
+        manifest,
+        artifact,
+        agencHome,
+        acquireLock: async () => () => undefined,
+        fetchImpl: fetchResponse(responseFromChunks(
+          [content],
+          { "content-length": String(content.length) },
+        )),
+        manifestTrust: "explicitHttps",
+        tmpDir: work,
+      })).rejects.toThrow(/private Node/);
+      expect(existsSync(join(
+        agencHome,
+        "runtime",
+        artifact.runtimeVersion,
+        linuxInstallKey(artifact.sha256),
+      ))).toBe(false);
+    },
+  );
+
+  test("rejects a self-consistent private Node identity that disagrees with the manifest", async () => {
+    const source = makeSyntheticArtifact(work, {
+      identityNodeModuleAbi: String(Number(NODE_ABI) + 1),
+    });
+    const content = readFileSync(source.tarball);
+    const artifact = makeRemoteArtifact(content.length, source.sha);
+    await expect(installRuntimeFromManifest({
+      manifest: manifestForArtifact(artifact),
+      artifact,
+      agencHome,
+      acquireLock: async () => () => undefined,
+      fetchImpl: fetchResponse(responseFromChunks(
+        [content],
+        { "content-length": String(content.length) },
+      )),
+      manifestTrust: "explicitHttps",
+      tmpDir: work,
+    })).rejects.toThrow(/private Node identity disagrees with the manifest/);
+    expect(existsSync(join(
+      agencHome,
+      "runtime",
+      artifact.runtimeVersion,
+      linuxInstallKey(artifact.sha256),
+    ))).toBe(false);
+    expect(
+      readdirSync(join(agencHome, "runtime", artifact.runtimeVersion))
+        .filter((name) => name.includes(".install-")),
+    ).toEqual([]);
+  });
+
+  test.each(["wrong-identity", "fail"] as const)(
+    "rejects and cleans up a staged private Node executable that reports %s",
+    async (nodeBehavior) => {
+      const source = makeSyntheticArtifact(work, { nodeBehavior });
+      const content = readFileSync(source.tarball);
+      const artifact = makeRemoteArtifact(content.length, source.sha);
+      await expect(installRuntimeFromManifest({
+        manifest: manifestForArtifact(artifact),
+        artifact,
+        agencHome,
+        acquireLock: async () => () => undefined,
+        fetchImpl: fetchResponse(responseFromChunks(
+          [content],
+          { "content-length": String(content.length) },
+        )),
+        manifestTrust: "explicitHttps",
+        tmpDir: work,
+      })).rejects.toThrow(/staged private Node identity/);
+      const versionDir = join(agencHome, "runtime", artifact.runtimeVersion);
+      expect(existsSync(join(
+        versionDir,
+        linuxInstallKey(artifact.sha256),
+      ))).toBe(false);
+      expect(
+        readdirSync(versionDir).filter((name) => name.includes(".install-")),
+      ).toEqual([]);
+      expect(
+        readdirSync(work).filter((name) => name.startsWith("agenc-update-download-")),
+      ).toEqual([]);
+    },
+  );
 
   test("prepared verifier success enforces the pinned command and isolated no-egress environment", async () => {
     const artifact = makeOfficialArtifact(Buffer.from("runtime"), Buffer.from("bundle"));
@@ -1405,6 +1746,67 @@ describe("agenc update CLI", () => {
     );
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe("ETIMEDOUT");
     expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  test("probes staged private Node with the exact isolated Linux library environment", async () => {
+    const stagingDir = join(work, "staged-runtime");
+    const nodeBinPath = join(stagingDir, NODE_BIN_REL);
+    const nodeLibraryPath = join(stagingDir, NODE_LIBRARY_REL);
+    let calls = 0;
+    await verifyStagedPrivateNodeIdentity({
+      nodeBinPath,
+      nodeLibraryPath,
+      stagingDir,
+      identity: {
+        nodeVersion: process.version,
+        nodeMajor: NODE_MAJOR,
+        nodeModuleAbi: NODE_ABI,
+        nodeApiVersion: process.versions.napi,
+      },
+      artifact: {
+        platform: "linux",
+        arch: "x64",
+        nodeMajor: NODE_MAJOR,
+        nodeModuleAbi: NODE_ABI,
+        nodeApiVersion: process.versions.napi,
+      },
+      timeoutMs: 321,
+      runProcess: async (command, args, options) => {
+        calls += 1;
+        expect(command).toBe(nodeBinPath);
+        expect(args).toHaveLength(2);
+        expect(args[0]).toBe("-e");
+        expect(args[1]).toContain("process.versions.modules");
+        expect(options.timeout).toBe(321);
+        expect(options.maxBuffer).toBe(16 * 1024);
+        expect(options.env).toEqual({
+          HOME: stagingDir,
+          USERPROFILE: stagingDir,
+          LANG: "C",
+          LC_ALL: "C",
+          NO_COLOR: "1",
+          PATH: dirname(nodeBinPath),
+          TEMP: stagingDir,
+          TMP: stagingDir,
+          TMPDIR: stagingDir,
+          LD_LIBRARY_PATH: nodeLibraryPath,
+        });
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            nodeVersion: process.version,
+            nodeMajor: NODE_MAJOR,
+            nodeModuleAbi: NODE_ABI,
+            nodeApiVersion: process.versions.napi,
+            platform: "linux",
+            arch: "x64",
+          }),
+          stderr: "",
+        };
+      },
+    });
+    expect(calls).toBe(1);
   });
 
   test("rejects remote manifests missing release and build provenance", async () => {
@@ -1822,12 +2224,13 @@ describe("agenc update CLI", () => {
       artifact.sha,
     );
 
-    // Wrapper repointed, signature + node path + AGENC_HOME preserved, still 0755.
+    // Wrapper repointed to the runtime's private Node + library, still 0755.
     const rewritten = readFileSync(wrapper, "utf8");
     expect(rewritten).toContain("Generated by AgenC install.sh");
     expect(rewritten).toContain("AgenC wrapper metadata v1:");
     expect(parseInstallShWrapper(wrapper)).toMatchObject({
-      nodeBin: process.execPath,
+      nodeBin: join(installDir, NODE_BIN_REL),
+      nodeLibraryPath: join(installDir, NODE_LIBRARY_REL),
       runtimeBin: newBin,
       agencHome,
     });
@@ -1837,6 +2240,47 @@ describe("agenc update CLI", () => {
     const run = spawnSync(wrapper, ["hello"], { encoding: "utf8" });
     expect(run.status).toBe(0);
     expect(run.stdout).toContain("ok hello");
+  });
+
+  test("a ready cache requires the private Node file and Linux libatomic", async () => {
+    const source = makeSyntheticArtifact(work);
+    const manifest = JSON.parse(
+      readFileSync(writeManifest(work, source), "utf8"),
+    ) as RuntimeManifest;
+    const artifact = manifest.artifacts[0]!;
+    const install = () => installRuntimeFromManifest({
+      manifest,
+      artifact,
+      agencHome,
+      acquireLock: async () => () => undefined,
+      manifestTrust: "explicitLocal" as const,
+      tmpDir: work,
+    });
+    const installDir = join(
+      agencHome,
+      "runtime",
+      NEW_VERSION,
+      linuxInstallKey(source.sha),
+    );
+
+    const first = await install();
+    expect(first).toMatchObject({
+      downloaded: true,
+      nodeBinPath: join(installDir, NODE_BIN_REL),
+      nodeLibraryPath: join(installDir, NODE_LIBRARY_REL),
+    });
+
+    rmSync(first.nodeBinPath);
+    const repairedNode = await install();
+    expect(repairedNode.downloaded).toBe(true);
+    expect(statSync(repairedNode.nodeBinPath).isFile()).toBe(true);
+
+    const libatomic = join(repairedNode.nodeLibraryPath!, "libatomic.so.1");
+    rmSync(libatomic);
+    const repairedLibrary = await install();
+    expect(repairedLibrary.downloaded).toBe(true);
+    expect(statSync(join(repairedLibrary.nodeLibraryPath!, "libatomic.so.1")).isFile())
+      .toBe(true);
   });
 
   test("rejects a relative AGENC_HOME instead of binding it to the updater cwd", async () => {
@@ -2157,13 +2601,16 @@ describe("agenc update CLI", () => {
     const oldBin = join(agencHome, "runtime", "8.0.0", LINUX_ARTIFACT_KEY, BIN_REL);
     const wrapperPath = writeInstallShWrapper(binDir, agencHome, oldBin);
     const wrapper = parseInstallShWrapper(wrapperPath)!;
-    const lowBin = join(agencHome, "runtime", "9.0.0", LINUX_ARTIFACT_KEY, BIN_REL);
-    const highBin = join(agencHome, "runtime", "10.0.0", LINUX_ARTIFACT_KEY, BIN_REL);
+    const lowBin = activationTarget(agencHome, "9.0.0", BIN_REL);
+    const lowNode = activationTarget(agencHome, "9.0.0", NODE_BIN_REL);
+    const highBin = activationTarget(agencHome, "10.0.0", BIN_REL);
+    const highNode = activationTarget(agencHome, "10.0.0", NODE_BIN_REL);
 
     const results = await Promise.all([
       activateInstallShWrappers({
         wrappers: [wrapper],
         runtimeBin: highBin,
+        nodeBin: highNode,
         targetVersion: "10.0.0",
         agencHome,
         allowDowngrade: false,
@@ -2171,6 +2618,7 @@ describe("agenc update CLI", () => {
       activateInstallShWrappers({
         wrappers: [wrapper],
         runtimeBin: lowBin,
+        nodeBin: lowNode,
         targetVersion: "9.0.0",
         agencHome,
         allowDowngrade: false,
@@ -2201,7 +2649,8 @@ describe("agenc update CLI", () => {
       for (const version of ["9.0.0", "10.0.0"]) {
         await activateInstallShWrappers({
           wrappers: [parseInstallShWrapper(wrapperPath)!],
-          runtimeBin: join(agencHome, "runtime", version, LINUX_ARTIFACT_KEY, BIN_REL),
+          runtimeBin: activationTarget(agencHome, version, BIN_REL),
+          nodeBin: activationTarget(agencHome, version, NODE_BIN_REL),
           targetVersion: version,
           agencHome,
           allowDowngrade: false,
@@ -2241,10 +2690,11 @@ describe("agenc update CLI", () => {
       })),
     })}\n`);
 
-    const nextBin = join(agencHome, "runtime", "10.0.0", LINUX_ARTIFACT_KEY, BIN_REL);
+    const nextBin = activationTarget(agencHome, "10.0.0", BIN_REL);
     await activateInstallShWrappers({
       wrappers: [wrappers[0]],
       runtimeBin: nextBin,
+      nodeBin: activationTarget(agencHome, "10.0.0", NODE_BIN_REL),
       targetVersion: "10.0.0",
       agencHome,
       allowDowngrade: false,
@@ -2301,13 +2751,8 @@ describe("agenc update CLI", () => {
       try {
         await expect(activateInstallShWrappers({
           wrappers: [active],
-          runtimeBin: join(
-            agencHome,
-            "runtime",
-            "10.0.0",
-            LINUX_ARTIFACT_KEY,
-            BIN_REL,
-          ),
+          runtimeBin: activationTarget(agencHome, "10.0.0", BIN_REL),
+          nodeBin: activationTarget(agencHome, "10.0.0", NODE_BIN_REL),
           targetVersion: "10.0.0",
           agencHome,
           allowDowngrade: false,
@@ -2340,9 +2785,39 @@ describe("agenc update CLI", () => {
           ],
         },
         { os: "linux", arch: "x64" },
-        NODE_ABI,
       ),
     ).toThrow(/no runtime build for linux-x64/);
+  });
+
+  test("selects the unique platform/arch artifact across a host ABI and Node major change", () => {
+    const source = makeSyntheticArtifact(work);
+    const manifest = JSON.parse(
+      readFileSync(writeManifest(work, source), "utf8"),
+    ) as RuntimeManifest;
+    const crossAbi = {
+      ...manifest.artifacts[0]!,
+      nodeMajor: NODE_MAJOR + 1,
+      nodeModuleAbi: String(Number(NODE_ABI) + 100),
+    };
+    const migratedManifest: RuntimeManifest = {
+      ...manifest,
+      artifacts: [crossAbi],
+    };
+
+    expect(selectUpdateArtifact(
+      migratedManifest,
+      { os: "linux", arch: "x64" },
+      {
+        platform: "linux",
+        arch: "x64",
+        nodeMajor: NODE_MAJOR,
+        nodeModuleAbi: NODE_ABI,
+        libcFamily: "glibc",
+        glibcVersion: "2.39",
+        glibcxxVersion: "3.4.33",
+        cxxAbiVersion: "1.3.15",
+      },
+    )).toBe(crossAbi);
   });
 
   test("rejects non-https remote URLs", async () => {
@@ -2360,7 +2835,7 @@ describe("agenc update CLI", () => {
           url: "http://example.invalid/runtime.tar.gz",
           sha256: artifact.sha,
           bytes: statSync(artifact.tarball).size,
-          bins: { agenc: BIN_REL },
+          bins: runtimeBins(),
         },
       ],
     });

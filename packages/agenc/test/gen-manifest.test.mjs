@@ -19,8 +19,12 @@ import { gzipSync } from "node:zlib";
 
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
 import {
+  MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+  PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
+} from "../lib/runtime-release-contract.mjs";
+import {
   frozenLegacyManifestBytes,
-  generateManifest,
+  generateManifest as generateManifestWithCheckoutNodeBootstrap,
   LEGACY_BRIDGE_CONTRACT,
   projectLegacyManifest,
   reviewedLegacyBridgeIdentity,
@@ -30,6 +34,7 @@ import { validateLauncherManifest } from "../scripts/check-package-ready.mjs";
 import {
   canonicalAttestationVerificationArgs,
   isolatedGitHubCliEnvironment,
+  nodeBootstrapReleaseAssets,
   prepareReleaseAssets,
   RELEASE_ATTESTATION_POLICY,
 } from "../scripts/prepare-release-assets.mjs";
@@ -66,6 +71,32 @@ const resolveSourceTagCommit = () => sourceCommit;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+const fixtureLibatomic = Buffer.from("libatomic");
+const fixtureLibatomicLicense = Buffer.from("GCC Runtime Library Exception");
+const fixtureNodeBootstrapContract = {
+  schemaVersion: 1,
+  libatomicPackage: releaseToolchain.linux.builderPackages.libatomic,
+  licenses: {
+    combinedSha256: sha256(fixtureLibatomicLicense),
+    combinedBytes: fixtureLibatomicLicense.length,
+  },
+  "linux-x64": {
+    librarySha256: sha256(fixtureLibatomic),
+    libraryBytes: fixtureLibatomic.length,
+  },
+  "linux-arm64": {
+    librarySha256: sha256(fixtureLibatomic),
+    libraryBytes: fixtureLibatomic.length,
+  },
+};
+
+function generateManifest(options) {
+  return generateManifestWithCheckoutNodeBootstrap({
+    ...options,
+    nodeBootstrapContract: fixtureNodeBootstrapContract,
+  });
 }
 
 test("release attestation gate exactly matches the official client policy", () => {
@@ -153,10 +184,62 @@ test("release attestation gate isolates gh configuration and disables auxiliary 
   );
 });
 
-function tarEntry(name, type, body = Buffer.alloc(0)) {
+test("future patch preparation reuses the immutable Node bootstrap release", () => {
+  assert.equal(
+    releaseToolchain.nodeBootstrap.minimumRuntimeVersion,
+    MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+  );
+  assert.equal(
+    releaseToolchain.nodeBootstrap.releaseTag,
+    PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
+  );
+
+  assert.deepEqual(
+    nodeBootstrapReleaseAssets({
+      releaseToolchain,
+      manifest: {
+        runtimeVersion: "0.11.1",
+        releaseTag: "agenc-v0.11.1",
+        releaseRepository: "tetsuo-ai/agenc-releases",
+      },
+      downloaded: new Map(),
+    }),
+    [],
+  );
+  assert.throws(
+    () => nodeBootstrapReleaseAssets({
+      releaseToolchain,
+      manifest: {
+        runtimeVersion: MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+        releaseTag: PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
+        releaseRepository: "tetsuo-ai/agenc-releases",
+      },
+      downloaded: new Map(),
+    }),
+    /Node bootstrap release asset is missing/,
+  );
+
+  const detached = structuredClone(releaseToolchain);
+  detached.nodeBootstrap.releaseTag = "agenc-v0.11.1";
+  assert.throws(
+    () => nodeBootstrapReleaseAssets({
+      releaseToolchain: detached,
+      manifest: {
+        runtimeVersion: "0.11.1",
+        releaseTag: "agenc-v0.11.1",
+        releaseRepository: "tetsuo-ai/agenc-releases",
+      },
+      downloaded: new Map(),
+    }),
+    /anchored to the minimum private-Node runtime release/,
+  );
+});
+
+function tarEntry(name, type, body = Buffer.alloc(0), mode) {
   const header = Buffer.alloc(512);
   header.write(name, 0, 100, "utf8");
-  header.write(type === "5" ? "0000755\0" : "0000644\0", 100, 8, "ascii");
+  const permissions = mode ?? (type === "5" ? 0o755 : 0o644);
+  header.write(`${permissions.toString(8).padStart(7, "0")}\0`, 100, 8, "ascii");
   header.write("0000000\0", 108, 8, "ascii");
   header.write("0000000\0", 116, 8, "ascii");
   header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
@@ -171,22 +254,89 @@ function tarEntry(name, type, body = Buffer.alloc(0)) {
   return [header, body, Buffer.alloc((512 - (body.length % 512)) % 512)];
 }
 
-function tinyRuntimeArchive(body) {
+function tinyRuntimeArchive(body, platform, {
+  identityOverrides = {},
+  libatomicBytes = fixtureLibatomic,
+  libatomicLicenseBytes = fixtureLibatomicLicense,
+} = {}) {
   const payload = Buffer.from(body);
+  const windows = platform === "win";
+  const executablePath = windows ? "node.exe" : "bin/node";
+  const executable = Buffer.from("private-node");
+  const nodeLicense = Buffer.from("Node license");
+  const libatomic = Buffer.from(libatomicBytes);
+  const libatomicLicense = Buffer.from(libatomicLicenseBytes);
+  const identity = {
+    schemaVersion: 1,
+    nodeVersion: `v${releaseToolchain.nodeVersion}`,
+    nodeMajor: releaseToolchain.nodeMajor,
+    nodeModuleAbi: releaseToolchain.nodeModuleAbi,
+    nodeApiVersion: releaseToolchain.nodeApiVersion,
+    executable: executablePath,
+    executableSha256: sha256(executable),
+    executableBytes: executable.length,
+    license: "LICENSE",
+    licenseSha256: sha256(nodeLicense),
+    licenseBytes: nodeLicense.length,
+    ...(platform === "linux"
+      ? {
+          libatomic: "lib/libatomic.so.1",
+          libatomicSha256: sha256(libatomic),
+          libatomicBytes: libatomic.length,
+          libatomicLicense: "LIBATOMIC-LICENSE",
+          libatomicLicenseSha256: sha256(libatomicLicense),
+          libatomicLicenseBytes: libatomicLicense.length,
+        }
+      : {}),
+    ...identityOverrides,
+  };
   return gzipSync(Buffer.concat([
     ...tarEntry("node_modules/", "5"),
+    ...tarEntry("node_modules/.agenc-node/", "5"),
+    ...(!windows ? tarEntry("node_modules/.agenc-node/bin/", "5") : []),
+    ...(platform === "linux"
+      ? tarEntry("node_modules/.agenc-node/lib/", "5")
+      : []),
+    ...tarEntry(
+      windows
+        ? "node_modules/.agenc-node/node.exe"
+        : "node_modules/.agenc-node/bin/node",
+      "0",
+      executable,
+      0o755,
+    ),
+    ...tarEntry("node_modules/.agenc-node/LICENSE", "0", nodeLicense),
+    ...tarEntry(
+      "node_modules/.agenc-node/identity.json",
+      "0",
+      Buffer.from(`${JSON.stringify(identity, null, 2)}\n`),
+    ),
+    ...(platform === "linux"
+      ? tarEntry(
+          "node_modules/.agenc-node/lib/libatomic.so.1",
+          "0",
+          libatomic,
+        )
+      : []),
+    ...(platform === "linux"
+      ? tarEntry(
+          "node_modules/.agenc-node/LIBATOMIC-LICENSE",
+          "0",
+          libatomicLicense,
+        )
+      : []),
     ...tarEntry("node_modules/test-package/", "5"),
     ...tarEntry("node_modules/test-package/index.js", "0", payload),
     Buffer.alloc(1024),
   ]), { level: 9, mtime: 0 });
 }
 
-function addArtifact(directory, platform, arch, body) {
+function addArtifact(directory, platform, arch, body, archiveOptions) {
   const nodeMajor = releaseToolchain.nodeMajor;
   const nodeModuleAbi = releaseToolchain.nodeModuleAbi;
   const artifact =
     `agenc-runtime-${runtimeVersion}-${platform}-${arch}-node${nodeMajor}-abi${nodeModuleAbi}.tar.gz`;
-  const bytes = tinyRuntimeArchive(body);
+  const bytes = tinyRuntimeArchive(body, platform, archiveOptions);
   const artifactPath = join(directory, artifact);
   writeFileSync(artifactPath, bytes);
   const archiveValidation = validateRuntimeArchive(artifactPath, platform);
@@ -291,7 +441,15 @@ function addArtifact(directory, platform, arch, body) {
       entries: archiveValidation.entries,
       uncompressedBytes: archiveValidation.uncompressedBytes,
     },
-    bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+    bins: {
+      agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc",
+      node: platform === "win"
+        ? "node_modules/.agenc-node/node.exe"
+        : "node_modules/.agenc-node/bin/node",
+      ...(platform === "linux"
+        ? { nodeLibrary: "node_modules/.agenc-node/lib" }
+        : {}),
+    },
     ...(platform === "linux"
       ? {
           libcFamily: "glibc",
@@ -546,7 +704,33 @@ test("release asset preparation revalidates and binds every provenance sidecar",
     const manifestPath = join(work, "agenc-runtime-manifest-v2.json");
     const legacyManifestPath = join(work, "agenc-runtime-manifest.json");
     const sbomPath = join(work, "agenc-core.spdx.json");
+    const exactSourceToolchainPath = join(work, "release-toolchain.json");
     mkdirSync(artifacts);
+    const exactSourceToolchain = structuredClone(releaseToolchain);
+    const bootstrapFixtures = new Map([
+      ["linux-arm64", Buffer.from("reviewed arm64 bootstrap fixture\n")],
+      ["linux-x64", Buffer.from("reviewed x64 bootstrap fixture\n")],
+    ]);
+    for (const [key, bytes] of bootstrapFixtures) {
+      const bootstrap = exactSourceToolchain.nodeBootstrap[key];
+      bootstrap.sha256 = sha256(bytes);
+      bootstrap.bytes = bytes.length;
+      bootstrap.url = bootstrap.url.replace(
+        /\/releases\/download\/[^/]+\/[^/]+$/,
+        `/releases/download/${tag}/${bootstrap.file}`,
+      );
+    }
+    exactSourceToolchain.nodeBootstrap.releaseTag = tag;
+    const exactSourceToolchainBytes = Buffer.from(
+      `${JSON.stringify(exactSourceToolchain, null, 2)}\n`,
+    );
+    writeFileSync(exactSourceToolchainPath, exactSourceToolchainBytes);
+    const checkoutToolchainBytes = readFileSync(join(repoRoot, "release-toolchain.json"));
+    assert.notEqual(
+      sha256(exactSourceToolchainBytes),
+      sha256(checkoutToolchainBytes),
+      "the recovery fixture must drift from the current checkout toolchain",
+    );
     for (const [platform, arch] of [
       ["darwin", "arm64"],
       ["darwin", "x64"],
@@ -564,11 +748,18 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       resolveSourceTagCommit,
       ...frozenLegacyFixture,
     });
+    for (const [key, bytes] of bootstrapFixtures) {
+      writeFileSync(
+        join(artifacts, exactSourceToolchain.nodeBootstrap[key].file),
+        bytes,
+      );
+    }
     execFileSync(
       process.execPath,
       [
         join(repoRoot, "scripts", "generate-spdx-sbom.mjs"),
         "--output", sbomPath,
+        "--toolchain", exactSourceToolchainPath,
         "--source-commit", sourceCommit,
       ],
       {
@@ -577,7 +768,14 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       },
     );
 
-    const readSourceFile = (_commit, path) => readFileSync(join(repoRoot, path));
+    const exactSourceReads = [];
+    const readSourceFile = (commit, path) => {
+      assert.equal(commit, sourceCommit);
+      exactSourceReads.push(path);
+      return path === "release-toolchain.json"
+        ? exactSourceToolchainBytes
+        : readFileSync(join(repoRoot, path));
+    };
     prepareReleaseAssets({
       artifactsRoot: artifacts,
       manifestPath,
@@ -589,12 +787,20 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       readSourceFile,
     });
     const outputNames = readdirSync(output).sort();
-    assert.equal(outputNames.length, 21);
+    assert.equal(outputNames.length, 23);
     assert.ok(outputNames.includes("SHA256SUMS"));
+    for (const [key, bytes] of bootstrapFixtures) {
+      const name = exactSourceToolchain.nodeBootstrap[key].file;
+      assert.deepEqual(readFileSync(join(output, name)), bytes);
+    }
+    assert.ok(
+      exactSourceReads.filter((path) => path === "release-toolchain.json").length >= 2,
+      "release preparation must recover exact-source toolchain bytes for validation and SBOM",
+    );
     assert.equal(statSync(join(output, "install.sh")).mode & 0o777, 0o755);
     assert.equal(statSync(join(output, "agenc-runtime-manifest.json")).mode & 0o777, 0o644);
     assert.equal(statSync(join(output, "agenc-runtime-manifest-v2.json")).mode & 0o777, 0o644);
-    assert.equal(readFileSync(join(output, "SHA256SUMS"), "utf8").trim().split("\n").length, 20);
+    assert.equal(readFileSync(join(output, "SHA256SUMS"), "utf8").trim().split("\n").length, 22);
 
     const attestedOutput = join(work, "attested-upload");
     const verifiedNames = [];
@@ -623,7 +829,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       readdirSync(attestedOutput).filter((name) => name.endsWith(".sigstore.json")).length,
       5,
     );
-    assert.equal(readdirSync(attestedOutput).length, 21);
+    assert.equal(readdirSync(attestedOutput).length, 23);
 
     const pinnedGh = join(work, "pinned-gh");
     const pinnedGhLog = join(work, "pinned-gh.log");
@@ -897,7 +1103,7 @@ test("release manifest generation requires one canonical bounded Sigstore bundle
   }
 });
 
-test("full release manifest covers the exact five-platform matrix and enforces the macOS floor", async () => {
+test("full release manifest accepts the combined workflow download and exact platform matrix", async () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-manifest-full-test-"));
   try {
     for (const [platform, arch] of [
@@ -907,7 +1113,18 @@ test("full release manifest covers the exact five-platform matrix and enforces t
       ["linux", "x64"],
       ["win", "x64"],
     ]) {
-      addArtifact(work, platform, arch, `${platform}-${arch}`);
+      const workflowArtifact = join(work, `agenc-runtime-${platform}-${arch}`);
+      mkdirSync(workflowArtifact);
+      addArtifact(workflowArtifact, platform, arch, `${platform}-${arch}`);
+      if (platform === "linux") {
+        writeFileSync(
+          join(
+            workflowArtifact,
+            releaseToolchain.nodeBootstrap[`${platform}-${arch}`].file,
+          ),
+          `${platform}-${arch} bootstrap`,
+        );
+      }
     }
     const outputPath = join(work, "manifest.json");
     const legacyOutputPath = join(work, "agenc-runtime-manifest.json");
@@ -923,6 +1140,24 @@ test("full release manifest covers the exact five-platform matrix and enforces t
       manifest.artifacts.map((artifact) => `${artifact.platform}-${artifact.arch}`),
       ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win-x64"],
     );
+    const unexpectedArchive = join(
+      work,
+      "agenc-runtime-linux-x64",
+      "agenc-node-bootstrap-libatomic-linux-riscv64.tar.gz",
+    );
+    writeFileSync(unexpectedArchive, "unexpected bootstrap");
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        outputPath,
+        legacyOutputPath,
+        resolveSourceTagCommit,
+        ...frozenLegacyFixture,
+      }),
+      /runtime artifact has no sidecar: agenc-node-bootstrap-libatomic-linux-riscv64\.tar\.gz/,
+    );
+    rmSync(unexpectedArchive);
     // Post-v0.7.2 the legacy bridge is the frozen pinned asset, byte for
     // byte — never a projection of the current release manifest.
     assert.equal(legacyManifest.runtimeVersion, LEGACY_BRIDGE_CONTRACT.runtimeVersion);
@@ -995,8 +1230,11 @@ test("full release manifest covers the exact five-platform matrix and enforces t
     );
     writeFileSync(outputPath, validManifestText);
 
-    const darwinMeta = readdirSync(work).find((name) => name.includes("darwin-arm64") && name.endsWith(".meta.json"));
-    const darwinMetaPath = join(work, darwinMeta);
+    const darwinWorkflowArtifact = join(work, "agenc-runtime-darwin-arm64");
+    const darwinMeta = readdirSync(darwinWorkflowArtifact).find(
+      (name) => name.includes("darwin-arm64") && name.endsWith(".meta.json"),
+    );
+    const darwinMetaPath = join(darwinWorkflowArtifact, darwinMeta);
     const meta = JSON.parse(readFileSync(darwinMetaPath, "utf8"));
     meta.minimumMacosVersion = "99.0";
     writeFileSync(darwinMetaPath, `${JSON.stringify(meta, null, 2)}\n`);
@@ -1071,6 +1309,67 @@ test("manifest generation rejects sidecars detached from the checkout", async ()
   }
 });
 
+test("manifest generation rejects an archive whose private Node identity is detached from its sidecar", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-manifest-node-identity-test-"));
+  try {
+    addArtifact(work, "darwin", "x64", "detached-node-identity", {
+      identityOverrides: { nodeModuleAbi: "999" },
+    });
+    await assert.rejects(
+      generateManifest({
+        tag,
+        artifactsDir: work,
+        baseUrl: `https://example.invalid/${tag}`,
+        allowPartial: true,
+        outputPath: join(work, "manifest.json"),
+      }),
+      /embedded Node native module ABI .* does not match provenance sidecar/,
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation binds Linux private Node compatibility bytes to the release toolchain", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-manifest-node-compatibility-test-"));
+  try {
+    for (const [label, archiveOptions, expected] of [
+      [
+        "library",
+        { libatomicBytes: Buffer.from("detached libatomic") },
+        /embedded Node libatomic SHA256 .* does not match release-toolchain\.json/,
+      ],
+      [
+        "license",
+        { libatomicLicenseBytes: Buffer.from("detached libatomic license") },
+        /embedded Node libatomic license SHA256 .* does not match release-toolchain\.json/,
+      ],
+    ]) {
+      const directory = join(work, label);
+      mkdirSync(directory);
+      addArtifact(
+        directory,
+        "linux",
+        "x64",
+        `detached-node-compatibility-${label}`,
+        archiveOptions,
+      );
+      await assert.rejects(
+        generateManifest({
+          tag,
+          artifactsDir: directory,
+          baseUrl: `https://example.invalid/${tag}`,
+          allowPartial: true,
+          outputPath: join(directory, "manifest.json"),
+        }),
+        expected,
+      );
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
 test("manifest generation rejects tampering of every release-bound sidecar field", async () => {
   const cases = [
     ["runtimeVersion", (meta) => { meta.runtimeVersion = "0.0.0"; }, /runtime version/],
@@ -1087,7 +1386,9 @@ test("manifest generation rejects tampering of every release-bound sidecar field
     ["artifactProfile", (meta) => { meta.artifactProfile = "unknown"; }, /artifact profile/],
     ["bytes", (meta) => { meta.bytes += 1; }, /byte count mismatch/],
     ["sha256", (meta) => { meta.sha256 = "0".repeat(64); }, /sha256 mismatch/],
-    ["bins", (meta) => { meta.bins.agenc = "../../escape"; }, /invalid agenc entrypoint/],
+    ["bins.agenc", (meta) => { meta.bins.agenc = "../../escape"; }, /invalid agenc entrypoint/],
+    ["bins.node", (meta) => { meta.bins.node = "../../host-node"; }, /invalid embedded Node entrypoint/],
+    ["bins.nodeLibrary", (meta) => { meta.bins.nodeLibrary = "../../host-lib"; }, /invalid embedded Node library path/],
     ["dependencyTreeSha256", (meta) => { meta.dependencyTreeSha256 = "bad"; }, /dependency tree sha256/],
     ["dependencyPackages", (meta) => { meta.dependencyPackages = 0; }, /dependency package count/],
     ["archiveFormat", (meta) => { meta.archiveFormat = "bad\nformat"; }, /archive format/],

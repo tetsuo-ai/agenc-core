@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/agenc-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed embedding SDK for the AgenC daemon protocol (socket, in-process, and subprocess transports)",
   "license": "MIT",
   "type": "module",
@@ -48,6 +48,6 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=25.9.0 <26.0.0"
+    "node": ">=26.5.0 <27.0.0"
   }
 }

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_PARSER_FALLBACK_IMAGE,
   DockerContainerRunner,
@@ -6,6 +6,7 @@ import {
   extractParserResults,
   mintUpstreamPreflightEvidence,
   PARSE_RESULT_SENTINEL,
+  runSinglePreflight,
   runTriplePreflight,
   testPassed,
   type ContainerEnvironment,
@@ -17,6 +18,7 @@ import {
   type PreflightTaskInputs,
   type VerifierBundle,
 } from "../../src/eval-executor/index.js";
+import { PINNED_DOCKER_BUILD_IMAGE } from "../helpers/release-toolchain.js";
 
 const digestOf = (char: string): `sha256:${string}` => `sha256:${char.repeat(64)}`;
 
@@ -117,7 +119,14 @@ class FakeContainerRunner implements ContainerRunner {
 
   async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
     this.auxiliaryImages.push(imageReference);
-    return { id: `aux-${this.auxiliaryImages.length}`, imageDigest: imageReference, workdir: "/" };
+    const digestSeparator = imageReference.lastIndexOf("@");
+    return {
+      id: `aux-${this.auxiliaryImages.length}`,
+      imageDigest: digestSeparator < 0
+        ? imageReference
+        : imageReference.slice(digestSeparator + 1),
+      workdir: "/",
+    };
   }
 
   async copyFile(
@@ -212,6 +221,9 @@ describe("eval executor triple preflight", () => {
         referencePassesAllChecks: true,
       });
       expect(run.phases).toHaveLength(2);
+      expect(new Set(run.phases.map((phase) => phase.parserImageDigest))).toEqual(
+        new Set([digestOf("a")]),
+      );
       expect(run.evidenceDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
     }
     expect(new Set(result.runs.map((run) => run.evidenceDigest)).size).toBe(3);
@@ -346,6 +358,13 @@ describe("eval executor triple preflight", () => {
     expect(runner.auxiliaryImages).toHaveLength(6);
     expect(new Set(runner.auxiliaryImages)).toEqual(new Set([DEFAULT_PARSER_FALLBACK_IMAGE]));
     expect(
+      new Set(result.runs.flatMap((run) =>
+        run.phases.map((phase) => phase.parserImageDigest)
+      )),
+    ).toEqual(new Set([DEFAULT_PARSER_FALLBACK_IMAGE.slice(
+      DEFAULT_PARSER_FALLBACK_IMAGE.lastIndexOf("@") + 1,
+    )]));
+    expect(
       runner.copiedFiles.filter((copy) => copy.startsWith("/agenc-eval/parser-input.log")),
     ).toHaveLength(6);
     // Every auxiliary container is removed alongside the six phase containers.
@@ -355,6 +374,49 @@ describe("eval executor triple preflight", () => {
       script.includes("parse-log.py")
     );
     expect(fallbackParses).toHaveLength(6);
+  });
+
+  test("round-trips and evidence-binds the resolved parser image digest", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00.000Z"));
+    try {
+      const parserA = `python:3.12-slim@${digestOf("1")}`;
+      const parserB = `python:3.12-slim@${digestOf("2")}`;
+      const first = await runSinglePreflight(
+        new FakeContainerRunner([
+          { ...BASE_OK, pythonMissing: true },
+          { ...REFERENCE_OK, pythonMissing: true },
+        ]),
+        INPUTS,
+        1,
+        undefined,
+        { parserFallbackImage: parserA },
+      );
+      const second = await runSinglePreflight(
+        new FakeContainerRunner([
+          { ...BASE_OK, pythonMissing: true },
+          { ...REFERENCE_OK, pythonMissing: true },
+        ]),
+        INPUTS,
+        1,
+        undefined,
+        { parserFallbackImage: parserB },
+      );
+
+      expect(first.environmentDigest).toBe(second.environmentDigest);
+      expect(first.evidenceDigest).not.toBe(second.evidenceDigest);
+      expect(first.phases.map((phase) => phase.parserImageDigest)).toEqual([
+        digestOf("1"),
+        digestOf("1"),
+      ]);
+      const roundTripped = JSON.parse(JSON.stringify(first)) as typeof first;
+      expect(roundTripped.phases.map((phase) => phase.parserImageDigest)).toEqual([
+        digestOf("1"),
+        digestOf("1"),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("a custom parser fallback image is honored", async () => {
@@ -447,11 +509,40 @@ describe("eval executor parser-result extraction", () => {
 });
 
 describe("docker runner hermetic guards", () => {
+  test("binds the default parser fallback to the reviewed Docker build image", () => {
+    expect(DEFAULT_PARSER_FALLBACK_IMAGE).toBe(PINNED_DOCKER_BUILD_IMAGE);
+  });
+
   test("refuses to run an image without an immutable manifest digest", async () => {
     const runner = new DockerContainerRunner();
     await expect(runner.createTaskContainer("ubuntu:latest")).rejects.toThrow(
       /pinned by @sha256 digest/u,
     );
+  });
+
+  test("refuses an auxiliary image without an immutable manifest digest", async () => {
+    const runner = new DockerContainerRunner();
+    await expect(runner.createAuxiliaryContainer("node:26.5.0-bookworm")).rejects.toThrow(
+      /pinned by @sha256 digest/u,
+    );
+  });
+
+  test("binds a registry-pinned image reference to its real digest", () => {
+    const runner = new DockerContainerRunner();
+    const digest = `sha256:${"a".repeat(64)}`;
+    const imageReference = `node:26.5.0-bookworm@${digest}`;
+    const resolveImageRef = (
+      runner as unknown as {
+        resolveImageRef(reference: string): {
+          readonly dockerReference: string;
+          readonly imageDigest: string;
+        };
+      }
+    ).resolveImageRef.bind(runner);
+    expect(resolveImageRef(imageReference)).toEqual({
+      dockerReference: imageReference,
+      imageDigest: digest,
+    });
   });
 
   test("refuses a bare local image ID unless explicitly allowed", async () => {

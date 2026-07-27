@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import test from "node:test";
-import { list as listTar } from "tar";
+import { create as createTar, list as listTar } from "tar";
 
 import {
   assertNoLocalPathLeaks,
@@ -14,19 +14,25 @@ import {
   assertRootLockSnapshot,
   canonicalWindowsNativeBuildRoot,
   canonicalizeRpmContentInventory,
+  embeddedNodeIdentitySmokeProgram,
+  embeddedNodeLayout,
   installedNativeModuleSmokeProgram,
   maximumGlibcVersion,
   maximumMacosDeploymentVersion,
   maximumRequiredSymbolVersion,
   pruneNativeBuildIntermediates,
   resolveBuildExecutables,
+  stageEmbeddedNode,
   withPinnedExecutablePath,
   withWindowsReproducibleNativeFlags,
   windowsReproducibleNativeFlagProvenance,
   writeCanonicalArchive,
 } from "../scripts/build-runtime-tarball.mjs";
 import { prepareWindowsCommonGypiBytes } from "../scripts/prepare-windows-node-headers.mjs";
-import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
+import {
+  validateEmbeddedNodeRuntimeArchive,
+  validateRuntimeArchive,
+} from "../lib/runtime-archive.mjs";
 
 function fixture(root, reverse) {
   const modules = join(root, "node_modules");
@@ -76,6 +82,275 @@ test("canonical runtime archives ignore creation order, mtimes, and umask modes"
   }
 });
 
+test("private Node staging is canonical, portable, and identity-bound", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-private-node-test-"));
+  try {
+    const distribution = join(work, "node-v26.5.0-linux-x64");
+    const nodeModules = join(work, "install", "node_modules");
+    mkdirSync(join(distribution, "bin"), { recursive: true });
+    mkdirSync(nodeModules, { recursive: true });
+    const executable = join(distribution, "bin", "node");
+    const license = join(distribution, "LICENSE");
+    const libatomic = join(distribution, "libatomic.so.1");
+    const libatomicLicense = join(distribution, "COPYING.RUNTIME");
+    writeFileSync(executable, "reviewed-node-binary");
+    writeFileSync(license, "reviewed Node license\n");
+    writeFileSync(libatomic, "reviewed libatomic binary");
+    writeFileSync(libatomicLicense, "reviewed GCC runtime license\n");
+
+    const staged = stageEmbeddedNode({
+      nodeModules,
+      nodeExecutablePath: executable,
+      libatomicPath: libatomic,
+      libatomicLicensePath: libatomicLicense,
+      nodeVersion: "v26.5.0",
+      nodeMajor: 26,
+      nodeModuleAbi: "147",
+      nodeApiVersion: "10",
+      platform: "linux",
+    });
+    assert.deepEqual(embeddedNodeLayout("linux"), {
+      executable: "bin/node",
+      bin: "node_modules/.agenc-node/bin/node",
+      libatomic: "lib/libatomic.so.1",
+      libatomicLicense: "LIBATOMIC-LICENSE",
+      nodeLibrary: "node_modules/.agenc-node/lib",
+      license: "LICENSE",
+      identity: "identity.json",
+    });
+    assert.equal(staged.bin, "node_modules/.agenc-node/bin/node");
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(nodeModules, ".agenc-node", "identity.json"), "utf8")),
+      staged.identity,
+    );
+    assert.equal(staged.identity.nodeVersion, "v26.5.0");
+    assert.equal(staged.identity.nodeModuleAbi, "147");
+    assert.equal(staged.identity.nodeApiVersion, "10");
+    assert.match(staged.identity.executableSha256, /^[0-9a-f]{64}$/);
+    assert.match(staged.identity.licenseSha256, /^[0-9a-f]{64}$/);
+    assert.equal(staged.identity.libatomic, "lib/libatomic.so.1");
+    assert.match(staged.identity.libatomicSha256, /^[0-9a-f]{64}$/);
+    assert.ok(staged.identity.libatomicBytes > 0);
+    assert.equal(staged.identity.libatomicLicense, "LIBATOMIC-LICENSE");
+    assert.match(staged.identity.libatomicLicenseSha256, /^[0-9a-f]{64}$/);
+    assert.ok(staged.identity.libatomicLicenseBytes > 0);
+    const archive = join(work, "private-node.tar.gz");
+    await writeCanonicalArchive({
+      installRoot: join(work, "install"),
+      artifactPath: archive,
+      epoch: 1_700_000_000,
+    });
+    const validatedArchive = validateEmbeddedNodeRuntimeArchive(archive, "linux");
+    assert.ok(validatedArchive.entries >= 8);
+    assert.deepEqual(validatedArchive.embeddedNodeIdentity, staged.identity);
+    assert.ok(Object.isFrozen(validatedArchive.embeddedNodeIdentity));
+
+    const stagedIdentityPath = join(nodeModules, ".agenc-node", "identity.json");
+    const stagedLibatomicPath = join(
+      nodeModules,
+      ".agenc-node",
+      "lib",
+      "libatomic.so.1",
+    );
+    const stagedLibatomicLicensePath = join(
+      nodeModules,
+      ".agenc-node",
+      "LIBATOMIC-LICENSE",
+    );
+    const validExecutable = readFileSync(staged.executablePath);
+    const validIdentity = readFileSync(stagedIdentityPath);
+    const validLibatomic = readFileSync(stagedLibatomicPath);
+    const validLibatomicLicense = readFileSync(stagedLibatomicLicensePath);
+    const tamperedArchive = async (name) => {
+      const artifactPath = join(work, `${name}.tar.gz`);
+      await writeCanonicalArchive({
+        installRoot: join(work, "install"),
+        artifactPath,
+        epoch: 1_700_000_000,
+      });
+      return artifactPath;
+    };
+    const rejectTamperedArchive = async (name, pattern) => {
+      const artifactPath = await tamperedArchive(name);
+      assert.throws(
+        () => validateEmbeddedNodeRuntimeArchive(artifactPath, "linux"),
+        pattern,
+      );
+    };
+
+    const changedExecutable = Buffer.from(validExecutable);
+    changedExecutable[0] ^= 0xff;
+    writeFileSync(staged.executablePath, changedExecutable);
+    await rejectTamperedArchive(
+      "private-node-hash-drift",
+      /executable SHA256 does not match its identity/,
+    );
+
+    writeFileSync(staged.executablePath, validExecutable);
+    writeFileSync(join(nodeModules, ".agenc-node", "LICENSE"), "reviewed Node license\nextra");
+    await rejectTamperedArchive(
+      "private-node-size-drift",
+      /license byte size does not match its identity/,
+    );
+
+    writeFileSync(join(nodeModules, ".agenc-node", "LICENSE"), "reviewed Node license\n");
+    const changedLibatomic = Buffer.from(validLibatomic);
+    changedLibatomic[0] ^= 0xff;
+    writeFileSync(stagedLibatomicPath, changedLibatomic);
+    await rejectTamperedArchive(
+      "private-node-libatomic-drift",
+      /libatomic SHA256 does not match its identity/,
+    );
+
+    writeFileSync(stagedLibatomicPath, validLibatomic);
+    const changedLibatomicLicense = Buffer.from(validLibatomicLicense);
+    changedLibatomicLicense[0] ^= 0xff;
+    writeFileSync(stagedLibatomicLicensePath, changedLibatomicLicense);
+    await rejectTamperedArchive(
+      "private-node-libatomic-license-drift",
+      /libatomicLicense SHA256 does not match its identity/,
+    );
+
+    writeFileSync(stagedLibatomicLicensePath, validLibatomicLicense);
+    writeFileSync(
+      stagedIdentityPath,
+      `${JSON.stringify({ ...staged.identity, unreviewed: true }, null, 2)}\n`,
+    );
+    await rejectTamperedArchive(
+      "private-node-extra-identity-key",
+      /identity has an invalid schema/,
+    );
+
+    writeFileSync(
+      stagedIdentityPath,
+      `${JSON.stringify({ ...staged.identity, executable: "bin/elsewhere" }, null, 2)}\n`,
+    );
+    await rejectTamperedArchive(
+      "private-node-path-drift",
+      /identity has an invalid executable path/,
+    );
+
+    writeFileSync(stagedIdentityPath, `${" ".repeat(17 * 1024)}\n`);
+    await rejectTamperedArchive(
+      "private-node-oversized-identity",
+      /identity\.json/,
+    );
+
+    writeFileSync(stagedIdentityPath, validIdentity);
+    const alternateExecutable = join(
+      nodeModules,
+      ".agenc-node",
+      "bin",
+      "node-copy",
+    );
+    writeFileSync(alternateExecutable, validExecutable);
+    chmodSync(alternateExecutable, 0o755);
+    rmSync(staged.executablePath);
+    symlinkSync("node-copy", staged.executablePath);
+    await rejectTamperedArchive(
+      "private-node-symlink",
+      /private Node subtree contains a symlink/,
+    );
+
+    rmSync(staged.executablePath);
+    rmSync(alternateExecutable);
+    writeFileSync(staged.executablePath, validExecutable);
+    chmodSync(staged.executablePath, 0o644);
+    const nonExecutableArchive = join(
+      work,
+      "private-node-non-executable.tar.gz",
+    );
+    // Deliberately bypass the canonical writer: it is responsible for
+    // restoring the private Node entrypoint's executable archive mode.
+    await createTar(
+      {
+        cwd: join(work, "install"),
+        file: nonExecutableArchive,
+        gzip: true,
+        portable: true,
+        strict: true,
+      },
+      ["node_modules"],
+    );
+    assert.throws(
+      () => validateEmbeddedNodeRuntimeArchive(nonExecutableArchive, "linux"),
+      /private Node executable is not executable/,
+    );
+
+    assert.deepEqual(embeddedNodeLayout("win32"), {
+      executable: "node.exe",
+      bin: "node_modules/.agenc-node/node.exe",
+      license: "LICENSE",
+      identity: "identity.json",
+    });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("Windows-like file metadata archives private node.exe as executable", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-private-node-win-mode-test-"));
+  try {
+    const distribution = join(work, "node-v26.5.0-win-x64");
+    const nodeModules = join(work, "install", "node_modules");
+    mkdirSync(distribution, { recursive: true });
+    mkdirSync(nodeModules, { recursive: true });
+    const executable = join(distribution, "node.exe");
+    writeFileSync(executable, "reviewed-windows-node-binary");
+    writeFileSync(join(distribution, "LICENSE"), "reviewed Node license\n");
+
+    const staged = stageEmbeddedNode({
+      nodeModules,
+      nodeExecutablePath: executable,
+      nodeVersion: "v26.5.0",
+      nodeMajor: 26,
+      nodeModuleAbi: "147",
+      nodeApiVersion: "10",
+      platform: "win32",
+    });
+    // Windows regular-file metadata does not carry POSIX execute bits.
+    chmodSync(staged.executablePath, 0o666);
+
+    const archive = join(work, "private-node-win.tar.gz");
+    await writeCanonicalArchive({
+      installRoot: join(work, "install"),
+      artifactPath: archive,
+      epoch: 1_700_000_000,
+    });
+    const validated = validateEmbeddedNodeRuntimeArchive(archive, "win");
+    const archivedNode = validated.members.find(
+      (member) => member.path === "node_modules/.agenc-node/node.exe",
+    );
+    assert.ok(archivedNode);
+    assert.notEqual(archivedNode.mode & 0o111, 0);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("private Node smoke rejects version, ABI, or Node-API drift", () => {
+  const expected = {
+    nodeVersion: process.version,
+    nodeModuleAbi: process.versions.modules,
+    nodeApiVersion: process.versions.napi,
+  };
+  assert.doesNotThrow(() =>
+    execFileSync(process.execPath, [
+      "-e",
+      embeddedNodeIdentitySmokeProgram(expected),
+    ]),
+  );
+  for (const field of Object.keys(expected)) {
+    const detached = { ...expected, [field]: "detached" };
+    const result = spawnSync(process.execPath, [
+      "-e",
+      embeddedNodeIdentitySmokeProgram(detached),
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 25);
+    assert.match(result.stderr, /embedded Node identity mismatch/);
+  }
+});
+
 test("canonical long-path PAX archives pass the install-side validator", async () => {
   const work = mkdtempSync(join(tmpdir(), "agenc-canonical-pax-test-"));
   try {
@@ -114,7 +389,7 @@ test("reproducibility mismatch identifies the exact archive member", async () =>
     const first = join(work, "first");
     const second = join(work, "second");
     const output = join(work, "output");
-    const artifact = "agenc-runtime-1.0.0-win-x64-node25-abi141.tar.gz";
+    const artifact = "agenc-runtime-1.0.0-win-x64-node26-abi147.tar.gz";
     for (const [root, installName, payload] of [
       [first, "install-first", "first-native"],
       [second, "install-second", "other-native"],
@@ -508,7 +783,7 @@ test("two-build verifier rejects a byte-identical but detached provenance sideca
     const output = join(work, "output");
     mkdirSync(first);
     mkdirSync(second);
-    const artifact = "agenc-runtime-1.0.0-linux-x64-node25-abi141.tar.gz";
+    const artifact = "agenc-runtime-1.0.0-linux-x64-node26-abi147.tar.gz";
     const bytes = Buffer.from("runtime artifact fixture");
     const metadata = {
       artifact,

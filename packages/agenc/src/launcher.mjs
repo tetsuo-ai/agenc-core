@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_READY_TIMEOUT_MS = 2000;
@@ -74,11 +75,17 @@ export function isDaemonCommand(argv) {
 export function resolveRuntimeBin(requireFn = requireFromLauncher) {
   try {
     const runtimeEntry = requireFn.resolve("@tetsuo-ai/runtime");
+    const runtimeRoot = realpathSync(resolve(dirname(runtimeEntry), ".."));
+    const repositoryRuntimeRoot = realpathSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "runtime"),
+    );
+    if (runtimeRoot !== repositoryRuntimeRoot) return null;
     return resolve(dirname(runtimeEntry), "../bin/agenc");
   } catch (error) {
     if (
       error?.code === "MODULE_NOT_FOUND" ||
-      error?.code === "ERR_MODULE_NOT_FOUND"
+      error?.code === "ERR_MODULE_NOT_FOUND" ||
+      error?.code === "ENOENT"
     ) {
       return null;
     }
@@ -86,8 +93,41 @@ export function resolveRuntimeBin(requireFn = requireFromLauncher) {
   }
 }
 
-// Resolve the runtime entry for either mode: prefer the dev file:-link, else
-// ensure (download + verify + extract) the published per-platform runtime.
+function hostRuntimeLaunch(runtimeBin) {
+  return { runtimeBin, nodeBin: process.execPath };
+}
+
+function requireRuntimeLaunch(value) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof value.runtimeBin !== "string" ||
+    typeof value.nodeBin !== "string" ||
+    (
+      value.nodeLibraryPath !== undefined &&
+      typeof value.nodeLibraryPath !== "string"
+    )
+  ) {
+    throw new Error("agenc: runtime manager returned an invalid launch contract");
+  }
+  return value;
+}
+
+// Resolve every path needed to execute the runtime. Development file: links
+// intentionally use the current Node process; published artifacts always
+// return their embedded Node (and the Linux compatibility-library directory).
+export async function resolveRuntimeLaunchAsync({
+  requireFn = requireFromLauncher,
+  ensureFn,
+} = {}) {
+  const dev = resolveRuntimeBin(requireFn);
+  if (dev !== null) return hostRuntimeLaunch(dev);
+  const ensureRuntimeLaunch =
+    ensureFn ?? (await import("../lib/runtime-manager.mjs")).ensureRuntimeLaunch;
+  return requireRuntimeLaunch(await ensureRuntimeLaunch());
+}
+
+// Retained for callers that only need the script path.
 export async function resolveRuntimeBinAsync({
   requireFn = requireFromLauncher,
   ensureFn,
@@ -96,7 +136,10 @@ export async function resolveRuntimeBinAsync({
   if (dev !== null) return dev;
   const ensureRuntime =
     ensureFn ?? (await import("../lib/runtime-manager.mjs")).ensureRuntime;
-  return ensureRuntime();
+  const ensured = await ensureRuntime();
+  return typeof ensured === "string"
+    ? ensured
+    : requireRuntimeLaunch(ensured).runtimeBin;
 }
 
 export async function spawnNodeScript(
@@ -107,12 +150,27 @@ export async function spawnNodeScript(
     cwd = process.cwd(),
     stdio = "inherit",
     spawnFn = spawn,
+    nodeBin = process.execPath,
+    nodeLibraryPath,
   } = {},
 ) {
+  const childEnv = { ...env };
+  const pathKey =
+    Object.keys(childEnv).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const nodeDir = dirname(nodeBin);
+  childEnv[pathKey] = childEnv[pathKey]
+    ? `${nodeDir}${delimiter}${childEnv[pathKey]}`
+    : nodeDir;
+  if (nodeLibraryPath !== undefined) {
+    // The embedded Linux Node requires the artifact's pinned libatomic. Do not
+    // search an operator-controlled ambient library path before that exact
+    // directory.
+    childEnv.LD_LIBRARY_PATH = nodeLibraryPath;
+  }
   return new Promise((resolveExit, reject) => {
-    const child = spawnFn(process.execPath, [scriptPath, ...args], {
+    const child = spawnFn(nodeBin, [scriptPath, ...args], {
       cwd,
-      env,
+      env: childEnv,
       stdio,
     });
     child.once("error", reject);
@@ -174,6 +232,8 @@ export async function ensureDaemonForLaunch({
   env = process.env,
   cwd = process.cwd(),
   runtimeBin = resolveRuntimeBin(),
+  runtimeNodeBin = process.execPath,
+  runtimeNodeLibraryPath,
   userHome = homedir(),
   readText = readFile,
   signalPid = process.kill,
@@ -197,7 +257,12 @@ export async function ensureDaemonForLaunch({
     return { status: "already-running" };
   }
 
-  await spawnDaemonFn(runtimeBin, { env, cwd });
+  await spawnDaemonFn(runtimeBin, {
+    env,
+    cwd,
+    nodeBin: runtimeNodeBin,
+    nodeLibraryPath: runtimeNodeLibraryPath,
+  });
   const ready = await waitForReadyFn({ env, userHome, readText, signalPid });
   if (!ready) {
     throw new Error("AgenC daemon did not become ready before timeout");
@@ -210,16 +275,29 @@ export async function main(
   {
     env = process.env,
     cwd = process.cwd(),
+    runtimeLaunch,
     runtimeBin,
+    runtimeNodeBin = process.execPath,
+    runtimeNodeLibraryPath,
     userHome = homedir(),
   } = {},
 ) {
   // Resolve (and, in a published install, download + verify) the runtime before
   // anything tries to spawn it. Sync default is avoided: it returns null when
   // runtime isn't an npm dep, which is the normal published case.
-  let resolvedBin = runtimeBin;
+  let resolvedLaunch = runtimeLaunch ??
+    (runtimeBin === undefined
+      ? undefined
+      : {
+          runtimeBin,
+          nodeBin: runtimeNodeBin,
+          ...(runtimeNodeLibraryPath === undefined
+            ? {}
+            : { nodeLibraryPath: runtimeNodeLibraryPath }),
+        });
   try {
-    resolvedBin ??= await resolveRuntimeBinAsync();
+    resolvedLaunch ??= await resolveRuntimeLaunchAsync();
+    resolvedLaunch = requireRuntimeLaunch(resolvedLaunch);
   } catch (error) {
     process.stderr.write(
       `agenc: could not obtain runtime: ${
@@ -229,7 +307,15 @@ export async function main(
     return 1;
   }
   try {
-    await ensureDaemonForLaunch({ argv, env, cwd, runtimeBin: resolvedBin, userHome });
+    await ensureDaemonForLaunch({
+      argv,
+      env,
+      cwd,
+      runtimeBin: resolvedLaunch.runtimeBin,
+      runtimeNodeBin: resolvedLaunch.nodeBin,
+      runtimeNodeLibraryPath: resolvedLaunch.nodeLibraryPath,
+      userHome,
+    });
   } catch (error) {
     // The launcher is transport, not policy: a daemon that cannot start must
     // not block daemon-independent commands. `agenc update` is the canonical
@@ -245,7 +331,13 @@ export async function main(
         "agenc: continuing without the daemon; commands that require it will report the failure\n",
     );
   }
-  return spawnNodeScript(resolvedBin, argv, { env, cwd, stdio: "inherit" });
+  return spawnNodeScript(resolvedLaunch.runtimeBin, argv, {
+    env,
+    cwd,
+    stdio: "inherit",
+    nodeBin: resolvedLaunch.nodeBin,
+    nodeLibraryPath: resolvedLaunch.nodeLibraryPath,
+  });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -1,7 +1,7 @@
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
-import { delimiter, join, normalize, posix, resolve, win32 } from 'path'
+import { delimiter, dirname, join, normalize, posix, resolve, win32 } from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
@@ -198,6 +198,46 @@ export async function findActiveGeneratedWrapper(
 
 export type InstallationDetectionOptions = ActiveGeneratedWrapperOptions & {
   readonly activeGeneratedWrapper?: GeneratedWrapper | null
+}
+
+export type PrivateNodeRuntimeDetectionOptions = {
+  readonly nodePath?: string
+  readonly runtimePath?: string
+}
+
+/**
+ * Prove the canonical modern release layout even when its generated wrapper is
+ * not on PATH (for example, an operator directly invokes the private runtime).
+ * False positives only suppress legacy mutation; they never grant ownership.
+ */
+export function isRunningFromPrivateNodeRuntime(
+  options: PrivateNodeRuntimeDetectionOptions = {},
+): boolean {
+  const nodePath = options.nodePath ?? process.execPath
+  const runtimePath = options.runtimePath ?? process.argv[1] ?? ''
+  if (nodePath.length === 0 || runtimePath.length === 0) return false
+
+  const runtimeRoot = resolve(dirname(runtimePath), '..', '..', '..', '..')
+  const expectedRuntimePath = join(
+    runtimeRoot,
+    'node_modules',
+    '@tetsuo-ai',
+    'runtime',
+    'bin',
+    'agenc',
+  )
+  const expectedNodePath =
+    getPlatform() === 'windows'
+      ? join(runtimeRoot, 'node_modules', '.agenc-node', 'node.exe')
+      : join(runtimeRoot, 'node_modules', '.agenc-node', 'bin', 'node')
+  const comparable = (path: string): string => {
+    const absolute = normalize(resolve(path))
+    return getPlatform() === 'windows' ? absolute.toLowerCase() : absolute
+  }
+  return (
+    comparable(runtimePath) === comparable(expectedRuntimePath) &&
+    comparable(nodePath) === comparable(expectedNodePath)
+  )
 }
 
 export async function getCurrentInstallationType(
@@ -423,9 +463,10 @@ async function detectMultipleInstallations(
         // Resolve the symlink to get the actual target
         const realPath = await realpath(globalBinPath)
 
-        // If the symlink points to a Caskroom directory, it's a Homebrew cask
-        // Only skip it if it's the same Homebrew installation we're currently running from
-        if (realPath.includes('/Caskroom/')) {
+        // Skip a Homebrew cask or restored formula only when it is the same
+        // Homebrew installation currently running. Otherwise a Homebrew npm
+        // prefix can make the formula's bin/agenc symlink look npm-global.
+        if (detectHomebrew({ executablePaths: [realPath] })) {
           isCurrentHomebrewInstallation = detectHomebrew()
         }
       } catch {

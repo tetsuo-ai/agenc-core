@@ -5,7 +5,11 @@ import { describe, expect, test, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
   feature: vi.fn((_flag: string) => false),
+  findActiveGeneratedWrapper: vi.fn(
+    async (): Promise<Record<string, unknown> | null> => null,
+  ),
   getCurrentInstallationType: vi.fn(async () => "npm-global"),
+  isRunningFromPrivateNodeRuntime: vi.fn(() => false),
   isAutoUpdaterDisabled: vi.fn(() => false),
   logForDebugging: vi.fn(),
   logError: vi.fn(),
@@ -24,7 +28,9 @@ vi.mock("../../utils/config.js", () => ({
 }));
 
 vi.mock("../../utils/doctorDiagnostic.js", () => ({
+  findActiveGeneratedWrapper: harness.findActiveGeneratedWrapper,
   getCurrentInstallationType: harness.getCurrentInstallationType,
+  isRunningFromPrivateNodeRuntime: harness.isRunningFromPrivateNodeRuntime,
 }));
 
 vi.mock("src/utils/debug.js", () => ({
@@ -110,7 +116,9 @@ async function waitFor(assertion: () => void): Promise<void> {
 function resetHarness(): void {
   vi.clearAllMocks();
   harness.feature.mockReturnValue(false);
+  harness.findActiveGeneratedWrapper.mockResolvedValue(null);
   harness.getCurrentInstallationType.mockResolvedValue("npm-global");
+  harness.isRunningFromPrivateNodeRuntime.mockReturnValue(false);
   harness.isAutoUpdaterDisabled.mockReturnValue(false);
   harness.logError.mockReset();
   harness.rendered = [];
@@ -170,6 +178,37 @@ async function renderWrapper(
   }
 }
 
+async function renderWithoutUpdater(expectedLog: string): Promise<void> {
+  const { stdin, stdout } = createStreams();
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
+
+  try {
+    root.render(
+      <AutoUpdaterWrapper
+        autoUpdaterResult={null}
+        isUpdating={false}
+        onAutoUpdaterResult={vi.fn()}
+        onChangeIsUpdating={vi.fn()}
+        showSuccessMessage={true}
+        verbose={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(harness.logForDebugging).toHaveBeenCalledWith(expectedLog);
+    });
+    expect(harness.rendered).toEqual([]);
+  } finally {
+    root.unmount();
+    stdin.end();
+    stdout.end();
+  }
+}
+
 describe("AutoUpdaterWrapper wave200 coverage", () => {
   test("routes detected installation types and leaves disabled detection blank", async () => {
     const packageManager = await renderWrapper("package-manager", {
@@ -195,19 +234,15 @@ describe("AutoUpdaterWrapper wave200 coverage", () => {
       "AutoUpdaterWrapper: Installation type: package-manager",
     );
 
-    const native = await renderWrapper("native");
-
-    expect(native.child.kind).toBe("native");
-    expect(harness.logForDebugging).toHaveBeenCalledWith(
-      "AutoUpdaterWrapper: Installation type: native",
-    );
-
     const standard = await renderWrapper("npm-global");
 
     expect(standard.child.kind).toBe("standard");
     expect(harness.logForDebugging).toHaveBeenCalledWith(
       "AutoUpdaterWrapper: Installation type: npm-global",
     );
+    expect(harness.getCurrentInstallationType).toHaveBeenCalledWith({
+      activeGeneratedWrapper: null,
+    });
 
     resetHarness();
     harness.feature.mockImplementation(
@@ -247,6 +282,60 @@ describe("AutoUpdaterWrapper wave200 coverage", () => {
       stdin.end();
       stdout.end();
     }
+  });
+
+  test("never mounts the legacy native updater for a first-launch standalone wrapper", async () => {
+    resetHarness();
+    harness.findActiveGeneratedWrapper.mockResolvedValue({
+      agencHome: "/home/example/.agenc",
+      kind: "posix",
+      nodeBin: "/home/example/.agenc/runtime/0.11.0/node",
+      path: "/home/example/.local/bin/agenc",
+      runtimeBin: "/home/example/.agenc/runtime/0.11.0/agenc",
+    });
+    // This is the historical classification that previously selected
+    // NativeAutoUpdater. A fresh install has not disabled updates in config.
+    harness.getCurrentInstallationType.mockResolvedValue("native");
+    harness.feature.mockImplementation(
+      (flag) => flag === "SKIP_DETECTION_WHEN_AUTOUPDATES_DISABLED",
+    );
+    harness.isAutoUpdaterDisabled.mockReturnValue(false);
+
+    await renderWithoutUpdater(
+      "AutoUpdaterWrapper: Standalone wrappers update only through `agenc update`; skipping legacy native auto-updater",
+    );
+
+    expect(harness.isAutoUpdaterDisabled).toHaveReturnedWith(false);
+    expect(harness.getCurrentInstallationType).not.toHaveBeenCalled();
+  });
+
+  test("direct private-runtime invocation cannot mount a legacy or generic updater", async () => {
+    resetHarness();
+    harness.findActiveGeneratedWrapper.mockResolvedValue(null);
+    harness.getCurrentInstallationType.mockResolvedValue("unknown");
+    harness.isRunningFromPrivateNodeRuntime.mockReturnValue(true);
+
+    await renderWithoutUpdater(
+      "AutoUpdaterWrapper: Private-Node runtimes update only through `agenc update`; skipping legacy auto-updaters",
+    );
+
+    expect(harness.getCurrentInstallationType).toHaveBeenCalledWith({
+      activeGeneratedWrapper: null,
+    });
+    expect(harness.rendered).toEqual([]);
+  });
+
+  test("modern native classification cannot mount the legacy native updater", async () => {
+    resetHarness();
+    harness.findActiveGeneratedWrapper.mockResolvedValue(null);
+    harness.getCurrentInstallationType.mockResolvedValue("native");
+    harness.isRunningFromPrivateNodeRuntime.mockReturnValue(false);
+
+    await renderWithoutUpdater(
+      "AutoUpdaterWrapper: Private-Node runtimes update only through `agenc update`; skipping legacy auto-updaters",
+    );
+
+    expect(harness.rendered).toEqual([]);
   });
 
   test("logs rejected installation detection and leaves updater hidden", async () => {

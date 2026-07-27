@@ -1,8 +1,8 @@
 # @tetsuo-ai/agenc-sdk
 
-**0.2.0** — typed, zero-dependency embedding SDK for the AgenC daemon protocol.
+**0.3.0** — typed, zero-dependency embedding SDK for the AgenC daemon protocol.
 
-Node **>=25.9 <26** · ESM only · plain `tsc` build · no runtime dependencies.
+Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 
 ## Surfaces
 

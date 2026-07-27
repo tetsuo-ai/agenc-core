@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import parseSpdxExpression from "spdx-expression-parse";
 
-const GENERATOR_REVISION = 3;
+const GENERATOR_REVISION = 4;
 const REPOSITORY_VCS = "git+https://github.com/tetsuo-ai/agenc-core.git";
 const args = process.argv.slice(2);
 
@@ -131,10 +131,14 @@ function dependencyCandidates(ownerPath, dependencyName) {
 }
 
 const lockfilePath = resolve(argValue("--lockfile", "package-lock.json"));
+const toolchainPath = resolve(argValue("--toolchain", "release-toolchain.json"));
 const outputPath = resolve(argValue("--output", "dist/agenc-core.spdx.json"));
 const lockfileBytes = readFileSync(lockfilePath);
 const lockfileSha256 = sha256(lockfileBytes);
+const toolchainBytes = readFileSync(toolchainPath);
+const toolchainSha256 = sha256(toolchainBytes);
 const lock = JSON.parse(lockfileBytes);
+const toolchain = JSON.parse(toolchainBytes);
 const sourceCommitSha = sourceCommit();
 const created = new Date(sourceDateEpoch() * 1000).toISOString();
 
@@ -258,7 +262,7 @@ for (const [rawPath, entry] of Object.entries(lock.packages).sort(([a], [b]) => 
   }
 }
 
-const packages = [...recordsByIdentity.values()].map((record) => {
+const npmPackages = [...recordsByIdentity.values()].map((record) => {
   const workspacePath = record.paths.find((path) => workspacePaths.has(path));
   const checksum = integrityChecksum(record.entry.integrity);
   const downloadLocation = record.isWorkspace
@@ -284,7 +288,156 @@ const packages = [...recordsByIdentity.values()].map((record) => {
       .sort(utf8Compare)
       .join(", ")}`,
   };
-}).sort((left, right) => utf8Compare(left.SPDXID, right.SPDXID));
+});
+
+function componentSpdxId(identity, name, version) {
+  return `SPDXRef-Package-${sanitizeSpdxId(`${name}-${version}`)}-${sha256(identity).slice(0, 20)}`;
+}
+
+function componentPurl(type, name, version, qualifiers) {
+  const query = Object.entries(qualifiers)
+    .sort(([left], [right]) => utf8Compare(left, right))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+  return `pkg:${type}/${encodeURIComponent(name)}@${encodeURIComponent(version)}?${query}`;
+}
+
+if (
+  toolchain.schemaVersion !== 1 ||
+  !/^\d+\.\d+\.\d+$/.test(toolchain.nodeVersion ?? "") ||
+  toolchain.nodeMajor !== Number(toolchain.nodeVersion.split(".")[0]) ||
+  toolchain.nodeDistributions === null ||
+  typeof toolchain.nodeDistributions !== "object"
+) {
+  throw new Error("release-toolchain.json has an invalid embedded Node contract");
+}
+
+const expectedNodeTargets = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win-x64",
+];
+const nodeTargets = Object.keys(toolchain.nodeDistributions).sort(utf8Compare);
+if (JSON.stringify(nodeTargets) !== JSON.stringify(expectedNodeTargets)) {
+  throw new Error("release-toolchain.json must describe the five embedded Node targets");
+}
+
+const componentPackages = [];
+for (const target of expectedNodeTargets) {
+  const distribution = toolchain.nodeDistributions[target];
+  const [platform, arch] = target.split("-");
+  if (
+    distribution === null ||
+    typeof distribution !== "object" ||
+    typeof distribution.file !== "string" ||
+    !/^[0-9a-f]{64}$/.test(distribution.sha256 ?? "") ||
+    !Number.isSafeInteger(distribution.bytes) ||
+    distribution.bytes <= 0
+  ) {
+    throw new Error(`release-toolchain.json has an invalid Node distribution for ${target}`);
+  }
+  const expectedFile =
+    `node-v${toolchain.nodeVersion}-${target}.${platform === "win" ? "zip" : "tar.gz"}`;
+  if (distribution.file !== expectedFile) {
+    throw new Error(`release-toolchain.json has a non-canonical Node filename for ${target}`);
+  }
+  const identity = `embedded-node:${target}:${toolchain.nodeVersion}:${distribution.sha256}`;
+  const spdxId = componentSpdxId(identity, `node-${target}`, toolchain.nodeVersion);
+  componentPackages.push({
+    name: `Node.js runtime (${target})`,
+    SPDXID: spdxId,
+    versionInfo: toolchain.nodeVersion,
+    downloadLocation:
+      `https://nodejs.org/dist/v${toolchain.nodeVersion}/${distribution.file}`,
+    filesAnalyzed: false,
+    licenseConcluded: "NOASSERTION",
+    licenseDeclared: "MIT",
+    copyrightText: "NOASSERTION",
+    checksums: [{ algorithm: "SHA256", checksumValue: distribution.sha256 }],
+    externalRefs: [{
+      referenceCategory: "PACKAGE-MANAGER",
+      referenceType: "purl",
+      referenceLocator: componentPurl("generic", "nodejs", toolchain.nodeVersion, {
+        arch,
+        os: platform,
+      }),
+    }],
+    comment:
+      `Embedded private Node distribution ${distribution.file}; ${distribution.bytes} bytes. ` +
+      "The extracted executable and bundled license are additionally bound by runtime identity.json.",
+  });
+  addRelationship(rootRecord.spdxId, "CONTAINS", spdxId);
+}
+
+const libatomicPackage = toolchain.linux?.builderPackages?.libatomic;
+const libatomicInventory = toolchain.linux?.rpmContentInventory;
+const nodeBootstrap = toolchain.nodeBootstrap;
+const libatomicMatch = /^libatomic-(\d+\.\d+\.\d+-\d+\.[A-Za-z0-9_]+)$/.exec(
+  libatomicPackage ?? "",
+);
+if (
+  libatomicMatch === null ||
+  nodeBootstrap?.schemaVersion !== 1 ||
+  nodeBootstrap.libatomicPackage !== libatomicPackage ||
+  nodeBootstrap.licenseExpression !== "GPL-3.0-or-later WITH GCC-exception-3.1" ||
+  !/^[0-9a-f]{64}$/.test(nodeBootstrap.licenses?.copying3Sha256 ?? "") ||
+  !/^[0-9a-f]{64}$/.test(nodeBootstrap.licenses?.runtimeExceptionSha256 ?? "") ||
+  libatomicInventory?.schemaVersion !== 1 ||
+  !Array.isArray(libatomicInventory.signatureKeyIds) ||
+  libatomicInventory.signatureKeyIds.length === 0
+) {
+  throw new Error("release-toolchain.json has an invalid embedded libatomic contract");
+}
+for (const [arch, rpmArch] of [["x64", "x86_64"], ["arm64", "aarch64"]]) {
+  const inventorySha256 = libatomicInventory.sha256?.[arch];
+  const bootstrap = nodeBootstrap[`linux-${arch}`];
+  if (
+    !/^[0-9a-f]{64}$/.test(inventorySha256 ?? "") ||
+    !/^[0-9a-f]{64}$/.test(bootstrap?.librarySha256 ?? "") ||
+    !Number.isSafeInteger(bootstrap?.libraryBytes) ||
+    bootstrap.libraryBytes <= 0 ||
+    !/^[0-9a-f]{64}$/.test(bootstrap?.sha256 ?? "") ||
+    !Number.isSafeInteger(bootstrap?.bytes) ||
+    bootstrap.bytes <= 0
+  ) {
+    throw new Error(`release-toolchain.json has no libatomic content identity for ${arch}`);
+  }
+  const identity =
+    `embedded-libatomic:${arch}:${libatomicMatch[1]}:${bootstrap.librarySha256}`;
+  const spdxId = componentSpdxId(identity, `libatomic-linux-${arch}`, libatomicMatch[1]);
+  componentPackages.push({
+    name: `libatomic runtime (linux-${arch})`,
+    SPDXID: spdxId,
+    versionInfo: libatomicMatch[1],
+    downloadLocation: "NOASSERTION",
+    filesAnalyzed: false,
+    licenseConcluded: "NOASSERTION",
+    licenseDeclared: "GPL-3.0-or-later WITH GCC-exception-3.1",
+    copyrightText: "NOASSERTION",
+    checksums: [{ algorithm: "SHA256", checksumValue: bootstrap.librarySha256 }],
+    externalRefs: [{
+      referenceCategory: "PACKAGE-MANAGER",
+      referenceType: "purl",
+      referenceLocator: componentPurl("rpm", "libatomic", libatomicMatch[1], {
+        arch: rpmArch,
+        distro: "rocky-8",
+      }),
+    }],
+    comment:
+      `Exact embedded libatomic.so.1 (${bootstrap.libraryBytes} bytes) from ` +
+      `${libatomicPackage}; bootstrap archive sha256:${bootstrap.sha256}. ` +
+      `GPLv3 sha256:${nodeBootstrap.licenses.copying3Sha256}; GCC Runtime Library ` +
+      `Exception sha256:${nodeBootstrap.licenses.runtimeExceptionSha256}. ` +
+      `The signed builder RPM inventory is sha256:${inventorySha256} ` +
+      `(signer ${libatomicInventory.signatureKeyIds.join(", ")}).`,
+  });
+  addRelationship(rootRecord.spdxId, "CONTAINS", spdxId);
+}
+
+const packages = [...npmPackages, ...componentPackages]
+  .sort((left, right) => utf8Compare(left.SPDXID, right.SPDXID));
 
 relationships.sort((left, right) => utf8Compare(
   `${left.spdxElementId}\0${left.relationshipType}\0${left.relatedSpdxElement}`,
@@ -298,13 +451,14 @@ const document = {
   name: `${rootName}@${rootVersion}`,
   documentNamespace:
     `https://tetsuo.ai/agenc-core/sbom/v${GENERATOR_REVISION}/` +
-    `${sourceCommitSha}/${lockfileSha256}/${graphSha256}`,
+    `${sourceCommitSha}/${lockfileSha256}/${toolchainSha256}/${graphSha256}`,
   creationInfo: {
     created,
     creators: ["Organization: Tetsuo AI", `Tool: agenc-core-spdx-sbom-${GENERATOR_REVISION}`],
     comment:
-      `Repository dependency SBOM for git:${sourceCommitSha}; ` +
-      `package-lock.json sha256:${lockfileSha256}; graph sha256:${graphSha256}`,
+      `Repository dependency and distributed runtime-component SBOM for git:${sourceCommitSha}; ` +
+      `package-lock.json sha256:${lockfileSha256}; ` +
+      `release-toolchain.json sha256:${toolchainSha256}; graph sha256:${graphSha256}`,
   },
   packages,
   relationships,

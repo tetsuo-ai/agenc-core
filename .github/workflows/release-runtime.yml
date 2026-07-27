@@ -36,7 +36,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "25.9.0"
+  NODE_VERSION: "26.5.0"
   NPM_VERSION: "11.17.0"
   npm_config_build_from_source: "true"
   LINUX_BUILDER_IMAGE: "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c"
@@ -99,6 +99,7 @@ jobs:
         run: |
           dnf install -y --setopt=gpgcheck=1 \
             libatomic-8.5.0-28.el8_10 \
+            libgcc-8.5.0-28.el8_10 \
             gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10 \
             gcc-toolset-12-binutils-2.38-17.el8 \
             python3.12-3.12.13-2.el8_10 \
@@ -110,6 +111,21 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - name: Bind the immutable Node compatibility bootstrap release
+        id: node_bootstrap_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap_version="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeBootstrap"]["minimumRuntimeVersion"])')"
+          bootstrap_tag="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeBootstrap"]["releaseTag"])')"
+          test "$bootstrap_tag" = "agenc-v${bootstrap_version}"
+          if test "$GITHUB_REF" = "refs/tags/${bootstrap_tag}"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "AGENC_PUBLISH_NODE_BOOTSTRAP=true" >> "$GITHUB_ENV"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "AGENC_PUBLISH_NODE_BOOTSTRAP=false" >> "$GITHUB_ENV"
+          fi
       - name: Activate and inventory the pinned native toolchain
         shell: bash
         run: |
@@ -190,30 +206,37 @@ jobs:
           set -euo pipefail
           node_file="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
           node_sha="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
+          node_bytes="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"])')"
           headers_file="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["file"])')"
           headers_sha="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["sha256"])')"
+          headers_bytes="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["bytes"])')"
           npm_file="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
           npm_url="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
           npm_sha="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
           node_archive="$RUNNER_TEMP/$node_file"
           headers_archive="$RUNNER_TEMP/$headers_file"
           npm_archive="$RUNNER_TEMP/$npm_file"
-          python3.12 - "$node_archive" "$node_sha" "$headers_archive" "$headers_sha" "$npm_archive" "$npm_sha" "$npm_url" "$NODE_VERSION" "$node_file" "$headers_file" <<'PY'
+          python3.12 - "$node_archive" "$node_sha" "$node_bytes" "$headers_archive" "$headers_sha" "$headers_bytes" "$npm_archive" "$npm_sha" "$npm_url" "$NODE_VERSION" "$node_file" "$headers_file" <<'PY'
           import hashlib
           import pathlib
           import sys
           import urllib.request
 
-          node_path, node_sha, headers_path, headers_sha, npm_path, npm_sha, npm_url, version, node_file, headers_file = sys.argv[1:]
-          for url, destination, expected in (
-              (f"https://nodejs.org/dist/v{version}/{node_file}", node_path, node_sha),
-              (f"https://nodejs.org/dist/v{version}/{headers_file}", headers_path, headers_sha),
-              (npm_url, npm_path, npm_sha),
+          node_path, node_sha, node_bytes, headers_path, headers_sha, headers_bytes, npm_path, npm_sha, npm_url, version, node_file, headers_file = sys.argv[1:]
+          for url, destination, expected_sha, expected_bytes in (
+              (f"https://nodejs.org/dist/v{version}/{node_file}", node_path, node_sha, int(node_bytes)),
+              (f"https://nodejs.org/dist/v{version}/{headers_file}", headers_path, headers_sha, int(headers_bytes)),
+              (npm_url, npm_path, npm_sha, None),
           ):
               urllib.request.urlretrieve(url, destination)
-              actual = hashlib.sha256(pathlib.Path(destination).read_bytes()).hexdigest()
-              if actual != expected:
-                  raise SystemExit(f"digest mismatch for {url}: {actual} != {expected}")
+              downloaded = pathlib.Path(destination).read_bytes()
+              if expected_bytes is not None and len(downloaded) != expected_bytes:
+                  raise SystemExit(
+                      f"byte count mismatch for {url}: {len(downloaded)} != {expected_bytes}"
+                  )
+              actual_sha = hashlib.sha256(downloaded).hexdigest()
+              if actual_sha != expected_sha:
+                  raise SystemExit(f"digest mismatch for {url}: {actual_sha} != {expected_sha}")
           PY
           node_root="$RUNNER_TEMP/node-distribution"
           headers_parent="$RUNNER_TEMP/node-headers"
@@ -225,6 +248,9 @@ jobs:
           expected_libatomic="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["linux"]["builderPackages"]["libatomic"])')"
           actual_libatomic="$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libatomic)"
           test "$actual_libatomic" = "$expected_libatomic"
+          expected_libgcc="$(python3.12 -c 'import json; print(json.load(open("release-toolchain.json"))["linux"]["builderPackages"]["libgcc"])')"
+          actual_libgcc="$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}' libgcc)"
+          test "$actual_libgcc" = "$expected_libgcc"
           node_shared_libraries="$(ldd "$node_root/bin/node" 2>&1)"
           printf '%s\n' "$node_shared_libraries"
           if grep -F 'not found' <<<"$node_shared_libraries"; then
@@ -232,6 +258,41 @@ jobs:
             exit 1
           fi
           grep -F 'libatomic.so.1 => /' <<<"$node_shared_libraries"
+          libatomic_path="$(readlink -f /usr/lib64/libatomic.so.1)"
+          copying3=/usr/share/licenses/libgcc/COPYING3
+          copying_runtime=/usr/share/licenses/libgcc/COPYING.RUNTIME
+          test -f "$libatomic_path"
+          test -f "$copying3"
+          test -f "$copying_runtime"
+          libatomic_license="$RUNNER_TEMP/LIBATOMIC-LICENSE"
+          cat "$copying3" > "$libatomic_license"
+          printf '\n--- GCC Runtime Library Exception 3.1 ---\n\n' >> "$libatomic_license"
+          cat "$copying_runtime" >> "$libatomic_license"
+          python3.12 - "$libatomic_path" "$copying3" "$copying_runtime" "$libatomic_license" "${{ matrix.slug }}" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          library, copying3, runtime_exception, combined = map(pathlib.Path, sys.argv[1:5])
+          slug = sys.argv[5]
+          with open("release-toolchain.json", encoding="utf-8") as source:
+              contract = json.load(source)["nodeBootstrap"]
+          expected = contract[slug]
+          checks = (
+              (library, expected["librarySha256"], expected["libraryBytes"], "libatomic"),
+              (copying3, contract["licenses"]["copying3Sha256"], contract["licenses"]["copying3Bytes"], "GPLv3"),
+              (runtime_exception, contract["licenses"]["runtimeExceptionSha256"], contract["licenses"]["runtimeExceptionBytes"], "runtime exception"),
+              (combined, contract["licenses"]["combinedSha256"], contract["licenses"]["combinedBytes"], "combined license"),
+          )
+          for path, expected_sha, expected_bytes, label in checks:
+              payload = path.read_bytes()
+              actual_sha = hashlib.sha256(payload).hexdigest()
+              if len(payload) != expected_bytes or actual_sha != expected_sha:
+                  raise SystemExit(
+                      f"{label} identity drift: {len(payload)}/{actual_sha} != {expected_bytes}/{expected_sha}"
+                  )
+          PY
           "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
             install --global "$npm_archive" --prefix "$node_root" \
             --ignore-scripts --no-audit --no-fund
@@ -246,6 +307,36 @@ jobs:
           echo "AGENC_NODE_DISTRIBUTION_SHA256=$node_sha" >> "$GITHUB_ENV"
           echo "AGENC_NODE_HEADERS_SHA256=$headers_sha" >> "$GITHUB_ENV"
           echo "AGENC_NPM_DISTRIBUTION_SHA256=$npm_sha" >> "$GITHUB_ENV"
+          echo "AGENC_NODE_LIBATOMIC_PATH=$libatomic_path" >> "$GITHUB_ENV"
+          echo "AGENC_LIBATOMIC_LICENSE_PATH=$libatomic_license" >> "$GITHUB_ENV"
+      - name: Build the immutable Node compatibility bootstrap
+        if: steps.node_bootstrap_release.outputs.publish == 'true'
+        shell: bash
+        env:
+          AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          bootstrap_root="$RUNNER_TEMP/node-bootstrap-${AGENC_RELEASE_SLUG}"
+          bootstrap_file="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
+          bootstrap_archive="$RUNNER_TEMP/$bootstrap_file"
+          umask 022
+          mkdir -p "$bootstrap_root/LICENSES" "$bootstrap_root/lib"
+          cp /usr/share/licenses/libgcc/COPYING3 "$bootstrap_root/LICENSES/COPYING3"
+          cp /usr/share/licenses/libgcc/COPYING.RUNTIME "$bootstrap_root/LICENSES/COPYING.RUNTIME"
+          cp "$(readlink -f /usr/lib64/libatomic.so.1)" "$bootstrap_root/lib/libatomic.so.1"
+          chmod 0644 "$bootstrap_root"/LICENSES/* "$bootstrap_root/lib/libatomic.so.1"
+          chmod 0755 "$bootstrap_root" "$bootstrap_root/LICENSES" "$bootstrap_root/lib"
+          (
+            cd "$bootstrap_root"
+            tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
+              --numeric-owner --pax-option=delete=atime,delete=ctime \
+              -cf - LICENSES lib | gzip -n -9 > "$bootstrap_archive"
+          )
+          expected_sha="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
+          expected_bytes="$(python3.12 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeBootstrap"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"])')"
+          test "$(sha256sum "$bootstrap_archive" | awk '{print $1}')" = "$expected_sha"
+          test "$(stat -c %s "$bootstrap_archive")" = "$expected_bytes"
+          echo "AGENC_NODE_BOOTSTRAP_PATH=$bootstrap_archive" >> "$GITHUB_ENV"
       - name: Build from two isolated worktrees and compare bytes
         env:
           AGENC_MAX_GLIBC: "2.28"
@@ -302,6 +393,12 @@ jobs:
             "$source_root/packages/agenc/scripts/verify-reproducible-artifacts.mjs" \
             --first "$first" --second "$second" \
             --output "$source_root/packages/agenc/release-artifacts"
+      - name: Stage the immutable Node compatibility bootstrap
+        if: steps.node_bootstrap_release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$AGENC_NODE_BOOTSTRAP_PATH" packages/agenc/release-artifacts/
       - name: Select the canonical runtime subject and bundle path
         id: runtime-artifact
         shell: bash
@@ -312,11 +409,18 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node26-abi147.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"
           echo "bundle=${artifact}.sigstore.json" >> "$GITHUB_OUTPUT"
+          bootstraps=(packages/agenc/release-artifacts/agenc-node-bootstrap-libatomic-*.tar.gz)
+          if test "$AGENC_PUBLISH_NODE_BOOTSTRAP" = true; then
+            test "${#bootstraps[@]}" -eq 1
+            echo "bootstrap=${bootstraps[0]}" >> "$GITHUB_OUTPUT"
+          else
+            test "${#bootstraps[@]}" -eq 0
+          fi
       - name: Attest runtime artifact provenance
         id: attest-runtime
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
@@ -324,6 +428,11 @@ jobs:
           subject-path: |
             ${{ steps.runtime-artifact.outputs.path }}
             ${{ steps.runtime-artifact.outputs.metadata }}
+      - name: Attest the immutable Node compatibility bootstrap
+        if: steps.node_bootstrap_release.outputs.publish == 'true'
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.runtime-artifact.outputs.bootstrap }}
       - name: Bind the action-produced bundle to its canonical release name
         shell: bash
         env:
@@ -371,6 +480,7 @@ jobs:
             packages/agenc/release-artifacts/agenc-runtime-*.tar.gz
             packages/agenc/release-artifacts/agenc-runtime-*.meta.json
             packages/agenc/release-artifacts/agenc-runtime-*.tar.gz.sigstore.json
+            packages/agenc/release-artifacts/agenc-node-bootstrap-libatomic-*.tar.gz
           if-no-files-found: error
 
   native-tarball:
@@ -553,8 +663,10 @@ jobs:
           set -euo pipefail
           node_file="$(python3 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["file"])')"
           node_sha="$(python3 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["sha256"])')"
+          node_bytes="$(python3 -c 'import json,os; print(json.load(open("release-toolchain.json"))["nodeDistributions"][os.environ["AGENC_RELEASE_SLUG"]]["bytes"])')"
           headers_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["file"])')"
           headers_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["sha256"])')"
+          headers_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeHeaders"]["bytes"])')"
           npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
           npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
           npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
@@ -570,6 +682,8 @@ jobs:
           test "$(shasum -a 256 "$node_archive" | awk '{print $1}')" = "$node_sha"
           test "$(shasum -a 256 "$headers_archive" | awk '{print $1}')" = "$headers_sha"
           test "$(shasum -a 256 "$npm_archive" | awk '{print $1}')" = "$npm_sha"
+          test "$(stat -f '%z' "$node_archive")" = "$node_bytes"
+          test "$(stat -f '%z' "$headers_archive")" = "$headers_bytes"
           node_root="$RUNNER_TEMP/node-distribution"
           headers_parent="$RUNNER_TEMP/node-headers"
           mkdir -p "$node_root" "$headers_parent"
@@ -623,6 +737,8 @@ jobs:
           Assert-Sha256 $headersArchive $toolchain.nodeHeaders.sha256
           Assert-Sha256 $npmArchive $toolchain.npmDistribution.sha256
           Assert-Sha256 $nodeImportLibrary $importLibrary.sha256
+          Assert-Bytes $nodeArchive $distribution.bytes
+          Assert-Bytes $headersArchive $toolchain.nodeHeaders.bytes
           Assert-Bytes $nodeImportLibrary $importLibrary.bytes
           $distributionParent = Join-Path $env:RUNNER_TEMP 'node-distribution'
           $headersParent = Join-Path $env:RUNNER_TEMP 'node-headers'
@@ -742,7 +858,7 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           artifact="${artifacts[0]}"
           test "$(basename "$artifact")" = \
-            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node25-abi141.tar.gz"
+            "agenc-runtime-$("$AGENC_NODE_EXECUTABLE_PATH" -p 'require("./runtime/package.json").version')-${{ matrix.slug }}-node26-abi147.tar.gz"
           test -f "${artifact}.meta.json"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "metadata=${artifact}.meta.json" >> "$GITHUB_OUTPUT"

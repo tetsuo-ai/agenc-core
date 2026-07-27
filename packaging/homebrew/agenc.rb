@@ -1,51 +1,85 @@
-# Homebrew formula template for the AgenC CLI (TODO task 4).
+# Homebrew formula template for the self-contained AgenC runtime.
 #
-# OWNER-PUBLISH STEP — this file is a template, not a live formula:
-#   1. Cut a release (agenc-v<version>) with the darwin tarballs + manifest
-#      uploaded as assets (see docs/install.md).
-#   2. Fill url/sha256 below from the release manifest (one bottle-style block
-#      per platform, or point at install.sh's contract).
-#   3. Push to the tap repo (tetsuo-ai/homebrew-agenc) as Formula/agenc.rb.
-#
-# The formula deliberately reuses scripts/install/install.sh so every install
-# path shares one verified contract (manifest -> sha256 -> runtime tree).
+# OWNER-PUBLISH STEP — this file remains deliberately unpublishable until the
+# two placeholder digests are replaced from an immutable agenc-v0.11.0
+# manifest and the formula is copied to tetsuo-ai/homebrew-agenc.
 class Agenc < Formula
   desc "Daemon-backed, terminal-native coding agent"
   homepage "https://github.com/tetsuo-ai/agenc-core"
-  # OWNER: point at the released installer script (or vendor it via the tap).
-  url "https://github.com/tetsuo-ai/agenc-core/releases/download/agenc-vX.Y.Z/agenc-installer.tar.gz"
-  sha256 "REPLACE_WITH_RELEASE_ASSET_SHA256"
+  version "0.11.0"
   license "MIT"
 
-  # AgenC 0.9.5 is the deliberately narrow Node 25.9.0 compatibility bridge.
-  # Homebrew/core does not retain a node@25 formula, so publishing an enabled
-  # formula would silently select an unsupported ABI. Re-enable only after the
-  # runtime release contract moves to a supported Node line with bottles.
-  disable! date: "2026-07-19", because: "AgenC 0.9.5 requires unavailable Node 25.9.0"
+  on_arm do
+    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-runtime-0.11.0-darwin-arm64-node26-abi147.tar.gz"
+    sha256 "REPLACE_WITH_DARWIN_ARM64_SHA256"
+  end
 
+  on_intel do
+    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-runtime-0.11.0-darwin-x64-node26-abi147.tar.gz"
+    sha256 "REPLACE_WITH_DARWIN_X64_SHA256"
+  end
+
+  # The runtime artifact includes its reviewed Node 26.5.0 executable. Keep
+  # ripgrep as the only host tool dependency used by the coding-agent surface.
+  depends_on :macos => :ventura
   depends_on "ripgrep"
 
   def install
-    # The installer speaks the runtime-manager contract: manifest fetch,
-    # sha256 verify, extract to AGENC_HOME/runtime/<version>/, wrapper.
-    system "sh", "install.sh",
-           "--prefix", prefix.to_s,
-           "--no-daemon",
-           "--version", version.to_s
+    odie "AgenC requires macOS 13.5 or newer." if MacOS.full_version < "13.5"
+    libexec.install Dir["node_modules"]
+
+    node_bin = libexec/"node_modules/.agenc-node/bin/node"
+    runtime_bin = libexec/"node_modules/@tetsuo-ai/runtime/bin/agenc"
+    odie "runtime artifact is missing private Node" unless node_bin.executable?
+    odie "runtime artifact is missing AgenC" unless runtime_bin.file?
+
+    (bin/"agenc").write <<~SH
+      #!/bin/sh
+      if [ -z "${AGENC_HOME:-}" ]; then
+        export AGENC_HOME="${HOME}/.agenc"
+      fi
+      if [ -n "${PATH:-}" ]; then
+        export PATH="#{node_bin.dirname}:$PATH"
+      else
+        export PATH="#{node_bin.dirname}"
+      fi
+      case " ${NODE_OPTIONS:-} " in
+        *heapsnapshot-near-heap-limit*)
+          exec "#{node_bin}" "#{runtime_bin}" "$@"
+          ;;
+        *)
+          mkdir -p "${AGENC_HOME}/oom-snapshots" 2>/dev/null || :
+          exec "#{node_bin}" --heapsnapshot-near-heap-limit=1 \
+            --diagnostic-dir="${AGENC_HOME}/oom-snapshots" "#{runtime_bin}" "$@"
+          ;;
+      esac
+    SH
+  end
+
+  service do
+    run [opt_bin/"agenc", "daemon", "start", "--foreground"]
+    keep_alive true
+    process_type :interactive
+    working_dir Dir.home
+    log_path var/"log/agenc.log"
+    error_log_path var/"log/agenc.error.log"
   end
 
   def caveats
     <<~EOS
       Start the daemon as a user service:
-        agenc daemon start
+        brew services start agenc
       Guided setup:
         agenc onboard
       Security posture:
         agenc security audit
+
+      Homebrew upgrades the complete AgenC + private Node runtime together.
+      Use `brew upgrade agenc`, not `agenc update`, for this installation.
     EOS
   end
 
   test do
-    assert_match "agenc", shell_output("#{bin}/agenc --version")
+    assert_match version.to_s, shell_output("#{bin}/agenc --version")
   end
 end

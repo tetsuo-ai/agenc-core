@@ -32,8 +32,11 @@ try {
   assertEqual(readFileSync(repeatedOutput, "utf8"), generatedBytes, "repeated SBOM bytes");
   const document = JSON.parse(generatedBytes);
   const lockfileBytes = readFileSync("package-lock.json");
+  const toolchainBytes = readFileSync("release-toolchain.json");
   const lock = JSON.parse(lockfileBytes);
+  const toolchain = JSON.parse(toolchainBytes);
   const lockfileSha = sha256(lockfileBytes);
+  const toolchainSha = sha256(toolchainBytes);
   const sourceCommit = gitHead();
 
   assertEqual(document.spdxVersion, "SPDX-2.3", "spdxVersion");
@@ -47,11 +50,14 @@ try {
   const namespace = document.documentNamespace;
   assertString(namespace, "documentNamespace");
   const namespaceParts = namespace.match(
-    /^https:\/\/tetsuo\.ai\/agenc-core\/sbom\/v3\/([0-9a-f]{40,64})\/([0-9a-f]{64})\/([0-9a-f]{64})$/,
+    /^https:\/\/tetsuo\.ai\/agenc-core\/sbom\/v4\/([0-9a-f]{40,64})\/([0-9a-f]{64})\/([0-9a-f]{64})\/([0-9a-f]{64})$/,
   );
-  if (namespaceParts === null) throw new Error("SBOM namespace is not source/lock/graph bound");
+  if (namespaceParts === null) {
+    throw new Error("SBOM namespace is not source/lock/toolchain/graph bound");
+  }
   assertEqual(namespaceParts[1], sourceCommit, "namespace source commit");
   assertEqual(namespaceParts[2], lockfileSha, "namespace lockfile digest");
+  assertEqual(namespaceParts[3], toolchainSha, "namespace toolchain digest");
 
   const packageIds = new Set();
   const purls = new Set();
@@ -81,8 +87,11 @@ try {
       reference?.referenceCategory === "PACKAGE-MANAGER" &&
       reference?.referenceType === "purl"
     )?.referenceLocator;
-    if (typeof purl !== "string" || !purl.startsWith("pkg:npm/")) {
-      throw new Error(`${pkg.name} is missing an npm package-url`);
+    if (
+      typeof purl !== "string" ||
+      !/^pkg:(?:npm|generic|rpm)\//.test(purl)
+    ) {
+      throw new Error(`${pkg.name} is missing a supported package-url`);
     }
     if (purls.has(purl)) throw new Error(`duplicate package-url identity: ${purl}`);
     purls.add(purl);
@@ -117,6 +126,62 @@ try {
       relationship.relatedSpdxElement === matches[0].SPDXID
     )) {
       throw new Error(`root package does not CONTAIN workspace ${workspacePath}`);
+    }
+  }
+
+  const embeddedNode = document.packages.filter((pkg) =>
+    /^Node\.js runtime \((?:darwin|linux|win)-(?:arm64|x64)\)$/.test(pkg.name)
+  );
+  if (embeddedNode.length !== 5) {
+    throw new Error("SBOM must enumerate all five embedded Node distributions");
+  }
+  for (const [target, distribution] of Object.entries(toolchain.nodeDistributions)) {
+    const pkg = embeddedNode.find((candidate) => candidate.name === `Node.js runtime (${target})`);
+    if (pkg === undefined) throw new Error(`SBOM is missing embedded Node for ${target}`);
+    assertEqual(pkg.versionInfo, toolchain.nodeVersion, `${target} Node version`);
+    assertEqual(pkg.licenseDeclared, "MIT", `${target} Node license`);
+    if (!pkg.checksums?.some((checksum) =>
+      checksum.algorithm === "SHA256" && checksum.checksumValue === distribution.sha256
+    )) {
+      throw new Error(`SBOM Node checksum does not match release-toolchain.json for ${target}`);
+    }
+    if (!document.relationships.some((relationship) =>
+      relationship.spdxElementId === rootPackage.SPDXID &&
+      relationship.relationshipType === "CONTAINS" &&
+      relationship.relatedSpdxElement === pkg.SPDXID
+    )) {
+      throw new Error(`root package does not CONTAIN embedded Node for ${target}`);
+    }
+  }
+
+  const embeddedLibatomic = document.packages.filter((pkg) =>
+    /^libatomic runtime \(linux-(?:arm64|x64)\)$/.test(pkg.name)
+  );
+  if (embeddedLibatomic.length !== 2) {
+    throw new Error("SBOM must enumerate both embedded libatomic runtimes");
+  }
+  for (const arch of ["x64", "arm64"]) {
+    const pkg = embeddedLibatomic.find((candidate) =>
+      candidate.name === `libatomic runtime (linux-${arch})`
+    );
+    if (pkg === undefined) throw new Error(`SBOM is missing embedded libatomic for ${arch}`);
+    assertEqual(
+      pkg.licenseDeclared,
+      "GPL-3.0-or-later WITH GCC-exception-3.1",
+      `${arch} libatomic license`,
+    );
+    if (!pkg.checksums?.some((checksum) =>
+      checksum.algorithm === "SHA256" &&
+      checksum.checksumValue === toolchain.nodeBootstrap[`linux-${arch}`].librarySha256
+    )) {
+      throw new Error(`SBOM libatomic checksum does not match release-toolchain.json for ${arch}`);
+    }
+    if (!document.relationships.some((relationship) =>
+      relationship.spdxElementId === rootPackage.SPDXID &&
+      relationship.relationshipType === "CONTAINS" &&
+      relationship.relatedSpdxElement === pkg.SPDXID
+    )) {
+      throw new Error(`root package does not CONTAIN embedded libatomic for ${arch}`);
     }
   }
 
@@ -161,11 +226,12 @@ try {
     packages: document.packages,
     relationships: document.relationships,
   });
-  assertEqual(namespaceParts[3], sha256(`${canonicalGraph}\n`), "namespace graph digest");
+  assertEqual(namespaceParts[4], sha256(`${canonicalGraph}\n`), "namespace graph digest");
   if (!document.creationInfo.comment.includes(`git:${sourceCommit}`) ||
       !document.creationInfo.comment.includes(`sha256:${lockfileSha}`) ||
-      !document.creationInfo.comment.includes(`graph sha256:${namespaceParts[3]}`)) {
-    throw new Error("SBOM creationInfo is not bound to source, lockfile, and graph");
+      !document.creationInfo.comment.includes(`sha256:${toolchainSha}`) ||
+      !document.creationInfo.comment.includes(`graph sha256:${namespaceParts[4]}`)) {
+    throw new Error("SBOM creationInfo is not bound to source, lockfile, toolchain, and graph");
   }
 
   console.log(

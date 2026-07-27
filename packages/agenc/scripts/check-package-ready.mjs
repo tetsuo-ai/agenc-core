@@ -23,6 +23,18 @@ const MAX_RUNTIME_MANIFEST_BYTES = 1024 * 1024;
 const MAX_RUNTIME_ARTIFACT_BYTES = 256 * 1024 * 1024;
 const MAX_RUNTIME_ATTESTATION_BYTES = 4 * 1024 * 1024;
 
+function canonicalRuntimeNodeBin(platform) {
+  return platform === "win"
+    ? "node_modules/.agenc-node/node.exe"
+    : "node_modules/.agenc-node/bin/node";
+}
+
+function canonicalRuntimeNodeLibrary(platform) {
+  return platform === "linux"
+    ? "node_modules/.agenc-node/lib"
+    : undefined;
+}
+
 function fail(message) {
   throw new Error(`launcher package is not release-ready: ${message}`);
 }
@@ -451,6 +463,22 @@ export function validateLauncherManifest({
     }
     if (artifact.bins?.agenc !== "node_modules/@tetsuo-ai/runtime/bin/agenc") {
       fail(`${key} has an invalid agenc entrypoint`);
+    }
+    if (manifest.runtimeVersion === LEGACY_BRIDGE_CONTRACT.runtimeVersion) {
+      if (
+        artifact.bins === null ||
+        typeof artifact.bins !== "object" ||
+        Array.isArray(artifact.bins) ||
+        JSON.stringify(Object.keys(artifact.bins).sort()) !== JSON.stringify(["agenc"])
+      ) {
+        fail(`${key} frozen legacy bins are not shape-exact`);
+      }
+    } else if (artifact.bins?.node !== canonicalRuntimeNodeBin(artifact.platform)) {
+      fail(`${key} has an invalid embedded Node entrypoint`);
+    } else if (
+      artifact.bins?.nodeLibrary !== canonicalRuntimeNodeLibrary(artifact.platform)
+    ) {
+      fail(`${key} has an invalid embedded Node library path`);
     }
   }
   const actualPlatforms = [...seen].sort();

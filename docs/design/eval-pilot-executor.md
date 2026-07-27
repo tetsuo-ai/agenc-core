@@ -67,8 +67,11 @@ Boundaries the executor enforces:
   egress are surfaced as candidate-QA failures for that task, which is signal
   the pilot protocol wants, not noise to suppress.)
 - **Parser containment.** The bundle's Python `logParser` is frozen CAS
-  content but still code; it executes inside the task container
-  (`--network none`), never on the host.
+  content but still code. It executes inside the task container when Python is
+  available; otherwise it runs in the exact digest-pinned auxiliary parser
+  image. Both paths use `--network none`, never the host. Each phase transcript
+  records the digest of the image that executed the parser, so the canonical
+  evidence digest changes if that interpreter image changes.
 
 ## Phase 1 — preflight executor (implemented)
 
@@ -142,7 +145,7 @@ Module `runtime/src/eval-executor/agent-run.ts`, CLI
 runtime inside a pinned task container, collects its patch, and verifies it
 with the hidden verifier — all offline.
 
-- **Overlay:** the operator stages a directory with `node/` (official Node 25
+- **Overlay:** the operator stages a directory with `node/` (official Node 26
   linux-x64), `runtime/` (extracted `agenc-runtime-*-linux-x64` release
   tarball), and `mock/serve.mjs` (the bundled offline provider). It is
   bind-mounted read-only at `/agenc-overlay`. `assertOverlayLayout` checks the
@@ -189,9 +192,9 @@ untrusted issue text. This lane is therefore NOT part of 2a. It requires:
 
 - **Agent placement:** the agent runs *inside* the task container so it can
   build and test with the image toolchain. There is no standalone agenc
-  binary; the runtime is Node >= 25.9 ESM with glibc natives
+  binary; the runtime is Node >= 26.5 ESM with glibc natives
   (`better-sqlite3`, `node-pty`, peer-credentials addon). The executor stages
-  an overlay mount containing an official Node 25 linux-x64 distribution and
+  an overlay mount containing an official Node 26 linux-x64 distribution and
   the extracted `agenc-runtime-*-linux-x64.tar.gz` release artifact; pilot
   images are glibc-based (Ubuntu derivatives), which this depends on and
   verifies at start (`ldd` probe) with `infrastructure_error` on mismatch.

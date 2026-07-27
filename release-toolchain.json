@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "nodeVersion": "25.9.0",
-  "nodeMajor": 25,
-  "nodeModuleAbi": "141",
+  "nodeVersion": "26.5.0",
+  "nodeMajor": 26,
+  "nodeModuleAbi": "147",
   "nodeApiVersion": "10",
   "npmVersion": "11.17.0",
   "npmDistribution": {
@@ -55,43 +55,87 @@
   },
   "nodeDistributions": {
     "linux-x64": {
-      "file": "node-v25.9.0-linux-x64.tar.gz",
-      "sha256": "134e55b2408448a219760fe04dc44d6851f9de8a79549021ffd870e9082d9e7b"
+      "file": "node-v26.5.0-linux-x64.tar.gz",
+      "sha256": "22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677",
+      "bytes": 61529729
     },
     "linux-arm64": {
-      "file": "node-v25.9.0-linux-arm64.tar.gz",
-      "sha256": "8fb4283301b8c720fc9f18bffff0f659e72cc14d0cf207a3bb411808aaa73a57"
+      "file": "node-v26.5.0-linux-arm64.tar.gz",
+      "sha256": "308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1",
+      "bytes": 61388036
     },
     "darwin-x64": {
-      "file": "node-v25.9.0-darwin-x64.tar.gz",
-      "sha256": "7d737b53ce191142bfa1c17cfa5b070d96e84eebf76b8dd06d84981cbdc3f7e3"
+      "file": "node-v26.5.0-darwin-x64.tar.gz",
+      "sha256": "98293394c945a24e64e00b4177bf075ec963ea70b34d1d2e24bd4a71716d334f",
+      "bytes": 58480209
     },
     "darwin-arm64": {
-      "file": "node-v25.9.0-darwin-arm64.tar.gz",
-      "sha256": "e479f3c469d3d9303a44f00a8ea37a3788395d171bb8059c48a4bbbd2e371b59"
+      "file": "node-v26.5.0-darwin-arm64.tar.gz",
+      "sha256": "ee920559aaa2391569cff4d737e3b83963430e3a14dedd91bfe0ff53171b5af9",
+      "bytes": 57181366
     },
     "win-x64": {
-      "file": "node-v25.9.0-win-x64.zip",
-      "sha256": "929552b8305effac843ba7b4270c437aefb702fc3fbd73fcd1bffd35d4ac284e"
+      "file": "node-v26.5.0-win-x64.zip",
+      "sha256": "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6",
+      "bytes": 41113391
+    }
+  },
+  "nodeBootstrap": {
+    "schemaVersion": 1,
+    "minimumRuntimeVersion": "0.11.0",
+    "releaseTag": "agenc-v0.11.0",
+    "licenseExpression": "GPL-3.0-or-later WITH GCC-exception-3.1",
+    "libatomicPackage": "libatomic-8.5.0-28.el8_10",
+    "licensePackage": "libgcc-8.5.0-28.el8_10",
+    "licenses": {
+      "copying3Sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "copying3Bytes": 35147,
+      "runtimeExceptionSha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+      "runtimeExceptionBytes": 3324,
+      "combinedSha256": "df7743d494c078043b24385b7e214c13afb0067b43d9b385b4be64e5b872326c",
+      "combinedBytes": 38515
+    },
+    "linux-x64": {
+      "file": "agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
+      "sha256": "5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6",
+      "bytes": 26073,
+      "librarySha256": "5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd",
+      "libraryBytes": 28920,
+      "rpmUrl": "https://download.rockylinux.org/pub/rocky/8/BaseOS/x86_64/os/Packages/l/libatomic-8.5.0-28.el8_10.x86_64.rpm",
+      "rpmSha256": "97467bd64967dd24ab1fb7100e839c794df300168ea9d2c315af92984148b7f2",
+      "rpmBytes": 26012
+    },
+    "linux-arm64": {
+      "file": "agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
+      "sha256": "645433551bd872a59e55e4f490ba0df36184b855dce2d3e798a4526c3dfb828c",
+      "bytes": 27660,
+      "librarySha256": "d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2",
+      "libraryBytes": 70232,
+      "rpmUrl": "https://download.rockylinux.org/pub/rocky/8/BaseOS/aarch64/os/Packages/l/libatomic-8.5.0-28.el8_10.aarch64.rpm",
+      "rpmSha256": "177ea1f700b8b7292e96dffafe0298939504462d23408135afabf33780b40360",
+      "rpmBytes": 26472
     }
   },
   "nodeHeaders": {
-    "file": "node-v25.9.0-headers.tar.gz",
-    "sha256": "de7a1b69ceee1a8a29a98d005d1edb642e917e5fed801fcadfd678d6f618c77a",
+    "file": "node-v26.5.0-headers.tar.gz",
+    "sha256": "b02b9c5922e7fd7bae30d9e97c293059175aa9d267b81d2866d52696445b5cbd",
+    "bytes": 9963460,
     "windowsCommonGypi": {
       "schemaVersion": 1,
       "path": "include/node/common.gypi",
-      "sourceSha256": "1fa5e02d19706d796b1ba275f11e3a2deec59d34eaaf34efab5779145f385f8a",
-      "releaseSha256": "8a9331b700e6cdd52e611d249a78e02513d70dd45f4be314bf6f1e301d4bbd2d",
+      "sourceSha256": "48c0c45ddfcf0de738fd7d9fc23c02768f2816686e099027af6373bd062e53b7",
+      "releaseSha256": "ddeb29bbdbcd29a167aa4799794c4a5c56222184f06361d8a2c0bfc310d9b266",
       "transformation": "disable-debug-information-and-full-paths"
     }
   },
   "nodeImportLibraries": {
     "win-x64": {
       "file": "node.lib",
-      "url": "https://nodejs.org/dist/v25.9.0/win-x64/node.lib",
-      "sha256": "e3577a5a4a772b21646fe05a24d53ce3727395bbbc412f326889ddf7129bc7a9",
-      "bytes": 2995712
+      "url": "https://nodejs.org/dist/v26.5.0/win-x64/node.lib",
+      "sha256": "56f06350037085fce04930befd98327afc86ee46f52af6f6f8a68a03630e8380",
+      "bytes": 3026982
     }
   },
   "docker": {
@@ -114,8 +158,8 @@
       "image": "moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a",
       "compatibilityVersion": "30"
     },
-    "buildImage": "node:25.9.0-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b",
-    "runtimeImage": "node:25.9.0-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370",
+    "buildImage": "node:26.5.0-bookworm@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271",
+    "runtimeImage": "node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
     "debianSnapshot": {
       "timestamp": "20260701T000000Z",
       "repositories": [
@@ -147,6 +191,7 @@
     "containerImage": "rockylinux@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c",
     "builderPackages": {
       "libatomic": "libatomic-8.5.0-28.el8_10",
+      "libgcc": "libgcc-8.5.0-28.el8_10",
       "gcc-toolset-12-gcc-c++": "gcc-toolset-12-gcc-c++-12.2.1-7.8.el8_10",
       "gcc-toolset-12-binutils": "gcc-toolset-12-binutils-2.38-17.el8",
       "python3.12": "python3.12-3.12.13-2.el8_10",

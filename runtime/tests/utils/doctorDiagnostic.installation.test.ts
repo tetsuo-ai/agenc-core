@@ -14,6 +14,7 @@ import {
   findActiveGeneratedWrapper,
   getCurrentInstallationType,
   getInstallationPath,
+  isRunningFromPrivateNodeRuntime,
   retainOnlyMultipleInstallations,
 } from "../../src/utils/doctorDiagnostic.js";
 import {
@@ -88,6 +89,36 @@ describe("Doctor installation detection", () => {
         commandPath: wrapperPath,
       }),
     ).resolves.toBeNull();
+  });
+
+  it("proves a direct private-Node runtime without relying on a PATH wrapper", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-private-runtime-"));
+    roots.push(root);
+    const runtimePath = join(
+      root,
+      "node_modules",
+      "@tetsuo-ai",
+      "runtime",
+      "bin",
+      "agenc",
+    );
+    const nodePath = join(
+      root,
+      "node_modules",
+      ".agenc-node",
+      "bin",
+      "node",
+    );
+
+    expect(
+      isRunningFromPrivateNodeRuntime({ nodePath, runtimePath }),
+    ).toBe(true);
+    expect(
+      isRunningFromPrivateNodeRuntime({
+        nodePath: process.execPath,
+        runtimePath,
+      }),
+    ).toBe(false);
   });
 
   it("classifies and displays a proven standalone install as native", async () => {

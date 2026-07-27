@@ -14,14 +14,16 @@
 #   AGENC_INSTALL_VERSION       pin a release version
 #   AGENC_HOME                  runtime install root (default ~\.agenc)
 #   AGENC_INSTALL_PREFIX        shim prefix (default $env:LOCALAPPDATA\agenc)
-# Test seams: AGENC_INSTALL_PLATFORM / AGENC_INSTALL_ARCH override the selected
-# Node binary's platform/architecture and are restricted to win32 + x64/arm64.
+# Test seams: AGENC_INSTALL_PLATFORM / AGENC_INSTALL_ARCH override platform
+# detection. AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE may point at a local copy of
+# the exact pinned Node distribution; production bytes and sha256 still apply.
 
 & {
 $ErrorActionPreference = "Stop"
 $priorNodeEnvironment = @{}
 foreach ($name in @(
-  "NODE_OPTIONS", "NODE_PATH", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_USE_ENV_PROXY"
+  "NODE_OPTIONS", "NODE_PATH", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_USE_ENV_PROXY",
+  "PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"
 )) {
   $priorNodeEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
@@ -34,9 +36,16 @@ try {
 [Environment]::SetEnvironmentVariable("NODE_OPTIONS", $null, "Process")
 [Environment]::SetEnvironmentVariable("NODE_PATH", $null, "Process")
 [Environment]::SetEnvironmentVariable("NODE_TLS_REJECT_UNAUTHORIZED", $null, "Process")
+[Environment]::SetEnvironmentVariable("LD_LIBRARY_PATH", $null, "Process")
+[Environment]::SetEnvironmentVariable("LD_PRELOAD", $null, "Process")
+[Environment]::SetEnvironmentVariable("DYLD_LIBRARY_PATH", $null, "Process")
+[Environment]::SetEnvironmentVariable("DYLD_INSERT_LIBRARIES", $null, "Process")
 $env:NODE_USE_ENV_PROXY = "1"
-$SupportedNodeMajor = 25
-$SupportedNodeMinor = 9
+$SupportedNodeMajor = 26
+$SupportedNodeMinor = 5
+$SupportedNodeVersion = "26.5.0"
+$LegacyBridgeNodeMajor = 25
+$LegacyBridgeNodeMinor = 9
 $MaxManifestBytes = 1MB
 $MaxArtifactBytes = 256MB
 $MaxSigstoreBundleBytes = 4MB
@@ -52,6 +61,93 @@ $script:OfficialProvenanceReceiptBase64 = ""
 
 function Write-Log([string]$msg) { Write-Host "agenc-install: $msg" }
 function Fail([string]$msg) { throw "agenc-install: ERROR: $msg" }
+
+function Copy-PinnedBootstrapHttps(
+  [string]$Url,
+  [string]$Destination,
+  [long]$ExactBytes
+) {
+  try { $uri = [Uri]$Url } catch { Fail "Node.js bootstrap URL is invalid" }
+  if (-not $uri.IsAbsoluteUri -or $uri.Scheme -cne "https" -or
+      $uri.UserInfo -or $uri.Fragment) {
+    Fail "Node.js bootstrap URL must be canonical HTTPS"
+  }
+  [void][System.Reflection.Assembly]::Load("System.Net.Http")
+  [int]$bootstrapTimeoutMs = 120000
+  if ($env:AGENC_INSTALL_TEST_BOOTSTRAP_TIMEOUT_MS) {
+    [int]$parsedBootstrapTimeout = 0
+    if (-not [int]::TryParse(
+        $env:AGENC_INSTALL_TEST_BOOTSTRAP_TIMEOUT_MS,
+        [ref]$parsedBootstrapTimeout
+      ) -or $parsedBootstrapTimeout -lt 1 -or $parsedBootstrapTimeout -gt 120000) {
+      Fail "invalid Node.js bootstrap deadline"
+    }
+    $bootstrapTimeoutMs = $parsedBootstrapTimeout
+  }
+  $deadline = [System.Threading.CancellationTokenSource]::new()
+  $deadline.CancelAfter($bootstrapTimeoutMs)
+  $handler = [System.Net.Http.HttpClientHandler]::new()
+  $handler.AllowAutoRedirect = $true
+  $handler.MaxAutomaticRedirections = 5
+  $client = [System.Net.Http.HttpClient]::new($handler)
+  $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+  $request = [System.Net.Http.HttpRequestMessage]::new(
+    [System.Net.Http.HttpMethod]::Get,
+    $uri
+  )
+  $null = $request.Headers.TryAddWithoutValidation("Accept-Encoding", "identity")
+  $response = $null
+  $inputStream = $null
+  $outputStream = $null
+  try {
+    $response = $client.SendAsync(
+      $request,
+      [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead,
+      $deadline.Token
+    ).GetAwaiter().GetResult()
+    $response.EnsureSuccessStatusCode()
+    if ($response.RequestMessage.RequestUri.Scheme -cne "https") {
+      Fail "Node.js bootstrap redirect left HTTPS"
+    }
+    $declared = $response.Content.Headers.ContentLength
+    if ($null -ne $declared -and [long]$declared -ne $ExactBytes) {
+      Fail "Node.js bootstrap Content-Length mismatch"
+    }
+    $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $outputStream = [IO.FileStream]::new(
+      $Destination,
+      [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write,
+      [IO.FileShare]::None
+    )
+    $buffer = [byte[]]::new(65536)
+    [long]$total = 0
+    while (($read = $inputStream.ReadAsync(
+        $buffer,
+        0,
+        $buffer.Length,
+        $deadline.Token
+      ).GetAwaiter().GetResult()) -gt 0) {
+      $total += $read
+      if ($total -gt $ExactBytes) { Fail "Node.js bootstrap exceeds pinned byte count" }
+      $outputStream.Write($buffer, 0, $read)
+    }
+    $outputStream.Flush($true)
+    if ($total -ne $ExactBytes) {
+      Fail "Node.js bootstrap byte count mismatch (expected $ExactBytes, got $total)"
+    }
+  } catch [System.OperationCanceledException] {
+    Fail "Node.js bootstrap deadline exceeded after ${bootstrapTimeoutMs}ms"
+  } finally {
+    if ($outputStream) { $outputStream.Dispose() }
+    if ($inputStream) { $inputStream.Dispose() }
+    if ($response) { $response.Dispose() }
+    $request.Dispose()
+    $client.Dispose()
+    $handler.Dispose()
+    $deadline.Dispose()
+  }
+}
 
 $BoundedFetch = @'
 const {
@@ -459,16 +555,134 @@ function Confirm-OfficialRuntimeProvenance(
 
 # --- prerequisites -----------------------------------------------------------
 
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) { Fail "Node.js $SupportedNodeMajor.$SupportedNodeMinor.x is required. Install it (https://nodejs.org) and re-run." }
-$nodeMajor = [int](node -e "process.stdout.write(process.versions.node.split('.')[0])")
-$nodeMinor = [int](node -e "process.stdout.write(process.versions.node.split('.')[1])")
-if ($nodeMajor -ne $SupportedNodeMajor -or $nodeMinor -lt $SupportedNodeMinor) {
-  Fail "Node.js >=$SupportedNodeMajor.$SupportedNodeMinor <26 required, found $(node -v)."
+$actualWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$nodePlatform = if ($env:AGENC_INSTALL_PLATFORM) { $env:AGENC_INSTALL_PLATFORM } elseif ($actualWindows) {
+  "win32"
+} else {
+  Fail "install.ps1 only supports Windows; use install.sh on Linux/macOS"
 }
+if ($nodePlatform -ne "win32") { Fail "unsupported operating-system platform: $nodePlatform" }
+$arch = if ($env:AGENC_INSTALL_ARCH) { $env:AGENC_INSTALL_ARCH } else {
+  switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+    ([System.Runtime.InteropServices.Architecture]::X64) { "x64" }
+    ([System.Runtime.InteropServices.Architecture]::Arm64) { "arm64" }
+    default { Fail "unsupported operating-system architecture" }
+  }
+}
+if ($arch -notin @("x64", "arm64")) { Fail "unsupported operating-system architecture: $arch" }
+
+function Test-NodeContract([string]$Path, [bool]$Legacy) {
+  if (-not $Path) { return $false }
+  $mode = if ($Legacy) { "legacy" } else { "modern" }
+  & $Path -e @'
+const [expectedPlatform, expectedArch, mode, allowOverride] = process.argv.slice(1);
+const [major, minor] = process.versions.node.split(".").map(Number);
+const legacy = mode === "legacy";
+const versionOk = legacy ? major === 25 && minor >= 9 : major === 26 && minor >= 5;
+const abiOk = legacy ? process.versions.modules === "141" : process.versions.modules === "147";
+const platformOk = allowOverride === "true" || (
+  process.platform === expectedPlatform && process.arch === expectedArch
+);
+if (!versionOk || !abiOk || process.versions.napi !== "10" || !platformOk) process.exit(1);
+'@ $nodePlatform $arch $mode ([string][bool]($env:AGENC_INSTALL_PLATFORM -or $env:AGENC_INSTALL_ARCH)).ToLowerInvariant() `
+    2>$null
+  return $LASTEXITCODE -eq 0
+}
+
+$bootstrapWork = $null
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+$nodeBin = if ($nodeCommand) { [string]$nodeCommand.Source } else { "" }
+if ($env:AGENC_INSTALL_VERSION -ceq "0.7.2") {
+  if (-not (Test-NodeContract $nodeBin $true)) {
+    $found = if ($nodeBin) { (& $nodeBin -v 2>$null | Out-String).Trim() } else { "none" }
+    Fail "The frozen v0.7.2 bridge requires Node.js >=$LegacyBridgeNodeMajor.$LegacyBridgeNodeMinor <26 on the host (ABI 141 / N-API 10), found $found."
+  }
+} elseif (-not (Test-NodeContract $nodeBin $false)) {
+  if ($arch -ne "x64") {
+    Fail "no pinned Node.js bootstrap distribution exists for win-$arch"
+  }
+  $nodeDistributionFile = "node-v26.5.0-win-x64.zip"
+  $nodeDistributionSha256 = "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6"
+  $nodeDistributionBytes = 41113391
+  $bootstrapWork = Join-Path ([IO.Path]::GetTempPath()) "agenc-node-bootstrap-$PID-$([Guid]::NewGuid())"
+  New-Item -ItemType Directory -Path $bootstrapWork | Out-Null
+  if ($actualWindows) {
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $privateAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $privateAcl.SetOwner($currentSid)
+    $privateAcl.SetAccessRuleProtection($true, $false)
+    $privateRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+      $currentSid,
+      [System.Security.AccessControl.FileSystemRights]::FullControl,
+      ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+      [System.Security.AccessControl.PropagationFlags]::None,
+      [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $privateAcl.AddAccessRule($privateRule)
+    Set-Acl -LiteralPath $bootstrapWork -AclObject $privateAcl
+  }
+  $nodeDistributionArchive = Join-Path $bootstrapWork $nodeDistributionFile
+  if ($env:AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE) {
+    if (-not [IO.Path]::IsPathFullyQualified($env:AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE)) {
+      Fail "AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE must be an absolute path"
+    }
+    $localNodeArchive = Get-Item -LiteralPath $env:AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE -Force
+    if (-not $localNodeArchive -or $localNodeArchive.PSIsContainer -or
+        ($localNodeArchive.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      Fail "pinned local Node bootstrap archive is not a regular file"
+    }
+    Copy-Item -LiteralPath $localNodeArchive.FullName -Destination $nodeDistributionArchive
+  } else {
+    $nodeDistributionUrl =
+      "https://nodejs.org/dist/v$SupportedNodeVersion/$nodeDistributionFile"
+    Copy-PinnedBootstrapHttps `
+      $nodeDistributionUrl `
+      $nodeDistributionArchive `
+      $nodeDistributionBytes
+  }
+  $nodeArchiveItem = Get-Item -LiteralPath $nodeDistributionArchive -Force
+  if ($nodeArchiveItem.Length -ne $nodeDistributionBytes) {
+    Fail "Node.js bootstrap byte count mismatch (expected $nodeDistributionBytes, got $($nodeArchiveItem.Length))"
+  }
+  $nodeArchiveSha = (Get-FileHash -Algorithm SHA256 $nodeDistributionArchive).Hash.ToLowerInvariant()
+  if ($nodeArchiveSha -cne $nodeDistributionSha256) {
+    Fail "Node.js bootstrap checksum mismatch"
+  }
+  [void][System.Reflection.Assembly]::Load("System.IO.Compression.FileSystem")
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($nodeDistributionArchive, $bootstrapWork)
+  $nodeBin = Join-Path $bootstrapWork "node-v26.5.0-win-x64\node.exe"
+  if (-not (Test-Path -LiteralPath $nodeBin -PathType Leaf)) {
+    Fail "pinned Node.js bootstrap executable is missing"
+  }
+  if (-not $actualWindows) {
+    & /bin/chmod 700 $nodeBin
+    if ($LASTEXITCODE -ne 0) { Fail "could not secure test-seam Node.js bootstrap" }
+  }
+  & $nodeBin -e @'
+const allowOverride = process.argv[1] === "true";
+if (process.versions.node !== "26.5.0" || process.versions.modules !== "147" ||
+    process.versions.napi !== "10" || (!allowOverride && (
+      process.platform !== "win32" || process.arch !== "x64"
+    ))) process.exit(1);
+'@ ([string][bool]($env:AGENC_INSTALL_PLATFORM -or $env:AGENC_INSTALL_ARCH)).ToLowerInvariant()
+  if ($LASTEXITCODE -ne 0) { Fail "pinned Node.js bootstrap identity is invalid" }
+  if (-not $actualWindows) {
+    $testSeamNode = Join-Path (Split-Path -Parent $nodeBin) "node"
+    Copy-Item -LiteralPath $nodeBin -Destination $testSeamNode
+    & /bin/chmod 700 $testSeamNode
+    if ($LASTEXITCODE -ne 0) { Fail "could not prepare test-seam Node.js command" }
+    Set-Alias -Name node -Value $testSeamNode -Scope Local
+  }
+  $env:Path = "$(Split-Path -Parent $nodeBin)$([IO.Path]::PathSeparator)$env:Path"
+  Write-Log "using private Node.js $SupportedNodeVersion bootstrap for win-$arch"
+}
+
+$node = Get-Command node -ErrorAction Stop
+$nodeBin = [string]$node.Source
+$nodeMajor = [int](node -e "process.stdout.write(process.versions.node.split('.')[0])")
 $nodeModuleAbi = node -e "process.stdout.write(process.versions.modules)"
 if ($nodeModuleAbi -notmatch "^[0-9]+$") { Fail "Node.js reported an invalid native module ABI: $nodeModuleAbi" }
-$actualWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 $tarPath = if ($actualWindows) {
   "\\?\GLOBALROOT\SystemRoot\System32\tar.exe"
 } else {
@@ -495,14 +709,6 @@ if ($actualWindows) {
   $tarPath = [string]$tarItem.FullName
 }
 
-$nodePlatform = if ($env:AGENC_INSTALL_PLATFORM) { $env:AGENC_INSTALL_PLATFORM } else {
-  node -e "process.stdout.write(process.platform)"
-}
-if ($nodePlatform -ne "win32") { Fail "the selected Node.js binary targets $nodePlatform; use install.sh on Linux/macOS" }
-$arch = if ($env:AGENC_INSTALL_ARCH) { $env:AGENC_INSTALL_ARCH } else {
-  node -e "process.stdout.write(process.arch)"
-}
-if ($arch -notin @("x64", "arm64")) { Fail "unsupported Node.js architecture: $arch" }
 if ($env:AGENC_INSTALL_REPO -and
     ($env:AGENC_INSTALL_REPO -notmatch "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" -or
      $env:AGENC_INSTALL_REPO -match "[`0`r`n]")) {
@@ -512,6 +718,17 @@ if ($env:AGENC_INSTALL_VERSION -and
     ($env:AGENC_INSTALL_VERSION -notmatch "^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$" -or
      $env:AGENC_INSTALL_VERSION -match "[`0`r`n]")) {
   Fail "AGENC_INSTALL_VERSION must be a canonical semantic version"
+}
+if ($env:AGENC_INSTALL_VERSION -and $env:AGENC_INSTALL_VERSION -cne "0.7.2") {
+  & $nodeBin -e @'
+const version = process.argv[1];
+const [major, minor] = version.split("-", 1)[0].split(".").map(BigInt);
+if (major > 0n || minor >= 11n) process.exit(0);
+process.exit(1);
+'@ $env:AGENC_INSTALL_VERSION
+  if ($LASTEXITCODE -ne 0) {
+    Fail "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node"
+  }
 }
 
 # Establish the install identity before any manifest/network work. Relative
@@ -618,7 +835,9 @@ $repo = if ($env:AGENC_INSTALL_REPO) { $env:AGENC_INSTALL_REPO } else { $Officia
 $manifestUrl = $env:AGENC_INSTALL_MANIFEST_URL
 $manifestExplicit = [bool]$manifestUrl
 if (-not $manifestUrl) {
-  if ($env:AGENC_INSTALL_VERSION) {
+  if ($env:AGENC_INSTALL_VERSION -ceq "0.7.2") {
+    $manifestUrl = "https://github.com/$repo/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"
+  } elseif ($env:AGENC_INSTALL_VERSION) {
     $manifestUrl = "https://github.com/$repo/releases/download/agenc-v$($env:AGENC_INSTALL_VERSION)/agenc-runtime-manifest-v2.json"
   } else {
     $manifestUrl = "https://github.com/$repo/releases/latest/download/agenc-runtime-manifest-v2.json"
@@ -627,10 +846,11 @@ if (-not $manifestUrl) {
 $expectedManifestRepo = if (-not $manifestExplicit) { $repo } else { "" }
 $manifestTrust = if ($manifestUrl -match "^https://") {
   $legacyUrl = "https://github.com/$OfficialRepo/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"
-  if ($repo -eq $OfficialRepo -and -not $manifestExplicit) { "official" }
-  elseif ($repo -eq $OfficialRepo -and $env:AGENC_INSTALL_VERSION -eq "0.7.2" -and $manifestUrl -eq $legacyUrl) {
+  if ($repo -eq $OfficialRepo -and -not $manifestExplicit -and
+      $env:AGENC_INSTALL_VERSION -ceq "0.7.2" -and $manifestUrl -ceq $legacyUrl) {
     "officialLegacy"
-  } else { "explicitHttps" }
+  } elseif ($repo -eq $OfficialRepo -and -not $manifestExplicit) { "official" }
+  else { "explicitHttps" }
 } elseif ($manifestUrl -match "^http://") {
   Fail "refusing non-HTTPS manifest URL: $manifestUrl"
 } else { "explicitLocal" }
@@ -747,6 +967,20 @@ try {
         [string]$manifest.releaseRepository -notmatch "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") {
       Fail "runtime manifest release identity is invalid"
     }
+    $runtimeVersionMatch = [regex]::Match(
+      [string]$manifest.runtimeVersion,
+      "^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$"
+    )
+    $runtimeMajor = [System.Numerics.BigInteger]::Parse(
+      $runtimeVersionMatch.Groups[1].Value
+    )
+    $runtimeMinor = [System.Numerics.BigInteger]::Parse(
+      $runtimeVersionMatch.Groups[2].Value
+    )
+    if ($runtimeMajor -eq [System.Numerics.BigInteger]::Zero -and
+        $runtimeMinor -lt [System.Numerics.BigInteger]::Parse("11")) {
+      Fail "runtime $($manifest.runtimeVersion) has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node"
+    }
     if ($expectedManifestRepo -and [string]$manifest.releaseRepository -cne $expectedManifestRepo) {
       Fail "runtime manifest releaseRepository $($manifest.releaseRepository) does not match requested $expectedManifestRepo"
     }
@@ -757,6 +991,11 @@ try {
     $identities = @{}
     foreach ($candidate in $allArtifacts) {
       $identity = "$($candidate.platform)-$($candidate.arch)/abi$($candidate.nodeModuleAbi)"
+      $expectedCandidateNode = if ([string]$candidate.platform -ceq "win") {
+        "node_modules/.agenc-node/node.exe"
+      } else {
+        "node_modules/.agenc-node/bin/node"
+      }
       if ($identity -notmatch "^(linux-(x64|arm64)|darwin-(x64|arm64)|win-x64)/abi[0-9]+$") {
         Fail "manifest artifact identity is invalid ($identity)"
       }
@@ -773,6 +1012,15 @@ try {
           -not (Test-JsonInteger $candidate.bytes) -or
           $candidateBytes -notmatch "^[1-9][0-9]*$" -or [long]$candidateBytes -gt $MaxArtifactBytes -or
           [string]$candidate.bins.agenc -cne "node_modules/@tetsuo-ai/runtime/bin/agenc" -or
+          [string]$candidate.bins.node -cne $expectedCandidateNode -or
+          (
+            [string]$candidate.platform -ceq "linux" -and
+            [string]$candidate.bins.nodeLibrary -cne "node_modules/.agenc-node/lib"
+          ) -or
+          (
+            [string]$candidate.platform -cne "linux" -and
+            (Test-HasProperty $candidate.bins "nodeLibrary")
+          ) -or
           -not (Test-CleanString $candidate.url)) {
         Fail "manifest artifact identity is invalid ($identity)"
       }
@@ -840,13 +1088,13 @@ try {
       }
     }
     $matches = @($allArtifacts | Where-Object {
-      $_.platform -eq "win" -and $_.arch -eq $arch -and $_.nodeModuleAbi -eq $nodeModuleAbi
+      $_.platform -eq "win" -and $_.arch -eq $arch
     })
   }
   if ($matches.Count -ne 1) {
     $have = ($manifest.artifacts | ForEach-Object { "$($_.platform)-$($_.arch)/abi$($_.nodeModuleAbi)" }) -join ", "
-    if ($matches.Count -eq 0) { Fail "no runtime build for win-$arch/abi$nodeModuleAbi (available: $have)" }
-    Fail "duplicate runtime builds for win-$arch/abi$nodeModuleAbi"
+    if ($matches.Count -eq 0) { Fail "no runtime build for win-$arch (available: $have)" }
+    Fail "duplicate runtime builds for win-$arch"
   }
   $artifact = $matches[0]
   $version = [string]$manifest.runtimeVersion
@@ -859,7 +1107,13 @@ try {
       $artifactBytes -notmatch "^[1-9][0-9]*$" -or [long]$artifactBytes -gt $MaxArtifactBytes -or
       $artifactNodeApiVersion -notmatch "^[0-9]+$" -or
       $artifactNodeApiVersion -ne [string](node -e "process.stdout.write(process.versions.napi)") -or
-      [string]$artifact.bins.agenc -ne "node_modules/@tetsuo-ai/runtime/bin/agenc") {
+      [string]$artifact.bins.agenc -ne "node_modules/@tetsuo-ai/runtime/bin/agenc" -or
+      (-not $legacy -and (
+        $artifactNodeMajor -ne 26 -or [string]$artifact.nodeModuleAbi -cne "147" -or
+        $artifactNodeApiVersion -cne "10" -or
+        [string]$artifact.bins.node -cne "node_modules/.agenc-node/node.exe" -or
+        (Test-HasProperty $artifact.bins "nodeLibrary")
+      ))) {
     Fail "manifest artifact identity is invalid"
   }
   if ($artifactNodeMajor -ne $nodeMajor) {
@@ -875,6 +1129,13 @@ try {
   $installDir = Join-Path $versionDir "$artifactKey-sha256-$($artifact.sha256)"
   $marker = Join-Path $installDir ".agenc-runtime-ok"
   $runtimeBin = Join-Path $installDir ($binRel -replace "/", "\")
+  $nodeBinRel = if ($legacy) { "" } else { [string]$artifact.bins.node }
+  $nodeLibraryRel = ""
+  $privateNodeBin = if ($legacy) {
+    $nodeBin
+  } else {
+    Join-Path $installDir ($nodeBinRel -replace "/", "\")
+  }
 
   $provenanceExpectationBase64 = ""
   if ($manifestTrust -eq "official") {
@@ -924,6 +1185,7 @@ const { gunzipSync } = require("node:zlib");
 const [
   mode, archivePath, installDir, binRel, expectedSha, artifactPlatform,
   provenanceExpectationBase64 = "", provenanceReceiptBase64 = "", extractionTool = "",
+  embeddedNodeRel = "", embeddedNodeLibraryRel = "",
 ] = process.argv.slice(2);
 if (!["recover", "install", "activate", "render-wrapper", "prepare-wrapper-directories"].includes(mode)) {
   throw new Error(`invalid runtime installer mode: ${mode}`);
@@ -1335,7 +1597,14 @@ function readyAt(path) {
   try {
     const root = lstatSync(path);
     return root.isDirectory() && !root.isSymbolicLink() &&
-      strictRelativeRuntimeFile(path, binRel) && strictMarkerMatches(path) &&
+      strictRelativeRuntimeFile(path, binRel) &&
+      (embeddedNodeRel === "" || (
+        strictRelativeRuntimeFile(path, embeddedNodeRel) &&
+        strictRelativeRuntimeFile(path, "node_modules/.agenc-node/identity.json")
+      )) &&
+      (embeddedNodeLibraryRel === "" ||
+        strictRelativeRuntimeFile(path, `${embeddedNodeLibraryRel}/libatomic.so.1`)) &&
+      strictMarkerMatches(path) &&
       strictProvenanceReceiptMatches(path);
   } catch { return false; }
 }
@@ -1426,7 +1695,7 @@ function replaceFileAtomically(path, content, fileMode) {
 // BEGIN GENERATED AGENC WRAPPER CONTRACT MODULE
 // Generated by scripts/sync-installer-sqlite-lock.mjs from the canonical
 // launcher module. Do not edit this embedded payload by hand.
-const AGENC_GENERATED_WRAPPER_SOURCE_BASE64 = "Ly8gQnl0ZS1jYW5vbmljYWwgc3RhbmRhbG9uZS1pbnN0YWxsZXIgd3JhcHBlciBjb250cmFjdCBzaGFyZWQgYnkgdGhlIHJ1bnRpbWUKLy8gdXBkYXRlciBhbmQgYm90aCBlbWJlZGRlZCBpbnN0YWxsZXJzLiBQYXJzaW5nIGlzIGRlbGliZXJhdGVseSBmdWxsLWZpbGU6Ci8vIG1hcmtlciBzdWJzdHJpbmdzIG11c3QgbmV2ZXIgZ3JhbnQgb3duZXJzaGlwIG9mIGEgdXNlci1hdXRob3JlZCBleGVjdXRhYmxlLgoKaW1wb3J0IHsgaXNBYnNvbHV0ZSB9IGZyb20gIm5vZGU6cGF0aCI7CgpleHBvcnQgY29uc3QgR0VORVJBVEVEX1dSQVBQRVJfTUFYX0JZVEVTID0gNjQgKiAxMDI0Owpjb25zdCBQT1NJWF9XUkFQUEVSX1NJR05BVFVSRSA9ICJHZW5lcmF0ZWQgYnkgQWdlbkMgaW5zdGFsbC5zaCI7CmNvbnN0IENNRF9XUkFQUEVSX1NJR05BVFVSRSA9ICJHZW5lcmF0ZWQgYnkgQWdlbkMgaW5zdGFsbC5wczEiOwpjb25zdCBXUkFQUEVSX01FVEFEQVRBX1BSRUZJWCA9ICJBZ2VuQyB3cmFwcGVyIG1ldGFkYXRhIHYxOiI7CgpmdW5jdGlvbiB2YWxpZGF0ZVZhbHVlcyhraW5kLCB2YWx1ZXMpIHsKICBpZiAoIXZhbHVlcyB8fCB0eXBlb2YgdmFsdWVzICE9PSAib2JqZWN0IikgewogICAgdGhyb3cgbmV3IFR5cGVFcnJvcigid3JhcHBlciB2YWx1ZXMgbXVzdCBiZSBhbiBvYmplY3QiKTsKICB9CiAgZm9yIChjb25zdCBsYWJlbCBvZiBbIm5vZGVCaW4iLCAicnVudGltZUJpbiIsICJhZ2VuY0hvbWUiXSkgewogICAgY29uc3QgdmFsdWUgPSB2YWx1ZXNbbGFiZWxdOwogICAgaWYgKHR5cGVvZiB2YWx1ZSAhPT0gInN0cmluZyIpIHRocm93IG5ldyBUeXBlRXJyb3IoYHdyYXBwZXIgJHtsYWJlbH0gbXVzdCBiZSBhIHN0cmluZ2ApOwogICAgaWYgKHZhbHVlLmluY2x1ZGVzKCJcMCIpKSB0aHJvdyBuZXcgRXJyb3IoYHdyYXBwZXIgJHtsYWJlbH0gY29udGFpbnMgTlVMYCk7CiAgICBpZiAoa2luZCA9PT0gImNtZCIgJiYgL1siXHJcbl0vdS50ZXN0KHZhbHVlKSkgewogICAgICB0aHJvdyBuZXcgRXJyb3IoYFdpbmRvd3Mgd3JhcHBlciAke2xhYmVsfSBjb250YWlucyBhbiB1bnN1cHBvcnRlZCBjaGFyYWN0ZXJgKTsKICAgIH0KICB9CiAgaWYgKCFpc0Fic29sdXRlKHZhbHVlcy5hZ2VuY0hvbWUpKSB7CiAgICB0aHJvdyBuZXcgRXJyb3IoIndyYXBwZXIgQUdFTkNfSE9NRSBtdXN0IGJlIGFuIGFic29sdXRlIHBhdGgiKTsKICB9Cn0KCmZ1bmN0aW9uIG1ldGFkYXRhRm9yKHZhbHVlcykgewogIHJldHVybiBCdWZmZXIuZnJvbShKU09OLnN0cmluZ2lmeSh7CiAgICBub2RlQmluOiB2YWx1ZXMubm9kZUJpbiwKICAgIHJ1bnRpbWVCaW46IHZhbHVlcy5ydW50aW1lQmluLAogICAgYWdlbmNIb21lOiB2YWx1ZXMuYWdlbmNIb21lLAogIH0pLCAidXRmOCIpLnRvU3RyaW5nKCJiYXNlNjR1cmwiKTsKfQoKZnVuY3Rpb24gcmVuZGVyTGVnYWN5T29tUG9zaXhXcmFwcGVyKHsgbm9kZUJpbiwgcnVudGltZUJpbiwgYWdlbmNIb21lIH0pIHsKICByZXR1cm4gWwogICAgIiMhL2Jpbi9zaCIsCiAgICBgIyAke1BPU0lYX1dSQVBQRVJfU0lHTkFUVVJFfSDigJQgcmV3cml0dGVuIG9uIGV2ZXJ5IGluc3RhbGwvdXBncmFkZS5gLAogICAgYGV4cG9ydCBBR0VOQ19IT01FPSJcJHtBR0VOQ19IT01FOi0ke2FnZW5jSG9tZX19ImAsCiAgICAiIyBPT00gc2VsZi1kaWFnbm9zaXM6IGhhdmUgVjggd3JpdGUgYSBoZWFwIHNuYXBzaG90IGZyb20gaW5zaWRlIHRoZSBHQyB3aGVuIiwKICAgICIjIHRoZSBoZWFwIG5lYXJzIGl0cyBsaW1pdCAocmVsaWFibGUgZXZlbiBpbiB0aGUgZW5kLXN0YWdlIEdDIHN0YWxsIHdoZXJlIEpTIiwKICAgICIjIHRpbWVycyBzdGFydmUpLCBpbnRvICRBR0VOQ19IT01FL29vbS1zbmFwc2hvdHMuIFRoZSBydW50aW1lIHBydW5lcyBvbGQiLAogICAgIiMgY2FwdHVyZXMgYW5kIHBvaW50cyBhdCBmcmVzaCBvbmVzIG9uIHRoZSBuZXh0IHN0YXJ0dXAuIFVzZXItcHJvdmlkZWQiLAogICAgIiMgTk9ERV9PUFRJT05TIHdpbjogb3VycyBhcmUgcHJlcGVuZGVkLCBhbmQgd2Ugc2tpcCBlbnRpcmVseSB3aGVuIHRoZSB1c2VyIiwKICAgICIjIGFscmVhZHkgdHVuZXMgaGVhcCBzbmFwc2hvdHMuIiwKICAgICdjYXNlICIgJHtOT0RFX09QVElPTlM6LX0gIiBpbicsCiAgICAiICAqaGVhcHNuYXBzaG90LW5lYXItaGVhcC1saW1pdCopIDogOzsiLAogICAgIiAgKikiLAogICAgJyAgICBta2RpciAtcCAiJHtBR0VOQ19IT01FfS9vb20tc25hcHNob3RzIiAyPi9kZXYvbnVsbCB8fCA6JywKICAgICcgICAgTk9ERV9PUFRJT05TPSItLWhlYXBzbmFwc2hvdC1uZWFyLWhlYXAtbGltaXQ9MSAtLWRpYWdub3N0aWMtZGlyPSR7QUdFTkNfSE9NRX0vb29tLXNuYXBzaG90cyAke05PREVfT1BUSU9OUzotfSInLAogICAgIiAgICBleHBvcnQgTk9ERV9PUFRJT05TIiwKICAgICIgICAgOzsiLAogICAgImVzYWMiLAogICAgYGV4ZWMgIiR7bm9kZUJpbn0iICIke3J1bnRpbWVCaW59IiAiJEAiYCwKICAgICIiLAogIF0uam9pbigiXG4iKTsKfQoKZXhwb3J0IGZ1bmN0aW9uIHJlbmRlckdlbmVyYXRlZFdyYXBwZXJDb250ZW50KHsga2luZCwgbm9kZUJpbiwgcnVudGltZUJpbiwgYWdlbmNIb21lIH0pIHsKICBpZiAoa2luZCAhPT0gInBvc2l4IiAmJiBraW5kICE9PSAiY21kIikgewogICAgdGhyb3cgbmV3IFR5cGVFcnJvcihgdW5zdXBwb3J0ZWQgd3JhcHBlciBraW5kOiAke1N0cmluZyhraW5kKX1gKTsKICB9CiAgY29uc3QgdmFsdWVzID0geyBub2RlQmluLCBydW50aW1lQmluLCBhZ2VuY0hvbWUgfTsKICB2YWxpZGF0ZVZhbHVlcyhraW5kLCB2YWx1ZXMpOwogIGNvbnN0IG1ldGFkYXRhID0gbWV0YWRhdGFGb3IodmFsdWVzKTsKICBpZiAoa2luZCA9PT0gImNtZCIpIHsKICAgIGNvbnN0IGJhdGNoID0gKHZhbHVlKSA9PiB2YWx1ZS5yZXBsYWNlQWxsKCIlIiwgIiUlIik7CiAgICByZXR1cm4gWwogICAgICAiQGVjaG8gb2ZmIiwKICAgICAgInNldGxvY2FsIERpc2FibGVEZWxheWVkRXhwYW5zaW9uIiwKICAgICAgYHJlbSAke0NNRF9XUkFQUEVSX1NJR05BVFVSRX0gLSByZXdyaXR0ZW4gb24gZXZlcnkgaW5zdGFsbC91cGdyYWRlLmAsCiAgICAgIGByZW0gJHtXUkFQUEVSX01FVEFEQVRBX1BSRUZJWH0gJHttZXRhZGF0YX1gLAogICAgICBgaWYgbm90IGRlZmluZWQgQUdFTkNfSE9NRSBzZXQgIkFHRU5DX0hPTUU9JHtiYXRjaChhZ2VuY0hvbWUpfSJgLAogICAgICBgIiR7YmF0Y2gobm9kZUJpbil9IiAiJHtiYXRjaChydW50aW1lQmluKX0iICUqYCwKICAgICAgIiIsCiAgICBdLmpvaW4oIlxyXG4iKTsKICB9CiAgY29uc3QgcXVvdGUgPSAodmFsdWUpID0+IGAnJHt2YWx1ZS5yZXBsYWNlQWxsKCInIiwgYCciJyInYCl9J2A7CiAgcmV0dXJuIFsKICAgICIjIS9iaW4vc2giLAogICAgYCMgJHtQT1NJWF9XUkFQUEVSX1NJR05BVFVSRX0g4oCUIHJld3JpdHRlbiBvbiBldmVyeSBpbnN0YWxsL3VwZ3JhZGUuYCwKICAgIGAjICR7V1JBUFBFUl9NRVRBREFUQV9QUkVGSVh9ICR7bWV0YWRhdGF9YCwKICAgICdpZiBbIC16ICIke0FHRU5DX0hPTUU6LX0iIF07IHRoZW4nLAogICAgYCAgZXhwb3J0IEFHRU5DX0hPTUU9JHtxdW90ZShhZ2VuY0hvbWUpfWAsCiAgICAiZmkiLAogICAgIiMgQ2FwdHVyZSBvbmUgVjggbmVhci1oZWFwLWxpbWl0IHNuYXBzaG90IHVubGVzcyB0aGUgb3BlcmF0b3IgYWxyZWFkeSBjb25maWd1cmVkIGl0LiIsCiAgICAnY2FzZSAiICR7Tk9ERV9PUFRJT05TOi19ICIgaW4nLAogICAgIiAgKmhlYXBzbmFwc2hvdC1uZWFyLWhlYXAtbGltaXQqKSIsCiAgICBgICAgIGV4ZWMgJHtxdW90ZShub2RlQmluKX0gJHtxdW90ZShydW50aW1lQmluKX0gIiRAImAsCiAgICAiICAgIDs7IiwKICAgICIgICopIiwKICAgICcgICAgbWtkaXIgLXAgIiR7QUdFTkNfSE9NRX0vb29tLXNuYXBzaG90cyIgMj4vZGV2L251bGwgfHwgOicsCiAgICBgICAgIGV4ZWMgJHtxdW90ZShub2RlQmluKX0gLS1oZWFwc25hcHNob3QtbmVhci1oZWFwLWxpbWl0PTEgYCArCiAgICAgICctLWRpYWdub3N0aWMtZGlyPSIke0FHRU5DX0hPTUV9L29vbS1zbmFwc2hvdHMiICcgKwogICAgICBgJHtxdW90ZShydW50aW1lQmluKX0gIiRAImAsCiAgICAiICAgIDs7IiwKICAgICJlc2FjIiwKICAgICIiLAogIF0uam9pbigiXG4iKTsKfQoKZnVuY3Rpb24gZGVjb2RlQ2Fub25pY2FsTWV0YWRhdGEoZW5jb2RlZCkgewogIHRyeSB7CiAgICBjb25zdCBieXRlcyA9IEJ1ZmZlci5mcm9tKGVuY29kZWQsICJiYXNlNjR1cmwiKTsKICAgIGlmIChieXRlcy50b1N0cmluZygiYmFzZTY0dXJsIikgIT09IGVuY29kZWQpIHJldHVybiB1bmRlZmluZWQ7CiAgICBjb25zdCBkZWNvZGVkID0gbmV3IFRleHREZWNvZGVyKCJ1dGYtOCIsIHsgZmF0YWw6IHRydWUgfSkuZGVjb2RlKGJ5dGVzKTsKICAgIGNvbnN0IHZhbHVlID0gSlNPTi5wYXJzZShkZWNvZGVkKTsKICAgIGlmICh2YWx1ZSA9PT0gbnVsbCB8fCB0eXBlb2YgdmFsdWUgIT09ICJvYmplY3QiIHx8IEFycmF5LmlzQXJyYXkodmFsdWUpKSByZXR1cm4gdW5kZWZpbmVkOwogICAgaWYgKAogICAgICBPYmplY3Qua2V5cyh2YWx1ZSkubGVuZ3RoICE9PSAzIHx8CiAgICAgIHR5cGVvZiB2YWx1ZS5ub2RlQmluICE9PSAic3RyaW5nIiB8fAogICAgICB0eXBlb2YgdmFsdWUucnVudGltZUJpbiAhPT0gInN0cmluZyIgfHwKICAgICAgdHlwZW9mIHZhbHVlLmFnZW5jSG9tZSAhPT0gInN0cmluZyIKICAgICkgcmV0dXJuIHVuZGVmaW5lZDsKICAgIHJldHVybiB7CiAgICAgIG5vZGVCaW46IHZhbHVlLm5vZGVCaW4sCiAgICAgIHJ1bnRpbWVCaW46IHZhbHVlLnJ1bnRpbWVCaW4sCiAgICAgIGFnZW5jSG9tZTogdmFsdWUuYWdlbmNIb21lLAogICAgfTsKICB9IGNhdGNoIHsKICAgIHJldHVybiB1bmRlZmluZWQ7CiAgfQp9CgpmdW5jdGlvbiBwYXJzZU1vZGVybihwYXRoLCBjb250ZW50KSB7CiAgY29uc3QgbWFya2VyID0gY29udGVudC5tYXRjaCgKICAgIC9eKCN8cmVtKSBBZ2VuQyB3cmFwcGVyIG1ldGFkYXRhIHYxOiAoW0EtWmEtejAtOV8tXSspXHI/JC9tdSwKICApOwogIGlmIChtYXJrZXIgPT09IG51bGwpIHJldHVybiB1bmRlZmluZWQ7CiAgY29uc3Qga2luZCA9IG1hcmtlclsxXSA9PT0gInJlbSIgPyAiY21kIiA6ICJwb3NpeCI7CiAgY29uc3QgdmFsdWVzID0gZGVjb2RlQ2Fub25pY2FsTWV0YWRhdGEobWFya2VyWzJdKTsKICBpZiAodmFsdWVzID09PSB1bmRlZmluZWQpIHJldHVybiB1bmRlZmluZWQ7CiAgdHJ5IHsKICAgIGNvbnN0IHdyYXBwZXIgPSB7IGtpbmQsIHBhdGgsIC4uLnZhbHVlcyB9OwogICAgcmV0dXJuIHJlbmRlckdlbmVyYXRlZFdyYXBwZXJDb250ZW50KHdyYXBwZXIpID09PSBjb250ZW50ID8gd3JhcHBlciA6IHVuZGVmaW5lZDsKICB9IGNhdGNoIHsKICAgIHJldHVybiB1bmRlZmluZWQ7CiAgfQp9CgpmdW5jdGlvbiBwYXJzZUxlZ2FjeShwYXRoLCBjb250ZW50KSB7CiAgY29uc3QgcG9zaXggPSBjb250ZW50Lm1hdGNoKAogICAgL14jIVwvYmluXC9zaFxuIyBHZW5lcmF0ZWQgYnkgQWdlbkMgaW5zdGFsbFwuc2gg4oCUIHJld3JpdHRlbiBvbiBldmVyeSBpbnN0YWxsXC91cGdyYWRlXC5cbmV4cG9ydCBBR0VOQ19IT01FPSJcJFx7QUdFTkNfSE9NRTotKFtefSJcbl0rKVx9IlxuZXhlYyAiKFteIlxuXSspIiAiKFteIlxuXSspIiAiXCRAIlxuJC91LAogICk7CiAgaWYgKHBvc2l4ICE9PSBudWxsKSB7CiAgICBjb25zdCB2YWx1ZXMgPSB7IGFnZW5jSG9tZTogcG9zaXhbMV0sIG5vZGVCaW46IHBvc2l4WzJdLCBydW50aW1lQmluOiBwb3NpeFszXSB9OwogICAgdHJ5IHsKICAgICAgdmFsaWRhdGVWYWx1ZXMoInBvc2l4IiwgdmFsdWVzKTsKICAgICAgcmV0dXJuIHsga2luZDogInBvc2l4IiwgcGF0aCwgLi4udmFsdWVzIH07CiAgICB9IGNhdGNoIHsKICAgICAgcmV0dXJuIHVuZGVmaW5lZDsKICAgIH0KICB9CiAgLy8gMC42LjIgZGV2ZWxvcG1lbnQgbWFpbiBicmllZmx5IGVtaXR0ZWQgdGhpcyBleGFjdCBmdWxsLWZpbGUgd3JhcHBlciBiZWZvcmUKICAvLyBhY3RpdmF0aW9uIG93bmVyc2hpcCBiZWNhbWUgY2Fub25pY2FsLiBBY2NlcHRpbmcgb25seSBhIGJ5dGUtZm9yLWJ5dGUKICAvLyByZWNvbnN0cnVjdGlvbiBwcmVzZXJ2ZXMgdXBncmFkZXMgZnJvbSB0aGF0IHN1cmZhY2Ugd2l0aG91dCB0dXJuaW5nIHRoZQogIC8vIGhpc3RvcmljYWwgbWFya2VyIGludG8gYSBnZW5lcmFsIG93bmVyc2hpcCBvcmFjbGUuCiAgY29uc3Qgb29tUG9zaXggPSBjb250ZW50Lm1hdGNoKAogICAgL14jIVwvYmluXC9zaFxuIyBHZW5lcmF0ZWQgYnkgQWdlbkMgaW5zdGFsbFwuc2gg4oCUIHJld3JpdHRlbiBvbiBldmVyeSBpbnN0YWxsXC91cGdyYWRlXC5cbmV4cG9ydCBBR0VOQ19IT01FPSJcJFx7QUdFTkNfSE9NRTotKFtefSJcbl0rKVx9IlxuW1xzXFNdKlxuZXhlYyAiKFteIlxuXSspIiAiKFteIlxuXSspIiAiXCRAIlxuJC91LAogICk7CiAgaWYgKG9vbVBvc2l4ICE9PSBudWxsKSB7CiAgICBjb25zdCB2YWx1ZXMgPSB7CiAgICAgIGFnZW5jSG9tZTogb29tUG9zaXhbMV0sCiAgICAgIG5vZGVCaW46IG9vbVBvc2l4WzJdLAogICAgICBydW50aW1lQmluOiBvb21Qb3NpeFszXSwKICAgIH07CiAgICB0cnkgewogICAgICB2YWxpZGF0ZVZhbHVlcygicG9zaXgiLCB2YWx1ZXMpOwogICAgICBpZiAocmVuZGVyTGVnYWN5T29tUG9zaXhXcmFwcGVyKHZhbHVlcykgPT09IGNvbnRlbnQpIHsKICAgICAgICByZXR1cm4geyBraW5kOiAicG9zaXgiLCBwYXRoLCAuLi52YWx1ZXMgfTsKICAgICAgfQogICAgfSBjYXRjaCB7CiAgICAgIHJldHVybiB1bmRlZmluZWQ7CiAgICB9CiAgfQogIGNvbnN0IGNtZCA9IGNvbnRlbnQubWF0Y2goCiAgICAvXkBlY2hvIG9mZihccj9cbilyZW0gR2VuZXJhdGVkIGJ5IEFnZW5DIGluc3RhbGxcLnBzMSAtIHJld3JpdHRlbiBvbiBldmVyeSBpbnN0YWxsXC91cGdyYWRlXC5cMWlmIG5vdCBkZWZpbmVkIEFHRU5DX0hPTUUgc2V0ICJBR0VOQ19IT01FPShbXiJcclxuXSspIlwxIihbXiJcclxuXSspIiAiKFteIlxyXG5dKykiICVcKlwxJC91LAogICk7CiAgaWYgKGNtZCA9PT0gbnVsbCkgcmV0dXJuIHVuZGVmaW5lZDsKICBjb25zdCB2YWx1ZXMgPSB7IGFnZW5jSG9tZTogY21kWzJdLCBub2RlQmluOiBjbWRbM10sIHJ1bnRpbWVCaW46IGNtZFs0XSB9OwogIHRyeSB7CiAgICB2YWxpZGF0ZVZhbHVlcygiY21kIiwgdmFsdWVzKTsKICAgIHJldHVybiB7IGtpbmQ6ICJjbWQiLCBwYXRoLCAuLi52YWx1ZXMgfTsKICB9IGNhdGNoIHsKICAgIHJldHVybiB1bmRlZmluZWQ7CiAgfQp9CgpleHBvcnQgZnVuY3Rpb24gcGFyc2VHZW5lcmF0ZWRXcmFwcGVyQ29udGVudChwYXRoLCBjb250ZW50KSB7CiAgaWYgKAogICAgdHlwZW9mIHBhdGggIT09ICJzdHJpbmciIHx8ICFpc0Fic29sdXRlKHBhdGgpIHx8CiAgICB0eXBlb2YgY29udGVudCAhPT0gInN0cmluZyIgfHwgQnVmZmVyLmJ5dGVMZW5ndGgoY29udGVudCwgInV0ZjgiKSA+IEdFTkVSQVRFRF9XUkFQUEVSX01BWF9CWVRFUwogICkgcmV0dXJuIG51bGw7CiAgcmV0dXJuIHBhcnNlTW9kZXJuKHBhdGgsIGNvbnRlbnQpID8/IHBhcnNlTGVnYWN5KHBhdGgsIGNvbnRlbnQpID8/IG51bGw7Cn0K";
+const AGENC_GENERATED_WRAPPER_SOURCE_BASE64 = "Ly8gQnl0ZS1jYW5vbmljYWwgc3RhbmRhbG9uZS1pbnN0YWxsZXIgd3JhcHBlciBjb250cmFjdCBzaGFyZWQgYnkgdGhlIHJ1bnRpbWUKLy8gdXBkYXRlciBhbmQgYm90aCBlbWJlZGRlZCBpbnN0YWxsZXJzLiBQYXJzaW5nIGlzIGRlbGliZXJhdGVseSBmdWxsLWZpbGU6Ci8vIG1hcmtlciBzdWJzdHJpbmdzIG11c3QgbmV2ZXIgZ3JhbnQgb3duZXJzaGlwIG9mIGEgdXNlci1hdXRob3JlZCBleGVjdXRhYmxlLgoKaW1wb3J0IHsgaXNBYnNvbHV0ZSwgcG9zaXgsIHdpbjMyIH0gZnJvbSAibm9kZTpwYXRoIjsKCmV4cG9ydCBjb25zdCBHRU5FUkFURURfV1JBUFBFUl9NQVhfQllURVMgPSA2NCAqIDEwMjQ7CmNvbnN0IFBPU0lYX1dSQVBQRVJfU0lHTkFUVVJFID0gIkdlbmVyYXRlZCBieSBBZ2VuQyBpbnN0YWxsLnNoIjsKY29uc3QgQ01EX1dSQVBQRVJfU0lHTkFUVVJFID0gIkdlbmVyYXRlZCBieSBBZ2VuQyBpbnN0YWxsLnBzMSI7CmNvbnN0IFdSQVBQRVJfTUVUQURBVEFfUFJFRklYID0gIkFnZW5DIHdyYXBwZXIgbWV0YWRhdGEgdjE6IjsKCmZ1bmN0aW9uIHZhbGlkYXRlVmFsdWVzKGtpbmQsIHZhbHVlcykgewogIGlmICghdmFsdWVzIHx8IHR5cGVvZiB2YWx1ZXMgIT09ICJvYmplY3QiKSB7CiAgICB0aHJvdyBuZXcgVHlwZUVycm9yKCJ3cmFwcGVyIHZhbHVlcyBtdXN0IGJlIGFuIG9iamVjdCIpOwogIH0KICBmb3IgKGNvbnN0IGxhYmVsIG9mIFsibm9kZUJpbiIsICJydW50aW1lQmluIiwgImFnZW5jSG9tZSJdKSB7CiAgICBjb25zdCB2YWx1ZSA9IHZhbHVlc1tsYWJlbF07CiAgICBpZiAodHlwZW9mIHZhbHVlICE9PSAic3RyaW5nIikgdGhyb3cgbmV3IFR5cGVFcnJvcihgd3JhcHBlciAke2xhYmVsfSBtdXN0IGJlIGEgc3RyaW5nYCk7CiAgICBpZiAodmFsdWUuaW5jbHVkZXMoIlwwIikpIHRocm93IG5ldyBFcnJvcihgd3JhcHBlciAke2xhYmVsfSBjb250YWlucyBOVUxgKTsKICAgIGlmIChraW5kID09PSAiY21kIiAmJiAvWyJcclxuXS91LnRlc3QodmFsdWUpKSB7CiAgICAgIHRocm93IG5ldyBFcnJvcihgV2luZG93cyB3cmFwcGVyICR7bGFiZWx9IGNvbnRhaW5zIGFuIHVuc3VwcG9ydGVkIGNoYXJhY3RlcmApOwogICAgfQogIH0KICBpZiAoIWlzQWJzb2x1dGUodmFsdWVzLmFnZW5jSG9tZSkpIHsKICAgIHRocm93IG5ldyBFcnJvcigid3JhcHBlciBBR0VOQ19IT01FIG11c3QgYmUgYW4gYWJzb2x1dGUgcGF0aCIpOwogIH0KICBpZiAodmFsdWVzLm5vZGVMaWJyYXJ5UGF0aCAhPT0gdW5kZWZpbmVkKSB7CiAgICBpZiAodHlwZW9mIHZhbHVlcy5ub2RlTGlicmFyeVBhdGggIT09ICJzdHJpbmciKSB7CiAgICAgIHRocm93IG5ldyBUeXBlRXJyb3IoIndyYXBwZXIgbm9kZUxpYnJhcnlQYXRoIG11c3QgYmUgYSBzdHJpbmciKTsKICAgIH0KICAgIGlmICh2YWx1ZXMubm9kZUxpYnJhcnlQYXRoLmluY2x1ZGVzKCJcMCIpKSB7CiAgICAgIHRocm93IG5ldyBFcnJvcigid3JhcHBlciBub2RlTGlicmFyeVBhdGggY29udGFpbnMgTlVMIik7CiAgICB9CiAgICBpZiAoIWlzQWJzb2x1dGUodmFsdWVzLm5vZGVMaWJyYXJ5UGF0aCkpIHsKICAgICAgdGhyb3cgbmV3IEVycm9yKCJ3cmFwcGVyIG5vZGVMaWJyYXJ5UGF0aCBtdXN0IGJlIGFuIGFic29sdXRlIHBhdGgiKTsKICAgIH0KICAgIGlmIChraW5kID09PSAiY21kIikgewogICAgICB0aHJvdyBuZXcgRXJyb3IoIldpbmRvd3Mgd3JhcHBlcnMgZG8gbm90IHN1cHBvcnQgbm9kZUxpYnJhcnlQYXRoIik7CiAgICB9CiAgfQp9CgpmdW5jdGlvbiBtZXRhZGF0YUZvcih2YWx1ZXMpIHsKICBjb25zdCBtZXRhZGF0YSA9IHsKICAgIG5vZGVCaW46IHZhbHVlcy5ub2RlQmluLAogICAgcnVudGltZUJpbjogdmFsdWVzLnJ1bnRpbWVCaW4sCiAgICBhZ2VuY0hvbWU6IHZhbHVlcy5hZ2VuY0hvbWUsCiAgICAuLi4odmFsdWVzLm5vZGVMaWJyYXJ5UGF0aCA9PT0gdW5kZWZpbmVkCiAgICAgID8ge30KICAgICAgOiB7IG5vZGVMaWJyYXJ5UGF0aDogdmFsdWVzLm5vZGVMaWJyYXJ5UGF0aCB9KSwKICB9OwogIHJldHVybiBCdWZmZXIuZnJvbShKU09OLnN0cmluZ2lmeShtZXRhZGF0YSksICJ1dGY4IikudG9TdHJpbmcoImJhc2U2NHVybCIpOwp9CgpmdW5jdGlvbiByZW5kZXJMZWdhY3lPb21Qb3NpeFdyYXBwZXIoeyBub2RlQmluLCBydW50aW1lQmluLCBhZ2VuY0hvbWUgfSkgewogIHJldHVybiBbCiAgICAiIyEvYmluL3NoIiwKICAgIGAjICR7UE9TSVhfV1JBUFBFUl9TSUdOQVRVUkV9IOKAlCByZXdyaXR0ZW4gb24gZXZlcnkgaW5zdGFsbC91cGdyYWRlLmAsCiAgICBgZXhwb3J0IEFHRU5DX0hPTUU9Ilwke0FHRU5DX0hPTUU6LSR7YWdlbmNIb21lfX0iYCwKICAgICIjIE9PTSBzZWxmLWRpYWdub3NpczogaGF2ZSBWOCB3cml0ZSBhIGhlYXAgc25hcHNob3QgZnJvbSBpbnNpZGUgdGhlIEdDIHdoZW4iLAogICAgIiMgdGhlIGhlYXAgbmVhcnMgaXRzIGxpbWl0IChyZWxpYWJsZSBldmVuIGluIHRoZSBlbmQtc3RhZ2UgR0Mgc3RhbGwgd2hlcmUgSlMiLAogICAgIiMgdGltZXJzIHN0YXJ2ZSksIGludG8gJEFHRU5DX0hPTUUvb29tLXNuYXBzaG90cy4gVGhlIHJ1bnRpbWUgcHJ1bmVzIG9sZCIsCiAgICAiIyBjYXB0dXJlcyBhbmQgcG9pbnRzIGF0IGZyZXNoIG9uZXMgb24gdGhlIG5leHQgc3RhcnR1cC4gVXNlci1wcm92aWRlZCIsCiAgICAiIyBOT0RFX09QVElPTlMgd2luOiBvdXJzIGFyZSBwcmVwZW5kZWQsIGFuZCB3ZSBza2lwIGVudGlyZWx5IHdoZW4gdGhlIHVzZXIiLAogICAgIiMgYWxyZWFkeSB0dW5lcyBoZWFwIHNuYXBzaG90cy4iLAogICAgJ2Nhc2UgIiAke05PREVfT1BUSU9OUzotfSAiIGluJywKICAgICIgICpoZWFwc25hcHNob3QtbmVhci1oZWFwLWxpbWl0KikgOiA7OyIsCiAgICAiICAqKSIsCiAgICAnICAgIG1rZGlyIC1wICIke0FHRU5DX0hPTUV9L29vbS1zbmFwc2hvdHMiIDI+L2Rldi9udWxsIHx8IDonLAogICAgJyAgICBOT0RFX09QVElPTlM9Ii0taGVhcHNuYXBzaG90LW5lYXItaGVhcC1saW1pdD0xIC0tZGlhZ25vc3RpYy1kaXI9JHtBR0VOQ19IT01FfS9vb20tc25hcHNob3RzICR7Tk9ERV9PUFRJT05TOi19IicsCiAgICAiICAgIGV4cG9ydCBOT0RFX09QVElPTlMiLAogICAgIiAgICA7OyIsCiAgICAiZXNhYyIsCiAgICBgZXhlYyAiJHtub2RlQmlufSIgIiR7cnVudGltZUJpbn0iICIkQCJgLAogICAgIiIsCiAgXS5qb2luKCJcbiIpOwp9CgpleHBvcnQgZnVuY3Rpb24gcmVuZGVyR2VuZXJhdGVkV3JhcHBlckNvbnRlbnQoewogIGtpbmQsCiAgbm9kZUJpbiwKICBydW50aW1lQmluLAogIGFnZW5jSG9tZSwKICBub2RlTGlicmFyeVBhdGgsCn0pIHsKICBpZiAoa2luZCAhPT0gInBvc2l4IiAmJiBraW5kICE9PSAiY21kIikgewogICAgdGhyb3cgbmV3IFR5cGVFcnJvcihgdW5zdXBwb3J0ZWQgd3JhcHBlciBraW5kOiAke1N0cmluZyhraW5kKX1gKTsKICB9CiAgY29uc3QgdmFsdWVzID0geyBub2RlQmluLCBydW50aW1lQmluLCBhZ2VuY0hvbWUsIG5vZGVMaWJyYXJ5UGF0aCB9OwogIHZhbGlkYXRlVmFsdWVzKGtpbmQsIHZhbHVlcyk7CiAgY29uc3QgbWV0YWRhdGEgPSBtZXRhZGF0YUZvcih2YWx1ZXMpOwogIGlmIChraW5kID09PSAiY21kIikgewogICAgY29uc3QgYmF0Y2ggPSAodmFsdWUpID0+IHZhbHVlLnJlcGxhY2VBbGwoIiUiLCAiJSUiKTsKICAgIGNvbnN0IG5vZGVEaXIgPSB3aW4zMi5kaXJuYW1lKG5vZGVCaW4pOwogICAgcmV0dXJuIFsKICAgICAgIkBlY2hvIG9mZiIsCiAgICAgICJzZXRsb2NhbCBEaXNhYmxlRGVsYXllZEV4cGFuc2lvbiIsCiAgICAgIGByZW0gJHtDTURfV1JBUFBFUl9TSUdOQVRVUkV9IC0gcmV3cml0dGVuIG9uIGV2ZXJ5IGluc3RhbGwvdXBncmFkZS5gLAogICAgICBgcmVtICR7V1JBUFBFUl9NRVRBREFUQV9QUkVGSVh9ICR7bWV0YWRhdGF9YCwKICAgICAgYGlmIG5vdCBkZWZpbmVkIEFHRU5DX0hPTUUgc2V0ICJBR0VOQ19IT01FPSR7YmF0Y2goYWdlbmNIb21lKX0iYCwKICAgICAgYHNldCAiUEFUSD0ke2JhdGNoKG5vZGVEaXIpfTslUEFUSCUiYCwKICAgICAgYCIke2JhdGNoKG5vZGVCaW4pfSIgIiR7YmF0Y2gocnVudGltZUJpbil9IiAlKmAsCiAgICAgICIiLAogICAgXS5qb2luKCJcclxuIik7CiAgfQogIGNvbnN0IHF1b3RlID0gKHZhbHVlKSA9PiBgJyR7dmFsdWUucmVwbGFjZUFsbCgiJyIsIGAnIiciJ2ApfSdgOwogIGNvbnN0IG5vZGVEaXIgPSBwb3NpeC5kaXJuYW1lKG5vZGVCaW4pOwogIGNvbnN0IGV4ZWNQcmVmaXggPSBub2RlTGlicmFyeVBhdGggPT09IHVuZGVmaW5lZAogICAgPyAiZXhlYyAiCiAgICA6IGBMRF9MSUJSQVJZX1BBVEg9JHtxdW90ZShub2RlTGlicmFyeVBhdGgpfSBleGVjIGA7CiAgcmV0dXJuIFsKICAgICIjIS9iaW4vc2giLAogICAgYCMgJHtQT1NJWF9XUkFQUEVSX1NJR05BVFVSRX0g4oCUIHJld3JpdHRlbiBvbiBldmVyeSBpbnN0YWxsL3VwZ3JhZGUuYCwKICAgIGAjICR7V1JBUFBFUl9NRVRBREFUQV9QUkVGSVh9ICR7bWV0YWRhdGF9YCwKICAgICdpZiBbIC16ICIke0FHRU5DX0hPTUU6LX0iIF07IHRoZW4nLAogICAgYCAgZXhwb3J0IEFHRU5DX0hPTUU9JHtxdW90ZShhZ2VuY0hvbWUpfWAsCiAgICAiZmkiLAogICAgJ2lmIFsgLW4gIiR7UEFUSDotfSIgXTsgdGhlbicsCiAgICBgICBleHBvcnQgUEFUSD0ke3F1b3RlKG5vZGVEaXIpfToiJFBBVEgiYCwKICAgICJlbHNlIiwKICAgIGAgIGV4cG9ydCBQQVRIPSR7cXVvdGUobm9kZURpcil9YCwKICAgICJmaSIsCiAgICAiIyBDYXB0dXJlIG9uZSBWOCBuZWFyLWhlYXAtbGltaXQgc25hcHNob3QgdW5sZXNzIHRoZSBvcGVyYXRvciBhbHJlYWR5IGNvbmZpZ3VyZWQgaXQuIiwKICAgICdjYXNlICIgJHtOT0RFX09QVElPTlM6LX0gIiBpbicsCiAgICAiICAqaGVhcHNuYXBzaG90LW5lYXItaGVhcC1saW1pdCopIiwKICAgIGAgICAgJHtleGVjUHJlZml4fSR7cXVvdGUobm9kZUJpbil9ICR7cXVvdGUocnVudGltZUJpbil9ICIkQCJgLAogICAgIiAgICA7OyIsCiAgICAiICAqKSIsCiAgICAnICAgIG1rZGlyIC1wICIke0FHRU5DX0hPTUV9L29vbS1zbmFwc2hvdHMiIDI+L2Rldi9udWxsIHx8IDonLAogICAgYCAgICAke2V4ZWNQcmVmaXh9JHtxdW90ZShub2RlQmluKX0gLS1oZWFwc25hcHNob3QtbmVhci1oZWFwLWxpbWl0PTEgYCArCiAgICAgICctLWRpYWdub3N0aWMtZGlyPSIke0FHRU5DX0hPTUV9L29vbS1zbmFwc2hvdHMiICcgKwogICAgICBgJHtxdW90ZShydW50aW1lQmluKX0gIiRAImAsCiAgICAiICAgIDs7IiwKICAgICJlc2FjIiwKICAgICIiLAogIF0uam9pbigiXG4iKTsKfQoKZnVuY3Rpb24gZGVjb2RlQ2Fub25pY2FsTWV0YWRhdGEoZW5jb2RlZCkgewogIHRyeSB7CiAgICBjb25zdCBieXRlcyA9IEJ1ZmZlci5mcm9tKGVuY29kZWQsICJiYXNlNjR1cmwiKTsKICAgIGlmIChieXRlcy50b1N0cmluZygiYmFzZTY0dXJsIikgIT09IGVuY29kZWQpIHJldHVybiB1bmRlZmluZWQ7CiAgICBjb25zdCBkZWNvZGVkID0gbmV3IFRleHREZWNvZGVyKCJ1dGYtOCIsIHsgZmF0YWw6IHRydWUgfSkuZGVjb2RlKGJ5dGVzKTsKICAgIGNvbnN0IHZhbHVlID0gSlNPTi5wYXJzZShkZWNvZGVkKTsKICAgIGlmICh2YWx1ZSA9PT0gbnVsbCB8fCB0eXBlb2YgdmFsdWUgIT09ICJvYmplY3QiIHx8IEFycmF5LmlzQXJyYXkodmFsdWUpKSByZXR1cm4gdW5kZWZpbmVkOwogICAgY29uc3Qga2V5cyA9IE9iamVjdC5rZXlzKHZhbHVlKTsKICAgIGNvbnN0IGV4cGVjdGVkS2V5cyA9IHZhbHVlLm5vZGVMaWJyYXJ5UGF0aCA9PT0gdW5kZWZpbmVkCiAgICAgID8gWyJub2RlQmluIiwgInJ1bnRpbWVCaW4iLCAiYWdlbmNIb21lIl0KICAgICAgOiBbIm5vZGVCaW4iLCAicnVudGltZUJpbiIsICJhZ2VuY0hvbWUiLCAibm9kZUxpYnJhcnlQYXRoIl07CiAgICBpZiAoCiAgICAgIGtleXMubGVuZ3RoICE9PSBleHBlY3RlZEtleXMubGVuZ3RoIHx8CiAgICAgICFleHBlY3RlZEtleXMuZXZlcnkoKGtleSwgaW5kZXgpID0+IGtleXNbaW5kZXhdID09PSBrZXkpIHx8CiAgICAgIHR5cGVvZiB2YWx1ZS5ub2RlQmluICE9PSAic3RyaW5nIiB8fAogICAgICB0eXBlb2YgdmFsdWUucnVudGltZUJpbiAhPT0gInN0cmluZyIgfHwKICAgICAgdHlwZW9mIHZhbHVlLmFnZW5jSG9tZSAhPT0gInN0cmluZyIgfHwKICAgICAgKHZhbHVlLm5vZGVMaWJyYXJ5UGF0aCAhPT0gdW5kZWZpbmVkICYmIHR5cGVvZiB2YWx1ZS5ub2RlTGlicmFyeVBhdGggIT09ICJzdHJpbmciKQogICAgKSByZXR1cm4gdW5kZWZpbmVkOwogICAgcmV0dXJuIHsKICAgICAgbm9kZUJpbjogdmFsdWUubm9kZUJpbiwKICAgICAgcnVudGltZUJpbjogdmFsdWUucnVudGltZUJpbiwKICAgICAgYWdlbmNIb21lOiB2YWx1ZS5hZ2VuY0hvbWUsCiAgICAgIC4uLih2YWx1ZS5ub2RlTGlicmFyeVBhdGggPT09IHVuZGVmaW5lZAogICAgICAgID8ge30KICAgICAgICA6IHsgbm9kZUxpYnJhcnlQYXRoOiB2YWx1ZS5ub2RlTGlicmFyeVBhdGggfSksCiAgICB9OwogIH0gY2F0Y2ggewogICAgcmV0dXJuIHVuZGVmaW5lZDsKICB9Cn0KCmZ1bmN0aW9uIHBhcnNlTW9kZXJuKHBhdGgsIGNvbnRlbnQpIHsKICBjb25zdCBtYXJrZXIgPSBjb250ZW50Lm1hdGNoKAogICAgL14oI3xyZW0pIEFnZW5DIHdyYXBwZXIgbWV0YWRhdGEgdjE6IChbQS1aYS16MC05Xy1dKylccj8kL211LAogICk7CiAgaWYgKG1hcmtlciA9PT0gbnVsbCkgcmV0dXJuIHVuZGVmaW5lZDsKICBjb25zdCBraW5kID0gbWFya2VyWzFdID09PSAicmVtIiA/ICJjbWQiIDogInBvc2l4IjsKICBjb25zdCB2YWx1ZXMgPSBkZWNvZGVDYW5vbmljYWxNZXRhZGF0YShtYXJrZXJbMl0pOwogIGlmICh2YWx1ZXMgPT09IHVuZGVmaW5lZCkgcmV0dXJuIHVuZGVmaW5lZDsKICB0cnkgewogICAgY29uc3Qgd3JhcHBlciA9IHsga2luZCwgcGF0aCwgLi4udmFsdWVzIH07CiAgICByZXR1cm4gcmVuZGVyR2VuZXJhdGVkV3JhcHBlckNvbnRlbnQod3JhcHBlcikgPT09IGNvbnRlbnQgPyB3cmFwcGVyIDogdW5kZWZpbmVkOwogIH0gY2F0Y2ggewogICAgcmV0dXJuIHVuZGVmaW5lZDsKICB9Cn0KCmZ1bmN0aW9uIHBhcnNlTGVnYWN5KHBhdGgsIGNvbnRlbnQpIHsKICBjb25zdCBwb3NpeCA9IGNvbnRlbnQubWF0Y2goCiAgICAvXiMhXC9iaW5cL3NoXG4jIEdlbmVyYXRlZCBieSBBZ2VuQyBpbnN0YWxsXC5zaCDigJQgcmV3cml0dGVuIG9uIGV2ZXJ5IGluc3RhbGxcL3VwZ3JhZGVcLlxuZXhwb3J0IEFHRU5DX0hPTUU9IlwkXHtBR0VOQ19IT01FOi0oW159IlxuXSspXH0iXG5leGVjICIoW14iXG5dKykiICIoW14iXG5dKykiICJcJEAiXG4kL3UsCiAgKTsKICBpZiAocG9zaXggIT09IG51bGwpIHsKICAgIGNvbnN0IHZhbHVlcyA9IHsgYWdlbmNIb21lOiBwb3NpeFsxXSwgbm9kZUJpbjogcG9zaXhbMl0sIHJ1bnRpbWVCaW46IHBvc2l4WzNdIH07CiAgICB0cnkgewogICAgICB2YWxpZGF0ZVZhbHVlcygicG9zaXgiLCB2YWx1ZXMpOwogICAgICByZXR1cm4geyBraW5kOiAicG9zaXgiLCBwYXRoLCAuLi52YWx1ZXMgfTsKICAgIH0gY2F0Y2ggewogICAgICByZXR1cm4gdW5kZWZpbmVkOwogICAgfQogIH0KICAvLyAwLjYuMiBkZXZlbG9wbWVudCBtYWluIGJyaWVmbHkgZW1pdHRlZCB0aGlzIGV4YWN0IGZ1bGwtZmlsZSB3cmFwcGVyIGJlZm9yZQogIC8vIGFjdGl2YXRpb24gb3duZXJzaGlwIGJlY2FtZSBjYW5vbmljYWwuIEFjY2VwdGluZyBvbmx5IGEgYnl0ZS1mb3ItYnl0ZQogIC8vIHJlY29uc3RydWN0aW9uIHByZXNlcnZlcyB1cGdyYWRlcyBmcm9tIHRoYXQgc3VyZmFjZSB3aXRob3V0IHR1cm5pbmcgdGhlCiAgLy8gaGlzdG9yaWNhbCBtYXJrZXIgaW50byBhIGdlbmVyYWwgb3duZXJzaGlwIG9yYWNsZS4KICBjb25zdCBvb21Qb3NpeCA9IGNvbnRlbnQubWF0Y2goCiAgICAvXiMhXC9iaW5cL3NoXG4jIEdlbmVyYXRlZCBieSBBZ2VuQyBpbnN0YWxsXC5zaCDigJQgcmV3cml0dGVuIG9uIGV2ZXJ5IGluc3RhbGxcL3VwZ3JhZGVcLlxuZXhwb3J0IEFHRU5DX0hPTUU9IlwkXHtBR0VOQ19IT01FOi0oW159IlxuXSspXH0iXG5bXHNcU10qXG5leGVjICIoW14iXG5dKykiICIoW14iXG5dKykiICJcJEAiXG4kL3UsCiAgKTsKICBpZiAob29tUG9zaXggIT09IG51bGwpIHsKICAgIGNvbnN0IHZhbHVlcyA9IHsKICAgICAgYWdlbmNIb21lOiBvb21Qb3NpeFsxXSwKICAgICAgbm9kZUJpbjogb29tUG9zaXhbMl0sCiAgICAgIHJ1bnRpbWVCaW46IG9vbVBvc2l4WzNdLAogICAgfTsKICAgIHRyeSB7CiAgICAgIHZhbGlkYXRlVmFsdWVzKCJwb3NpeCIsIHZhbHVlcyk7CiAgICAgIGlmIChyZW5kZXJMZWdhY3lPb21Qb3NpeFdyYXBwZXIodmFsdWVzKSA9PT0gY29udGVudCkgewogICAgICAgIHJldHVybiB7IGtpbmQ6ICJwb3NpeCIsIHBhdGgsIC4uLnZhbHVlcyB9OwogICAgICB9CiAgICB9IGNhdGNoIHsKICAgICAgcmV0dXJuIHVuZGVmaW5lZDsKICAgIH0KICB9CiAgY29uc3QgY21kID0gY29udGVudC5tYXRjaCgKICAgIC9eQGVjaG8gb2ZmKFxyP1xuKXJlbSBHZW5lcmF0ZWQgYnkgQWdlbkMgaW5zdGFsbFwucHMxIC0gcmV3cml0dGVuIG9uIGV2ZXJ5IGluc3RhbGxcL3VwZ3JhZGVcLlwxaWYgbm90IGRlZmluZWQgQUdFTkNfSE9NRSBzZXQgIkFHRU5DX0hPTUU9KFteIlxyXG5dKykiXDEiKFteIlxyXG5dKykiICIoW14iXHJcbl0rKSIgJVwqXDEkL3UsCiAgKTsKICBpZiAoY21kID09PSBudWxsKSByZXR1cm4gdW5kZWZpbmVkOwogIGNvbnN0IHZhbHVlcyA9IHsgYWdlbmNIb21lOiBjbWRbMl0sIG5vZGVCaW46IGNtZFszXSwgcnVudGltZUJpbjogY21kWzRdIH07CiAgdHJ5IHsKICAgIHZhbGlkYXRlVmFsdWVzKCJjbWQiLCB2YWx1ZXMpOwogICAgcmV0dXJuIHsga2luZDogImNtZCIsIHBhdGgsIC4uLnZhbHVlcyB9OwogIH0gY2F0Y2ggewogICAgcmV0dXJuIHVuZGVmaW5lZDsKICB9Cn0KCmV4cG9ydCBmdW5jdGlvbiBwYXJzZUdlbmVyYXRlZFdyYXBwZXJDb250ZW50KHBhdGgsIGNvbnRlbnQpIHsKICBpZiAoCiAgICB0eXBlb2YgcGF0aCAhPT0gInN0cmluZyIgfHwgIWlzQWJzb2x1dGUocGF0aCkgfHwKICAgIHR5cGVvZiBjb250ZW50ICE9PSAic3RyaW5nIiB8fCBCdWZmZXIuYnl0ZUxlbmd0aChjb250ZW50LCAidXRmOCIpID4gR0VORVJBVEVEX1dSQVBQRVJfTUFYX0JZVEVTCiAgKSByZXR1cm4gbnVsbDsKICByZXR1cm4gcGFyc2VNb2Rlcm4ocGF0aCwgY29udGVudCkgPz8gcGFyc2VMZWdhY3kocGF0aCwgY29udGVudCkgPz8gbnVsbDsKfQo=";
 let generatedWrapperModulePromise;
 function loadGeneratedWrapperModule() {
   generatedWrapperModulePromise ??= import(
@@ -1723,6 +1992,16 @@ async function runtimeMain() {
     if (!strictRelativeRuntimeFile(stagingDir, binRel)) {
       throw new Error("runtime entrypoint is not a contained regular file");
     }
+    if (embeddedNodeRel !== "" && (
+      !strictRelativeRuntimeFile(stagingDir, embeddedNodeRel) ||
+      !strictRelativeRuntimeFile(stagingDir, "node_modules/.agenc-node/identity.json")
+    )) {
+      throw new Error("runtime private Node payload is incomplete");
+    }
+    if (embeddedNodeLibraryRel !== "" &&
+        !strictRelativeRuntimeFile(stagingDir, `${embeddedNodeLibraryRel}/libatomic.so.1`)) {
+      throw new Error("runtime private Node library payload is incomplete");
+    }
     syncTree(stagingDir);
     if (provenanceExpectation !== undefined) {
       const receipt = decodeProvenanceJson(provenanceReceiptBase64, "provenance receipt");
@@ -1783,6 +2062,7 @@ async function renderWrapperMain() {
     nodeBin: installDir,
     runtimeBin: binRel,
     agencHome: expectedSha,
+    ...(extractionTool === "" ? {} : { nodeLibraryPath: extractionTool }),
   });
   if (parseGeneratedWrapperContent(resolve(archivePath), content) === null) {
     throw new Error("rendered wrapper failed canonical validation");
@@ -1871,7 +2151,8 @@ main().catch((error) => {
   }
 
   $recoveryState = (& node $runtimeInstallerPath recover - $installDir $binRel `
-    ([string]$artifact.sha256) "win" $provenanceExpectationBase64 "" | Out-String).Trim()
+    ([string]$artifact.sha256) "win" $provenanceExpectationBase64 "" "" `
+    $nodeBinRel $nodeLibraryRel | Out-String).Trim()
   if ($LASTEXITCODE -ne 0) { Fail "runtime crash recovery failed" }
 
   if ($recoveryState -eq "ready") {
@@ -1902,7 +2183,7 @@ main().catch((error) => {
       $provenanceExpectationBase64
     & node $runtimeInstallerPath install $tarball $installDir $binRel `
       ([string]$artifact.sha256) "win" $provenanceExpectationBase64 `
-      $script:OfficialProvenanceReceiptBase64 $tarPath
+      $script:OfficialProvenanceReceiptBase64 $tarPath $nodeBinRel $nodeLibraryRel
     if ($LASTEXITCODE -ne 0) { Fail "runtime archive validation or installation failed" }
     Write-Log "runtime $version installed at $installDir"
   } else {
@@ -1911,9 +2192,20 @@ main().catch((error) => {
 
   # --- shim ------------------------------------------------------------------
 
+  if (-not $legacy) {
+    & $privateNodeBin -e @'
+const allowOverride = process.argv[1] === "true";
+if (process.versions.node !== "26.5.0" || process.versions.modules !== "147" ||
+    process.versions.napi !== "10" || (!allowOverride && (
+      process.platform !== "win32" || process.arch !== "x64"
+    ))) process.exit(1);
+'@ ([string][bool]($env:AGENC_INSTALL_PLATFORM -or $env:AGENC_INSTALL_ARCH)).ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0) { Fail "installed private Node.js identity is invalid" }
+  }
+
   $shim = Join-Path $binDir "agenc.cmd"
   $shimTemp = Join-Path $work "agenc-wrapper.cmd"
-  & node $runtimeInstallerPath render-wrapper $shimTemp ([string]$node.Source) $runtimeBin $agencHome "cmd"
+  & node $runtimeInstallerPath render-wrapper $shimTemp $privateNodeBin $runtimeBin $agencHome "cmd"
   if ($LASTEXITCODE -ne 0) { Fail "could not render shim" }
   $allowDowngrade = if ($env:AGENC_INSTALL_VERSION) { "true" } else { "false" }
   $activationResult = (& node $runtimeInstallerPath activate $shimTemp $shim $agencHome $version $allowDowngrade | Out-String).Trim()
@@ -1959,6 +2251,9 @@ main().catch((error) => {
   }
 }
 } finally {
+  if ($bootstrapWork -and (Test-Path -LiteralPath $bootstrapWork)) {
+    Remove-Item -Recurse -Force -LiteralPath $bootstrapWork -ErrorAction SilentlyContinue
+  }
   foreach ($name in $priorNodeEnvironment.Keys) {
     [Environment]::SetEnvironmentVariable($name, $priorNodeEnvironment[$name], "Process")
   }

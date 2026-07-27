@@ -98,7 +98,11 @@ function fixture() {
             `agenc-v${launcherVersion}/${artifactName}`,
           sha256: index.toString(16).repeat(64),
           bytes: index + 1,
-          bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+          bins: {
+            agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc",
+            node: "node_modules/.agenc-node/bin/node",
+            nodeLibrary: "node_modules/.agenc-node/lib",
+          },
         };
       }),
     }, null, 2)}\n`,

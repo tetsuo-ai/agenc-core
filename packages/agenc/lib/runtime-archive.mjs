@@ -8,6 +8,8 @@ const BLOCK_SIZE = 512;
 const MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_ENTRIES = 200_000;
 const MAX_SYMLINK_EXPANSIONS = 64;
+const MAX_EMBEDDED_NODE_IDENTITY_BYTES = 16 * 1024;
+const EMBEDDED_NODE_ROOT = "node_modules/.agenc-node";
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 function field(block, start, length) {
@@ -203,6 +205,8 @@ function inspectRuntimeArchive(
   path,
   platform = process.platform === "win32" ? "win" : process.platform,
   includeContentInventory = false,
+  capturedContentLimits,
+  capturedContents,
 ) {
   const archive = gunzipSync(readFileSync(path), {
     maxOutputLength: MAX_UNCOMPRESSED_BYTES,
@@ -264,6 +268,20 @@ function inspectRuntimeArchive(
           .digest("hex");
         if (type === "2") member.linkPath = pendingPax?.linkpath ?? headerLink;
       }
+      const captureLimit = capturedContentLimits?.get(memberPath);
+      if (captureLimit !== undefined) {
+        if (size > captureLimit) {
+          throw new Error(
+            `runtime archive member exceeds its content limit: ${memberPath}`,
+          );
+        }
+        if (type === "0") {
+          capturedContents?.set(
+            memberPath,
+            Buffer.from(archive.subarray(dataStart, dataEnd)),
+          );
+        }
+      }
       members.push(member);
       pendingPax = undefined;
       pendingPaxStart = undefined;
@@ -296,4 +314,236 @@ export function runtimeArchiveContentInventory(
   platform = process.platform === "win32" ? "win" : process.platform,
 ) {
   return inspectRuntimeArchive(path, platform, true);
+}
+
+function requirePlainIdentity(value) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new Error("runtime archive private Node identity must be a JSON object");
+  }
+  return value;
+}
+
+function requireExactIdentityKeys(identity, expectedKeys) {
+  const actual = Object.keys(identity).sort();
+  const expected = [...expectedKeys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error("runtime archive private Node identity has an invalid schema");
+  }
+}
+
+function requireIdentityString(identity, key, pattern) {
+  const value = identity[key];
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new Error(`runtime archive private Node identity has an invalid ${key}`);
+  }
+  return value;
+}
+
+function requireIdentityBytes(identity, key) {
+  const value = identity[key];
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`runtime archive private Node identity has an invalid ${key}`);
+  }
+  return value;
+}
+
+function requireIdentityPath(identity, key, expected) {
+  if (identity[key] !== expected) {
+    throw new Error(
+      `runtime archive private Node identity has an invalid ${key} path`,
+    );
+  }
+}
+
+function requireIdentityMember(members, identity, {
+  pathKey,
+  expectedRelativePath,
+  bytesKey,
+  sha256Key,
+}) {
+  requireIdentityPath(identity, pathKey, expectedRelativePath);
+  const memberPath = `${EMBEDDED_NODE_ROOT}/${expectedRelativePath}`;
+  const member = members.get(memberPath);
+  if (
+    member?.type !== "0" ||
+    !Number.isSafeInteger(member.bytes) ||
+    member.bytes <= 0
+  ) {
+    throw new Error(`runtime archive is missing private Node file: ${memberPath}`);
+  }
+  const expectedBytes = requireIdentityBytes(identity, bytesKey);
+  if (member.bytes !== expectedBytes) {
+    throw new Error(
+      `runtime archive private Node ${pathKey} byte size does not match its identity`,
+    );
+  }
+  const expectedSha256 = requireIdentityString(
+    identity,
+    sha256Key,
+    /^[0-9a-f]{64}$/,
+  );
+  if (member.contentSha256 !== expectedSha256) {
+    throw new Error(
+      `runtime archive private Node ${pathKey} SHA256 does not match its identity`,
+    );
+  }
+  return member;
+}
+
+function parseEmbeddedNodeIdentity(bytes) {
+  let source;
+  let identity;
+  try {
+    source = decoder.decode(bytes);
+    identity = requirePlainIdentity(JSON.parse(source));
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("runtime archive private Node identity")
+    ) {
+      throw error;
+    }
+    throw new Error("runtime archive private Node identity is malformed JSON", {
+      cause: error,
+    });
+  }
+  // The producer writes deterministic JSON. Requiring that representation also
+  // rejects duplicate keys, which JSON.parse alone would silently overwrite.
+  if (source !== `${JSON.stringify(identity, null, 2)}\n`) {
+    throw new Error(
+      "runtime archive private Node identity is not canonical JSON",
+    );
+  }
+  return identity;
+}
+
+export function validateEmbeddedNodeRuntimeArchive(
+  path,
+  platform = process.platform === "win32" ? "win" : process.platform,
+) {
+  const identityPath = `${EMBEDDED_NODE_ROOT}/identity.json`;
+  const capturedContents = new Map();
+  const inventory = inspectRuntimeArchive(
+    path,
+    platform,
+    true,
+    new Map([[identityPath, MAX_EMBEDDED_NODE_IDENTITY_BYTES]]),
+    capturedContents,
+  );
+  const members = new Map(inventory.members.map((member) => [member.path, member]));
+  const windows = platform === "win" || platform === "win32";
+  const executable = windows ? "node.exe" : "bin/node";
+  for (const member of inventory.members) {
+    if (
+      member.type === "2" &&
+      (member.path === EMBEDDED_NODE_ROOT ||
+        member.path.startsWith(`${EMBEDDED_NODE_ROOT}/`))
+    ) {
+      throw new Error(
+        `runtime archive private Node subtree contains a symlink: ${member.path}`,
+      );
+    }
+  }
+  const identityMember = members.get(identityPath);
+  const identityBytes = capturedContents.get(identityPath);
+  if (
+    identityMember?.type !== "0" ||
+    !Number.isSafeInteger(identityMember.bytes) ||
+    identityMember.bytes <= 0 ||
+    identityBytes === undefined
+  ) {
+    throw new Error(`runtime archive is missing private Node file: ${identityPath}`);
+  }
+  const identity = parseEmbeddedNodeIdentity(identityBytes);
+  const commonKeys = [
+    "schemaVersion",
+    "nodeVersion",
+    "nodeMajor",
+    "nodeModuleAbi",
+    "nodeApiVersion",
+    "executable",
+    "executableSha256",
+    "executableBytes",
+    "license",
+    "licenseSha256",
+    "licenseBytes",
+  ];
+  const linuxKeys = [
+    "libatomic",
+    "libatomicSha256",
+    "libatomicBytes",
+    "libatomicLicense",
+    "libatomicLicenseSha256",
+    "libatomicLicenseBytes",
+  ];
+  requireExactIdentityKeys(
+    identity,
+    platform === "linux" ? [...commonKeys, ...linuxKeys] : commonKeys,
+  );
+  if (identity.schemaVersion !== 1) {
+    throw new Error(
+      "runtime archive private Node identity has an invalid schemaVersion",
+    );
+  }
+  const nodeVersion = requireIdentityString(
+    identity,
+    "nodeVersion",
+    /^v[1-9][0-9]*\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/,
+  );
+  if (
+    !Number.isSafeInteger(identity.nodeMajor) ||
+    identity.nodeMajor <= 0 ||
+    nodeVersion.split(".", 1)[0] !== `v${identity.nodeMajor}`
+  ) {
+    throw new Error(
+      "runtime archive private Node identity has an invalid nodeMajor",
+    );
+  }
+  requireIdentityString(identity, "nodeModuleAbi", /^[1-9][0-9]*$/);
+  requireIdentityString(identity, "nodeApiVersion", /^[1-9][0-9]*$/);
+
+  const executableMember = requireIdentityMember(members, identity, {
+    pathKey: "executable",
+    expectedRelativePath: executable,
+    bytesKey: "executableBytes",
+    sha256Key: "executableSha256",
+  });
+  requireIdentityMember(members, identity, {
+    pathKey: "license",
+    expectedRelativePath: "LICENSE",
+    bytesKey: "licenseBytes",
+    sha256Key: "licenseSha256",
+  });
+  if (platform === "linux") {
+    requireIdentityMember(members, identity, {
+      pathKey: "libatomic",
+      expectedRelativePath: "lib/libatomic.so.1",
+      bytesKey: "libatomicBytes",
+      sha256Key: "libatomicSha256",
+    });
+    requireIdentityMember(members, identity, {
+      pathKey: "libatomicLicense",
+      expectedRelativePath: "LIBATOMIC-LICENSE",
+      bytesKey: "libatomicLicenseBytes",
+      sha256Key: "libatomicLicenseSha256",
+    });
+  }
+  const executablePath = `${EMBEDDED_NODE_ROOT}/${executable}`;
+  if ((executableMember.mode & 0o111) === 0) {
+    throw new Error(
+      `runtime archive private Node executable is not executable: ${executablePath}`,
+    );
+  }
+  return {
+    ...inventory,
+    embeddedNodeIdentity: Object.freeze(identity),
+  };
 }

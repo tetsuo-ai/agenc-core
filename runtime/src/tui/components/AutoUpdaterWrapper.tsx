@@ -4,7 +4,14 @@ import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js';
-import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import {
+  findActiveGeneratedWrapper,
+  getCurrentInstallationType,
+  isRunningFromPrivateNodeRuntime,
+} from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { MINIMUM_PRIVATE_NODE_RUNTIME_VERSION } from '../../utils/runtime-release-contract.js';
+import { gte } from '../../utils/semver.js';
+import { VERSION } from '../../version.js';
 import { AutoUpdater } from './AutoUpdater.js';
 import { NativeAutoUpdater } from './NativeAutoUpdater.js';
 import { PackageManagerAutoUpdater } from './PackageManagerAutoUpdater.js';
@@ -28,6 +35,7 @@ export function AutoUpdaterWrapper({
 }: Props): React.ReactNode {
   const [useNativeInstaller, setUseNativeInstaller] = React.useState<boolean | null>(null);
   const [isPackageManager, setIsPackageManager] = React.useState<boolean | null>(null);
+  const [skipLegacyAutoUpdaters, setSkipLegacyAutoUpdaters] = React.useState(false);
 
   React.useEffect(() => {
     let mounted = true;
@@ -36,9 +44,45 @@ export function AutoUpdaterWrapper({
         logForDebugging("AutoUpdaterWrapper: Skipping detection, auto-updates disabled");
         return;
       }
-      const installationType = await getCurrentInstallationType();
+      const activeGeneratedWrapper = await findActiveGeneratedWrapper();
+      if (!mounted) {
+        return;
+      }
+      if (activeGeneratedWrapper !== null) {
+        // Generated wrappers activate content-addressed runtime + private-Node
+        // trees through `agenc update`. NativeAutoUpdater installs an unrelated
+        // legacy single-binary layout and must never be allowed to rewrite one.
+        logForDebugging(
+          "AutoUpdaterWrapper: Standalone wrappers update only through `agenc update`; skipping legacy native auto-updater",
+        );
+        setSkipLegacyAutoUpdaters(true);
+        setUseNativeInstaller(false);
+        setIsPackageManager(false);
+        return;
+      }
+      const installationType = await getCurrentInstallationType({
+        activeGeneratedWrapper,
+      });
       logForDebugging(`AutoUpdaterWrapper: Installation type: ${installationType}`);
       if (!mounted) {
+        return;
+      }
+      if (
+        installationType !== "package-manager" &&
+        (
+          isRunningFromPrivateNodeRuntime() ||
+          (
+            installationType === "native" &&
+            gte(VERSION, MINIMUM_PRIVATE_NODE_RUNTIME_VERSION)
+          )
+        )
+      ) {
+        logForDebugging(
+          "AutoUpdaterWrapper: Private-Node runtimes update only through `agenc update`; skipping legacy auto-updaters",
+        );
+        setSkipLegacyAutoUpdaters(true);
+        setUseNativeInstaller(false);
+        setIsPackageManager(false);
         return;
       }
       setUseNativeInstaller(installationType === "native");
@@ -53,6 +97,9 @@ export function AutoUpdaterWrapper({
   }, []);
 
   if (useNativeInstaller === null || isPackageManager === null) {
+    return null;
+  }
+  if (skipLegacyAutoUpdaters) {
     return null;
   }
   if (isPackageManager) {

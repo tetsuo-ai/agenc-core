@@ -38,6 +38,9 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: "26.5.0"
+
 jobs:
   promote:
     runs-on: ubuntu-24.04
@@ -48,6 +51,48 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      - name: Install digest-pinned Node
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain_node="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeVersion"])'
+          )"
+          node_file="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])'
+          )"
+          node_sha="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])'
+          )"
+          node_bytes="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["bytes"])'
+          )"
+          node_abi="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeModuleAbi"])'
+          )"
+          node_api="$(
+            python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeApiVersion"])'
+          )"
+          test "$toolchain_node" = "$NODE_VERSION"
+          node_archive="$RUNNER_TEMP/$node_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" \
+            --output "$node_archive"
+          test "$(sha256sum "$node_archive" | cut -d ' ' -f 1)" = "$node_sha"
+          test "$(stat -c '%s' "$node_archive")" = "$node_bytes"
+          node_root="$RUNNER_TEMP/node-distribution"
+          mkdir -m 700 "$node_root"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          "$node_root/bin/node" -e '
+            if (
+              process.versions.node !== process.argv[1] ||
+              process.versions.modules !== process.argv[2] ||
+              process.versions.napi !== process.argv[3]
+            ) process.exit(1);
+          ' "$NODE_VERSION" "$node_abi" "$node_api"
+          echo "$node_root/bin" >> "$GITHUB_PATH"
 
       - name: Bind promotion to exact reviewed source
         env:

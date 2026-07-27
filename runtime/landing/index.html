@@ -184,7 +184,7 @@
         <p class="eyebrow">Install</p>
         <h2>Get AgenC on your machine.</h2>
         <p class="section-sub">
-          Use the public launcher. Release artifacts are built from the committed lockfile in
+          Use the self-contained standalone installer. Release artifacts are built from the committed lockfile in
           <a class="inline-link" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">agenc-core</a>.
         </p>
       </div>
@@ -192,12 +192,12 @@
       <div class="install-card reveal">
         <div class="install-header">
           <span>Quick start</span>
-          <button class="btn btn-secondary copy-btn" type="button" data-copy="npm install -g @tetsuo-ai/agenc">
+          <button class="btn btn-secondary copy-btn" type="button" data-copy="curl -fsSL https://get.agenc.ag/install.sh | sh">
             Copy
           </button>
         </div>
-        <pre class="install-code" tabindex="0"><code><span class="code-comment"># install the public launcher</span>
-npm install -g @tetsuo-ai/agenc
+        <pre class="install-code" tabindex="0"><code><span class="code-comment"># macOS / Linux — installs AgenC with its private Node runtime</span>
+curl -fsSL https://get.agenc.ag/install.sh | sh
 
 <span class="code-comment"># run in any repo</span>
 agenc</code></pre>
@@ -205,7 +205,7 @@ agenc</code></pre>
           <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Open install docs</a>
           <a class="btn btn-secondary" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub repository</a>
         </div>
-        <p class="install-note">Requires Node.js 25.9+ · See docs for platform details</p>
+        <p class="install-note">Includes a private Node.js 26.5 runtime · No host Node required</p>
       </div>
     </section>
 

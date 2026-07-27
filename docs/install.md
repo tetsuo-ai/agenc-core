@@ -1,7 +1,8 @@
 # Installing AgenC
 
-**Current release: 0.10.0.** The public one-line installer and npm package use
-the same reviewed immutable runtime release.
+**Current version in tree: 0.11.0.** The standalone installer, npm launcher,
+updater, and Homebrew template share the same reviewed immutable runtime
+contract.
 
 Three interchangeable install paths share one runtime contract. Each verified
 runtime lives at:
@@ -12,8 +13,8 @@ $AGENC_HOME/runtime/<version>/<platform>-<arch>-<libc-or-native>-node-abi-<abi>-
 
 The full artifact sha256 is part of the immutable cache identity, and the
 `.agenc-runtime-ok` marker independently binds that entry to the digest and
-executable. The platform, libc family, and Node native ABI stop one host or
-Node line from reusing an incompatible runtime installed by another path.
+executable. The platform, libc family, and Node native ABI stop one artifact or
+runtime line from reusing an incompatible install created by another path.
 
 Related: [quickstart](quickstart.md) · [onboarding](onboarding.md) ·
 [VPS deploy](deploy/vps.md) · [gateway](gateway.md).
@@ -26,14 +27,19 @@ curl -fsSL https://get.agenc.ag/install.sh | sh
 
 The script (source: `scripts/install/install.sh`):
 
-1. requires a root-owned system `tar` and Node.js `>=25.9 <26` (Node is also
-   used for uniform JSON, compatibility, sha256, and archive validation across
-   platforms); official macOS installs also require the system `unzip`,
+1. requires trusted operating-system download, SHA-256, and archive tools. It
+   uses a compatible host Node 26 when present; otherwise it downloads and
+   verifies the exact Node 26.5.0 distribution into a private temporary
+   directory. Linux also bootstraps the exact reviewed `libatomic.so.1`
+   compatibility payload needed to start that portable Node. No host Node
+   installation is required; official macOS installs also require the system
+   `unzip`,
 2. fetches the release manifest (`agenc-runtime-manifest-v2.json`) for the latest
-   published release, or a pinned one with `--version` (the current release is
-   `0.10.0`),
-3. selects exactly one platform/architecture/native-ABI entry and rejects an
-   incompatible host before downloading the runtime,
+   published release, or a pinned one with `--version` (this tree targets
+   `0.11.0`),
+3. selects exactly one platform/architecture entry and enforces its operating
+   system compatibility floors before downloading; the host Node version and
+   native ABI never control modern artifact selection,
 4. downloads only the manifest's canonical HTTPS release URL, rejects an
    HTTPS-to-HTTP redirect, enforces one two-minute monotonic deadline across
    redirects, headers, and body, and verifies both byte count and sha256,
@@ -52,8 +58,9 @@ The script (source: `scripts/install/install.sh`):
    atomically promotes the complete runtime under the content-addressed ABI
    path; a SQLite `BEGIN IMMEDIATE` lock makes concurrent local installs safe
    and is released by the OS if an installer exits,
-8. installs an `agenc` wrapper to `--prefix`/bin (default `~/.local/bin`) with
-   the absolute Node path baked in (user services run with a minimal PATH),
+8. installs an `agenc` wrapper to `--prefix`/bin (default `~/.local/bin`) that
+   points at the artifact's private Node executable and, on Linux, its private
+   compatibility-library directory (user services run with a minimal PATH),
 9. installs and starts the daemon as a systemd user service (Linux) or
    launchd agent (macOS). Skip with `--no-daemon`.
 
@@ -61,15 +68,20 @@ Before its first Node subprocess, the standalone installer removes inherited
 `NODE_OPTIONS`, `NODE_PATH`, and `NODE_TLS_REJECT_UNAUTHORIZED`; those variables
 can preload code, change module resolution, or disable HTTPS certificate
 verification. It preserves `NODE_EXTRA_CA_CERTS` and the standard proxy
-variables, and enables Node's environment-proxy support so reviewed enterprise
-CAs and `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` continue to work. The PowerShell
-installer restores the caller process's original Node variables in a `finally`
-block, including on failure.
+variables, and enables Node's environment-proxy support after the private
+bootstrap has been verified, so reviewed enterprise CAs and
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` continue to work. The PowerShell installer
+restores the caller process's original Node variables in a `finally` block,
+including on failure.
 
 Flags: `--version`, `--manifest-url`, `--repo`, `--prefix`, `--no-daemon`.
 Re-running is idempotent: a verified existing install skips the download.
 Modern official installs additionally require the matching policy receipt; a
 legacy sha256-only cache is re-downloaded and verified rather than grandfathered.
+Supported standalone pins are the frozen `0.7.2` bridge, which requires host
+Node 25.9, or private-Node releases `0.11.0` and newer. Releases `0.8.0` through
+`0.10.x` use the retired host-Node artifact contract and are rejected with an
+actionable compatibility error.
 Interrupted promotions recover a verified staged tree or backup before any
 artifact download. Per-artifact SQLite lock databases use OS file locking and
 remain as durable identities; there is no stale PID lease to reap. Wrapper/shim
@@ -99,7 +111,7 @@ lock identity.
 Pin explicitly:
 
 ```bash
-curl -fsSL https://get.agenc.ag/install.sh | sh -s -- --version 0.10.0
+curl -fsSL https://get.agenc.ag/install.sh | sh -s -- --version 0.11.0
 ```
 
 ## Updating
@@ -113,13 +125,20 @@ archive-safety, locking, staging, and atomic-promotion contract. It installs
 side by side under the content-addressed ABI runtime path and transactionally repoints all
 eligible wrappers generated by `install.sh`. A running daemon keeps the old
 version until `agenc daemon restart`. `--check` reports without writing;
-`--pin 0.10.0` targets a specific release and is the only update mode allowed to
-downgrade the active wrapper.
+`--pin 0.11.0` targets a specific private-Node release and is the only update
+mode allowed to downgrade the active wrapper. The in-runtime updater accepts
+`0.11.0` and newer; use the standalone installer, not `agenc update`, for the
+frozen host-Node `0.7.2` bridge.
 
 npm-launcher installs pin their runtime through the manifest bundled into the
 launcher package, so they update with `npm install -g @tetsuo-ai/agenc@latest`
 instead (`agenc update` detects this and says so). Re-running the install
 one-liner also updates in place.
+
+The 0.10.0 standalone updater runs on Node 25 / ABI 141 and cannot select the
+new ABI 147 artifact. Upgrade an existing standalone 0.10.0 installation by
+rerunning the one-line installer once. The resulting 0.11.0 wrapper and future
+updates use the artifact's private Node runtime.
 
 Tests: `runtime/tests/packaging/update-cli.test.ts`.
 
@@ -144,23 +163,31 @@ The public runtime matrix is deliberately explicit:
 | macOS | x64, arm64 | macOS 13.5 |
 | Windows | x64 | Native Windows runtime |
 
-All paths require Node.js 25.9 or newer within the 25.x line and the manifest's
-native module ABI and Node-API version. Node 25 is now end-of-life; 0.10.0 is a
-narrow compatibility bridge, not permission to substitute a different Node
-major into release artifacts. Alpine/musl Linux, Linux armv7, and Windows arm64 are not in
-the release matrix; installers fail before the runtime download rather than
-attempting a best-effort install. Exact release inputs live in
-`release-toolchain.json` (currently Node.js 25.9.0, ABI 141, Node-API 10, and
-npm 11.17.0).
+Standalone and Homebrew installations include the exact reviewed Node.js
+26.5.0 runtime, module ABI 147, and Node-API 10; they do not require host Node.
+Source checkouts, the npm launcher, and the SDK require Node.js `>=26.5 <27`.
+Node 26 is Current through 2026-10-28 and is scheduled to enter Active LTS on
+that date. Release artifacts remain pinned to one exact toolchain even though
+source/npm engine ranges permit compatible 26.x updates. Substituting another
+Node major into release artifacts is unsupported. Alpine/musl Linux, Linux
+armv7, and Windows arm64 are not in the release matrix; installers fail before
+the runtime download rather than attempting a best-effort install. Exact
+release inputs live in `release-toolchain.json` (currently Node.js 26.5.0, ABI
+147, Node-API 10, and npm 11.17.0).
 
-The initial official install requires public HTTPS access to the manifest,
-selected runtime, its Sigstore bundle, the pinned GitHub CLI archive, and the
-current GitHub/Sigstore trusted-root and transparency metadata used by
-`gh attestation verify`. The bundle alone is not an offline trust root.
-Installed runtime startup does not. `--repo` binds a repo-derived manifest to
-that requested repository. `--manifest-url` and local paths deliberately select
-an explicit-trust mirror/test mode: byte count, sha256, compatibility, and
-archive safety still apply, but official source-workflow provenance does not.
+Lifecycle sources: [Node.js releases](https://nodejs.org/en/about/previous-releases)
+and the [Node.js Release Working Group schedule](https://github.com/nodejs/Release#release-schedule).
+
+The initial official standalone install requires public HTTPS access to the
+exact Node distribution, the Linux compatibility bootstrap when applicable,
+the manifest, selected runtime, its Sigstore bundle, the pinned GitHub CLI
+archive, and the current GitHub/Sigstore trusted-root and transparency metadata
+used by `gh attestation verify`. The bundle alone is not an offline trust root.
+Installed runtime startup does not require that network access. `--repo` binds
+a repo-derived manifest to that requested repository. `--manifest-url` and
+local paths deliberately select an explicit-trust mirror/test mode: byte
+count, sha256, compatibility, and archive safety still apply, but official
+source-workflow provenance does not.
 
 ### Ubuntu AppArmor and bubblewrap
 
@@ -195,7 +222,9 @@ npm install -g @tetsuo-ai/agenc
 
 The launcher's postinstall resolves the same runtime contract via
 `packages/agenc/lib/runtime-manager.mjs`. Prefer a version that resolves
-runtime **0.10.0** when you need parity with this doc set.
+runtime **0.11.0** when you need parity with this doc set. npm itself still
+requires a compatible host Node; use the standalone installer or Homebrew
+formula when you want a self-contained installation.
 
 ## Docker
 
@@ -230,13 +259,21 @@ that configured addon cannot load, and `/data` can be `noexec` without weakening
 socket authentication. VPS deployment shapes:
 [docs/deploy/vps.md](deploy/vps.md).
 
-## Homebrew (owner-publish pending)
+## Homebrew
 
-`packaging/homebrew/agenc.rb` is the tap formula template; it wraps
-`install.sh` so every path shares one verified contract. It ships with
-placeholder URL/sha and is explicitly disabled. Homebrew/core has no `node@25`
-formula, so the tap must not be published until AgenC moves to a supported Node
-line and native macOS release gates pass.
+```bash
+brew install tetsuo-ai/agenc/agenc
+```
+
+The tap formula installs the architecture-specific macOS runtime artifact
+directly and launches its bundled Node 26.5.0 executable, so Homebrew has no
+host-Node dependency. Homebrew upgrades the complete AgenC + private Node
+runtime together with `brew upgrade agenc`; `agenc update` is not the update
+path for formula installations.
+
+`packaging/homebrew/agenc.rb` remains the owner-publish template. Release
+operators replace its placeholder digests in the tap only after both native
+macOS release gates pass and the immutable release manifest is public.
 
 ## After install
 
@@ -422,7 +459,7 @@ closed if source visibility changes. The installers default to
 `releases/latest/download/agenc-runtime-manifest-v2.json` there — a regression
 test pins that default.
 
-Release builds require exactly Node.js 25.9.0 and npm 11.17.0 as declared by
+Release builds require exactly Node.js 26.5.0 and npm 11.17.0 as declared by
 `release-toolchain.json` and the root `packageManager`. Start with `npm ci`;
 the committed lockfile and reviewed lifecycle-script allowlist are the
 dependency authority. Before assembling a release, run
@@ -695,10 +732,11 @@ resolved package inventory is stored at
    manifests, publish the immutable version digest first, smoke the registry
    result, and only then advance `latest` by digest. The local clean-build gate
    proves the current host image only and no GHCR release is authorized.
-7. Homebrew tap (`tetsuo-ai/homebrew-agenc`) remains disabled for 0.7.2. Do not
-   fill or publish the template merely because darwin tarballs exist: first
-   migrate the runtime contract to a supported Node line with a Homebrew
-   formula, then rerun native macOS release gates.
+7. Homebrew resumes with the private-Node formula in 0.11.0. Keep the checked-in
+   placeholder formula unpublishable until both native macOS artifacts pass
+   their release gates; then substitute the immutable release URLs and SHA-256
+   values in `tetsuo-ai/homebrew-agenc`, test both Intel and Apple Silicon
+   installs, and publish the tap update.
 
 For npm artifacts, use the exact launcher workspace and an owned empty output
 directory:

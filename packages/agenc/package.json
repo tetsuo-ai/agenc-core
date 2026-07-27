@@ -1,6 +1,6 @@
 {
   "name": "@tetsuo-ai/agenc",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Public AgenC CLI launcher package",
   "license": "MIT",
   "type": "module",
@@ -23,6 +23,7 @@
     "lib/activation-lock-identity.mjs",
     "lib/generated-wrapper.d.mts",
     "lib/generated-wrapper.mjs",
+    "lib/runtime-archive.d.mts",
     "lib/runtime-archive.mjs",
     "lib/runtime-compatibility.mjs",
     "lib/runtime-manager.mjs",
@@ -47,6 +48,6 @@
     "@tetsuo-ai/runtime": "file:../../runtime"
   },
   "engines": {
-    "node": ">=25.9.0 <26.0.0"
+    "node": ">=26.5.0 <27.0.0"
   }
 }

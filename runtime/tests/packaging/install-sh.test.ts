@@ -46,6 +46,9 @@ const RELEASE_TOOLCHAIN = join(REPO_ROOT, "release-toolchain.json");
 
 const VERSION = "9.9.9-test";
 const BIN_REL = "node_modules/@tetsuo-ai/runtime/bin/agenc";
+const NODE_BIN_REL = "node_modules/.agenc-node/bin/node";
+const WINDOWS_NODE_BIN_REL = "node_modules/.agenc-node/node.exe";
+const NODE_LIBRARY_REL = "node_modules/.agenc-node/lib";
 const NODE_ABI = process.versions.modules;
 
 function sha256(buf: Buffer): string {
@@ -75,14 +78,64 @@ function removePersistentWrapperLocks(root: string): void {
 
 // Synthetic runtime tarball with the real extraction layout; the bin is a
 // node script so the generated wrapper can actually be executed.
-function makeSyntheticArtifact(dir: string): { tarball: string; sha: string } {
+function makeSyntheticArtifact(
+  dir: string,
+  options: { omitPrivateNode?: boolean; omitPrivateNodeLibrary?: boolean } = {},
+): { tarball: string; sha: string } {
   const tree = join(dir, "tree");
   const binDir = join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin");
+  const privateNodeRoot = join(tree, "node_modules", ".agenc-node");
+  const privateNodeBin = join(privateNodeRoot, "bin", "node");
   mkdirSync(binDir, { recursive: true });
+  mkdirSync(dirname(privateNodeBin), { recursive: true });
+  mkdirSync(join(privateNodeRoot, "lib"), { recursive: true });
   writeFileSync(
     join(binDir, "agenc"),
-    'console.log("ok " + process.argv.slice(2).join(" "));\n',
+    [
+      'if (process.argv.includes("--agenc-child-node-probe")) {',
+      '  const { spawnSync } = require("node:child_process");',
+      '  const child = spawnSync("node", ["--agenc-private-node-probe"], { encoding: "utf8" });',
+      "  if (child.error) throw child.error;",
+      "  process.stdout.write(child.stdout);",
+      "} else {",
+      '  console.log("ok " + process.argv.slice(2).join(" "));',
+      "}",
+      "",
+    ].join("\n"),
   );
+  const nodeShim = [
+    "#!/bin/sh",
+    'if [ "${1:-}" = "--agenc-private-node-probe" ]; then',
+    "  printf 'private-node-path-ok\\n'",
+    "  exit 0",
+    "fi",
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+    "",
+  ].join("\n");
+  if (!options.omitPrivateNode) {
+    writeFileSync(privateNodeBin, nodeShim, { mode: 0o755 });
+    chmodSync(privateNodeBin, 0o755);
+    writeFileSync(join(privateNodeRoot, "node.exe"), nodeShim, { mode: 0o755 });
+    chmodSync(join(privateNodeRoot, "node.exe"), 0o755);
+  }
+  writeFileSync(join(privateNodeRoot, "LICENSE"), "synthetic Node license\n");
+  writeFileSync(join(privateNodeRoot, "identity.json"), JSON.stringify({
+    schemaVersion: 1,
+    nodeVersion: process.versions.node,
+    nodeMajor: Number(process.versions.node.split(".")[0]),
+    nodeModuleAbi: process.versions.modules,
+    nodeApiVersion: process.versions.napi,
+  }));
+  if (!options.omitPrivateNodeLibrary) {
+    if (process.platform === "linux" && process.arch === "x64") {
+      cpSync(
+        "/usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0",
+        join(privateNodeRoot, "lib", "libatomic.so.1"),
+      );
+    } else {
+      writeFileSync(join(privateNodeRoot, "lib", "libatomic.so.1"), "synthetic libatomic\n");
+    }
+  }
   const tarball = join(dir, `agenc-runtime-${VERSION}-test.tar.gz`);
   const res = spawnSync("tar", ["-czf", tarball, "-C", tree, "node_modules"]);
   expect(res.status).toBe(0);
@@ -124,6 +177,12 @@ function writeManifest(
   artifact: { tarball: string; sha: string },
   overrides: Record<string, unknown> = {},
 ): string {
+  const platform = String(overrides.platform ?? "linux");
+  const bins = platform === "win"
+    ? { agenc: BIN_REL, node: WINDOWS_NODE_BIN_REL }
+    : platform === "linux"
+      ? { agenc: BIN_REL, node: NODE_BIN_REL, nodeLibrary: NODE_LIBRARY_REL }
+      : { agenc: BIN_REL, node: NODE_BIN_REL };
   const manifest = {
     manifestVersion: 2,
     runtimeVersion: VERSION,
@@ -144,7 +203,7 @@ function writeManifest(
         url: pathToFileURL(artifact.tarball).href,
         sha256: artifact.sha,
         bytes: statSync(artifact.tarball).size,
-        bins: { agenc: BIN_REL },
+        bins,
         ...overrides,
       },
     ],
@@ -204,7 +263,9 @@ function remoteManifest(
       attestationUrl: `${artifactUrl}.sigstore.json`,
       attestationSha256: sha256(attestation),
       attestationBytes: attestation.length,
-      bins: { agenc: BIN_REL },
+      bins: platform === "win"
+        ? { agenc: BIN_REL, node: WINDOWS_NODE_BIN_REL }
+        : { agenc: BIN_REL, node: NODE_BIN_REL, nodeLibrary: NODE_LIBRARY_REL },
     }],
   };
 }
@@ -246,6 +307,155 @@ function writeInstrumentedInstallPs1(dir: string): string {
     '[Environment]::SetEnvironmentVariable("NODE_OPTIONS", $null, "Process")',
     '# test copy only: retain NODE_OPTIONS for fault instrumentation',
   );
+  writeFileSync(target, source);
+  return target;
+}
+
+function makeBootstrapNodeDistribution(dir: string): string {
+  const distribution = join(dir, "node-v26.5.0-linux-x64");
+  const bin = join(distribution, "bin");
+  mkdirSync(bin, { recursive: true });
+  const node = join(bin, "node");
+  writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, {
+    mode: 0o755,
+  });
+  chmodSync(node, 0o755);
+  const archive = join(dir, "node-v26.5.0-linux-x64.tar.gz");
+  const result = spawnSync("tar", ["-czf", archive, "-C", dir, "node-v26.5.0-linux-x64"]);
+  expect(result.status, result.stderr?.toString()).toBe(0);
+  return archive;
+}
+
+function makeBootstrapLibatomicDistribution(dir: string): {
+  archive: string;
+  library: string;
+} {
+  const root = join(dir, "bootstrap-libatomic");
+  const licenses = join(root, "LICENSES");
+  const libraries = join(root, "lib");
+  mkdirSync(licenses, { recursive: true, mode: 0o755 });
+  mkdirSync(libraries, { recursive: true, mode: 0o755 });
+  chmodSync(root, 0o755);
+  chmodSync(licenses, 0o755);
+  chmodSync(libraries, 0o755);
+  writeFileSync(join(licenses, "COPYING.RUNTIME"), "synthetic runtime exception\n", {
+    mode: 0o644,
+  });
+  writeFileSync(join(licenses, "COPYING3"), "synthetic GPLv3\n", { mode: 0o644 });
+  chmodSync(join(licenses, "COPYING.RUNTIME"), 0o644);
+  chmodSync(join(licenses, "COPYING3"), 0o644);
+  const library = join(libraries, "libatomic.so.1");
+  cpSync("/usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0", library);
+  chmodSync(library, 0o644);
+  const archive = join(dir, "agenc-node-bootstrap-libatomic-linux-x64.tar.gz");
+  const result = spawnSync(
+    "tar",
+    ["--sort=name", "--format=posix", "--mtime=@0", "--owner=0", "--group=0",
+      "--numeric-owner", "--pax-option=delete=atime,delete=ctime",
+      "-czf", archive, "-C", root, "LICENSES", "lib"],
+  );
+  expect(result.status, result.stderr?.toString()).toBe(0);
+  return { archive, library };
+}
+
+function writeBootstrapFixtureInstallSh(
+  dir: string,
+  archive: string,
+  compatibility: { archive: string; library: string },
+): string {
+  const target = join(dir, "bootstrap-fixture-install.sh");
+  let source = readFileSync(INSTALL_SH, "utf8");
+  source = replaceExactlyOnce(
+    source,
+    'NODE_DIST_SHA="22b5f47ad6ae78837e4c2b846019965ce1a06ba143de176102294a1bf44fc677"',
+    `NODE_DIST_SHA="${sha256(readFileSync(archive))}"`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    "NODE_DIST_BYTES=61529729",
+    `NODE_DIST_BYTES=${statSync(archive).size}`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    'NODE_COMPAT_SHA="5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6"',
+    `NODE_COMPAT_SHA="${sha256(readFileSync(compatibility.archive))}"`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    "NODE_COMPAT_BYTES=26073",
+    `NODE_COMPAT_BYTES=${statSync(compatibility.archive).size}`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    'NODE_COMPAT_LIBRARY_SHA="5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd"',
+    `NODE_COMPAT_LIBRARY_SHA="${sha256(readFileSync(compatibility.library))}"`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    "NODE_COMPAT_LIBRARY_BYTES=28920",
+    `NODE_COMPAT_LIBRARY_BYTES=${statSync(compatibility.library).size}`,
+  );
+  writeFileSync(target, source, { mode: 0o755 });
+  return target;
+}
+
+function makeBootstrapWindowsNodeDistribution(dir: string): string {
+  const distribution = join(dir, "node-v26.5.0-win-x64");
+  mkdirSync(distribution, { recursive: true });
+  const node = join(distribution, "node.exe");
+  writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, {
+    mode: 0o755,
+  });
+  chmodSync(node, 0o755);
+  const archive = join(dir, "node-v26.5.0-win-x64.zip");
+  const result = spawnSync(
+    "zip",
+    ["-qr", archive, "node-v26.5.0-win-x64"],
+    { cwd: dir },
+  );
+  expect(result.status, result.stderr?.toString()).toBe(0);
+  return archive;
+}
+
+function writeBootstrapFixtureInstallPs1(
+  dir: string,
+  archive: string,
+  options: { bootstrapUrl?: string; trustTestCertificate?: boolean } = {},
+): string {
+  const target = join(dir, "bootstrap-fixture-install.ps1");
+  let source = readFileSync(INSTALL_PS1, "utf8");
+  source = replaceExactlyOnce(
+    source,
+    '$nodeDistributionSha256 = "d3b2277dbcccfdf24ef6302928f64f484cff1d77a6d3caa3a28f4d20ce9158f6"',
+    `$nodeDistributionSha256 = "${sha256(readFileSync(archive))}"`,
+  );
+  source = replaceExactlyOnce(
+    source,
+    "$nodeDistributionBytes = 41113391",
+    `$nodeDistributionBytes = ${statSync(archive).size}`,
+  );
+  if (options.bootstrapUrl !== undefined) {
+    source = replaceExactlyOnce(
+      source,
+      [
+        "$nodeDistributionUrl =",
+        '      "https://nodejs.org/dist/v$SupportedNodeVersion/$nodeDistributionFile"',
+      ].join("\n"),
+      `$nodeDistributionUrl = "${options.bootstrapUrl.replaceAll('"', '`"')}"`,
+    );
+  }
+  if (options.trustTestCertificate) {
+    source = replaceExactlyOnce(
+      source,
+      "$handler = [System.Net.Http.HttpClientHandler]::new()",
+      [
+        "$handler = [System.Net.Http.HttpClientHandler]::new()",
+        "# private test copy only: trust the loopback fixture certificate",
+        "$handler.ServerCertificateCustomValidationCallback = " +
+          "[System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator",
+      ].join("\n"),
+    );
+  }
   writeFileSync(target, source);
   return target;
 }
@@ -713,6 +923,8 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       installDir,
       marker: join(installDir, ".agenc-runtime-ok"),
       provenanceReceipt: join(installDir, ".agenc-runtime-provenance-v1.json"),
+      privateNode: join(installDir, NODE_BIN_REL),
+      privateNodeLibrary: join(installDir, NODE_LIBRARY_REL),
       wrapper: join(home, ".local", "bin", "agenc"),
     };
   }
@@ -727,9 +939,15 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(res.stderr).toContain("checksum verified");
     expect(res.status).toBe(0);
 
-    const { marker, wrapper } = paths(home, artifact.sha);
+    const { marker, privateNode, privateNodeLibrary, wrapper } = paths(home, artifact.sha);
     expect(readFileSync(marker, "utf8")).toBe(artifact.sha);
+    expect(existsSync(privateNode)).toBe(true);
+    expect(existsSync(join(privateNodeLibrary, "libatomic.so.1"))).toBe(true);
     expect(statSync(wrapper).mode & 0o111).not.toBe(0);
+    expect(parseInstallShWrapper(wrapper)).toMatchObject({
+      nodeBin: privateNode,
+      nodeLibraryPath: privateNodeLibrary,
+    });
     // The created AGENC_HOME must be owner-only regardless of umask — a
     // stranger-install container test caught mkdir -p leaving it 755.
     expect(statSync(join(home, ".agenc")).mode & 0o777).toBe(0o700);
@@ -739,6 +957,48 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     // The wrapper actually launches the installed runtime bin.
     const out = execFileSync(wrapper, ["--version"], { encoding: "utf8" });
     expect(out).toContain("ok --version");
+    const ambientBin = join(work, "ambient-bin-without-node");
+    mkdirSync(ambientBin);
+    const childNode = execFileSync(wrapper, ["--agenc-child-node-probe"], {
+      encoding: "utf8",
+      env: {
+        PATH: ambientBin,
+        NODE_OPTIONS: "--heapsnapshot-near-heap-limit=1",
+      },
+    });
+    expect(childNode).toBe("private-node-path-ok\n");
+  });
+
+  test.each([
+    ["private Node executable", { omitPrivateNode: true }, "private Node payload is incomplete"],
+    ["private Node library", { omitPrivateNodeLibrary: true }, "private Node library payload is incomplete"],
+  ])("rejects an artifact missing its %s", (_label, options, expected) => {
+    const home = join(work, `missing-${String(_label).replaceAll(" ", "-")}`);
+    const artifact = makeSyntheticArtifact(work, options);
+    const manifest = writeManifest(work, artifact);
+
+    const result = runInstaller({ home, manifest, args: ["--no-daemon"] });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(expected);
+    expect(existsSync(paths(home, artifact.sha).marker)).toBe(false);
+    expectFailedInstallCleanup(home);
+  });
+
+  test("ready-cache recovery refuses a marker-only tree missing private Node", () => {
+    const home = join(work, "damaged-private-node-home");
+    const artifact = makeSyntheticArtifact(work);
+    const manifest = writeManifest(work, artifact);
+    const first = runInstaller({ home, manifest, args: ["--no-daemon"] });
+    expect(first.status, first.stderr).toBe(0);
+    const installed = paths(home, artifact.sha);
+    rmSync(installed.privateNode);
+
+    const repaired = runInstaller({ home, manifest, args: ["--no-daemon"] });
+
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(repaired.stderr).not.toContain("already installed");
+    expect(existsSync(installed.privateNode)).toBe(true);
   });
 
   test("default install repairs an existing owner-owned group-writable wrapper directory", () => {
@@ -2026,7 +2286,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       { env, encoding: "utf8" },
     );
     expect(res.status).not.toBe(0);
-    expect(res.stderr).toContain("unsupported Node.js architecture override: riscv64");
+    expect(res.stderr).toContain("unsupported operating-system architecture override: riscv64");
     expect(res.stderr).not.toContain("fetching release manifest");
   });
 
@@ -2041,41 +2301,220 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(ps1).not.toContain("agenc-core/releases");
   });
 
-  test("standalone installers key native artifacts from the selected Node binary", () => {
+  test("standalone installers detect the target before selecting a bootstrap Node", () => {
     const sh = readFileSync(INSTALL_SH, "utf8");
-    expect(sh).toContain("node -p 'process.platform'");
-    expect(sh).toContain("node -p 'process.arch'");
+    expect(sh).toContain('case "$(/usr/bin/uname -m)"');
     expect(sh).toContain("minimumGlibcVersion");
     expect(sh).toContain("${a.platform}-${a.arch}-${libc}-node-abi-${a.nodeModuleAbi}");
-    expect(sh).not.toContain('case "$(uname -m)"');
+    expect(sh).toContain("AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE");
 
     const ps1 = readFileSync(INSTALL_PS1, "utf8");
-    expect(ps1).toContain("process.stdout.write(process.platform)");
-    expect(ps1).toContain("process.stdout.write(process.arch)");
+    expect(ps1).toContain("[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture");
     expect(ps1).toContain('"win-$arch-native-node-abi-$nodeModuleAbi"');
-    expect(ps1).not.toContain("PROCESSOR_ARCHITECTURE");
+    expect(ps1).toContain("AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE");
+    expect(ps1).toContain(
+      '"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"',
+    );
+    expect(ps1).toContain('[System.Reflection.Assembly]::Load("System.Net.Http")');
+    expect(ps1).toContain(".SendAsync(");
+    expect(ps1).toContain(".ReadAsStreamAsync()");
+    expect(ps1).toContain(
+      '[System.Reflection.Assembly]::Load("System.IO.Compression.FileSystem")',
+    );
   });
 
-  test("node version gate: refuses Node outside the supported 25.9 bridge", () => {
+  test("standalone bootstrap pins are mechanically bound to release-toolchain.json", () => {
+    const toolchain = JSON.parse(readFileSync(RELEASE_TOOLCHAIN, "utf8")) as any;
+    const sh = readFileSync(INSTALL_SH, "utf8");
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+
+    expect(sh).toContain(`SUPPORTED_NODE_MAJOR=${toolchain.nodeMajor}`);
+    expect(sh).toContain(`SUPPORTED_NODE_VERSION=${toolchain.nodeVersion}`);
+    expect(sh).toContain(
+      'NODE_DIST_URL="https://nodejs.org/dist/v${SUPPORTED_NODE_VERSION}/${NODE_DIST_FILE}"',
+    );
+    expect(ps1).toContain(`$SupportedNodeMajor = ${toolchain.nodeMajor}`);
+    expect(ps1).toContain(`$SupportedNodeVersion = "${toolchain.nodeVersion}"`);
+    expect(ps1).toContain(
+      '"https://nodejs.org/dist/v$SupportedNodeVersion/$nodeDistributionFile"',
+    );
+    for (const slug of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]) {
+      const distribution = toolchain.nodeDistributions[slug];
+      expect(sh).toContain(`NODE_DIST_FILE="${distribution.file}"`);
+      expect(sh).toContain(`NODE_DIST_SHA="${distribution.sha256}"`);
+      expect(sh).toContain(`NODE_DIST_BYTES=${distribution.bytes}`);
+    }
+    const windows = toolchain.nodeDistributions["win-x64"];
+    expect(ps1).toContain(`$nodeDistributionFile = "${windows.file}"`);
+    expect(ps1).toContain(`$nodeDistributionSha256 = "${windows.sha256}"`);
+    expect(ps1).toContain(`$nodeDistributionBytes = ${windows.bytes}`);
+
+    const bootstrap = toolchain.nodeBootstrap;
+    expect(bootstrap.minimumRuntimeVersion).toBe("0.11.0");
+    expect(bootstrap.releaseTag).toBe(
+      `agenc-v${bootstrap.minimumRuntimeVersion}`,
+    );
+    expect(sh).toContain(
+      `NODE_COMPAT_RELEASE_TAG="${bootstrap.releaseTag}"`,
+    );
+    expect(sh).toContain(
+      `NODE_COMPAT_URL="https://github.com/tetsuo-ai/agenc-releases/releases/download/` +
+        `\${NODE_COMPAT_RELEASE_TAG}/\${NODE_COMPAT_FILE}"`,
+    );
+    for (const slug of ["linux-x64", "linux-arm64"]) {
+      const compat = bootstrap[slug];
+      expect(compat.url).toBe(
+        `https://github.com/tetsuo-ai/agenc-releases/releases/download/` +
+          `${bootstrap.releaseTag}/${compat.file}`,
+      );
+      expect(sh).toContain(`NODE_COMPAT_FILE="${compat.file}"`);
+      expect(sh).toContain(`NODE_COMPAT_SHA="${compat.sha256}"`);
+      expect(sh).toContain(`NODE_COMPAT_BYTES=${compat.bytes}`);
+      expect(sh).toContain(`NODE_COMPAT_LIBRARY_SHA="${compat.librarySha256}"`);
+      expect(sh).toContain(`NODE_COMPAT_LIBRARY_BYTES=${compat.libraryBytes}`);
+    }
+    for (const installer of [sh, ps1]) {
+      expect(installer).toContain(
+        `process.versions.node !== "${toolchain.nodeVersion}"`,
+      );
+      expect(installer).toContain(
+        `process.versions.modules !== "${toolchain.nodeModuleAbi}"`,
+      );
+      expect(installer).toContain(
+        `process.versions.napi !== "${toolchain.nodeApiVersion}"`,
+      );
+    }
+  });
+
+  test("PowerShell bootstrap uses one cancellation deadline for headers and every body read", () => {
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain("$deadline.CancelAfter($bootstrapTimeoutMs)");
+    expect(ps1).toContain("$client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan");
+    expect(ps1).toMatch(
+      /\.SendAsync\(\s*\$request,\s*\[System\.Net\.Http\.HttpCompletionOption\]::ResponseHeadersRead,\s*\$deadline\.Token\s*\)/,
+    );
+    expect(ps1).toMatch(
+      /\.ReadAsync\(\s*\$buffer,\s*0,\s*\$buffer\.Length,\s*\$deadline\.Token\s*\)/,
+    );
+    expect(ps1).not.toContain("$inputStream.Read($buffer");
+    expect(ps1).toContain("$deadline.Dispose()");
+  });
+
+  test.skipIf(process.platform !== "linux" || process.arch !== "x64")(
+    "modern install bootstraps pinned Node when host Node is incompatible",
+    () => {
     const home = join(work, "home");
     mkdirSync(home, { recursive: true });
     const artifact = makeSyntheticArtifact(work);
     const manifest = writeManifest(work, artifact);
-
-    // Stub node reporting major version 20 for any invocation.
-    const stubDir = join(work, "stub-bin");
-    mkdirSync(stubDir, { recursive: true });
-    writeFileSync(join(stubDir, "node"), '#!/bin/sh\nprintf "20"\n');
-    chmodSync(join(stubDir, "node"), 0o755);
+    const bootstrapArchive = makeBootstrapNodeDistribution(work);
+    const compatibility = makeBootstrapLibatomicDistribution(work);
+    const installerPath = writeBootstrapFixtureInstallSh(
+      work,
+      bootstrapArchive,
+      compatibility,
+    );
 
     const res = runInstaller({
       home,
       manifest,
       args: ["--no-daemon"],
-      pathPrepend: [stubDir],
+      installerPath,
+      envOverrides: {
+        PATH: "/usr/bin:/bin",
+        AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE: bootstrapArchive,
+        AGENC_INSTALL_BOOTSTRAP_LIBATOMIC_ARCHIVE: compatibility.archive,
+      },
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stderr).toContain("using private Node.js 26.5.0 bootstrap");
+    const installed = paths(home, artifact.sha);
+    expect(parseInstallShWrapper(installed.wrapper)).toMatchObject({
+      nodeBin: installed.privateNode,
+      nodeLibraryPath: installed.privateNodeLibrary,
+    });
+    expect(readFileSync(installed.wrapper, "utf8")).not.toContain("agenc-node-bootstrap");
+    expect(
+      readdirSync(join(home, "tmp")).filter((name) =>
+        name.startsWith("agenc-node-bootstrap.")),
+    ).toEqual([]);
+    },
+  );
+
+  test("the frozen v0.7.2 pin requires Node 25 before any manifest fetch", () => {
+    const home = join(work, "home");
+    const res = runInstaller({
+      home,
+      repoDerived: true,
+      args: ["--version", "0.7.2", "--no-daemon"],
     });
     expect(res.status).not.toBe(0);
-    expect(res.stderr).toContain("Node.js >=25.9 <26 required");
+    expect(res.stderr).toContain(
+      "The frozen v0.7.2 bridge requires Node.js >=25.9 <26",
+    );
+    expect(res.stderr).not.toContain("fetching release manifest");
+  });
+
+  test("retired host-Node releases fail with an actionable diagnostic before manifest fetch", () => {
+    const home = join(work, "home");
+    const pinned = runInstaller({
+      home,
+      repoDerived: true,
+      args: ["--version", "0.10.0", "--no-daemon"],
+    });
+    expect(pinned.status).not.toBe(0);
+    expect(pinned.stderr).toContain(
+      "runtime 0.10.0 has no supported standalone activation contract",
+    );
+    expect(pinned.stderr).toContain(
+      "0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node",
+    );
+    expect(pinned.stderr).not.toContain("fetching release manifest");
+
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain(
+      "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract",
+    );
+    expect(ps1).toContain(
+      "0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node",
+    );
+  });
+
+  test("unpinned retired manifests fail as compatibility errors, not malformed artifacts", () => {
+    const home = join(work, "home");
+    mkdirSync(home, { recursive: true });
+    const artifact = makeSyntheticArtifact(work);
+    const manifestPath = writeManifest(work, artifact);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.runtimeVersion = "0.10.0";
+    manifest.releaseTag = "agenc-v0.10.0";
+    manifest.artifacts[0].runtimeVersion = "0.10.0";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = runInstaller({ home, manifest: manifestPath, args: ["--no-daemon"] });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "runtime 0.10.0 has no supported standalone activation contract",
+    );
+    expect(result.stderr).not.toContain("manifest artifact identity is invalid");
+  });
+
+  test("ordinary v0.7.2 pins resolve the frozen legacy manifest in both installers", () => {
+    const sh = readFileSync(INSTALL_SH, "utf8");
+    expect(sh).toContain(
+      'MANIFEST_URL="https://github.com/${REPO}/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"',
+    );
+    expect(sh.indexOf('MANIFEST_TRUST="officialLegacy"')).toBeLessThan(
+      sh.indexOf('MANIFEST_TRUST="official"'),
+    );
+
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain(
+      '$manifestUrl = "https://github.com/$repo/releases/download/agenc-v0.7.2/agenc-runtime-manifest.json"',
+    );
+    expect(ps1.indexOf('"officialLegacy"')).toBeLessThan(
+      ps1.indexOf('elseif ($repo -eq $OfficialRepo -and -not $manifestExplicit) { "official" }'),
+    );
   });
 
   test("install.ps1 parses under pwsh (skipped when pwsh is absent)", () => {
@@ -2224,8 +2663,95 @@ describe.skipIf(spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status !
         installDir,
         marker: join(installDir, ".agenc-runtime-ok"),
         bin: join(installDir, BIN_REL),
+        privateNode: join(installDir, WINDOWS_NODE_BIN_REL),
+        wrapper: join(home, "prefix", "bin", "agenc.cmd"),
       };
     }
+
+    test.skipIf(
+      process.platform === "win32" ||
+      spawnSync("zip", ["-v"], { stdio: "ignore" }).status !== 0,
+    )("PowerShell bootstraps pinned Node when the host command is incompatible", () => {
+      const home = join(work, "bootstrap-home");
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const artifact = makeSyntheticArtifact(work);
+      const manifest = writeManifest(work, artifact, {
+        platform: "win",
+        arch: "x64",
+      });
+      const bootstrapArchive = makeBootstrapWindowsNodeDistribution(work);
+      const installerPath = writeBootstrapFixtureInstallPs1(work, bootstrapArchive);
+      const incompatibleBin = join(work, "incompatible-node");
+      mkdirSync(incompatibleBin);
+      writeFileSync(join(incompatibleBin, "node"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      chmodSync(join(incompatibleBin, "node"), 0o755);
+
+      const result = runPowerShell(home, manifest, join(home, ".agenc"), {
+        PATH: `${incompatibleBin}:${process.env.PATH ?? ""}`,
+        AGENC_INSTALL_BOOTSTRAP_NODE_ARCHIVE: bootstrapArchive,
+      }, installerPath);
+
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("using private Node.js 26.5.0 bootstrap");
+      const installed = windowsPaths(home, artifact.sha);
+      expect(parseGeneratedWrapper(installed.wrapper)).toMatchObject({
+        nodeBin: installed.privateNode,
+      });
+      expect(readFileSync(installed.wrapper, "utf8")).not.toContain("agenc-node-bootstrap");
+      expect(
+        readdirSync(join(home, "tmp")).filter((name) =>
+          name.startsWith("agenc-node-bootstrap-")),
+      ).toEqual([]);
+    });
+
+    test.skipIf(
+      process.platform === "win32" ||
+      spawnSync("zip", ["-v"], { stdio: "ignore" }).status !== 0,
+    )("PowerShell bootstrap deadline covers a stalled response body", () => {
+      const home = join(work, "bootstrap-stall-home");
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const bootstrapArchive = makeBootstrapWindowsNodeDistribution(work);
+      const fixture = startHttpsFixture(work, {
+        "/node.zip": {
+          bodyBase64: readFileSync(bootstrapArchive).toString("base64"),
+          stallBody: true,
+        },
+      });
+      const incompatibleBin = join(work, "incompatible-node-stall");
+      mkdirSync(incompatibleBin);
+      writeFileSync(join(incompatibleBin, "node"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      chmodSync(join(incompatibleBin, "node"), 0o755);
+      const installerPath = writeBootstrapFixtureInstallPs1(
+        work,
+        bootstrapArchive,
+        {
+          bootstrapUrl: `${fixture.baseUrl}/node.zip`,
+          trustTestCertificate: true,
+        },
+      );
+      try {
+        const started = Date.now();
+        const result = runPowerShell(home, join(work, "must-not-be-read.json"), join(home, ".agenc"), {
+          PATH: `${incompatibleBin}:${process.env.PATH ?? ""}`,
+          AGENC_INSTALL_TEST_BOOTSTRAP_TIMEOUT_MS: "500",
+          HTTP_PROXY: "",
+          HTTPS_PROXY: "",
+          ALL_PROXY: "",
+          NO_PROXY: "127.0.0.1,localhost",
+        }, installerPath);
+        const output = `${result.stdout}\n${result.stderr}`;
+
+        expect(result.status).not.toBe(0);
+        expect(output).toContain("Node.js bootstrap deadline exceeded after 500ms");
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(
+          readdirSync(join(home, "tmp")).filter((name) =>
+            name.startsWith("agenc-node-bootstrap-")),
+        ).toEqual([]);
+      } finally {
+        fixture.stop();
+      }
+    });
 
     test("PowerShell rejects a reparse temporary parent before child mutation", () => {
       const home = join(work, "reparse-parent-home");
@@ -2394,6 +2920,10 @@ describe.skipIf(spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status !
       const paths = windowsPaths(home, artifact.sha);
       expect(readFileSync(paths.marker, "utf8")).toBe(artifact.sha);
       expect(readFileSync(paths.bin, "utf8")).toContain("console.log");
+      expect(existsSync(paths.privateNode)).toBe(true);
+      expect(parseGeneratedWrapper(paths.wrapper)).toMatchObject({
+        nodeBin: paths.privateNode,
+      });
       const homeIdentity = statSync(join(home, ".agenc"), { bigint: true });
       expect(existsSync(resolve(`${homeIdentity.dev}:${homeIdentity.ino}`))).toBe(false);
       expect(existsSync(join(home, ".agenc", "runtime", ".activation-lock.sqlite"))).toBe(true);

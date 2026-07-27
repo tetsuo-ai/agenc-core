@@ -250,8 +250,9 @@ describe("PackageManagerAutoUpdater coverage swarm row 115", () => {
   });
 
   test.each([
+    ["homebrew", "brew upgrade agenc"],
     ["winget", "winget upgrade AgenC.AgenCCode"],
-    ["apk", "apk upgrade agenc-code"],
+    ["apk", "apk upgrade agenc"],
     ["unknown", "your package manager update command"],
   ])("renders the %s package-manager command", async (packageManager, command) => {
     harness.getPackageManager.mockResolvedValue(packageManager);

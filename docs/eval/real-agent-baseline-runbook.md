@@ -5,7 +5,7 @@ inputs (M1). One command per batch; resumable; no secrets on any argv.
 
 ## Prerequisites
 
-- docker, Node from `devEngines` (`.nvmrc`-compatible ≥ 25.9.0).
+- docker, Node from `devEngines` (`.nvmrc`-compatible ≥ 26.5.0).
 - A staged agent overlay directory (see
   `docs/design/eval-pilot-executor-phase2b-egress.md`): `node/` (portable Node
   dist + `node/compat/libatomic.so.1`), `runtime/` (extracted runtime tarball

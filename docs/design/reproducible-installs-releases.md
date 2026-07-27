@@ -4,6 +4,7 @@
 **Scope:** M0 “Make installs and releases reproducible”
 **Status:** implemented and locally verified on 2026-07-14; Docker registry
 publication remains separately unauthorized and data-gated.
+**Node 26 update:** 2026-07-27
 
 The mandatory `npm run check:clean-build` gate passed from a clean committed tree. It reproduced
 569 installed packages and six release-facing artifacts across independent `.git`-free source
@@ -28,7 +29,7 @@ in a set.
 
 ## Primary-source research
 
-Research was refreshed on 2026-07-14. The load-bearing sources are:
+Research was refreshed on 2026-07-27. The load-bearing sources are:
 
 - npm documents `npm ci` as the frozen, clean-install command: it requires an
   existing lock, removes an existing `node_modules`, and exits when the lock and
@@ -121,19 +122,25 @@ Research was refreshed on 2026-07-14. The load-bearing sources are:
   [macOS arm64 image](https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20260715.0234),
   [macOS x64 image](https://github.com/actions/runner-images/releases/tag/macos-15%2F20260720.0353),
   [Windows x64 image](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260714.173)
-- Node's release archive identifies 25.9.0 as out of maintenance, and the
-  current Homebrew/core Node formula list has no `node@25`. The 0.7.2 release
-  therefore treats Node 25.9.0 as an exact compatibility bridge and disables
-  Homebrew publication instead of silently selecting another ABI.
-  [Node 25.9.0 archive](https://nodejs.org/en/download/archive/v25.9.0),
+- Node 26.5.0 is the Current release, carries module ABI 147 and npm 11.17.0,
+  and is scheduled to enter Active LTS on 2026-10-28. Standalone and Homebrew
+  installations bundle this exact runtime instead of depending on the host's
+  Node formula.
+  [Node 26.5.0 archive](https://nodejs.org/en/download/archive/v26.5.0),
+  [Node release schedule](https://github.com/nodejs/Release#release-schedule),
   [Homebrew Node formula](https://formulae.brew.sh/formula/node)
+- Historically, Node's release archive identified 25.9.0 as out of
+  maintenance, and Homebrew/core had no `node@25`. The 0.7.2 release therefore
+  treats Node 25.9.0 as an exact compatibility bridge and disables Homebrew
+  publication instead of silently selecting another ABI.
+  [Node 25.9.0 archive](https://nodejs.org/en/download/archive/v25.9.0)
 
 ## Decisions
 
 ### One committed dependency contract
 
-The root `package-lock.json`, exact npm version, Node 25.9.0 / ABI 141 / Node-API
-10 bridge, base-image
+The root `package-lock.json`, exact npm version, Node 26.5.0 / ABI 147 / Node-API
+10 contract, base-image
 digests, Buildx binary hashes, BuildKit image digest, Debian snapshot, direct
 runtime packages, and native release toolchains live in reviewed files. Every
 install/release path uses `npm ci`; no gate accepts a regenerated lock.
@@ -211,12 +218,15 @@ integrity receipt. Existing mutable release state is never silently repaired.
 
 Before npm packing, the downstream job proves that the immutable release API,
 canonical `SHA256SUMS`, complete five-platform tar/metadata/attestation matrix,
-source-exact installers, SBOM, and locally re-prepared 21-file asset directory
-have identical names, sizes, and SHA-256 digests. An incomplete, substituted,
-or extra immutable asset therefore blocks launcher promotion. Packing and
-verification both run the complete launcher-manifest validator over the exact
-source or embedded bytes. Stable publication explicitly selects `latest` and
-then independently verifies the registry dist-tag, including idempotent reruns.
+source-exact installers, SBOM, and locally re-prepared release asset directory
+have identical names, sizes, and SHA-256 digests. The `0.11.0` private-Node
+anchor contains 23 files, including its two immutable Linux compatibility
+bootstraps; later releases contain 21 and reuse those anchored bootstraps. An
+incomplete, substituted, or extra immutable asset therefore blocks launcher
+promotion. Packing and verification both run the complete launcher-manifest
+validator over the exact source or embedded bytes. Stable publication
+explicitly selects `latest` and then independently verifies the registry
+dist-tag, including idempotent reruns.
 
 The npm launcher payload is a literal leaf-file allowlist. Before npm lifecycle
 execution, release tooling requires the exact clean tag/commit/tree and freezes
@@ -310,9 +320,10 @@ quality gate is Linux-only; native Windows ACL and architecture behavior remain
 release-matrix responsibilities, not an implied Docker-publication grant.
 `socket._handle.fd` is a Node implementation detail, so the real
 `verifiedBy=peerUid` smoke remains mandatory on every supported Node/platform
-release job. Node 25 is end-of-life and unavailable as a versioned Homebrew
-formula, so the Homebrew template stays disabled and a separately reviewed
-Node 26 migration is required after this compatibility bridge.
+release job. The historical Node 25 bridge remains immutable, while current
+releases use Node 26.5.0 / ABI 147. Homebrew publication is no longer blocked
+by the runtime line, but still requires a populated formula and successful
+native macOS release gates.
 
 Official artifact attestations authenticate build origin, but the current
 online verifier still obtains current GitHub/Sigstore trusted-root and

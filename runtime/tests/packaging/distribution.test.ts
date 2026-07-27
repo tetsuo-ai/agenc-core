@@ -19,8 +19,8 @@ describe("docker packaging", () => {
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain("ENV AGENC_HOME=/data/.agenc");
     expect(dockerfile).toContain('VOLUME ["/data"]');
-    expect(dockerfile).toMatch(/FROM node:25\.9\.0-bookworm@sha256:[0-9a-f]{64}/);
-    expect(dockerfile).toMatch(/FROM node:25\.9\.0-bookworm-slim@sha256:[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/FROM node:26\.5\.0-bookworm@sha256:[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/FROM node:26\.5\.0-bookworm-slim@sha256:[0-9a-f]{64}/);
     expect(dockerfile).toContain("npm ci --no-audit --no-fund");
     expect(dockerfile).toContain("build:runtime-tarball");
     expect(dockerfile).toContain('AGENC_BUILD_COMMIT="${AGENC_BUILD_COMMIT}"');
@@ -74,14 +74,37 @@ describe("homebrew packaging", () => {
     expect(existsSync(formulaPath)).toBe(true);
     const formula = readFileSync(formulaPath, "utf8");
     expect(formula).toContain("class Agenc < Formula");
-    expect(formula).toContain("disable!");
-    expect(formula).toContain("requires unavailable Node 25.9.0");
-    expect(formula).not.toMatch(/depends_on "node(?:@\d+)?"/);
+    expect(formula).not.toContain("disable!");
+    expect(formula).not.toContain('depends_on "node"');
+    expect(formula).toContain("depends_on :macos => :ventura");
+    expect(formula).toContain('MacOS.full_version < "13.5"');
+    expect(formula).toContain('depends_on "ripgrep"');
+    expect(formula).toContain('libexec/"node_modules/.agenc-node/bin/node"');
+    expect(formula).toContain(
+      'libexec/"node_modules/@tetsuo-ai/runtime/bin/agenc"',
+    );
+    const privatePath = 'export PATH="#{node_bin.dirname}:$PATH"';
+    const privateNodeExec = 'exec "#{node_bin}" "#{runtime_bin}" "$@"';
+    expect(formula).toContain(privatePath);
+    expect(formula.indexOf(privatePath)).toBeLessThan(
+      formula.indexOf(privateNodeExec),
+    );
+    // The service traverses the same wrapper, so daemon children receive the
+    // artifact Node path before the runtime starts.
+    expect(formula).toContain(
+      'run [opt_bin/"agenc", "daemon", "start", "--foreground"]',
+    );
+    expect(formula).toContain("brew upgrade agenc");
+    expect(formula).not.toContain("agenc-code");
+    expect(formula).not.toContain('"install.sh"');
+    expect(formula).not.toContain("curl ");
     // The template must stay obviously unpublishable until the owner fills
     // in a real release asset hash.
-    expect(formula).toContain("REPLACE_WITH_RELEASE_ASSET_SHA256");
+    expect(formula).toContain("REPLACE_WITH_DARWIN_ARM64_SHA256");
+    expect(formula).toContain("REPLACE_WITH_DARWIN_X64_SHA256");
     expect(formula).toContain("OWNER-PUBLISH STEP");
-    // It rides the shared installer contract rather than a parallel one.
-    expect(formula).toContain("install.sh");
+    // Homebrew installs the immutable artifact directly and never performs
+    // nested network installation during a formula build.
+    expect(formula).toContain("libexec.install");
   });
 });

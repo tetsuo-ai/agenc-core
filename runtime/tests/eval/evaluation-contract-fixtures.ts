@@ -119,7 +119,7 @@ export function makeOperatorTask(
       image: image("task"),
       platform: "linux-amd64",
       hardwareClass: "standard-4",
-      toolchain: [{ name: "node", version: "25.9.0", digest: digest("node:25.9.0") }],
+      toolchain: [{ name: "node", version: "26.5.0", digest: digest("node:26.5.0") }],
     },
     resetRecipe: {
       id: "fresh-reset",
@@ -310,7 +310,7 @@ export function makePreregistration(
       commit: GIT_COMMIT,
       image: image("evaluator"),
       harnessConfigDigest: digest("harness-config"),
-      toolchain: [{ name: "node", version: "25.9.0", digest: digest("node:25.9.0") }],
+      toolchain: [{ name: "node", version: "26.5.0", digest: digest("node:26.5.0") }],
       analysisImplementation: artifact("analysis-implementation", "application/javascript"),
       trustAssessmentImplementation: artifact("trust-assessment", "application/javascript"),
     },

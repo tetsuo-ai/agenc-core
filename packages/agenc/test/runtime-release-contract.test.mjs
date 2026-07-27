@@ -6,11 +6,17 @@ import { test } from "node:test";
 import {
   canonicalRuntimeAttestationVerificationArgs,
   canonicalLocalFileUrlToPath,
+  canonicalRuntimeNodeBin,
+  canonicalRuntimeNodeLibrary,
+  FROZEN_LEGACY_RUNTIME_VERSION,
+  MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+  PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
   OFFICIAL_RELEASE_REPOSITORY,
   PINNED_GITHUB_CLI_ARTIFACTS,
   PINNED_GITHUB_CLI_VERSION,
   RUNTIME_ATTESTATION_POLICY,
   RUNTIME_MANIFEST_TRUST_MODES,
+  requireSupportedRuntimeVersion,
   validateRuntimeReleaseManifest,
 } from "../lib/runtime-release-contract.mjs";
 import { LEGACY_BRIDGE_CONTRACT } from "../scripts/gen-manifest.mjs";
@@ -18,8 +24,8 @@ import { LEGACY_BRIDGE_CONTRACT } from "../scripts/gen-manifest.mjs";
 const repoRoot = new URL("../../../", import.meta.url);
 
 const VERSION = "1.2.3";
-const NODE_MAJOR = 25;
-const NODE_MODULE_ABI = "141";
+const NODE_MAJOR = 26;
+const NODE_MODULE_ABI = "147";
 const NODE_API_VERSION = "10";
 
 test("get.agenc.ag source preserves the landing page and release routes", () => {
@@ -96,7 +102,7 @@ test("get.agenc.ag source preserves the landing page and release routes", () => 
   assert.ok(advertisedVersions.length > 0);
   assert.deepEqual([...new Set(advertisedVersions)], [version]);
   assert.doesNotMatch(landingPage, /PRE-RELEASE/);
-  assert.ok(landingPage.includes("NODE ≥ 25.9 &lt; 26"));
+  assert.ok(landingPage.includes("PRIVATE NODE 26.5"));
   assert.ok(landingPage.includes("curl -fsSL https://get.agenc.ag/install.sh | sh"));
   for (const asset of ["agenc-logo.svg", "agenc-wordmark.svg"]) {
     const contents = readFileSync(
@@ -143,6 +149,26 @@ test("installer promotion is exact-SHA, fast-forward-only, and lane-scoped", () 
     workflow,
     /installer-hotfix requires an existing full-release promotion/u,
   );
+  const toolchain = JSON.parse(readFileSync(
+    new URL("../../../release-toolchain.json", import.meta.url),
+    "utf8",
+  ));
+  assert.match(
+    workflow,
+    new RegExp(`NODE_VERSION: "${toolchain.nodeVersion.replaceAll(".", "\\.")}"`, "u"),
+  );
+  assert.match(
+    workflow,
+    /nodeDistributions"\]\["linux-x64"\]\["sha256"\]/u,
+  );
+  assert.match(
+    workflow,
+    /nodeDistributions"\]\["linux-x64"\]\["bytes"\]/u,
+  );
+  assert.match(workflow, /json\.load\(open\("release-toolchain\.json"\)\)\["nodeModuleAbi"\]/u);
+  assert.match(workflow, /json\.load\(open\("release-toolchain\.json"\)\)\["nodeApiVersion"\]/u);
+  assert.match(workflow, /process\.versions\.modules !== process\.argv\[2\]/u);
+  assert.match(workflow, /process\.versions\.napi !== process\.argv\[3\]/u);
   assert.match(workflow, /node scripts\/sync-installer-sqlite-lock\.mjs --check/u);
   assert.match(workflow, /sh -n scripts\/install\/install\.sh/u);
   assert.match(workflow, /raw\.githubusercontent\.com/u);
@@ -171,7 +197,7 @@ test("consumer GitHub CLI pins exactly mirror the reviewed release toolchain", (
   assert.equal(Object.isFrozen(PINNED_GITHUB_CLI_ARTIFACTS), true);
 });
 
-test("installer legacy bridge identity exactly mirrors manifest generation and the release toolchain", () => {
+test("modern release identity advances while the installer legacy bridge remains frozen", () => {
   const toolchain = JSON.parse(readFileSync(
     new URL("../../../release-toolchain.json", import.meta.url),
     "utf8",
@@ -186,15 +212,41 @@ test("installer legacy bridge identity exactly mirrors manifest generation and t
     releaseRepository: toolchain.legacyBridge.releaseRepository,
     releaseTag: toolchain.legacyBridge.releaseTag,
   }, expected);
+  assert.deepEqual(
+    {
+      nodeVersion: toolchain.nodeVersion,
+      nodeMajor: toolchain.nodeMajor,
+      nodeModuleAbi: toolchain.nodeModuleAbi,
+      nodeApiVersion: toolchain.nodeApiVersion,
+    },
+    {
+      nodeVersion: "26.5.0",
+      nodeMajor: NODE_MAJOR,
+      nodeModuleAbi: NODE_MODULE_ABI,
+      nodeApiVersion: NODE_API_VERSION,
+    },
+  );
   assert.deepEqual({
-    nodeMajor: toolchain.nodeMajor,
-    nodeModuleAbi: toolchain.nodeModuleAbi,
-    nodeApiVersion: toolchain.nodeApiVersion,
-  }, {
     nodeMajor: LEGACY_BRIDGE_CONTRACT.nodeMajor,
     nodeModuleAbi: LEGACY_BRIDGE_CONTRACT.nodeModuleAbi,
     nodeApiVersion: LEGACY_BRIDGE_CONTRACT.nodeApiVersion,
+  }, {
+    nodeMajor: 25,
+    nodeModuleAbi: "141",
+    nodeApiVersion: "10",
   });
+  assert.equal(
+    toolchain.nodeBootstrap.minimumRuntimeVersion,
+    MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+  );
+  assert.equal(
+    toolchain.nodeBootstrap.releaseTag,
+    PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
+  );
+  assert.equal(
+    PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG,
+    `agenc-v${MINIMUM_PRIVATE_NODE_RUNTIME_VERSION}`,
+  );
 
   for (const path of ["scripts/install/install.sh", "scripts/install/install.ps1"]) {
     const source = readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
@@ -202,8 +254,17 @@ test("installer legacy bridge identity exactly mirrors manifest generation and t
     const tags = [...source.matchAll(/agenc-v\d+\.\d+\.\d+/g)].map((match) => match[0]);
     assert.ok(versions.length > 0, `${path} has no hard-coded legacy bridge version`);
     assert.ok(tags.length > 0, `${path} has no hard-coded legacy bridge tag`);
-    assert.deepEqual([...new Set(versions)], [expected.runtimeVersion], path);
-    assert.deepEqual([...new Set(tags)], [expected.releaseTag], path);
+    const expectedVersions = [
+      ...new Set([
+        expected.runtimeVersion,
+        MINIMUM_PRIVATE_NODE_RUNTIME_VERSION,
+      ]),
+    ];
+    const expectedTags = path.endsWith(".sh")
+      ? [expected.releaseTag, PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG]
+      : [expected.releaseTag];
+    assert.deepEqual([...new Set(versions)].sort(), expectedVersions.sort(), path);
+    assert.deepEqual([...new Set(tags)].sort(), expectedTags.sort(), path);
     assert.ok(source.includes(
       `releases/download/${expected.releaseTag}/agenc-runtime-manifest.json`,
     ), `${path} legacy manifest URL`);
@@ -211,6 +272,14 @@ test("installer legacy bridge identity exactly mirrors manifest generation and t
       ? "agenc-runtime-${bridgeVersion}-"
       : `agenc-runtime-${expected.runtimeVersion}-`;
     assert.ok(source.includes(expectedArtifactVersion), `${path} legacy artifact URL`);
+    if (path.endsWith(".sh")) {
+      assert.ok(source.includes(
+        `NODE_COMPAT_RELEASE_TAG="${PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG}"`,
+      ), `${path} private Node compatibility bootstrap release`);
+      assert.ok(source.includes(
+        "releases/download/${NODE_COMPAT_RELEASE_TAG}/${NODE_COMPAT_FILE}",
+      ), `${path} private Node compatibility bootstrap URL`);
+    }
   }
 });
 
@@ -296,7 +365,11 @@ function remoteManifest({
       bytes: 1,
       attestationSha256: "d".repeat(64),
       attestationBytes: 1,
-      bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+      bins: {
+        agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc",
+        node: "node_modules/.agenc-node/bin/node",
+        nodeLibrary: "node_modules/.agenc-node/lib",
+      },
     }],
   };
 }
@@ -327,6 +400,67 @@ test("official release trust is fixed to the AgenC release repository", () => {
       officialRepository: "attacker/releases",
     }),
     /releaseRepository is not official/,
+  );
+});
+
+test("modern v2 artifacts bind the platform-specific private Node entrypoint", () => {
+  assert.equal(FROZEN_LEGACY_RUNTIME_VERSION, "0.7.2");
+  assert.equal(MINIMUM_PRIVATE_NODE_RUNTIME_VERSION, "0.11.0");
+  assert.equal(PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG, "agenc-v0.11.0");
+  assert.equal(requireSupportedRuntimeVersion("0.7.2"), "0.7.2");
+  assert.equal(requireSupportedRuntimeVersion("0.11.0"), "0.11.0");
+  assert.equal(requireSupportedRuntimeVersion("0.11.1"), "0.11.1");
+  assert.throws(
+    () => requireSupportedRuntimeVersion("0.10.0"),
+    /no supported standalone activation contract/,
+  );
+  assert.equal(canonicalRuntimeNodeBin("linux"), "node_modules/.agenc-node/bin/node");
+  assert.equal(canonicalRuntimeNodeBin("darwin"), "node_modules/.agenc-node/bin/node");
+  assert.equal(canonicalRuntimeNodeBin("win"), "node_modules/.agenc-node/node.exe");
+  assert.equal(canonicalRuntimeNodeLibrary("linux"), "node_modules/.agenc-node/lib");
+  assert.equal(canonicalRuntimeNodeLibrary("darwin"), undefined);
+  assert.equal(canonicalRuntimeNodeLibrary("win"), undefined);
+
+  for (const mutate of [
+    (artifact) => { delete artifact.bins.node; },
+    (artifact) => { artifact.bins.node = "../../host-node"; },
+    (artifact) => { artifact.bins.node = "node_modules/.agenc-node/node.exe"; },
+    (artifact) => { delete artifact.bins.nodeLibrary; },
+    (artifact) => { artifact.bins.nodeLibrary = "../../host-lib"; },
+  ]) {
+    const manifest = attachCanonicalAttestation(remoteManifest());
+    mutate(manifest.artifacts[0]);
+    assert.throws(
+      () => validateRuntimeReleaseManifest(manifest, { trustMode: "official" }),
+      /artifact identity is invalid/,
+    );
+  }
+});
+
+test("published declarations expose the private Node release contract", () => {
+  const declarations = readFileSync(
+    new URL("../lib/runtime-release-contract.d.mts", import.meta.url),
+    "utf8",
+  );
+  for (const expected of [
+    'FROZEN_LEGACY_RUNTIME_VERSION: "0.7.2"',
+    'MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.0"',
+    'PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.0"',
+    "readonly node?: string",
+    "readonly nodeLibrary?: string",
+    "canonicalRuntimeNodeBin(platform: string): string",
+    "canonicalRuntimeNodeLibrary(platform: string): string | undefined",
+    "requireSupportedRuntimeVersion(version: string): string",
+  ]) {
+    assert.match(declarations, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("retired host-Node manifests fail with an actionable compatibility diagnostic", () => {
+  const retired = attachCanonicalAttestation(remoteManifest({ version: "0.10.0" }));
+  assert.throws(
+    () => validateRuntimeReleaseManifest(retired, { trustMode: "official" }),
+    /use the frozen 0\.7\.2 bridge with host Node 25\.9, or 0\.11\.0 and newer/,
   );
 });
 

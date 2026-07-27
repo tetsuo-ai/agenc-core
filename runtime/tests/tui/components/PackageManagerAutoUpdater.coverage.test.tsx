@@ -169,7 +169,8 @@ describe("PackageManagerAutoUpdater coverage", () => {
 
       expect(rendered).toContain("currentVersion: 1.0.0");
       expect(rendered).toContain("Update available! Run:");
-      expect(rendered).toContain("brew upgrade agenc-code");
+      expect(rendered).toContain("brew upgrade agenc");
+      expect(rendered).not.toContain("brew upgrade agenc-code");
       expect(rendered).not.toContain("your package manager update command");
       expect(harness.intervalDelay).toBe(1_800_000);
       expect(harness.isAutoUpdaterDisabled).toHaveBeenCalledOnce();
@@ -262,7 +263,8 @@ describe("PackageManagerAutoUpdater coverage", () => {
       await sleep(20);
 
       expect(harness.logError).toHaveBeenCalledWith(error);
-      expect(stripAnsi(output)).toContain("brew upgrade agenc-code");
+      expect(stripAnsi(output)).toContain("brew upgrade agenc");
+      expect(stripAnsi(output)).not.toContain("brew upgrade agenc-code");
     } finally {
       root.unmount();
       stdin.end();

@@ -26,6 +26,7 @@ import { gzipSync } from "node:zlib";
 
 import {
   ensureRuntime,
+  ensureRuntimeLaunch,
   isInstalled,
   MAX_RUNTIME_ARTIFACT_BYTES,
   MAX_RUNTIME_MANIFEST_BYTES,
@@ -34,6 +35,7 @@ import {
   resolveAgenCHome,
   runtimeBinPath,
   runtimeInstallDir,
+  runtimeLaunchPaths,
   selectArtifact,
 } from "../lib/runtime-manager.mjs";
 import { validateRuntimeArchive } from "../lib/runtime-archive.mjs";
@@ -76,6 +78,18 @@ function compatibilityFields(platform) {
         }
       : {}),
     ...(platform === "darwin" ? { minimumMacosVersion: "13.5" } : {}),
+  };
+}
+
+function runtimeBins(platform = platformSlug().os) {
+  return {
+    agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc",
+    node: platform === "win"
+      ? "node_modules/.agenc-node/node.exe"
+      : "node_modules/.agenc-node/bin/node",
+    ...(platform === "linux"
+      ? { nodeLibrary: "node_modules/.agenc-node/lib" }
+      : {}),
   };
 }
 
@@ -123,6 +137,51 @@ function makeSyntheticArtifact(dir, version, binSource = "#!/usr/bin/env node\nc
   const binDir = join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, "agenc"), binSource);
+  const platform = platformSlug().os;
+  const privateNodeRoot = join(tree, "node_modules", ".agenc-node");
+  const executable = platform === "win" ? "node.exe" : "bin/node";
+  const executableBytes = Buffer.from("synthetic private node\n");
+  const licenseBytes = Buffer.from("synthetic Node license\n");
+  const executablePath = join(privateNodeRoot, ...executable.split("/"));
+  mkdirSync(dirname(executablePath), { recursive: true });
+  writeFileSync(executablePath, executableBytes);
+  chmodSync(executablePath, 0o755);
+  writeFileSync(join(privateNodeRoot, "LICENSE"), licenseBytes);
+  const identity = {
+    schemaVersion: 1,
+    nodeVersion: process.version,
+    nodeMajor: NODE_MAJOR,
+    nodeModuleAbi: process.versions.modules,
+    nodeApiVersion: process.versions.napi,
+    executable,
+    executableSha256: sha256(executableBytes),
+    executableBytes: executableBytes.length,
+    license: "LICENSE",
+    licenseSha256: sha256(licenseBytes),
+    licenseBytes: licenseBytes.length,
+  };
+  if (platform === "linux") {
+    const libatomicBytes = Buffer.from("synthetic libatomic\n");
+    const libatomicLicenseBytes = Buffer.from("synthetic libatomic license\n");
+    mkdirSync(join(privateNodeRoot, "lib"), { recursive: true });
+    writeFileSync(join(privateNodeRoot, "lib", "libatomic.so.1"), libatomicBytes);
+    writeFileSync(
+      join(privateNodeRoot, "LIBATOMIC-LICENSE"),
+      libatomicLicenseBytes,
+    );
+    Object.assign(identity, {
+      libatomic: "lib/libatomic.so.1",
+      libatomicSha256: sha256(libatomicBytes),
+      libatomicBytes: libatomicBytes.length,
+      libatomicLicense: "LIBATOMIC-LICENSE",
+      libatomicLicenseSha256: sha256(libatomicLicenseBytes),
+      libatomicLicenseBytes: libatomicLicenseBytes.length,
+    });
+  }
+  writeFileSync(
+    join(privateNodeRoot, "identity.json"),
+    `${JSON.stringify(identity, null, 2)}\n`,
+  );
   const artifact = join(dir, `agenc-runtime-${version}-test.tar.gz`);
   const res = spawnSync("tar", ["-czf", artifact, "-C", tree, "node_modules"]);
   assert.equal(res.status, 0, "tar should succeed");
@@ -144,7 +203,7 @@ function syntheticManifest(version, artifact, digest, bytes) {
       url: pathToFileURL(artifact).href,
       sha256: digest,
       bytes,
-      bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+      bins: runtimeBins(),
     }],
   };
 }
@@ -165,7 +224,7 @@ function httpsManifest(version, digest, bytes, overrides = {}) {
       `-abi${process.versions.modules}.tar.gz`,
     sha256: digest,
     bytes,
-    bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+    bins: runtimeBins(platform),
     ...overrides.artifact,
   };
   if (releaseRepository === "tetsuo-ai/agenc-releases") {
@@ -196,6 +255,10 @@ function httpsManifest(version, digest, bytes, overrides = {}) {
 
 function ensureLocalRuntime(options) {
   return ensureRuntime({ ...options, manifestTrust: LOCAL_MANIFEST_TRUST });
+}
+
+function ensureLocalRuntimeLaunch(options) {
+  return ensureRuntimeLaunch({ ...options, manifestTrust: LOCAL_MANIFEST_TRUST });
 }
 
 test("resolveAgenCHome prefers AGENC_HOME over HOME", () => {
@@ -375,24 +438,29 @@ test("artifact ceiling rejection happens before install-state mutation", async (
   }
 });
 
-test("ABI incompatibility gives reinstall guidance before install-state mutation", async () => {
-  const work = mkdtempSync(join(tmpdir(), "agenc-artifact-abi-guidance-"));
+test("modern runtime selection ignores the npm host Node major and ABI", async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-private-node-selection-"));
   try {
-    const artifactPath = join(work, "runtime.tar.gz");
-    writeFileSync(artifactPath, "x");
-    const manifest = syntheticManifest("1.2.5", artifactPath, "a".repeat(64), 1);
-    manifest.artifacts[0].nodeModuleAbi = "999";
-    const home = join(work, "home");
-    await assert.rejects(
-      ensureLocalRuntime({
-        env: { AGENC_HOME: home },
-        manifest,
-        runtimeCompatibility: HOST_RUNTIME,
-        log: () => {},
-      }),
-      /reinstall @tetsuo-ai\/agenc before retrying; no runtime was downloaded/,
+    const built = makeSyntheticArtifact(work, "1.2.5");
+    const manifest = syntheticManifest(
+      "1.2.5",
+      built.artifact,
+      built.sha256,
+      built.bytes,
     );
-    assert.equal(existsSync(home), false);
+    const home = join(work, "home");
+    const bin = await ensureLocalRuntime({
+      env: { AGENC_HOME: home },
+      manifest,
+      runtimeCompatibility: {
+        ...HOST_RUNTIME,
+        nodeMajor: 25,
+        nodeModuleAbi: "141",
+      },
+      log: () => {},
+    });
+    assert.equal(bin, runtimeBinPath(home, "1.2.5", manifest.artifacts[0]));
+    assert.equal(existsSync(bin), true);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -413,7 +481,7 @@ test("selectArtifact finds the matching platform and errors clearly otherwise", 
         url: LOCAL_RUNTIME_URL,
         sha256: "a".repeat(64),
         bytes: 1,
-        bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+        bins: runtimeBins("linux"),
       },
       {
         platform: "darwin",
@@ -423,7 +491,7 @@ test("selectArtifact finds the matching platform and errors clearly otherwise", 
         url: LOCAL_RUNTIME_URL,
         sha256: "b".repeat(64),
         bytes: 1,
-        bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+        bins: runtimeBins("darwin"),
       },
     ],
   };
@@ -450,17 +518,151 @@ test("selectArtifact finds the matching platform and errors clearly otherwise", 
       HOST_RUNTIME,
       LOCAL_SELECT_OPTIONS,
     ),
-    new RegExp(`no runtime build for win-x64\\/abi${process.versions.modules}`),
+    /no runtime build for win-x64/,
+  );
+  assert.equal(
+    selectArtifact(
+      manifest,
+      { os: "linux", arch: "x64" },
+      "999",
+      {
+        ...HOST_RUNTIME,
+        nodeMajor: 25,
+        nodeModuleAbi: "999",
+      },
+      LOCAL_SELECT_OPTIONS,
+    ).sha256,
+    "a".repeat(64),
+  );
+});
+
+test("modern selection is host-ABI-independent across all five native targets", () => {
+  const targets = [
+    ["darwin", "arm64"],
+    ["darwin", "x64"],
+    ["linux", "arm64"],
+    ["linux", "x64"],
+    ["win", "x64"],
+  ];
+  const artifacts = targets.map(([platform, arch], index) => ({
+    platform,
+    arch,
+    runtimeVersion: "1.0.0",
+    ...compatibilityFields(platform),
+    url: LOCAL_RUNTIME_URL,
+    sha256: index.toString(16).padStart(64, "0"),
+    bytes: 1,
+    bins: runtimeBins(platform),
+  }));
+  const manifest = {
+    manifestVersion: 2,
+    runtimeVersion: "1.0.0",
+    releaseRepository: "local/test",
+    releaseTag: "agenc-v1.0.0",
+    artifacts,
+  };
+  for (const [index, [platform, arch]] of targets.entries()) {
+    const runtime = {
+      platform,
+      arch,
+      nodeMajor: 25,
+      nodeModuleAbi: "141",
+      ...(platform === "linux"
+        ? {
+            libcFamily: "glibc",
+            glibcVersion: "2.39",
+            glibcxxVersion: "3.4.33",
+            cxxAbiVersion: "1.3.15",
+          }
+        : {}),
+      ...(platform === "darwin" ? { macosVersion: "14.0" } : {}),
+    };
+    assert.equal(
+      selectArtifact(
+        manifest,
+        { os: platform, arch },
+        "141",
+        runtime,
+        LOCAL_SELECT_OPTIONS,
+      ),
+      artifacts[index],
+      `${platform}-${arch}`,
+    );
+  }
+});
+
+test("the frozen v0.7.2 bridge still selects by host ABI and Node major", () => {
+  const artifact = {
+    platform: "linux",
+    arch: "x64",
+    runtimeVersion: "0.7.2",
+    nodeMajor: 25,
+    nodeModuleAbi: "141",
+    nodeApiVersion: "10",
+    libcFamily: "glibc",
+    minimumGlibcVersion: "2.28",
+    minimumGlibcxxVersion: "3.4.25",
+    minimumCxxAbiVersion: "1.3.11",
+    url: LOCAL_RUNTIME_URL,
+    sha256: "a".repeat(64),
+    bytes: 1,
+    bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+  };
+  const manifest = {
+    manifestVersion: 2,
+    runtimeVersion: "0.7.2",
+    releaseRepository: "local/test",
+    releaseTag: "agenc-v0.7.2",
+    artifacts: [artifact],
+  };
+  const legacyRuntime = {
+    platform: "linux",
+    arch: "x64",
+    nodeMajor: 25,
+    nodeModuleAbi: "141",
+    libcFamily: "glibc",
+    glibcVersion: "2.39",
+    glibcxxVersion: "3.4.33",
+    cxxAbiVersion: "1.3.15",
+  };
+  assert.equal(
+    selectArtifact(
+      manifest,
+      { os: "linux", arch: "x64" },
+      "141",
+      legacyRuntime,
+      LOCAL_SELECT_OPTIONS,
+    ),
+    artifact,
+  );
+  assert.deepEqual(
+    runtimeLaunchPaths("/agenc-home", "0.7.2", artifact, {
+      legacyNodeBin: "/host/node25",
+    }),
+    {
+      runtimeBin: join(
+        "/agenc-home",
+        "runtime",
+        "0.7.2",
+        "linux-x64-glibc-node-abi-141-sha256-" + "a".repeat(64),
+        "node_modules",
+        "@tetsuo-ai",
+        "runtime",
+        "bin",
+        "agenc",
+      ),
+      nodeBin: "/host/node25",
+    },
   );
   assert.throws(
     () => selectArtifact(
       manifest,
       { os: "linux", arch: "x64" },
-      "999",
-      HOST_RUNTIME,
+      "147",
+      { ...legacyRuntime, nodeMajor: 26, nodeModuleAbi: "147" },
       LOCAL_SELECT_OPTIONS,
     ),
-    /no runtime build for linux-x64\/abi999/,
+    /no runtime build for linux-x64\/abi147/,
   );
 });
 
@@ -473,7 +675,7 @@ test("selectArtifact rejects incompatible Linux libc before download", () => {
     url: LOCAL_RUNTIME_URL,
     sha256: "a".repeat(64),
     bytes: 1,
-    bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+    bins: runtimeBins("linux"),
   };
   const manifest = {
     manifestVersion: 2,
@@ -654,7 +856,7 @@ test("ensureRuntime downloads (file://), verifies sha, extracts, and is idempote
           url: pathToFileURL(artifact).href,
           sha256: digest,
           bytes,
-          bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+          bins: runtimeBins(),
         },
       ],
     };
@@ -672,6 +874,39 @@ test("ensureRuntime downloads (file://), verifies sha, extracts, and is idempote
     assert.match(bin, /node-abi-[0-9]+/);
     assert.ok(logs.some((l) => l.includes("fetching")));
 
+    const launch = await ensureLocalRuntimeLaunch({
+      env: { AGENC_HOME: home },
+      manifest,
+      log: () => {},
+      runtimeCompatibility: {
+        ...HOST_RUNTIME,
+        nodeMajor: 25,
+        nodeModuleAbi: "141",
+      },
+    });
+    assert.deepEqual(
+      launch,
+      runtimeLaunchPaths(home, version, manifest.artifacts[0]),
+    );
+    assert.equal(existsSync(launch.nodeBin), true);
+    if (platformSlug().os === "linux") {
+      assert.equal(
+        launch.nodeLibraryPath,
+        join(
+          runtimeInstallDir(home, version, manifest.artifacts[0]),
+          "node_modules",
+          ".agenc-node",
+          "lib",
+        ),
+      );
+      assert.equal(
+        existsSync(join(launch.nodeLibraryPath, "libatomic.so.1")),
+        true,
+      );
+    } else {
+      assert.equal(launch.nodeLibraryPath, undefined);
+    }
+
     // Second call short-circuits: no "fetching" log this time.
     const logs2 = [];
     const bin2 = await ensureLocalRuntime({
@@ -686,6 +921,78 @@ test("ensureRuntime downloads (file://), verifies sha, extracts, and is idempote
       false,
       "verified install must not re-download",
     );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("a cached modern runtime missing its private Node dependency is repaired", {
+  skip: platformSlug().os !== "linux",
+}, async () => {
+  const work = mkdtempSync(join(tmpdir(), "agenc-private-node-cache-repair-"));
+  try {
+    const version = "9.9.91";
+    const built = makeSyntheticArtifact(work, version);
+    const manifest = syntheticManifest(version, built.artifact, built.sha256, built.bytes);
+    const home = join(work, "home");
+    const first = await ensureLocalRuntimeLaunch({
+      env: { AGENC_HOME: home },
+      manifest,
+      runtimeCompatibility: HOST_RUNTIME,
+      log: () => {},
+    });
+    unlinkSync(first.nodeBin);
+    const nodeRepairLogs = [];
+    const nodeRepaired = await ensureLocalRuntimeLaunch({
+      env: { AGENC_HOME: home },
+      manifest,
+      runtimeCompatibility: {
+        ...HOST_RUNTIME,
+        nodeMajor: 25,
+        nodeModuleAbi: "141",
+      },
+      log: (message) => nodeRepairLogs.push(message),
+    });
+    assert.deepEqual(nodeRepaired, first);
+    assert.equal(existsSync(nodeRepaired.nodeBin), true);
+    assert.equal(
+      nodeRepairLogs.some((message) => message.includes("fetching")),
+      true,
+    );
+
+    chmodSync(first.nodeBin, 0o644);
+    const modeRepairLogs = [];
+    const modeRepaired = await ensureLocalRuntimeLaunch({
+      env: { AGENC_HOME: home },
+      manifest,
+      runtimeCompatibility: HOST_RUNTIME,
+      log: (message) => modeRepairLogs.push(message),
+    });
+    assert.deepEqual(modeRepaired, first);
+    assert.notEqual(statSync(modeRepaired.nodeBin).mode & 0o111, 0);
+    assert.equal(
+      modeRepairLogs.some((message) => message.includes("fetching")),
+      true,
+    );
+
+    const libatomic = join(first.nodeLibraryPath, "libatomic.so.1");
+    unlinkSync(libatomic);
+
+    const logs = [];
+    const repaired = await ensureLocalRuntimeLaunch({
+      env: { AGENC_HOME: home },
+      manifest,
+      runtimeCompatibility: {
+        ...HOST_RUNTIME,
+        nodeMajor: 25,
+        nodeModuleAbi: "141",
+      },
+      log: (message) => logs.push(message),
+    });
+    assert.deepEqual(repaired, first);
+    assert.equal(existsSync(repaired.nodeBin), true);
+    assert.equal(existsSync(libatomic), true);
+    assert.equal(logs.some((message) => message.includes("fetching")), true);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -724,7 +1031,7 @@ test("ensureRuntime repairs a pre-hardening group-writable runtime dir instead o
           url: pathToFileURL(artifact).href,
           sha256: digest,
           bytes,
-          bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+          bins: runtimeBins(),
         },
       ],
     };
@@ -1126,7 +1433,7 @@ test("ensureRuntime rejects a checksum mismatch", async () => {
           url: pathToFileURL(artifact).href,
           sha256: "0".repeat(64), // wrong
           bytes,
-          bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+          bins: runtimeBins(),
         },
       ],
     };
@@ -1153,10 +1460,9 @@ test("ensureRuntime preserves the operation and every cleanup failure in order",
   const root = mkdtempSync(join(tmpdir(), "agenc-runtime-cleanup-errors-"));
   const home = join(root, "home");
   const tree = join(root, "tree");
-  const placeholder = join(tree, "node_modules", "placeholder.txt");
-  mkdirSync(dirname(placeholder), { recursive: true });
-  writeFileSync(placeholder, "no runtime entrypoint\n");
-  const artifactPath = join(root, "runtime.tar.gz");
+  const built = makeSyntheticArtifact(root, "8.8.8-test");
+  unlinkSync(join(tree, "node_modules", "@tetsuo-ai", "runtime", "bin", "agenc"));
+  const artifactPath = built.artifact;
   assert.equal(
     spawnSync("tar", ["-czf", artifactPath, "-C", tree, "node_modules"]).status,
     0,
@@ -1225,7 +1531,7 @@ test("ensureRuntime rejects an HTTPS-to-HTTP artifact redirect", async () => {
         `-node${NODE_MAJOR}-abi${process.versions.modules}.tar.gz`,
       sha256: "0".repeat(64),
       bytes: 1,
-      bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+      bins: runtimeBins(),
     };
     await assert.rejects(
       ensureRuntime({
@@ -1519,7 +1825,7 @@ test("ensureRuntime repairs a stale marker whose runtime bin is missing", async 
       url: pathToFileURL(artifact).href,
       sha256: digest,
       bytes,
-      bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+      bins: runtimeBins(),
     };
     const manifest = {
       manifestVersion: 2,
@@ -1562,7 +1868,7 @@ test("concurrent runtime installs converge without partial trees", async () => {
       url: pathToFileURL(artifact).href,
       sha256: digest,
       bytes,
-      bins: { agenc: "node_modules/@tetsuo-ai/runtime/bin/agenc" },
+      bins: runtimeBins(),
     };
     const manifest = {
       manifestVersion: 2,

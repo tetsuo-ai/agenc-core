@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import {
   ensureDaemonForLaunch,
@@ -11,7 +12,11 @@ import {
   resolveDaemonCookiePath,
   resolveDaemonPidPath,
   resolveReadyTimeoutMs,
+  resolveRuntimeBin,
+  resolveRuntimeBinAsync,
+  resolveRuntimeLaunchAsync,
   shouldAutostartDaemon,
+  spawnNodeScript,
   waitForDaemonReady,
 } from "../src/launcher.mjs";
 
@@ -121,6 +126,8 @@ test("ensureDaemonForLaunch starts daemon and waits for health check", async () 
       userHome: home,
       cwd: "/tmp/project",
       runtimeBin: "/tmp/runtime-bin",
+      runtimeNodeBin: "/tmp/private-node",
+      runtimeNodeLibraryPath: "/tmp/private-node-library",
       waitForReadyFn: async (options) => {
         calls.push(options.timeoutMs);
         return calls.length > 1;
@@ -129,11 +136,88 @@ test("ensureDaemonForLaunch starts daemon and waits for health check", async () 
         assert.equal(runtimeBin, "/tmp/runtime-bin");
         assert.equal(options.cwd, "/tmp/project");
         assert.equal(options.env, env);
+        assert.equal(options.nodeBin, "/tmp/private-node");
+        assert.equal(options.nodeLibraryPath, "/tmp/private-node-library");
       },
     });
     assert.equal(result.status, "started");
     assert.deepEqual(calls, [1, undefined]);
   });
+});
+
+test("published runtime resolution exposes its private Node launch contract", async () => {
+  const expected = {
+    runtimeBin: "/runtime/node_modules/@tetsuo-ai/runtime/bin/agenc",
+    nodeBin: "/runtime/node_modules/.agenc-node/bin/node",
+    nodeLibraryPath: "/runtime/node_modules/.agenc-node/lib",
+  };
+  const missingRuntime = {
+    resolve() {
+      const error = new Error("not installed");
+      error.code = "MODULE_NOT_FOUND";
+      throw error;
+    },
+  };
+  assert.deepEqual(
+    await resolveRuntimeLaunchAsync({
+      requireFn: missingRuntime,
+      ensureFn: async () => expected,
+    }),
+    expected,
+  );
+  assert.equal(
+    await resolveRuntimeBinAsync({
+      requireFn: missingRuntime,
+      ensureFn: async () => expected.runtimeBin,
+    }),
+    expected.runtimeBin,
+  );
+});
+
+test("an unrelated installed runtime package cannot trigger the host-Node dev path", async () => {
+  await withTempHome(async (home) => {
+    const entry = join(
+      home,
+      "node_modules",
+      "@tetsuo-ai",
+      "runtime",
+      "dist",
+      "index.js",
+    );
+    await mkdir(dirname(entry), { recursive: true });
+    await writeFile(entry, "export {};\n");
+    assert.equal(resolveRuntimeBin({ resolve: () => entry }), null);
+  });
+});
+
+test("spawnNodeScript uses the private Node and exact Linux library path", async () => {
+  const calls = [];
+  const child = new EventEmitter();
+  const result = spawnNodeScript("/runtime/bin/agenc", ["status"], {
+    cwd: "/project",
+    env: {
+      PATH: "/operator/bin",
+      LD_LIBRARY_PATH: "/operator/library",
+      AGENC_HOME: "/agenc-home",
+    },
+    nodeBin: "/runtime/.agenc-node/bin/node",
+    nodeLibraryPath: "/runtime/.agenc-node/lib",
+    spawnFn(command, args, options) {
+      calls.push({ command, args, options });
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    },
+  });
+  assert.equal(await result, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/runtime/.agenc-node/bin/node");
+  assert.deepEqual(calls[0].args, ["/runtime/bin/agenc", "status"]);
+  assert.equal(calls[0].options.cwd, "/project");
+  assert.equal(calls[0].options.env.LD_LIBRARY_PATH, "/runtime/.agenc-node/lib");
+  assert.equal(
+    calls[0].options.env.PATH,
+    `${dirname(calls[0].command)}${delimiter}/operator/bin`,
+  );
 });
 
 test("main continues to the requested command when daemon autostart fails", async () => {

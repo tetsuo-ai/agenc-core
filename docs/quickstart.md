@@ -1,12 +1,14 @@
 # AgenC in 5 minutes (your agent in 15)
 
-**Current release: 0.10.0.** The public installer and npm package resolve to the
-same reviewed immutable runtime release.
+**Current version in tree: 0.11.0.** Standalone and npm installations resolve
+the same reviewed immutable runtime contract.
 
-Prerequisites: Node.js **>=25.9 <26** (release toolchain: 25.9.0), `tar`, and a way to reach a model — BYOK
+Prerequisites: `tar` and a way to reach a model — BYOK
 (xAI / OpenAI / Anthropic / OpenRouter / …), a local Ollama or LM Studio
 endpoint, or an AgenC login for managed OpenRouter (including free hosted
-`:free` routes). Sixteen built-in providers are supported.
+`:free` routes). The standalone installer supplies its own verified Node 26.5.0
+runtime; npm and SDK installs require host Node **>=26.5 <27**. Sixteen built-in
+providers are supported.
 
 Related: [install](install.md) · [onboarding](onboarding.md) ·
 [gateway](gateway.md) · [managed OpenRouter](managed-openrouter.md) ·
@@ -127,6 +129,6 @@ Coming from another assistant?
 
 ## Not shipped (do not expect these yet)
 
-Signal, WhatsApp, and email channels are not in 0.10.0.
+Signal, WhatsApp, and email channels are not in 0.11.0.
 Telegram, Discord, Slack, WebChat, and stdio **are** shipped via
 `agenc gateway`.

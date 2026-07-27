@@ -13,7 +13,11 @@ export interface RuntimeReleaseArtifact {
   readonly attestationUrl?: string;
   readonly attestationSha256?: string;
   readonly attestationBytes?: number;
-  readonly bins?: { readonly agenc?: string };
+  readonly bins?: {
+    readonly agenc?: string;
+    readonly node?: string;
+    readonly nodeLibrary?: string;
+  };
   readonly [key: string]: unknown;
 }
 
@@ -32,6 +36,9 @@ export const MAX_RUNTIME_ARTIFACT_BYTES: number;
 export const MAX_RUNTIME_ATTESTATION_BYTES: number;
 export const OFFICIAL_RELEASE_REPOSITORY: string;
 export const OFFICIAL_SOURCE_REPOSITORY: string;
+export const FROZEN_LEGACY_RUNTIME_VERSION: "0.7.2";
+export const MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.0";
+export const PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.0";
 export const OFFICIAL_RELEASE_WORKFLOW: string;
 export const RUNTIME_ATTESTATION_POLICY: Readonly<{
   repository: string;
@@ -78,6 +85,12 @@ export function canonicalRuntimeArtifactName(
     "platform" | "arch" | "nodeMajor" | "nodeModuleAbi"
   >,
 ): string;
+
+export function canonicalRuntimeNodeBin(platform: string): string;
+
+export function canonicalRuntimeNodeLibrary(platform: string): string | undefined;
+
+export function requireSupportedRuntimeVersion(version: string): string;
 
 export function canonicalLocalFileUrlToPath(
   value: string,
