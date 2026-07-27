@@ -242,6 +242,11 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain("numTotalTestSuites: 3");
     expect(windowsJob).toContain("numTotalTests: 3");
     expect(windowsJob).toContain(
+      "npm.cmd ci --ignore-scripts --no-audit --no-fund",
+    );
+    expect(windowsJob).not.toContain("npm.cmd rebuild");
+    expect(windowsJob).not.toContain("npm_config_build_from_source");
+    expect(windowsJob).toContain(
       "Windows native capability lane passed 3 tests in 2 files with zero skipped",
     );
 

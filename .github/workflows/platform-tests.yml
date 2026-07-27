@@ -480,9 +480,6 @@ jobs:
           $ErrorActionPreference = "Stop"
           & npm.cmd ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-          $env:npm_config_build_from_source = "true"
-          & npm.cmd rebuild better-sqlite3 esbuild node-pty
-          if ($LASTEXITCODE -ne 0) { throw "native dependency rebuild failed" }
 
       - name: Run the exact Windows native capability lane
         shell: pwsh
