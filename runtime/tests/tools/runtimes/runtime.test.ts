@@ -16,7 +16,6 @@ import {
   hasFullDiskReadAccess,
 } from "../../sandbox/engine/index.js";
 import { EventLog } from "../../session/event-log.js";
-import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { ToolRouter } from "../router.js";
 import type { Tool } from "../types.js";
@@ -262,48 +261,6 @@ describe("tools/runtimes", () => {
     expect(canReadPathWithCwd(profile.fileSystem, "/repo/private/key", "/repo"))
       .toBe(false);
   });
-
-  test.runIf(process.platform === "darwin")(
-    "live default workspace-write policy launches pwd through macOS Seatbelt",
-    async () => {
-      const cwd = process.cwd();
-      const profile = permissionProfileForRuntimeContext(
-        {
-          sandboxMode: "workspace_write",
-          invocation: {
-            turn: {
-              cwd,
-              fileSystemSandboxPolicy: {
-                allowWrite: [cwd],
-                denyWrite: [],
-                allowRead: [],
-                denyRead: [],
-              },
-            },
-          },
-        } as never,
-        { cwd },
-      );
-      const manager = new UnifiedExecProcessManager({ cwd });
-
-      try {
-        const result = await manager.execCommand({
-          cmd: "pwd",
-          yield_time_ms: 1_000,
-          runtimeSandbox: {
-            permissionProfile: profile,
-            sandboxPolicyCwd: cwd,
-            preference: "require",
-          },
-        });
-
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout.trim()).toBe(cwd);
-      } finally {
-        await manager.closeAll("test cleanup");
-      }
-    },
-  );
 
   test("runtime sandbox enforcement denies read-only writes and outside-workspace writes", () => {
     const mutatingTool: Tool = {

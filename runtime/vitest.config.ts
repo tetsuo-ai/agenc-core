@@ -111,6 +111,26 @@ export const CROSS_REPO_TEST_INCLUDE = Object.freeze([
   'tests/app-server/sdk-tui-coattach-example.contract.test.ts',
 ]);
 
+/** Native integration tests executed only by their matching hosted builder. */
+export const NATIVE_TEST_INCLUDE = Object.freeze([
+  'tests/durability/atomic-artifact.win32.test.ts',
+  'tests/tools/runtimes/runtime.darwin.test.ts',
+  'tests/utils/execFileNoThrow.win32.test.ts',
+]);
+
+/** PowerShell integration tests executed by the pinned hosted capability lane. */
+export const POWERSHELL_TEST_INCLUDE = Object.freeze([
+  'tests/budget/admitted-legacy-powershell.powershell.test.ts',
+  'tests/packaging/install-ps1.powershell.test.ts',
+  'tests/shell-command/powershell-parser.powershell.test.ts',
+  'tests/tools/PowerShellTool.execution.powershell.test.ts',
+]);
+
+/** Real-Neovim integration tests executed by the pinned hosted capability lane. */
+export const NEOVIM_TEST_INCLUDE = Object.freeze([
+  'tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts',
+]);
+
 /**
  * Tests that may contact a provider, browser, or chain are never discovered by
  * the default suite. `HookProgressMessage.live.parity.test.ts` deliberately
@@ -132,6 +152,9 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   'tests/transaction-guard/devnet-live.e2e.test.ts',
   ...DESIGN_TEST_INCLUDE,
   ...CROSS_REPO_TEST_INCLUDE,
+  ...NATIVE_TEST_INCLUDE,
+  ...POWERSHELL_TEST_INCLUDE,
+  ...NEOVIM_TEST_INCLUDE,
 ]);
 
 /** Explicit allowlist for credential-preserving, operator-invoked live runs. */
@@ -145,7 +168,14 @@ export const LIVE_TEST_INCLUDE = Object.freeze([
   'tests/transaction-guard/devnet-live.e2e.test.ts',
 ]);
 
-export type AgenCVitestMode = 'default' | 'live' | 'design' | 'cross-repo';
+export type AgenCVitestMode =
+  | 'default'
+  | 'live'
+  | 'design'
+  | 'cross-repo'
+  | 'native'
+  | 'powershell'
+  | 'neovim';
 
 function splitModuleId(id: string): { readonly path: string; readonly suffix: string } {
   const index = id.search(/[?#]/);
@@ -413,11 +443,42 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
             include: [...CROSS_REPO_TEST_INCLUDE],
             exclude: [...configDefaults.exclude],
           }
-      : {
-        setupFiles: ['./vitest.setup.ts'],
-        include: [...DEFAULT_TEST_INCLUDE],
-        exclude: [...DEFAULT_TEST_EXCLUDE],
-      };
+        : mode === 'native'
+          ? {
+              // Platform integration probes run only on their matching hosted
+              // native builder, with normal credential stripping and the JS
+              // network tripwire.
+              setupFiles: ['./vitest.setup.ts'],
+              include: [...NATIVE_TEST_INCLUDE],
+              exclude: [...configDefaults.exclude],
+            }
+          : mode === 'powershell'
+            ? {
+                // The hosted capability lane provisions an exact PowerShell
+                // runtime before entering the ordinary hermetic test boundary.
+                setupFiles: ['./vitest.setup.ts'],
+                include: [...POWERSHELL_TEST_INCLUDE],
+                exclude: [...configDefaults.exclude],
+                env: {
+                  DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+                  DOTNET_NOLOGO: '1',
+                  POWERSHELL_TELEMETRY_OPTOUT: '1',
+                  POWERSHELL_UPDATECHECK: 'Off',
+                },
+              }
+            : mode === 'neovim'
+              ? {
+                  // The hosted capability lane provisions a digest-pinned
+                  // Neovim before entering the ordinary hermetic boundary.
+                  setupFiles: ['./vitest.setup.ts'],
+                  include: [...NEOVIM_TEST_INCLUDE],
+                  exclude: [...configDefaults.exclude],
+                }
+            : {
+                setupFiles: ['./vitest.setup.ts'],
+                include: [...DEFAULT_TEST_INCLUDE],
+                exclude: [...DEFAULT_TEST_EXCLUDE],
+              };
 
   return defineConfig({
     plugins: [

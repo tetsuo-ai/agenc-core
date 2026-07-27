@@ -1,10 +1,9 @@
 /**
- * M5 exit proof — opt-in acceptance lane.
+ * M5 exit proof — hermetic daemon-wiring acceptance lane.
  *
- * Skipped unless `AGENC_M5_ACCEPTANCE=1` (the M4 matrix-style opt-in
- * gating convention for heavier acceptance runs). Same SIGKILL-at-
- * `after_spawn_before_effect_result` crash/restart flow as the hermetic
- * lane, but assembled through the REAL daemon wiring
+ * Runs in the default suite. It uses the same SIGKILL-at-
+ * `after_spawn_before_effect_result` crash/restart flow as the controller
+ * lane, but is assembled through the REAL daemon wiring
  * (`createDaemonWorkflowController`: per-run durability resolution,
  * multi-project resume sweep, real daemon evidence-ledger factory) —
  * model seams stay scripted by default; a real-model mode is a deliberate
@@ -27,14 +26,12 @@ import {
 } from "./fixtures/m5-exit-shared.js";
 import { M5_EXIT_RUN_ID } from "./fixtures/m5-harness.js";
 
-const ACCEPTANCE_ENABLED = process.env.AGENC_M5_ACCEPTANCE === "1";
-
 afterEach(() => {
   cleanupM5ExitStateDirs();
 });
 
-describe.sequential.skipIf(!ACCEPTANCE_ENABLED)(
-  "M5 exit proof — acceptance lane (AGENC_M5_ACCEPTANCE=1)",
+describe.sequential(
+  "M5 exit proof — daemon-wiring acceptance lane",
   () => {
     it(
       "crash/restart through the real daemon wiring completes by adoption and reconstructs from evidence alone",

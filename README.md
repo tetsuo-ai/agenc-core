@@ -377,15 +377,19 @@ The optional design-audit browser is likewise an explicit external process:
 it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
-**Required checks:** the complete suite runs locally, never in GitHub Actions.
-Before merge, the PR records the exact tested SHA, commands, results, and
-skips; GitHub is only the branch/PR/merge record. Release verification repeats
+**Required checks:** the complete platform-independent suite runs locally.
+GitHub Actions carries only exact, narrow PowerShell, Neovim, macOS, and
+Windows capability lanes. Before merge, the PR records the exact locally
+tested SHA, commands, results, and skips. Release verification repeats
 the same local gates against the immutable release-tag commit and retains the
 defined local evidence record. Manual release workflows may build artifacts
-afterward, but run no tests. The repository retains an optional GitHub
-App/ruleset design, but it is inactive and not required by the current
-local-only operating policy. Contract and reproduction details live in
-[`docs/ci-required-gates.md`](docs/ci-required-gates.md).
+afterward; the tagged native runtime builders also require one macOS Seatbelt
+probe or three Windows atomic-artifact/`.cmd` probes in two files to pass with
+zero skips before building. Those native probes do not replace the local test
+plan. The
+repository retains an optional GitHub App/ruleset design, but it is inactive
+and not required by the current local-only operating policy. Contract and
+reproduction details live in [`docs/ci-required-gates.md`](docs/ci-required-gates.md).
 
 Doc index: [`docs/INDEX.md`](docs/INDEX.md). Local contributor notes may live in a gitignored `AGENTS.md`.
 

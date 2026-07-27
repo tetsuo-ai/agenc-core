@@ -1,3 +1,3 @@
 import { registerDirectPowerShellAdmissionTests } from "./admitted-legacy-powershell-tests.js";
 
-registerDirectPowerShellAdmissionTests("default");
+registerDirectPowerShellAdmissionTests("powershell");

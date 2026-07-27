@@ -992,7 +992,7 @@ async function runRequiredGates(supervisorRoot) {
     observerBinary,
     'sh',
     '-c',
-    'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && node ../node_modules/typescript/bin/tsc --noEmit && exec node scripts/run-hermetic-vitest.mjs "$@"',
+    'umask 077 && mkdir -p "$HOME" && chmod 700 "$HOME" && node ../node_modules/typescript/bin/tsc --noEmit && exec node scripts/run-hermetic-vitest.mjs --require-zero-skips "$@"',
     'agenc-hermetic-suite',
     ...requestedArgs,
   ])

@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   __setAtomicArtifactOperationForTesting,
   AtomicArtifactConflictError,
-  AtomicArtifactOperationUnsupportedError,
   AtomicArtifactUnsafePathError,
   cleanupOrphanedArtifactTemps,
   cleanupOrphanedArtifactTempsSync,
@@ -409,42 +408,6 @@ describe("atomic artifact commit", () => {
       expect(existsSync(firstTemp) || existsSync(secondTemp)).toBe(false);
       expect(readFileSync(siblingTemp, "utf8")).toBe("must stay");
       expect(existsSync(matchingDirectory)).toBe(true);
-    },
-  );
-
-  it.runIf(process.platform === "win32")(
-    "fails closed when publication has no descriptor-relative child operations",
-    async () => {
-      const artifact = target();
-
-      await expect(
-        commitArtifactAtomically(artifact.path, "must not publish", {
-          trustedRoot: artifact.directory,
-        }),
-      ).rejects.toBeInstanceOf(AtomicArtifactOperationUnsupportedError);
-      expect(existsSync(artifact.path)).toBe(false);
-    },
-  );
-
-  it.runIf(process.platform === "win32")(
-    "fails closed when cleanup has no descriptor-relative child operations",
-    async () => {
-      const artifact = target();
-      writeFileSync(`${artifact.path}.101.orphan.tmp`, "must stay");
-
-      await expect(
-        cleanupOrphanedArtifactTemps(artifact.path, {
-          trustedRoot: artifact.directory,
-        }),
-      ).rejects.toBeInstanceOf(AtomicArtifactOperationUnsupportedError);
-      expect(() =>
-        cleanupOrphanedArtifactTempsSync(artifact.path, {
-          trustedRoot: artifact.directory,
-        }),
-      ).toThrow(AtomicArtifactOperationUnsupportedError);
-      expect(readFileSync(`${artifact.path}.101.orphan.tmp`, "utf8")).toBe(
-        "must stay",
-      );
     },
   );
 });

@@ -6,9 +6,11 @@
 # Linux native dependencies build in a glibc 2.28 container so the generic
 # linux artifacts retain Node's Tier-1 compatibility baseline.
 #
-# This is an artifact-build workflow, not a test workflow. Before dispatch, the
-# operator must complete and retain the exact-tag local release evidence defined
-# in docs/ci-required-gates.md. Publishing stays local/operator-driven (no
+# This is an artifact-build workflow, not a replacement for the local test
+# plan. Its native jobs additionally run the exact macOS and Windows integration
+# probes that Linux cannot execute. Before dispatch, the operator must complete
+# and retain the exact-tag local release evidence defined in
+# docs/ci-required-gates.md. Publishing stays local/operator-driven (no
 # cross-repository write secret in this workflow). The reviewed draft, explicit
 # destination tag, artifact attestation, immutable publication, and downstream
 # npm/Docker/Homebrew sequence are documented in docs/install.md under
@@ -768,7 +770,7 @@ jobs:
           "AGENC_NODE_IMPORT_LIBRARY_BYTES=$($importLibrary.bytes)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NODE_COMMON_GYPI_SHA256=$($headerProof.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "AGENC_NPM_DISTRIBUTION_SHA256=$($toolchain.npmDistribution.sha256)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Build from two isolated worktrees and compare bytes
+      - name: Run native probes and build from two isolated worktrees
         shell: bash
         run: |
           set -euo pipefail
@@ -785,6 +787,26 @@ jobs:
           second_source="$owned_root/source-second"
           first="$owned_root/artifact-first"
           second="$owned_root/artifact-second"
+          native_results="$owned_root/native-test-results.json"
+          case "$AGENC_RELEASE_SLUG" in
+            darwin-arm64|darwin-x64)
+              native_tests=("tests/tools/runtimes/runtime.darwin.test.ts")
+              expected_native_tests=1
+              expected_native_suites=1
+              ;;
+            win-x64)
+              native_tests=(
+                "tests/durability/atomic-artifact.win32.test.ts"
+                "tests/utils/execFileNoThrow.win32.test.ts"
+              )
+              expected_native_tests=3
+              expected_native_suites=3
+              ;;
+            *)
+              echo "unsupported native release slug: $AGENC_RELEASE_SLUG" >&2
+              exit 1
+              ;;
+          esac
           cleanup() {
             git -C "$source_root" worktree remove --force "$first_source" 2>/dev/null || true
             git -C "$source_root" worktree remove --force "$second_source" 2>/dev/null || true
@@ -808,6 +830,79 @@ jobs:
             test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
             "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci --prefix "$build_source" \
               --cache "$owned_root/npm-cache-$build" --no-audit --no-fund
+            if test "$build" = first; then
+              "$AGENC_NODE_EXECUTABLE_PATH" \
+                "$build_source/runtime/scripts/run-hermetic-vitest.mjs" \
+                --require-zero-skips \
+                run "${native_tests[@]}" \
+                --config "$build_source/runtime/vitest.native.config.ts" \
+                --allowOnly=false \
+                --reporter=verbose \
+                --reporter=json \
+                --outputFile.json "$native_results"
+              "$AGENC_NODE_EXECUTABLE_PATH" --input-type=module - \
+                "$native_results" "$expected_native_tests" \
+                "$expected_native_suites" "${native_tests[@]}" <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const [
+            resultsPath,
+            expectedTestsText,
+            expectedSuitesText,
+            ...expectedFiles
+          ] = process.argv.slice(2);
+          const expectedTests = Number.parseInt(expectedTestsText ?? "", 10);
+          const expectedSuites = Number.parseInt(expectedSuitesText ?? "", 10);
+          if (
+            !resultsPath ||
+            expectedFiles.length < 1 ||
+            !Number.isSafeInteger(expectedTests) ||
+            expectedTests < 1 ||
+            !Number.isSafeInteger(expectedSuites) ||
+            expectedSuites < 1
+          ) {
+            throw new Error("invalid native-test result assertion inputs");
+          }
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const exactCounts = {
+            numTotalTestSuites: expectedSuites,
+            numPassedTestSuites: expectedSuites,
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: expectedTests,
+            numPassedTests: expectedTests,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `native-test result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (results.success !== true || !Array.isArray(results.testResults)) {
+            throw new Error("native-test result did not report success");
+          }
+          const files = results.testResults
+            .map(result => String(result.name).split("\\").join("/"))
+            .map(file => expectedFiles.find(expectedFile =>
+              file.endsWith(`/runtime/${expectedFile}`),
+            ) ?? file)
+            .sort();
+          expectedFiles.sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(
+              `native-test files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
+            );
+          }
+          console.log(
+            `native integration probe passed ${expectedTests} test(s) in ${expectedFiles.length} file(s) with zero skipped`,
+          );
+          NODE
+              test -z "$(git -C "$build_source" status --porcelain=v1 --untracked-files=all)"
+            fi
             AGENC_RELEASE_OUT_DIR="$build_output" \
               "$AGENC_NODE_EXECUTABLE_PATH" \
                 "$build_source/packages/agenc/scripts/build-runtime-tarball.mjs"

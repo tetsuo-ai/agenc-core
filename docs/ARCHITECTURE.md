@@ -372,15 +372,20 @@ crashing the process.
   installs and package builds under different umasks, then uses two additional
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
-- **Local required verification** — the complete stable contract runs locally,
-  never in GitHub Actions. Each PR records the exact tested SHA, commands,
-  results, and skips before merge; release verification repeats the gates on
-  the immutable release-tag commit and retains the defined local evidence
-  record. GitHub remains the branch/PR/merge record; manual release workflows
-  may build artifacts afterward, but run no tests. The repository-scoped
-  App/ruleset implementation is retained as an inactive optional design, not a
-  current merge requirement. Reproduction and trust boundaries are documented
-  in
+- **Local required verification** — the complete platform-independent stable
+  contract runs locally. GitHub Actions carries only exact, narrow PowerShell,
+  Neovim, macOS, and Windows capability lanes. Each PR records the exact
+  locally tested SHA, commands, results, and skips before merge; release
+  verification repeats the gates on the immutable release-tag commit and
+  retains the defined local evidence record. GitHub remains the
+  branch/PR/merge record; manual release workflows
+  may build artifacts afterward. The tagged native runtime builders also gate
+  artifact construction on one macOS Seatbelt probe or three Windows
+  atomic-artifact/`.cmd` probes in two files with zero skips; those probes do
+  not replace the local test plan. The repository-scoped App/ruleset
+  implementation is retained as
+  an inactive optional design, not a current merge requirement. Reproduction
+  and trust boundaries are documented in
   [`ci-required-gates.md`](ci-required-gates.md).
 
 Root development loop (from repo root):

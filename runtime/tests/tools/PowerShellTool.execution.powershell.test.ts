@@ -1,3 +1,3 @@
 import { registerPowerShellToolExecutionTests } from './PowerShellTool.execution-tests.js'
 
-registerPowerShellToolExecutionTests('default')
+registerPowerShellToolExecutionTests('powershell')

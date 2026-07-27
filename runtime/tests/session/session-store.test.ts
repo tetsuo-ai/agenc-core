@@ -239,7 +239,21 @@ describe("session-store", () => {
       `;
       child = spawn(process.execPath, ["-e", childScript], {
         detached: true,
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let childStdout = "";
+      let childStderr = "";
+      let childSpawnError: Error | undefined;
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        childStdout += chunk;
+      });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        childStderr += chunk;
+      });
+      child.once("error", (error) => {
+        childSpawnError = error;
       });
       child.unref();
 
@@ -249,11 +263,22 @@ describe("session-store", () => {
         await new Promise((r) => setTimeout(r, 25));
       }
 
-      if (!existsSync(readyPath) || !existsSync(lockPath)) {
-        // Child couldn't acquire (e.g. linkSync unavailable on an
-        // exotic filesystem). Don't fail the test — stale-reclaim +
-        // live-holder-same-pid + reentry tests cover the rest.
-        return;
+      const readyExists = existsSync(readyPath);
+      const lockExists = existsSync(lockPath);
+      if (!readyExists || !lockExists) {
+        throw new Error(
+          [
+            "SessionLock child failed to establish the cross-process lock within 3000ms",
+            `pid=${String(child.pid)}`,
+            `exitCode=${String(child.exitCode)}`,
+            `signalCode=${String(child.signalCode)}`,
+            `spawnError=${childSpawnError?.stack ?? "none"}`,
+            `readyPath=${JSON.stringify(readyPath)} exists=${String(readyExists)}`,
+            `lockPath=${JSON.stringify(lockPath)} exists=${String(lockExists)}`,
+            `stdout=${JSON.stringify(childStdout)}`,
+            `stderr=${JSON.stringify(childStderr)}`,
+          ].join("\n"),
+        );
       }
 
       // Sanity: verify the lock file holds the child's pid, not

@@ -1,0 +1,550 @@
+name: platform-tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: platform-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "26.5.0"
+  NPM_VERSION: "11.17.0"
+
+jobs:
+  powershell:
+    name: powershell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Bind the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "tetsuo-ai/agenc-core"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install digest-pinned Node, npm, and PowerShell
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["file"])')"
+          node_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["sha256"])')"
+          node_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["nodeDistributions"]["linux-x64"]["bytes"])')"
+          npm_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["file"])')"
+          npm_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["url"])')"
+          npm_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["npmDistribution"]["sha256"])')"
+          powershell_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["version"])')"
+          powershell_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["linux-x64"]["file"])')"
+          powershell_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["linux-x64"]["url"])')"
+          powershell_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["linux-x64"]["sha256"])')"
+          powershell_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["linux-x64"]["bytes"])')"
+
+          test "$node_file" = "node-v${NODE_VERSION}-linux-x64.tar.gz"
+          test "$npm_file" = "npm-${NPM_VERSION}.tgz"
+          test "$powershell_file" = "powershell-${powershell_version}-linux-x64.tar.gz"
+          [[ "$node_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$npm_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$powershell_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$node_bytes" =~ ^[1-9][0-9]*$ ]]
+          [[ "$powershell_bytes" =~ ^[1-9][0-9]*$ ]]
+          test "$npm_url" = "https://registry.npmjs.org/npm/-/${npm_file}"
+          test "$powershell_url" = \
+            "https://github.com/PowerShell/PowerShell/releases/download/v${powershell_version}/${powershell_file}"
+
+          node_archive="$RUNNER_TEMP/$node_file"
+          npm_archive="$RUNNER_TEMP/$npm_file"
+          powershell_archive="$RUNNER_TEMP/$powershell_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}" \
+            --output "$node_archive"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$npm_url" --output "$npm_archive"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$powershell_url" --output "$powershell_archive"
+
+          test "$(sha256sum "$node_archive" | awk '{print $1}')" = "$node_sha"
+          test "$(sha256sum "$npm_archive" | awk '{print $1}')" = "$npm_sha"
+          test "$(sha256sum "$powershell_archive" | awk '{print $1}')" = "$powershell_sha"
+          test "$(stat --format='%s' "$node_archive")" = "$node_bytes"
+          test "$(stat --format='%s' "$powershell_archive")" = "$powershell_bytes"
+
+          node_root="$RUNNER_TEMP/node-distribution"
+          powershell_root="$RUNNER_TEMP/powershell-distribution"
+          mkdir -p "$node_root" "$powershell_root"
+          tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+          tar -xzf "$powershell_archive" -C "$powershell_root"
+          chmod -R a+rX,go-w "$powershell_root"
+          chmod 0555 "$powershell_root/pwsh"
+
+          bundled_npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          "$node_root/bin/node" "$bundled_npm_cli" install --global \
+            "$npm_archive" --prefix "$node_root" \
+            --ignore-scripts --no-audit --no-fund
+          npm_cli="$node_root/lib/node_modules/npm/bin/npm-cli.js"
+          test "$("$node_root/bin/node" --version)" = "v${NODE_VERSION}"
+          test "$("$node_root/bin/node" "$npm_cli" --version)" = "$NPM_VERSION"
+          test "$(POWERSHELL_TELEMETRY_OPTOUT=1 \
+            POWERSHELL_UPDATECHECK=Off \
+            DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+            DOTNET_NOLOGO=1 \
+            "$powershell_root/pwsh" -NoLogo -NoProfile -Command \
+            '$PSVersionTable.PSVersion.ToString()')" = "$powershell_version"
+
+          {
+            echo "$node_root/bin"
+            echo "$powershell_root"
+          } >> "$GITHUB_PATH"
+          {
+            echo "AGENC_NODE_EXECUTABLE_PATH=$node_root/bin/node"
+            echo "AGENC_NPM_CLI_PATH=$npm_cli"
+            echo "npm_config_nodedir=$node_root"
+            echo "POWERSHELL_TELEMETRY_OPTOUT=1"
+            echo "POWERSHELL_UPDATECHECK=Off"
+            echo "DOTNET_CLI_TELEMETRY_OPTOUT=1"
+            echo "DOTNET_NOLOGO=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Install the reviewed dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" ci \
+            --ignore-scripts --no-audit --no-fund
+          npm_config_build_from_source=true \
+            "$AGENC_NODE_EXECUTABLE_PATH" "$AGENC_NPM_CLI_PATH" rebuild \
+              better-sqlite3 esbuild node-pty
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+          test "$(pwsh -NoLogo -NoProfile -Command \
+            '$PSVersionTable.PSVersion.ToString()')" = \
+            "$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["powershellTestRuntime"]["version"])')"
+
+      - name: Run the exact PowerShell capability lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/powershell-test-results.json"
+          "$AGENC_NODE_EXECUTABLE_PATH" \
+            runtime/scripts/run-hermetic-vitest.mjs \
+              --require-zero-skips \
+              run \
+              --config vitest.powershell.config.ts \
+              --allowOnly=false \
+              --reporter=verbose \
+              --reporter=json \
+              --outputFile.json "$results"
+          "$AGENC_NODE_EXECUTABLE_PATH" --input-type=module - \
+            "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing PowerShell-test results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedTests = 19;
+          const expectedFiles = [
+            "tests/budget/admitted-legacy-powershell.powershell.test.ts",
+            "tests/packaging/install-ps1.powershell.test.ts",
+            "tests/shell-command/powershell-parser.powershell.test.ts",
+            "tests/tools/PowerShellTool.execution.powershell.test.ts",
+          ];
+          const exactCounts = {
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTestSuites: 7,
+            numPassedTestSuites: 7,
+            numTotalTests: expectedTests,
+            numPassedTests: expectedTests,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `PowerShell-test result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (results.success !== true || !Array.isArray(results.testResults)) {
+            throw new Error("PowerShell-test result did not report success");
+          }
+          const files = results.testResults
+            .map(result => relative(resolve("runtime"), result.name).split("\\").join("/"))
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(
+              `PowerShell-test files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
+            );
+          }
+          console.log(
+            `PowerShell capability lane passed ${expectedTests} tests in ${files.length} files with zero skipped`,
+          );
+          NODE
+
+          leaked_pids="$RUNNER_TEMP/powershell-leaked-pids.txt"
+          if pgrep -f -- \
+            '[/]powershell-distribution/pwsh([[:space:]]|$)' \
+            > "$leaked_pids"; then
+            echo "PowerShell capability lane leaked process(es):" >&2
+            cat "$leaked_pids" >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  neovim:
+    name: neovim
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bind the checkout and provision pinned npm and Neovim
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "tetsuo-ai/agenc-core"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(node --version)" = "v${NODE_VERSION}"
+
+          npm_archive="$RUNNER_TEMP/npm-${NPM_VERSION}.tgz"
+          node scripts/fetch-pinned-npm.mjs "$npm_archive"
+          npm install --global "$npm_archive" \
+            --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "$NPM_VERSION"
+
+          neovim_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["version"])')"
+          neovim_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["file"])')"
+          neovim_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["url"])')"
+          neovim_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["sha256"])')"
+          neovim_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["bytes"])')"
+          test "$neovim_version" = "0.12.1"
+          test "$neovim_file" = "nvim-linux-x86_64.tar.gz"
+          test "$neovim_url" = \
+            "https://github.com/neovim/neovim/releases/download/v${neovim_version}/${neovim_file}"
+          [[ "$neovim_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$neovim_bytes" =~ ^[1-9][0-9]*$ ]]
+
+          neovim_archive="$RUNNER_TEMP/$neovim_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$neovim_url" --output "$neovim_archive"
+          test "$(sha256sum "$neovim_archive" | awk '{print $1}')" = "$neovim_sha"
+          test "$(stat --format='%s' "$neovim_archive")" = "$neovim_bytes"
+
+          neovim_root="$RUNNER_TEMP/neovim-distribution"
+          mkdir -p "$neovim_root"
+          tar -xzf "$neovim_archive" --strip-components=1 -C "$neovim_root"
+          chmod -R a+rX,go-w "$neovim_root"
+          chmod 0555 "$neovim_root/bin/nvim"
+          test "$("$neovim_root/bin/nvim" --version | sed -n '1p')" = \
+            "NVIM v${neovim_version}"
+          echo "$neovim_root/bin" >> "$GITHUB_PATH"
+          echo "AGENC_PINNED_NVIM=$neovim_root/bin/nvim" >> "$GITHUB_ENV"
+
+      - name: Install the reviewed dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm_config_build_from_source=true \
+            npm rebuild better-sqlite3 esbuild node-pty
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+          test "$(command -v nvim)" = "$AGENC_PINNED_NVIM"
+          test "$(nvim --version | sed -n '1p')" = "NVIM v0.12.1"
+
+      - name: Run the exact real-Neovim capability lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/neovim-test-results.json"
+          node runtime/scripts/run-hermetic-vitest.mjs \
+            --require-zero-skips \
+            run \
+            --config vitest.neovim.config.ts \
+            --allowOnly=false \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json "$results"
+          node --input-type=module - "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing Neovim-test results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedFile =
+            "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts";
+          const exactCounts = {
+            numTotalTestSuites: 2,
+            numPassedTestSuites: 2,
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: 4,
+            numPassedTests: 4,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `Neovim-test result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (
+            results.success !== true ||
+            !Array.isArray(results.testResults) ||
+            results.testResults.length !== 1
+          ) {
+            throw new Error("Neovim-test result did not report one successful file");
+          }
+          const file = relative(
+            resolve("runtime"),
+            results.testResults[0].name,
+          ).split("\\").join("/");
+          if (file !== expectedFile) {
+            throw new Error(
+              `Neovim-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+            );
+          }
+          console.log("Neovim capability lane passed 4 tests in 1 file with zero skipped");
+          NODE
+          if pgrep -f -- "$AGENC_PINNED_NVIM" >/dev/null; then
+            pgrep -af -- "$AGENC_PINNED_NVIM" >&2
+            echo "real-Neovim capability lane leaked a child process" >&2
+            exit 1
+          fi
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  macos-native:
+    name: macos-native
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bind the checkout and install pinned npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "tetsuo-ai/agenc-core"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(node --version)" = "v${NODE_VERSION}"
+          npm_archive="$RUNNER_TEMP/npm-${NPM_VERSION}.tgz"
+          node scripts/fetch-pinned-npm.mjs "$npm_archive"
+          npm install --global "$npm_archive" \
+            --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Install the reviewed dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm_config_build_from_source=true \
+            npm rebuild better-sqlite3 esbuild node-pty
+
+      - name: Run the exact macOS native capability lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/macos-native-test-results.json"
+          node runtime/scripts/run-hermetic-vitest.mjs \
+            --require-zero-skips \
+            run tests/tools/runtimes/runtime.darwin.test.ts \
+            --config vitest.native.config.ts \
+            --allowOnly=false \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json "$results"
+          node --input-type=module - "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing macOS-native results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedFile = "tests/tools/runtimes/runtime.darwin.test.ts";
+          const exactCounts = {
+            numTotalTestSuites: 1,
+            numPassedTestSuites: 1,
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: 1,
+            numPassedTests: 1,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `macOS-native result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (
+            results.success !== true ||
+            !Array.isArray(results.testResults) ||
+            results.testResults.length !== 1
+          ) {
+            throw new Error("macOS-native result did not report one successful file");
+          }
+          const file = relative(
+            resolve("runtime"),
+            results.testResults[0].name,
+          ).split("\\").join("/");
+          if (file !== expectedFile) {
+            throw new Error(
+              `macOS-native file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+            );
+          }
+          console.log("macOS native capability lane passed 1 test in 1 file with zero skipped");
+          NODE
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+  windows-native:
+    name: windows-native
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bind the checkout and install pinned npm
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_REPOSITORY -ne "tetsuo-ai/agenc-core") {
+            throw "unexpected repository: $env:GITHUB_REPOSITORY"
+          }
+          if ((git rev-parse HEAD) -ne $env:GITHUB_SHA) {
+            throw "checkout is not bound to GITHUB_SHA"
+          }
+          if (-not [string]::IsNullOrWhiteSpace(
+            (git status --porcelain=v1 --untracked-files=all | Out-String)
+          )) {
+            throw "checkout is not clean"
+          }
+          if ((node --version) -ne "v$env:NODE_VERSION") {
+            throw "unexpected Node version"
+          }
+          $npmArchive = Join-Path $env:RUNNER_TEMP "npm-$env:NPM_VERSION.tgz"
+          & node scripts/fetch-pinned-npm.mjs $npmArchive
+          if ($LASTEXITCODE -ne 0) { throw "pinned npm download failed" }
+          & npm.cmd install --global $npmArchive `
+            --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "pinned npm install failed" }
+          if ((npm.cmd --version) -ne $env:NPM_VERSION) {
+            throw "unexpected npm version"
+          }
+
+      - name: Install the reviewed dependency graph
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & npm.cmd ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+          $env:npm_config_build_from_source = "true"
+          & npm.cmd rebuild better-sqlite3 esbuild node-pty
+          if ($LASTEXITCODE -ne 0) { throw "native dependency rebuild failed" }
+
+      - name: Run the exact Windows native capability lane
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $results = Join-Path $env:RUNNER_TEMP "windows-native-test-results.json"
+          & node runtime/scripts/run-hermetic-vitest.mjs `
+            --require-zero-skips `
+            run `
+            tests/durability/atomic-artifact.win32.test.ts `
+            tests/utils/execFileNoThrow.win32.test.ts `
+            --config vitest.native.config.ts `
+            --allowOnly=false `
+            --reporter=verbose `
+            --reporter=json `
+            --outputFile.json $results
+          if ($LASTEXITCODE -ne 0) { throw "Windows native tests failed" }
+          @'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing Windows-native results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedFiles = [
+            "tests/durability/atomic-artifact.win32.test.ts",
+            "tests/utils/execFileNoThrow.win32.test.ts",
+          ];
+          const exactCounts = {
+            numTotalTestSuites: 3,
+            numPassedTestSuites: 3,
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: 3,
+            numPassedTests: 3,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `Windows-native result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (results.success !== true || !Array.isArray(results.testResults)) {
+            throw new Error("Windows-native result did not report success");
+          }
+          const files = results.testResults
+            .map(result => relative(resolve("runtime"), result.name).split("\\").join("/"))
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(
+              `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
+            );
+          }
+          console.log("Windows native capability lane passed 3 tests in 2 files with zero skipped");
+          '@ | node --input-type=module - $results
+          if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
+          if (-not [string]::IsNullOrWhiteSpace(
+            (git status --porcelain=v1 --untracked-files=all | Out-String)
+          )) {
+            throw "Windows native lane dirtied the checkout"
+          }

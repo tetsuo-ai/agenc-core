@@ -478,49 +478,6 @@ describe("Linux sandbox launcher", () => {
     ]);
   });
 
-  it("blocks network syscalls with real bubblewrap when the platform allows it", async () => {
-    const bwrap = findSystemBubblewrapInPath(process.env.PATH, process.cwd());
-    if (bwrap === null || !systemBubblewrapWorks(bwrap)) return;
-    const root = withTempDir("agenc-linux-launcher-real-bwrap-");
-    const profile: PermissionProfile = {
-      fileSystem: unrestrictedFileSystemPolicy(),
-      network: "disabled",
-    };
-    const script = [
-      "const net = require('node:net');",
-      "const socket = net.connect({ host: '198.51.100.10', port: 9 });",
-      "socket.once('connect', () => process.exit(3));",
-      "socket.once('error', () => process.exit(0));",
-      "setTimeout(() => process.exit(0), 500);",
-    ].join("");
-    // This is the one sanctioned native-network probe: bubblewrap creates the
-    // isolated network namespace before this Node command starts. Remove the
-    // JavaScript preload so the assertion exercises the kernel boundary, not
-    // the default-suite tripwire. No public route exists inside the namespace.
-    const probeEnv = { ...process.env };
-    delete probeEnv.NODE_OPTIONS;
-    delete probeEnv.AGENC_TEST_NETWORK_ATTEMPT_LEDGER;
-
-    const exitCode = await runLinuxSandboxMain([
-      "--sandbox-policy-cwd",
-      root,
-      "--command-cwd",
-      root,
-      "--permission-profile",
-      JSON.stringify(profile),
-      "--no-proc",
-      "--",
-      process.execPath,
-      "-e",
-      script,
-    ], {
-      env: probeEnv,
-      preferredLauncher: () => ({ program: bwrap, supportsArgv0: true }),
-    });
-
-    expect(exitCode).toBe(0);
-  });
-
   it("ships the launcher as an executable package binary", () => {
     const runtimeRoot = process.cwd();
     const packageJson = JSON.parse(
@@ -864,19 +821,6 @@ function withTempDir(prefix: string): string {
 
 function writeExecutable(filePath: string, source: string): void {
   fs.writeFileSync(filePath, source, { mode: 0o755 });
-}
-
-function systemBubblewrapWorks(program: string): boolean {
-  const output = spawnSync(program, [
-    "--unshare-user",
-    "--unshare-net",
-    "--ro-bind",
-    "/",
-    "/",
-    "--",
-    "/bin/true",
-  ]);
-  return output.status === 0;
 }
 
 function sliceAfter(args: readonly string[], flag: string): string[] {

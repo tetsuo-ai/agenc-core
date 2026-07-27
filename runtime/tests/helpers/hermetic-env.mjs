@@ -497,6 +497,7 @@ export const HERMETIC_LIVE_TEST_OPT_IN_ENV_VARS = Object.freeze([
 export const HERMETIC_HARNESS_INPUT_ENV_VARS = Object.freeze([
   'AGENC_TEST_HERMETIC_RUN_ROOT',
   'AGENC_TEST_NETWORK_ATTEMPT_LEDGER',
+  'AGENC_TEST_ZERO_SKIP_REPORT',
 ])
 
 /** OS launch inputs that cannot be synthesized portably. */
@@ -518,6 +519,7 @@ export const HERMETIC_LAUNCH_PASSTHROUGH_ENV_VARS = Object.freeze([
 export const HERMETIC_LAUNCH_TEST_INPUT_ENV_VARS = Object.freeze([
   'AGENC_TEST_DESIGN_ENV_PROBE',
   'AGENC_TEST_NETWORK_ATTEMPT_CHILD_MODE',
+  'AGENC_TEST_ZERO_SKIP_CHILD_MODE',
 ])
 
 /**

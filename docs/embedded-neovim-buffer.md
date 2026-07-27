@@ -116,6 +116,10 @@ npm --workspace=@tetsuo-ai/runtime exec -- vitest run \
   tests/tui/workbench/buffer-neovim-e2e-contract.test.ts \
   tests/tui/workbench/buffer-docs-config.contract.test.ts \
   --reporter=dot
+# Hosted `platform-tests / neovim` provisions the exact v0.12.1 binary.
+# This command deliberately fails when that pinned capability is unavailable.
+node runtime/scripts/run-hermetic-vitest.mjs --require-zero-skips \
+  run --config vitest.neovim.config.ts --allowOnly=false
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-buffer-neovim
 npm --workspace=@tetsuo-ai/runtime run check:tui-workbench-visual-smoke
 npm run build

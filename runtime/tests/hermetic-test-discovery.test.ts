@@ -52,6 +52,29 @@ const CROSS_REPO_TEST_FILES = [
   'tests/app-server/sdk-tui-coattach-example.contract.test.ts',
 ] as const;
 
+const NATIVE_TEST_FILES = [
+  'tests/durability/atomic-artifact.win32.test.ts',
+  'tests/tools/runtimes/runtime.darwin.test.ts',
+  'tests/utils/execFileNoThrow.win32.test.ts',
+] as const;
+
+const POWERSHELL_TEST_FILES = [
+  'tests/budget/admitted-legacy-powershell.powershell.test.ts',
+  'tests/packaging/install-ps1.powershell.test.ts',
+  'tests/shell-command/powershell-parser.powershell.test.ts',
+  'tests/tools/PowerShellTool.execution.powershell.test.ts',
+] as const;
+
+const DEFAULT_POWERSHELL_TEST_FILES = [
+  'tests/budget/admitted-legacy-powershell.test.ts',
+  'tests/shell-command/powershell-parser.test.ts',
+  'tests/tools/PowerShellTool.execution.test.ts',
+] as const;
+
+const NEOVIM_TEST_FILES = [
+  'tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts',
+] as const;
+
 function listTestFiles(config: string): string[] {
   const result = spawnSync(
     process.execPath,
@@ -101,6 +124,36 @@ describe('hermetic test discovery', () => {
       ).not.toContain(crossRepoFile);
     }
 
+    for (const nativeFile of NATIVE_TEST_FILES) {
+      expect(
+        files,
+        `${nativeFile} leaked into the Linux clean-checkout suite`,
+      ).not.toContain(nativeFile);
+    }
+
+    for (const powershellFile of POWERSHELL_TEST_FILES) {
+      expect(
+        files,
+        `${powershellFile} leaked into the default suite`,
+      ).not.toContain(powershellFile);
+    }
+    for (const defaultPowerShellFile of DEFAULT_POWERSHELL_TEST_FILES) {
+      expect(
+        files,
+        `${defaultPowerShellFile} must retain its capability-independent coverage`,
+      ).toContain(defaultPowerShellFile);
+    }
+
+    for (const neovimFile of NEOVIM_TEST_FILES) {
+      expect(
+        files,
+        `${neovimFile} leaked into the default suite`,
+      ).not.toContain(neovimFile);
+    }
+    expect(files).toContain(
+      'tests/tui/workbench/buffer-neovim-discovery.contract.test.ts',
+    );
+
     // Despite its historical filename, this test only inspects production
     // rendering source and is intentionally part of the offline suite.
     expect(files).toContain(
@@ -120,6 +173,131 @@ describe('hermetic test discovery', () => {
     expect(listTestFiles('vitest.cross-repo.config.ts')).toEqual([
       ...CROSS_REPO_TEST_FILES,
     ]);
+  });
+
+  it('native discovery is an exact hosted-builder allowlist without skip gates', () => {
+    expect(listTestFiles('vitest.native.config.ts')).toEqual([
+      ...NATIVE_TEST_FILES,
+    ]);
+    for (const file of NATIVE_TEST_FILES) {
+      const source = readFileSync(resolve(runtimeRoot, file), 'utf8');
+      expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+    }
+  });
+
+  it('PowerShell discovery is an exact hosted capability allowlist without skip gates', () => {
+    expect(listTestFiles('vitest.powershell.config.ts')).toEqual([
+      ...POWERSHELL_TEST_FILES,
+    ]);
+    for (const file of POWERSHELL_TEST_FILES) {
+      const source = readFileSync(resolve(runtimeRoot, file), 'utf8');
+      expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+    }
+
+    const shellEntry = readFileSync(
+      resolve(runtimeRoot, 'tests/packaging/install-sh.test.ts'),
+      'utf8',
+    );
+    const powershellEntry = readFileSync(
+      resolve(runtimeRoot, 'tests/packaging/install-ps1.powershell.test.ts'),
+      'utf8',
+    );
+    expect(shellEntry).toContain('registerInstallerTests("shell")');
+    expect(shellEntry).not.toContain('registerInstallerTests("powershell")');
+    expect(powershellEntry).toContain('registerInstallerTests("powershell")');
+    expect(powershellEntry).not.toContain('registerInstallerTests("shell")');
+
+    const defaultAdmissionEntry = readFileSync(
+      resolve(runtimeRoot, 'tests/budget/admitted-legacy-powershell.test.ts'),
+      'utf8',
+    );
+    const capabilityAdmissionEntry = readFileSync(
+      resolve(
+        runtimeRoot,
+        'tests/budget/admitted-legacy-powershell.powershell.test.ts',
+      ),
+      'utf8',
+    );
+    expect(defaultAdmissionEntry).toContain(
+      'registerDirectPowerShellAdmissionTests("default")',
+    );
+    expect(capabilityAdmissionEntry).toContain(
+      'registerDirectPowerShellAdmissionTests("powershell")',
+    );
+
+    const defaultToolEntry = readFileSync(
+      resolve(runtimeRoot, 'tests/tools/PowerShellTool.execution.test.ts'),
+      'utf8',
+    );
+    const capabilityToolEntry = readFileSync(
+      resolve(
+        runtimeRoot,
+        'tests/tools/PowerShellTool.execution.powershell.test.ts',
+      ),
+      'utf8',
+    );
+    expect(defaultToolEntry).toContain(
+      "registerPowerShellToolExecutionTests('default')",
+    );
+    expect(capabilityToolEntry).toContain(
+      "registerPowerShellToolExecutionTests('powershell')",
+    );
+
+    const sharedInstallerTests = readFileSync(
+      resolve(runtimeRoot, 'tests/packaging/installer-tests.ts'),
+      'utf8',
+    );
+    const powershellTests = sharedInstallerTests.slice(
+      sharedInstallerTests.indexOf('function registerInstallPs1Tests'),
+    );
+    expect(powershellTests).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+  });
+
+  it('real-Neovim discovery is an exact fail-closed hosted allowlist', () => {
+    expect(listTestFiles('vitest.neovim.config.ts')).toEqual([
+      ...NEOVIM_TEST_FILES,
+    ]);
+    const capabilitySource = readFileSync(
+      resolve(runtimeRoot, NEOVIM_TEST_FILES[0]),
+      'utf8',
+    );
+    expect(capabilitySource).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+    expect(capabilitySource).not.toMatch(
+      /if\s*\(\s*!discovery\.usable\s*\)\s*\{[^}]*\breturn\b/su,
+    );
+    expect(capabilitySource).toContain(
+      'throw new Error(`the pinned real-Neovim capability is required:',
+    );
+    expect(capabilitySource).toContain('raw: "NVIM v0.12.1"');
+
+    const defaultLifecycleSource = readFileSync(
+      resolve(
+        runtimeRoot,
+        'tests/tui/workbench/buffer-neovim-lifecycle.contract.test.ts',
+      ),
+      'utf8',
+    );
+    for (const testName of [
+      'closes a clean real Neovim session through the all-buffer safe-close path',
+      'detects a modified hidden buffer before an external-editor handoff',
+      'opens Neovim, refuses dirty quit, and force cleans the child',
+      'reports visible grid highlight cells for visual selections',
+    ]) {
+      expect(defaultLifecycleSource).not.toContain(testName);
+      expect(capabilitySource).toContain(testName);
+    }
+
+    const discoverySource = readFileSync(
+      resolve(
+        runtimeRoot,
+        'tests/tui/workbench/buffer-neovim-discovery.contract.test.ts',
+      ),
+      'utf8',
+    );
+    expect(discoverySource).toContain(
+      'returns a missing-binary fallback when configured and default executables are absent',
+    );
+    expect(discoverySource).toContain('reasonCode: "missing-binary"');
   });
 
   it('loads live mode with no setup files while default mode keeps its setup', async () => {
@@ -144,6 +322,21 @@ describe('hermetic test discovery', () => {
       resolve(runtimeRoot, 'vitest.cross-repo.config.ts'),
       runtimeRoot,
     );
+    const nativeResult = await loadConfigFromFile(
+      environment,
+      resolve(runtimeRoot, 'vitest.native.config.ts'),
+      runtimeRoot,
+    );
+    const powershellResult = await loadConfigFromFile(
+      environment,
+      resolve(runtimeRoot, 'vitest.powershell.config.ts'),
+      runtimeRoot,
+    );
+    const neovimResult = await loadConfigFromFile(
+      environment,
+      resolve(runtimeRoot, 'vitest.neovim.config.ts'),
+      runtimeRoot,
+    );
 
     expect(defaultResult?.config.test?.setupFiles).toEqual(['./vitest.setup.ts']);
     expect(liveResult?.config.test?.setupFiles).toEqual([]);
@@ -157,6 +350,21 @@ describe('hermetic test discovery', () => {
       './vitest.design.setup.ts',
     ]);
     expect(crossRepoResult?.config.test?.setupFiles).toEqual([
+      './vitest.setup.ts',
+    ]);
+    expect(nativeResult?.config.test?.setupFiles).toEqual([
+      './vitest.setup.ts',
+    ]);
+    expect(powershellResult?.config.test?.setupFiles).toEqual([
+      './vitest.setup.ts',
+    ]);
+    expect(powershellResult?.config.test?.env).toEqual({
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+      DOTNET_NOLOGO: '1',
+      POWERSHELL_TELEMETRY_OPTOUT: '1',
+      POWERSHELL_UPDATECHECK: 'Off',
+    });
+    expect(neovimResult?.config.test?.setupFiles).toEqual([
       './vitest.setup.ts',
     ]);
   });

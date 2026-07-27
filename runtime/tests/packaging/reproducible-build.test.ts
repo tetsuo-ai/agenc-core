@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const REPO_ROOT = resolve(process.cwd(), "..");
-const HOSTED_TEST_COMMANDS = [
+const BROAD_HOSTED_GATE_COMMANDS = [
   "npm test",
   "npm run test",
   "npm run typecheck",
@@ -13,12 +13,24 @@ const HOSTED_TEST_COMMANDS = [
   "npm run check:agent-surface-contract",
   "npm run check:sbom",
   "check:tui-runtime-startup",
-  "vitest",
   "tsc --noEmit",
 ] as const;
 
+const ANY_HOSTED_TEST_COMMANDS = [
+  ...BROAD_HOSTED_GATE_COMMANDS,
+  "vitest",
+] as const;
+
 function expectArtifactWorkflowWithoutHostedTests(workflow: string) {
-  for (const command of HOSTED_TEST_COMMANDS) expect(workflow).not.toContain(command);
+  for (const command of ANY_HOSTED_TEST_COMMANDS) {
+    expect(workflow).not.toContain(command);
+  }
+}
+
+function expectArtifactWorkflowWithoutBroadHostedGates(workflow: string) {
+  for (const command of BROAD_HOSTED_GATE_COMMANDS) {
+    expect(workflow).not.toContain(command);
+  }
 }
 
 describe("reproducible install and release contract", () => {
@@ -103,6 +115,146 @@ describe("reproducible install and release contract", () => {
     expect(readFileSync(join(REPO_ROOT, ".npmrc"), "utf8")).toBe(
       "install-strategy=hoisted\nstrict-allow-scripts=true\n",
     );
+  });
+
+  test("hosted capability lanes pin their runtimes and exact zero-skip allowlists", () => {
+    const toolchain = JSON.parse(
+      readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
+    ) as {
+      powershellTestRuntime: {
+        schemaVersion: number;
+        version: string;
+        "linux-x64": {
+          file: string;
+          url: string;
+          sha256: string;
+          bytes: number;
+        };
+      };
+      neovimTestRuntime: {
+        schemaVersion: number;
+        version: string;
+        "linux-x64": {
+          file: string;
+          url: string;
+          sha256: string;
+          bytes: number;
+        };
+      };
+    };
+    expect(toolchain.powershellTestRuntime).toEqual({
+      schemaVersion: 1,
+      version: "7.6.4",
+      "linux-x64": {
+        file: "powershell-7.6.4-linux-x64.tar.gz",
+        url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/powershell-7.6.4-linux-x64.tar.gz",
+        sha256: "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
+        bytes: 77_628_778,
+      },
+    });
+    expect(toolchain.neovimTestRuntime).toEqual({
+      schemaVersion: 1,
+      version: "0.12.1",
+      "linux-x64": {
+        file: "nvim-linux-x86_64.tar.gz",
+        url: "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-x86_64.tar.gz",
+        sha256: "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
+        bytes: 11_359_184,
+      },
+    });
+
+    const workflow = readFileSync(
+      join(REPO_ROOT, ".github/workflows/platform-tests.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain("\n  pull_request:");
+    expect(workflow).toContain("\n  powershell:");
+    expect(workflow).toContain("\n  neovim:");
+    expect(workflow).toContain("\n  macos-native:");
+    expect(workflow).toContain("\n  windows-native:");
+
+    const powershellJob = workflow.slice(
+      workflow.indexOf("\n  powershell:"),
+      workflow.indexOf("\n  neovim:"),
+    );
+    expect(powershellJob).toContain("runs-on: ubuntu-24.04");
+    expect(powershellJob).toContain('["powershellTestRuntime"]["linux-x64"]');
+    expect(powershellJob).toContain("--require-zero-skips");
+    expect(powershellJob).toContain("--config vitest.powershell.config.ts");
+    expect(powershellJob).toContain("const expectedTests = 19");
+    expect(powershellJob).toContain("numTotalTestSuites: 7");
+    expect(powershellJob).toContain("numPassedTestSuites: 7");
+    for (const testFile of [
+      "tests/budget/admitted-legacy-powershell.powershell.test.ts",
+      "tests/packaging/install-ps1.powershell.test.ts",
+      "tests/shell-command/powershell-parser.powershell.test.ts",
+      "tests/tools/PowerShellTool.execution.powershell.test.ts",
+    ]) {
+      expect(powershellJob).toContain(testFile);
+    }
+    expect(powershellJob).toContain("POWERSHELL_TELEMETRY_OPTOUT=1");
+    expect(powershellJob).toContain("POWERSHELL_UPDATECHECK=Off");
+    expect(powershellJob).toContain("DOTNET_CLI_TELEMETRY_OPTOUT=1");
+    expect(powershellJob).toContain("DOTNET_NOLOGO=1");
+    expect(powershellJob).toContain(
+      "'[/]powershell-distribution/pwsh([[:space:]]|$)'",
+    );
+    expect(powershellJob).toContain(
+      'git status --porcelain=v1 --untracked-files=all',
+    );
+
+    const neovimJob = workflow.slice(
+      workflow.indexOf("\n  neovim:"),
+      workflow.indexOf("\n  macos-native:"),
+    );
+    expect(neovimJob).toContain("runs-on: ubuntu-24.04");
+    expect(neovimJob).toContain('["neovimTestRuntime"]["linux-x64"]');
+    expect(neovimJob).toContain("--config vitest.neovim.config.ts");
+    expect(neovimJob).toContain(
+      "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
+    );
+    expect(neovimJob).toContain("numTotalTestSuites: 2");
+    expect(neovimJob).toContain("numTotalTests: 4");
+    expect(neovimJob).toContain("results.testResults.length !== 1");
+    expect(neovimJob).toContain("pgrep -f --");
+
+    const macosJob = workflow.slice(
+      workflow.indexOf("\n  macos-native:"),
+      workflow.indexOf("\n  windows-native:"),
+    );
+    expect(macosJob).toContain("runs-on: macos-15");
+    expect(macosJob).toContain(
+      "run tests/tools/runtimes/runtime.darwin.test.ts",
+    );
+    expect(macosJob).toContain("--config vitest.native.config.ts");
+    expect(macosJob).toContain("numTotalTestSuites: 1");
+    expect(macosJob).toContain("numTotalTests: 1");
+
+    const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
+    expect(windowsJob).toContain("runs-on: windows-2025");
+    expect(windowsJob).toContain(
+      "tests/durability/atomic-artifact.win32.test.ts",
+    );
+    expect(windowsJob).toContain(
+      "tests/utils/execFileNoThrow.win32.test.ts",
+    );
+    expect(windowsJob).toContain("--config vitest.native.config.ts");
+    expect(windowsJob).toContain("numTotalTestSuites: 3");
+    expect(windowsJob).toContain("numTotalTests: 3");
+    expect(windowsJob).toContain(
+      "Windows native capability lane passed 3 tests in 2 files with zero skipped",
+    );
+
+    expect(workflow.match(
+      /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
+    )).toHaveLength(4);
+    expect(workflow.match(
+      /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
+    )).toHaveLength(3);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(4);
+    expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
+    expect(workflow).not.toContain("cache: npm");
+    expect(workflow).not.toContain("--passWithNoTests");
   });
 
   test("release-sensitive text inputs check out with canonical LF endings", () => {
@@ -261,7 +413,7 @@ describe("reproducible install and release contract", () => {
     expect(windowsValidation).toContain("if ($name -ieq 'PATH') { $name = 'PATH' }");
     const windowsInstall = nativeJob.slice(
       nativeJob.indexOf("Install digest-pinned Node, headers, and npm (Windows)"),
-      nativeJob.indexOf("Build from two isolated worktrees and compare bytes"),
+      nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
     );
     expect(windowsInstall).toContain("$headersRelease = Join-Path $headersRoot 'Release'");
     expect(windowsInstall).toContain(
@@ -697,7 +849,7 @@ describe("reproducible install and release contract", () => {
     );
   });
 
-  test("runtime artifact jobs bind to the exact release tag without running tests", () => {
+  test("runtime artifact jobs bind to the exact tag and run only exact native probes", () => {
     const workflow = readFileSync(
       join(REPO_ROOT, ".github/workflows/release-runtime.yml"),
       "utf8",
@@ -715,9 +867,60 @@ describe("reproducible install and release contract", () => {
       'test "$(git rev-parse --verify "${expected_ref}^{commit}")" = "$GITHUB_SHA"',
     );
     expect(workflow).not.toContain("required-gates:");
-    expectArtifactWorkflowWithoutHostedTests(workflow);
+    expectArtifactWorkflowWithoutBroadHostedGates(workflow);
     expect(workflow).toMatch(/\n  linux-tarball:\n    needs: release-source\n/u);
     expect(workflow).toMatch(/\n  native-tarball:\n    needs: release-source\n/u);
+
+    const nativeJob = workflow.slice(workflow.indexOf("\n  native-tarball:"));
+    const nativeBuild = nativeJob.slice(
+      nativeJob.indexOf("Run native probes and build from two isolated worktrees"),
+      nativeJob.indexOf("Upload failed reproducibility inputs"),
+    );
+    expect(nativeBuild).toContain(
+      'native_tests=("tests/tools/runtimes/runtime.darwin.test.ts")',
+    );
+    expect(nativeBuild).toContain(
+      '"tests/durability/atomic-artifact.win32.test.ts"',
+    );
+    expect(nativeBuild).toContain(
+      '"tests/utils/execFileNoThrow.win32.test.ts"',
+    );
+    expect(nativeBuild).toContain("expected_native_tests=1");
+    expect(nativeBuild).toContain("expected_native_tests=3");
+    expect(nativeBuild).toContain("expected_native_suites=1");
+    expect(nativeBuild).toContain("expected_native_suites=3");
+    expect(nativeBuild).toContain('run "${native_tests[@]}"');
+    expect(nativeBuild).toContain('"${native_tests[@]}" <<\'NODE\'');
+    expect(nativeBuild).toContain("...expectedFiles");
+    expect(nativeBuild.match(/run-hermetic-vitest\.mjs/g)).toHaveLength(1);
+    expect(nativeBuild).toContain("vitest.native.config.ts");
+    expect(nativeBuild).toContain("--require-zero-skips");
+    expect(nativeBuild).toContain("--allowOnly=false");
+    expect(nativeBuild).toContain("--reporter=verbose");
+    expect(nativeBuild).toContain("--reporter=json");
+    expect(nativeBuild).toContain('--outputFile.json "$native_results"');
+    expect(nativeBuild).not.toContain("--passWithNoTests");
+    for (const field of [
+      "numTotalTestSuites",
+      "numPassedTestSuites",
+      "numFailedTestSuites",
+      "numPendingTestSuites",
+      "numTotalTests",
+      "numPassedTests",
+      "numFailedTests",
+      "numPendingTests",
+      "numTodoTests",
+    ]) {
+      expect(nativeBuild).toContain(field);
+    }
+    expect(nativeBuild).toContain("results.success !== true");
+    expect(nativeBuild).toContain("zero skipped");
+    expect(nativeBuild.indexOf('ci --prefix "$build_source"')).toBeLessThan(
+      nativeBuild.indexOf("run-hermetic-vitest.mjs"),
+    );
+    expect(nativeBuild.indexOf("run-hermetic-vitest.mjs")).toBeLessThan(
+      nativeBuild.indexOf("build-runtime-tarball.mjs"),
+    );
   });
 
   test("the ESM bundle disables redundant per-module strict directives", () => {

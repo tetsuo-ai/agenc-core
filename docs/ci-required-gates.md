@@ -4,14 +4,19 @@ Decision record: 2026-07-15
 
 Operating policy update: 2026-07-16
 
-The current policy is **local-only verification**. GitHub Actions runs no test
-suite, and merge does not require a GitHub App Check Run or an App-bound
-ruleset. Before merge, the PR must record the exact locally tested SHA,
-commands, results, and every skip. Release verification repeats the required
-gates locally against the immutable release-tag commit. For PR verification,
-GitHub is only the branch/PR/merge record. The dispatch-only release workflows
-may later build or publish artifacts, but they run no test suite and must not be
-invoked merely to verify a change.
+The current merge policy keeps the complete platform-independent suite
+**local-only**. GitHub Actions runs only exact, narrow capability lanes, and
+merge does not require a GitHub App Check Run or an App-bound ruleset. Before
+merge, the PR must record the exact locally tested
+SHA, commands, results, and every skip. Release verification repeats the
+required gates locally against the immutable release-tag commit. GitHub remains
+the branch/PR/merge record for that broad verification. The dispatch-only
+release workflows may later build or publish artifacts. The tagged native
+runtime builders additionally run an exact allowlist of one macOS Seatbelt test
+and three Windows atomic-artifact/`.cmd` tests in two files that Linux cannot
+execute; these probes
+gate their artifacts but do not authorize merge or replace the local evidence.
+Release workflows must not be invoked merely to verify a change.
 
 The sections explicitly labeled **Inactive optional** retain the reviewed App,
 dedicated-host, and ruleset deployment design. That design is not part of
@@ -790,8 +795,12 @@ exact SHA in its receipt; a prior SHA never authorizes a newer one.
 [`release-runtime.yml`](../.github/workflows/release-runtime.yml), and
 [`promote-installers.yml`](../.github/workflows/promote-installers.yml) use
 GitHub-hosted jobs to publish or promote exact reviewed bytes. They do not
-repeat the local verification plan. Before artifact or promotion work starts,
-each workflow:
+repeat the local verification plan. The `release-runtime.yml` native matrix
+does run the exact native-only allowlist after its first clean install and
+requires the recorded result to contain one passing macOS test in one file or
+three passing Windows tests in two files with zero failed, pending, skipped, or
+todo tests. Before artifact
+or promotion work starts, each workflow:
 
 1. requires typed `tested_sha` and `local_evidence_sha256` dispatch inputs;
 2. normally requires `tested_sha` to equal the workflow's exact
@@ -816,9 +825,35 @@ attestations and npm provenance bind the separate reviewed `main` tooling
 commit. Runtime publication has no recovery exception and still requires
 `tested_sha == GITHUB_SHA`.
 
-They run no tests and do not read a GitHub App check. The operator must first
-complete and retain the exact-tag local evidence defined above. A PR-head test
-record cannot authorize release of a different squash-merged commit.
+Apart from those three native-only artifact probes, the workflows run no tests
+and do not read a GitHub App check. The operator must first complete and retain
+the exact-tag local evidence defined above. A PR-head test record cannot
+authorize release of a different squash-merged commit.
+
+## Hosted capability lanes
+
+[`platform-tests.yml`](../.github/workflows/platform-tests.yml) carries only
+tests whose required runtime or operating system is unavailable to the normal
+Linux local gate. Its `powershell` job installs the digest- and byte-pinned
+PowerShell runtime from [`release-toolchain.json`](../release-toolchain.json),
+enters the same credential-stripped, private-home Vitest boundary as the
+default suite, and runs an exact four-file allowlist. The Node tripwire remains
+active, while the native PowerShell subprocess is restricted to local
+fixtures, fixed telemetry/update opt-outs, and an asserted no-process-leak
+postcondition; this narrow lane is not an OS egress boundary.
+The `neovim` job similarly provisions the official digest- and byte-pinned
+Neovim 0.12.1 Linux binary and requires all four real-process lifecycle tests
+in its one-file allowlist. The `macos-native` and `windows-native` jobs run the
+same exact native probes used by release builders: one Seatbelt test in one
+file on macOS, and three atomic-publication/`.cmd` tests in two files on
+Windows. Every result parser requires the exact reviewed suite, test, and file
+counts with no failed, pending, skipped, or todo tests.
+
+This narrow hosted check supplements the local required gate; it does not
+replace or authorize the broader test, typecheck, build, TUI, or release
+contracts. Adding a capability file requires an explicit config and result
+inventory change. A missing capability causes the lane to fail closed rather
+than silently passing or registering a skipped test.
 
 ## Inactive optional policy-context rotation
 
@@ -1028,9 +1063,10 @@ The repository policy tests, stable suite, builds, contracts, SBOM check, and
 PTY supervisor run locally. PR descriptions are the human-reviewed evidence
 record and must follow the exact-SHA protocol above. Release records use the
 defined local evidence path and immutable-tag protocol. No dedicated GitHub
-App, active App-bound ruleset, or hosted test workflow is claimed or required
-in local-only mode. The optional multi-UID systemd/App design has not been
-activated.
+App or active App-bound ruleset is claimed or required in local-only mode.
+The hosted platform workflow supplements PRs with the four narrow capability
+lanes above; the same native probes also run before tagged native artifacts
+are built. The optional multi-UID systemd/App design has not been activated.
 
 ## Primary sources
 
@@ -1080,8 +1116,12 @@ Research refreshed 2026-07-15:
 - [npm 11 `npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci/)
   defines frozen-lockfile installs.
 
-GitHub-hosted test execution was rejected because it spends remote runner time
-without strengthening the local hermetic boundary. The current policy keeps
-all verification local and records evidence in the PR. The optional App design
-would add authenticated exact-SHA enforcement without moving test compute to
-GitHub, but that extra control-plane complexity is deliberately inactive.
+General GitHub-hosted suite execution remains rejected because it spends remote
+runner time without strengthening the local hermetic boundary. Narrow
+exceptions cover capabilities Linux cannot otherwise prove: tagged artifact
+builders and PR lanes run exact macOS and Windows native probes, while the PR
+`powershell` and `neovim` lanes run exact pinned-runtime allowlists. None repeat
+the complete local plan. The current policy keeps broad merge verification local
+and records evidence in the PR. The optional App design would add authenticated
+exact-SHA enforcement without moving that complete plan to GitHub, but that
+extra control-plane complexity is deliberately inactive.

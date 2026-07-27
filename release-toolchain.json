@@ -10,6 +10,26 @@
     "url": "https://registry.npmjs.org/npm/-/npm-11.17.0.tgz",
     "sha256": "b290bbb35b9e72c3ef84edbe041f28c4479c4d9ee79f555817b8caafe7ce4bba"
   },
+  "powershellTestRuntime": {
+    "schemaVersion": 1,
+    "version": "7.6.4",
+    "linux-x64": {
+      "file": "powershell-7.6.4-linux-x64.tar.gz",
+      "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/powershell-7.6.4-linux-x64.tar.gz",
+      "sha256": "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721",
+      "bytes": 77628778
+    }
+  },
+  "neovimTestRuntime": {
+    "schemaVersion": 1,
+    "version": "0.12.1",
+    "linux-x64": {
+      "file": "nvim-linux-x86_64.tar.gz",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-x86_64.tar.gz",
+      "sha256": "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
+      "bytes": 11359184
+    }
+  },
   "githubCli": {
     "version": "2.96.0",
     "linuxX64": {

@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -25,31 +27,90 @@ describe("grok incremental tracker registry — M-LLM-3 leak", () => {
     expect(registeredIncrementalTrackerCountForTest()).toBe(0);
   });
 
-  it("does not strongly retain trackers whose owner was dropped", async () => {
-    // Register many trackers via a throwaway closure so no strong reference to
-    // them survives this block (mirrors per-call providers that never dispose()).
+  it("does not strongly retain trackers whose owner was dropped", () => {
     const created = 50;
-    (() => {
-      for (let i = 0; i < created; i += 1) {
-        registerIncrementalTracker(new IncrementalTracker());
+    const moduleUrl = new URL(
+      "../../../../src/llm/providers/grok/incremental.ts",
+      import.meta.url,
+    ).href;
+    const childScript = `
+      const {
+        IncrementalTracker,
+        registerIncrementalTracker,
+        registeredIncrementalTrackerCountForTest,
+      } = await import(${JSON.stringify(moduleUrl)});
+      const created = ${created};
+      function registerDroppedTrackers() {
+        for (let i = 0; i < created; i += 1) {
+          registerIncrementalTracker(new IncrementalTracker());
+        }
       }
-    })();
+      registerDroppedTrackers();
+      const before = registeredIncrementalTrackerCountForTest();
+      await new Promise((resolve) => setImmediate(resolve));
+      for (let i = 0; i < 10; i += 1) {
+        globalThis.gc();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const after = registeredIncrementalTrackerCountForTest();
+      process.stdout.write(JSON.stringify({
+        gcType: typeof globalThis.gc,
+        created,
+        before,
+        after,
+      }));
+    `;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--expose-gc",
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "--eval",
+        childScript,
+      ],
+      {
+        cwd: fileURLToPath(new URL("../../../../", import.meta.url)),
+        encoding: "utf8",
+        // Preserve the hermetic runner's reviewed NODE_OPTIONS preload so its
+        // network tripwire also governs this focused child.
+        env: process.env,
+        timeout: 15_000,
+      },
+    );
+    const diagnostics = [
+      `status=${String(child.status)}`,
+      `signal=${String(child.signal)}`,
+      `error=${child.error?.stack ?? "none"}`,
+      `stdout=${JSON.stringify(child.stdout)}`,
+      `stderr=${JSON.stringify(child.stderr)}`,
+    ].join("\n");
 
-    // Force GC if the runtime exposes it, then let finalizers run.
-    const gc = (globalThis as { gc?: () => void }).gc;
-    if (typeof gc !== "function") {
-      // Without --expose-gc we cannot force collection; assert the weaker
-      // invariant that the count never exceeds what was created (i.e. no runaway),
-      // and skip the strict collection assertion.
-      expect(registeredIncrementalTrackerCountForTest()).toBeLessThanOrEqual(created);
-      return;
+    expect(child.error, diagnostics).toBeUndefined();
+    expect(child.signal, diagnostics).toBeNull();
+    expect(child.status, diagnostics).toBe(0);
+
+    let evidence: {
+      gcType: string;
+      created: number;
+      before: number;
+      after: number;
+    };
+    try {
+      evidence = JSON.parse(child.stdout) as typeof evidence;
+    } catch (error) {
+      throw new Error(
+        `GC retention child did not return valid evidence: ${
+          error instanceof Error ? error.message : String(error)
+        }\n${diagnostics}`,
+      );
     }
-    for (let i = 0; i < 5; i += 1) {
-      gc();
-      await new Promise((r) => setTimeout(r, 0));
-    }
-    // A strong Set would still report all `created` trackers; the WeakRef set
-    // reports them collected (0 live, since nothing else references them).
-    expect(registeredIncrementalTrackerCountForTest()).toBe(0);
+
+    expect(evidence.gcType).toBe("function");
+    expect(evidence.created).toBe(created);
+    expect(evidence.before).toBe(created);
+    // Reverting the registry to a strong Set leaves all `created` trackers here.
+    expect(evidence.after).toBe(0);
   });
 });

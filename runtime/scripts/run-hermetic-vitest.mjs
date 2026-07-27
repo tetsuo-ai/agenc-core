@@ -17,6 +17,10 @@ import {
   HERMETIC_MARKER_ENV_VAR,
   sanitizeHermeticEnv,
 } from '../tests/helpers/hermetic-env.mjs'
+import {
+  readZeroSkipEvidence,
+  ZERO_SKIP_REPORT_ENV_VAR,
+} from './zero-skip-reporter.mjs'
 
 const runtimeRoot = fileURLToPath(new URL('../', import.meta.url))
 const vitestCli = fileURLToPath(
@@ -25,12 +29,22 @@ const vitestCli = fileURLToPath(
 const networkTripwire = fileURLToPath(
   new URL('../tests/helpers/network-tripwire.cjs', import.meta.url),
 )
+const zeroSkipReporter = fileURLToPath(
+  new URL('./zero-skip-reporter.mjs', import.meta.url),
+)
 
 const args = process.argv.slice(2)
 const designIndex = args.indexOf('--design')
 const design = designIndex !== -1
 if (design) args.splice(designIndex, 1)
+const requireZeroSkips = args.includes('--require-zero-skips')
+for (let index = args.length - 1; index >= 0; index -= 1) {
+  if (args[index] === '--require-zero-skips') args.splice(index, 1)
+}
 if (args.length === 0) args.push('run')
+const hasRequestedReporter = args.some(
+  argument => argument === '--reporter' || argument.startsWith('--reporter='),
+)
 
 async function run() {
   // The unsandboxed prelauncher owns one disposable run root. Every worker
@@ -51,6 +65,10 @@ async function run() {
     const attemptLedger = join(runRoot, 'network-attempts')
     mkdirSync(attemptLedger, { mode: 0o700, recursive: true })
     childEnv.AGENC_TEST_NETWORK_ATTEMPT_LEDGER = attemptLedger
+    const zeroSkipReport = join(runRoot, 'zero-skips.json')
+    if (requireZeroSkips) {
+      childEnv[ZERO_SKIP_REPORT_ENV_VAR] = zeroSkipReport
+    }
 
     // This marker proves setupFiles ran in each Vitest worker; the prelauncher
     // must not stamp it or a removed setupFiles entry would be masked.
@@ -63,7 +81,18 @@ async function run() {
     // reviewed preload guards the coordinator and propagates itself to workers.
     childEnv.NODE_OPTIONS = `--require ${JSON.stringify(networkTripwire)}`
 
-    const child = spawn(process.execPath, [vitestCli, ...args], {
+    const childArgs = [
+      vitestCli,
+      ...args,
+      ...(requireZeroSkips
+        ? [
+            ...(hasRequestedReporter ? [] : ['--reporter', 'default']),
+            '--reporter',
+            zeroSkipReporter,
+          ]
+        : []),
+    ]
+    const child = spawn(process.execPath, childArgs, {
       cwd: runtimeRoot,
       env: childEnv,
       stdio: 'inherit',
@@ -128,6 +157,34 @@ async function run() {
         }
       }
       exitCode = 1
+    }
+
+    if (requireZeroSkips) {
+      try {
+        const evidence = readZeroSkipEvidence(zeroSkipReport)
+        if (evidence.skippedTests.length > 0) {
+          process.stderr.write(
+            `Hermetic Vitest requires zero skipped tests; observed ${evidence.skippedTests.length}\n`,
+          )
+          for (const skipped of evidence.skippedTests.slice(0, 20)) {
+            process.stderr.write(
+              `  ${skipped.file} > ${skipped.name} [${skipped.mode}]\n`,
+            )
+          }
+          if (evidence.skippedTests.length > 20) {
+            process.stderr.write(
+              `  ... ${evidence.skippedTests.length - 20} more skipped test(s)\n`,
+            )
+          }
+          exitCode = 1
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        process.stderr.write(
+          `Hermetic Vitest zero-skip evidence was missing or unreadable: ${message}\n`,
+        )
+        exitCode = 1
+      }
     }
 
     if (result.signal !== null) {

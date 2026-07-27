@@ -337,12 +337,10 @@ describe("process hardening", () => {
     }
   });
 
-  const nativeBuildTest = process.platform === "linux" && hasNativeBuildTools()
-    ? test
-    : test.skip;
+  const linuxNativeBuildTest = process.platform === "linux" ? test : test.skip;
 
-  nativeBuildTest("loads the native hardening path inside a spawned process", () => {
-
+  linuxNativeBuildTest("loads the native hardening path inside a spawned process", () => {
+    expectNativeBuildTools();
     const cacheDir = tempDir("agenc-hardening-test-");
     const moduleUrl = sourceUrl("sandbox/hardening/index.ts").href;
     const script = `
@@ -391,7 +389,8 @@ describe("process hardening", () => {
     expect(payload.dumpable).toBe(0);
   });
 
-  nativeBuildTest("can compile through explicit runtime-build opt-in", () => {
+  linuxNativeBuildTest("can compile through explicit runtime-build opt-in", () => {
+    expectNativeBuildTools();
     const cacheDir = tempDir("agenc-hardening-build-opt-in-");
     const moduleUrl = sourceUrl("sandbox/hardening/index.ts").href;
     const script = `
@@ -432,11 +431,23 @@ function step(
   return result.steps.find((entry) => entry.operation === operation);
 }
 
-function hasNativeBuildTools(): boolean {
-  return existsSync("/usr/include/node/node_api.h") &&
-    spawnSync("sh", ["-c", "command -v cc"], {
-      stdio: "ignore",
-    }).status === 0;
+function expectNativeBuildTools(): void {
+  const includeDir = [
+    "/usr/include/node",
+    path.resolve(path.dirname(process.execPath), "..", "include", "node"),
+  ].find((candidate) => existsSync(path.join(candidate, "node_api.h")));
+  expect(
+    includeDir,
+    "native hardening tests require node_api.h in a production-supported include directory",
+  ).toBeDefined();
+
+  const compiler = spawnSync("sh", ["-c", "command -v cc"], {
+    encoding: "utf8",
+  });
+  expect(
+    compiler.status,
+    compiler.stderr || "native hardening tests require cc on PATH",
+  ).toBe(0);
 }
 
 function tempNodeIncludeDir(): string {

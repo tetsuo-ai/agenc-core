@@ -166,6 +166,17 @@ describe('useApiKeyVerification api key helper coverage', () => {
       expect(authHarness.getApiKeyFromApiKeyHelper).toHaveBeenCalledWith(true)
       expect(authHarness.getAnthropicApiKeyWithSource).toHaveBeenLastCalledWith()
       expect(authHarness.verifyApiKey).not.toHaveBeenCalled()
+
+      await waitForCondition(
+        () =>
+          snapshots.some(
+            snapshot =>
+              snapshot.status === 'error' &&
+              snapshot.errorMessage ===
+                'API key helper did not return a valid key',
+          ),
+        'Timed out waiting for the helper error effect snapshot',
+      )
       expect(snapshots).toContainEqual({
         errorMessage: 'API key helper did not return a valid key',
         status: 'error',

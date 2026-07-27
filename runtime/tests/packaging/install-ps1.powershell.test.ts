@@ -1,3 +1,3 @@
 import { registerInstallerTests } from "./installer-tests.js";
 
-registerInstallerTests("shell");
+registerInstallerTests("powershell");

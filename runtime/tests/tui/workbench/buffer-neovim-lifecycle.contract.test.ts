@@ -6,8 +6,6 @@ import { EventEmitter } from "node:events";
 import { encode } from "@msgpack/msgpack";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { discoverNeovim } from "../../../src/tui/workbench/buffer/neovim/NeovimDiscovery.js";
-import type { NeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
 import { dirtyFlagFromRpcNotificationParams, EmbeddedNeovimSession, NeovimStartupCleanupError, startEmbeddedNeovim } from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
 import { NeovimRpcError } from "../../../src/tui/workbench/buffer/neovim/NeovimRpc.js";
 import { cleanupTrackedNeovimProcesses, getTrackedNeovimProcessCountForTesting, killNeovimChild, normalizeNeovimPid, runTrackedNeovimProcessExitCleanupForTesting, spawnNeovimProcess, waitForNeovimExit } from "../../../src/tui/workbench/buffer/neovim/NeovimProcess.js";
@@ -717,174 +715,6 @@ describe("embedded Neovim lifecycle", () => {
     expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
   });
 
-  it("closes a clean real Neovim session through the all-buffer safe-close path", async () => {
-    const discovery = await discoverNeovim({ timeoutMs: 1000, useUserInit: false });
-    if (!discovery.usable) {
-      expect(discovery.reason).toContain("Embedded Neovim is unavailable");
-      return;
-    }
-    const filePath = join(dir, "clean-close.txt");
-    await writeFile(filePath, "alpha\n", "utf8");
-    const session = await startEmbeddedNeovim({
-      executable: discovery.executable,
-      args: discovery.args,
-      filePath,
-      line: 1,
-      column: 0,
-      cwd: dir,
-      size: { rows: 4, columns: 24 },
-      onSnapshot: () => {},
-      onError: (error) => {
-        throw error;
-      },
-      onExit: () => {},
-    });
-    const pid = session.pid;
-
-    await expect(session.quit(false)).resolves.toEqual({ closed: true });
-    await session.cleanup();
-    await waitUntilDead(pid);
-
-    expect(isProcessAlive(pid)).toBe(false);
-    expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
-  });
-
-  it("detects a modified hidden buffer before an external-editor handoff", async () => {
-    const discovery = await discoverNeovim({ timeoutMs: 1000, useUserInit: false });
-    if (!discovery.usable) {
-      expect(discovery.reason).toContain("Embedded Neovim is unavailable");
-      return;
-    }
-    const filePath = join(dir, "hidden-buffer.txt");
-    await writeFile(filePath, "alpha\n", "utf8");
-    const session = await startEmbeddedNeovim({
-      executable: discovery.executable,
-      args: discovery.args,
-      filePath,
-      line: 1,
-      column: 0,
-      cwd: dir,
-      size: { rows: 4, columns: 24 },
-      onSnapshot: () => {},
-      onError: () => {},
-      onExit: () => {},
-    });
-    const pid = session.pid;
-
-    await session.input("<Esc>:set hidden<CR>:enew<CR>ihidden edit");
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    await session.input(`<Esc>:hide edit ${filePath}<CR>`);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-
-    await expect(session.isDirty()).resolves.toBe(false);
-    await expect(session.hasUnsavedBuffers()).resolves.toBe(true);
-    await session.quit(true);
-    await session.cleanup();
-    await waitUntilDead(pid);
-
-    expect(isProcessAlive(pid)).toBe(false);
-    expect(getTrackedNeovimProcessCountForTesting()).toBe(0);
-  });
-
-  it("opens Neovim, refuses dirty quit, and force cleans the child", async () => {
-    const discovery = await discoverNeovim({ timeoutMs: 1000 });
-    if (!discovery.usable) {
-      expect(discovery.reason).toContain("Embedded Neovim is unavailable");
-      return;
-    }
-    const filePath = join(dir, "target.txt");
-    await writeFile(filePath, "alpha\n", "utf8");
-    const snapshots: string[][] = [];
-    const dirtyChanges: boolean[] = [];
-
-    const session = await startEmbeddedNeovim({
-      executable: discovery.executable,
-      args: discovery.args,
-      filePath,
-      line: 1,
-      column: 0,
-      cwd: dir,
-      size: { rows: 21, columns: 116 },
-      onSnapshot: (snapshot) => {
-        snapshots.push([...snapshot.lines]);
-      },
-      onDirtyChange: (dirty) => {
-        dirtyChanges.push(dirty);
-      },
-      onError: (error) => {
-        throw error;
-      },
-      onExit: () => {},
-    });
-    const pid = session.pid;
-
-    await session.input("ibeta");
-    await session.paste(" gamma");
-    await session.resize({ rows: 4, columns: 24 });
-    await session.focus(true);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    await expect(session.isDirty()).resolves.toBe(true);
-    const dirtyQuit = await session.quit(false);
-    expect(dirtyQuit).toMatchObject({ closed: false });
-
-    await expect(session.save(true)).resolves.toBe(true);
-    await expect(session.isDirty()).resolves.toBe(false);
-    expect(await readFile(filePath, "utf8")).toContain("beta gamma");
-    expect(dirtyChanges).toContain(false);
-    await session.input("omore");
-    await session.quit(true);
-    await session.cleanup();
-
-    expect(snapshots.length).toBeGreaterThan(0);
-    expect(await readFile(filePath, "utf8")).not.toContain("more");
-    expect(isProcessAlive(pid)).toBe(false);
-  });
-
-  it("reports visible grid highlight cells for visual selections", async () => {
-    const discovery = await discoverNeovim({ timeoutMs: 1000, useUserInit: false });
-    if (!discovery.usable) {
-      expect(discovery.reason).toContain("Embedded Neovim is unavailable");
-      return;
-    }
-    const filePath = join(dir, "target.txt");
-    await writeFile(filePath, "alpha beta gamma\nsecond line\n", "utf8");
-    const snapshots: NeovimRenderSnapshot[] = [];
-
-    const session = await startEmbeddedNeovim({
-      executable: discovery.executable,
-      args: discovery.args,
-      filePath,
-      line: 1,
-      column: 0,
-      cwd: dir,
-      size: { rows: 8, columns: 40 },
-      onSnapshot: (snapshot) => {
-        snapshots.push(snapshot);
-      },
-      onError: (error) => {
-        throw error;
-      },
-      onExit: () => {},
-    });
-
-    try {
-      await session.input("gg0");
-      await waitForSnapshot(snapshots, (snapshot) => snapshot.cursor.row === 0 && snapshot.cursor.column === 0);
-      await session.input("v$");
-      const visual = await waitForSnapshot(snapshots, (snapshot) => snapshot.mode.startsWith("visual"));
-      const highlightsById = new Map(visual.highlights.map((highlight) => [highlight.id, highlight.attributes]));
-      const selectedCells = visual.cells[0]?.filter((cell) => {
-        const attributes = highlightsById.get(cell.highlightId);
-        return attributes?.reverse === true || typeof attributes?.background === "number";
-      }) ?? [];
-
-      expect(visual.lines[0]).toContain("alpha beta gamma");
-      expect(selectedCells.length).toBeGreaterThan(0);
-    } finally {
-      await session.quit(true);
-      await session.cleanup();
-    }
-  });
 });
 
 function fakeChild(options: {
@@ -945,21 +775,6 @@ async function waitForPidFile(path: string): Promise<number> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for pid file ${path}`);
-}
-
-async function waitForSnapshot<T>(
-  snapshots: readonly T[],
-  predicate: (snapshot: T) => boolean,
-): Promise<T> {
-  const deadline = Date.now() + 1500;
-  let last = snapshots.at(-1);
-  while (Date.now() < deadline) {
-    const match = snapshots.findLast(predicate);
-    if (match) return match;
-    last = snapshots.at(-1);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`timed out waiting for embedded Neovim snapshot; last=${JSON.stringify(last)}`);
 }
 
 function mockMissingProcessGroups(): void {

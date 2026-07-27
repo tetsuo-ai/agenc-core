@@ -134,7 +134,10 @@ describe("descriptor-bound instruction snapshots", () => {
       const root = tempRoot();
       const fifo = join(root, "rule.md");
       const made = spawnSync("mkfifo", [fifo]);
-      if (made.status !== 0) return;
+      expect(
+        made.status,
+        made.stderr?.toString() || "mkfifo must be available in the Unix test lane",
+      ).toBe(0);
       const read = await readInstructionFileSnapshot({
         requestedPath: fifo,
         boundaryRoot: root,

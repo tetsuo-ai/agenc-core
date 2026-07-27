@@ -128,6 +128,7 @@ export const REQUIRED_GATES = Object.freeze([
 // test files remain reviewable without requiring a gate-policy rotation.
 export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   ".npmrc",
+  ".github/workflows/platform-tests.yml",
   ".github/workflows/publish-npm.yml",
   ".github/workflows/release-runtime.yml",
   "package.json",
@@ -154,6 +155,9 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/tsconfig.bundle.json",
   "runtime/tsconfig.json",
   "runtime/vitest.config.ts",
+  "runtime/vitest.native.config.ts",
+  "runtime/vitest.neovim.config.ts",
+  "runtime/vitest.powershell.config.ts",
   "runtime/scripts/build-runtime.mjs",
   "runtime/scripts/check-package-entrypoints.mjs",
   "runtime/scripts/check-sdk-generated-types.mjs",
@@ -165,6 +169,7 @@ export const REQUIRED_GATE_POLICY_PATHS = Object.freeze([
   "runtime/scripts/run-hermetic-test-boundary.mjs",
   "runtime/scripts/run-hermetic-vitest.mjs",
   "runtime/scripts/write-build-version.mjs",
+  "runtime/scripts/zero-skip-reporter.mjs",
   "runtime/tests/helpers/hermetic-env.mjs",
   "runtime/tests/helpers/hermetic-managed-policy-mocks.ts",
   "runtime/tests/helpers/hermetic-secure-storage-mocks.ts",

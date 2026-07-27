@@ -6,8 +6,9 @@ import { describe, expect, it } from "vitest";
 // declare the expected lifecycle assertions — it does NOT spawn nvim or run a
 // real session. The actual embedded-Neovim PTY end-to-end gate (including the
 // "kill TUI / runtime-exit ⇒ no orphaned nvim child" lifecycle checks, scenarios
-// 120-124) runs via `npm run check:tui-workbench-buffer-neovim`. Hosted CI is
-// disabled, so do not treat this file as e2e coverage on its own.
+// 120-124) runs via `npm run check:tui-workbench-buffer-neovim`. The hosted
+// Neovim lane covers four lower-level real-process lifecycle tests; the full
+// PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
   it("defines the workbench Neovim scenarios and wrapper command", async () => {
     const scenario = await readFile("scripts/check-tui-e2e/scenarios/120-workbench-buffer-neovim.mjs", "utf8");
