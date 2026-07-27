@@ -5,6 +5,8 @@ import {
   parsePowerShellScriptWithNativeAst,
 } from "./powershell-parser.js";
 
+const CAPABILITY_STARTUP_TIMEOUT_MS = 10_000;
+
 function findPowerShellExecutable(): string | null {
   for (const candidate of ["pwsh", "powershell"]) {
     const result = spawnSync(
@@ -12,7 +14,7 @@ function findPowerShellExecutable(): string | null {
       ["-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion"],
       {
         encoding: "utf8",
-        timeout: 1_000,
+        timeout: CAPABILITY_STARTUP_TIMEOUT_MS,
       },
     );
     if (result.status === 0) return candidate;
@@ -34,6 +36,7 @@ describe("parsePowerShellScriptWithNativeAst capability", () => {
     const outcome = parsePowerShellScriptWithNativeAst(
       executable,
       "Get-ChildItem . | Select-Object Name",
+      { timeoutMs: CAPABILITY_STARTUP_TIMEOUT_MS },
     );
     expect(outcome).toEqual({
       ok: true,
@@ -43,6 +46,7 @@ describe("parsePowerShellScriptWithNativeAst capability", () => {
     const second = parsePowerShellScriptWithNativeAst(
       executable,
       "Write-Output foo | Measure-Object",
+      { timeoutMs: CAPABILITY_STARTUP_TIMEOUT_MS },
     );
     expect(second).toEqual({
       ok: true,

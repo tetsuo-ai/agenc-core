@@ -8,6 +8,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_NPM_ARCHIVE_BYTES = 32 * 1024 * 1024;
 
+export function fsyncDirectorySync(
+  descriptor,
+  {
+    platform = process.platform,
+    fsyncImpl = fsyncSync,
+  } = {},
+) {
+  try {
+    fsyncImpl(descriptor);
+  } catch (error) {
+    // Windows does not expose a portable directory FlushFileBuffers
+    // operation. Node 26 reports EPERM after successfully opening the
+    // directory, while the archive itself has already been fsynced above.
+    if (platform === "win32" && error?.code === "EPERM") return;
+    throw error;
+  }
+}
+
 async function readBoundedBody(response, maximumBytes = MAX_NPM_ARCHIVE_BYTES) {
   const reader = response.body?.getReader?.();
   if (reader === undefined) throw new Error("pinned npm response has no readable body");
@@ -86,7 +104,7 @@ export async function fetchPinnedNpm({
     closeSync(descriptor);
     descriptor = undefined;
     directoryDescriptor = openSync(dirname(destination), "r");
-    fsyncSync(directoryDescriptor);
+    fsyncDirectorySync(directoryDescriptor);
     closeSync(directoryDescriptor);
     directoryDescriptor = undefined;
     committed = true;

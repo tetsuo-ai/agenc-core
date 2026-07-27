@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { fetchPinnedNpm } from "../../../scripts/fetch-pinned-npm.mjs";
+import {
+  fetchPinnedNpm,
+  fsyncDirectorySync,
+} from "../../../scripts/fetch-pinned-npm.mjs";
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -138,4 +141,46 @@ test("fetchPinnedNpm rejects a non-canonical registry contract before network ac
   } finally {
     rmSync(work.root, { recursive: true, force: true });
   }
+});
+
+test("directory durability tolerates only the unsupported Windows EPERM result", () => {
+  const windowsUnsupported = Object.assign(
+    new Error("directory fsync is unsupported"),
+    { code: "EPERM" },
+  );
+  assert.doesNotThrow(() => {
+    fsyncDirectorySync(123, {
+      platform: "win32",
+      fsyncImpl: () => {
+        throw windowsUnsupported;
+      },
+    });
+  });
+  assert.throws(
+    () => {
+      fsyncDirectorySync(123, {
+        platform: "linux",
+        fsyncImpl: () => {
+          throw windowsUnsupported;
+        },
+      });
+    },
+    (error) => error === windowsUnsupported,
+  );
+
+  const unexpectedWindowsFailure = Object.assign(
+    new Error("unexpected directory fsync failure"),
+    { code: "EIO" },
+  );
+  assert.throws(
+    () => {
+      fsyncDirectorySync(123, {
+        platform: "win32",
+        fsyncImpl: () => {
+          throw unexpectedWindowsFailure;
+        },
+      });
+    },
+    (error) => error === unexpectedWindowsFailure,
+  );
 });
