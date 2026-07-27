@@ -61,7 +61,7 @@ INSTALL_DAEMON=1
 SUPPORTED_NODE_MAJOR=26
 SUPPORTED_NODE_MINOR=5
 SUPPORTED_NODE_VERSION=26.5.0
-NODE_COMPAT_RELEASE_TAG="agenc-v0.11.0"
+NODE_COMPAT_RELEASE_TAG="agenc-v0.11.1"
 LEGACY_BRIDGE_NODE_MAJOR=25
 LEGACY_BRIDGE_NODE_MINOR=9
 MAX_MANIFEST_BYTES=1048576
@@ -393,11 +393,15 @@ if [ -n "$PIN_VERSION" ]; then
   node -e '
     const version = process.argv[1];
     if (version === "0.7.2") process.exit(0);
-    const [major, minor] = version.split("-", 1)[0].split(".").map(BigInt);
-    if (major > 0n || minor >= 11n) process.exit(0);
-    process.exit(1);
+    const actual = version.split("-", 1)[0].split(".").map(BigInt);
+    const minimum = [0n, 11n, 1n];
+    for (let index = 0; index < minimum.length; index += 1) {
+      if (actual[index] > minimum[index]) process.exit(0);
+      if (actual[index] < minimum[index]) process.exit(1);
+    }
+    process.exit(0);
   ' "$PIN_VERSION" || fail \
-    "runtime ${PIN_VERSION} has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node"
+    "runtime ${PIN_VERSION} has no supported standalone activation contract; use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node"
 fi
 
 # --- platform ----------------------------------------------------------------
@@ -996,12 +1000,21 @@ SELECTED="$(node -e '
         !repositoryPattern.test(m.releaseRepository)) {
       reject("runtime manifest release identity is invalid", 2);
     }
-    const [runtimeMajor, runtimeMinor] =
-      m.runtimeVersion.split("-", 1)[0].split(".").map(BigInt);
-    if (runtimeMajor === 0n && runtimeMinor < 11n) {
+    const actualRuntime = m.runtimeVersion
+      .split("-", 1)[0]
+      .split(".")
+      .map(BigInt);
+    const minimumRuntime = [0n, 11n, 1n];
+    const runtimeSupported = actualRuntime.some((part, index) =>
+      part > minimumRuntime[index] &&
+      actualRuntime.slice(0, index).every((prior, priorIndex) =>
+        prior === minimumRuntime[priorIndex],
+      ),
+    ) || actualRuntime.every((part, index) => part === minimumRuntime[index]);
+    if (!runtimeSupported) {
       reject(
         `runtime ${m.runtimeVersion} has no supported standalone activation contract; ` +
-        "use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node",
+        "use the frozen 0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
         2,
       );
     }

@@ -82,8 +82,8 @@
   },
   "nodeBootstrap": {
     "schemaVersion": 1,
-    "minimumRuntimeVersion": "0.11.0",
-    "releaseTag": "agenc-v0.11.0",
+    "minimumRuntimeVersion": "0.11.1",
+    "releaseTag": "agenc-v0.11.1",
     "licenseExpression": "GPL-3.0-or-later WITH GCC-exception-3.1",
     "libatomicPackage": "libatomic-8.5.0-28.el8_10",
     "licensePackage": "libgcc-8.5.0-28.el8_10",
@@ -97,7 +97,7 @@
     },
     "linux-x64": {
       "file": "agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
-      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.1/agenc-node-bootstrap-libatomic-linux-x64.tar.gz",
       "sha256": "5fc14af17505b9d2e0d341d50b73abf9370e7f07e216ff2cf9e3a9e1c5cea5b6",
       "bytes": 26073,
       "librarySha256": "5d7b55b28da42d1f298277089903a3eca81610b6aed627fc25270353ff24cbbd",
@@ -108,7 +108,7 @@
     },
     "linux-arm64": {
       "file": "agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
-      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
+      "url": "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.1/agenc-node-bootstrap-libatomic-linux-arm64.tar.gz",
       "sha256": "645433551bd872a59e55e4f490ba0df36184b855dce2d3e798a4526c3dfb828c",
       "bytes": 27660,
       "librarySha256": "d3c76f7e4ef68232200c8d4ee91c91162b06a952d3a81afdab9b7ad379185dd2",
@@ -205,8 +205,8 @@
       "format": "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       "signatureKeyIds": ["15af5dac6d745a60"],
       "sha256": {
-        "x64": "59512994add5fd7459df93586bac1855877a232a71ee3a114c941d66ba4dab0d",
-        "arm64": "c352613f54e67597cfd7af3534d163798455cef42c2e4be3741d36a837da71ce"
+        "x64": "0cf2f72faf2019701463fabc01a78c0cc893d51b2517fc7f4ce7cd65e76c2b02",
+        "arm64": "3739ba86a1767e0ed5cc94eaf235ae3d1d9709ab45880c7dca366283068f8e19"
       }
     },
     "compilerVersion": "12.2.1",

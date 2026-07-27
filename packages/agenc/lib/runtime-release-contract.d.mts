@@ -37,8 +37,8 @@ export const MAX_RUNTIME_ATTESTATION_BYTES: number;
 export const OFFICIAL_RELEASE_REPOSITORY: string;
 export const OFFICIAL_SOURCE_REPOSITORY: string;
 export const FROZEN_LEGACY_RUNTIME_VERSION: "0.7.2";
-export const MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.0";
-export const PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.0";
+export const MINIMUM_PRIVATE_NODE_RUNTIME_VERSION: "0.11.1";
+export const PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG: "agenc-v0.11.1";
 export const OFFICIAL_RELEASE_WORKFLOW: string;
 export const RUNTIME_ATTESTATION_POLICY: Readonly<{
   repository: string;

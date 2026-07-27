@@ -1,21 +1,21 @@
 # Homebrew formula template for the self-contained AgenC runtime.
 #
 # OWNER-PUBLISH STEP — this file remains deliberately unpublishable until the
-# two placeholder digests are replaced from an immutable agenc-v0.11.0
+# two placeholder digests are replaced from an immutable agenc-v0.11.1
 # manifest and the formula is copied to tetsuo-ai/homebrew-agenc.
 class Agenc < Formula
   desc "Daemon-backed, terminal-native coding agent"
   homepage "https://github.com/tetsuo-ai/agenc-core"
-  version "0.11.0"
+  version "0.11.1"
   license "MIT"
 
   on_arm do
-    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-runtime-0.11.0-darwin-arm64-node26-abi147.tar.gz"
+    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.1/agenc-runtime-0.11.1-darwin-arm64-node26-abi147.tar.gz"
     sha256 "REPLACE_WITH_DARWIN_ARM64_SHA256"
   end
 
   on_intel do
-    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.0/agenc-runtime-0.11.0-darwin-x64-node26-abi147.tar.gz"
+    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.1/agenc-runtime-0.11.1-darwin-x64-node26-abi147.tar.gz"
     sha256 "REPLACE_WITH_DARWIN_X64_SHA256"
   end
 

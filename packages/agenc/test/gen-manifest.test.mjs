@@ -198,8 +198,8 @@ test("future patch preparation reuses the immutable Node bootstrap release", () 
     nodeBootstrapReleaseAssets({
       releaseToolchain,
       manifest: {
-        runtimeVersion: "0.11.1",
-        releaseTag: "agenc-v0.11.1",
+        runtimeVersion: "0.11.2",
+        releaseTag: "agenc-v0.11.2",
         releaseRepository: "tetsuo-ai/agenc-releases",
       },
       downloaded: new Map(),
@@ -220,7 +220,7 @@ test("future patch preparation reuses the immutable Node bootstrap release", () 
   );
 
   const detached = structuredClone(releaseToolchain);
-  detached.nodeBootstrap.releaseTag = "agenc-v0.11.1";
+  detached.nodeBootstrap.releaseTag = "agenc-v0.11.2";
   assert.throws(
     () => nodeBootstrapReleaseAssets({
       releaseToolchain: detached,

@@ -2350,7 +2350,7 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(ps1).toContain(`$nodeDistributionBytes = ${windows.bytes}`);
 
     const bootstrap = toolchain.nodeBootstrap;
-    expect(bootstrap.minimumRuntimeVersion).toBe("0.11.0");
+    expect(bootstrap.minimumRuntimeVersion).toBe("0.11.1");
     expect(bootstrap.releaseTag).toBe(
       `agenc-v${bootstrap.minimumRuntimeVersion}`,
     );
@@ -2455,19 +2455,19 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
     expect(res.stderr).not.toContain("fetching release manifest");
   });
 
-  test("retired host-Node releases fail with an actionable diagnostic before manifest fetch", () => {
+  test("pre-anchor releases fail with an actionable diagnostic before manifest fetch", () => {
     const home = join(work, "home");
     const pinned = runInstaller({
       home,
       repoDerived: true,
-      args: ["--version", "0.10.0", "--no-daemon"],
+      args: ["--version", "0.11.0", "--no-daemon"],
     });
     expect(pinned.status).not.toBe(0);
     expect(pinned.stderr).toContain(
-      "runtime 0.10.0 has no supported standalone activation contract",
+      "runtime 0.11.0 has no supported standalone activation contract",
     );
     expect(pinned.stderr).toContain(
-      "0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node",
+      "0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
     );
     expect(pinned.stderr).not.toContain("fetching release manifest");
 
@@ -2476,25 +2476,25 @@ describe.skipIf(process.platform === "win32")("install.sh", () => {
       "runtime $($env:AGENC_INSTALL_VERSION) has no supported standalone activation contract",
     );
     expect(ps1).toContain(
-      "0.7.2 bridge with host Node 25.9, or 0.11.0 and newer with private Node",
+      "0.7.2 bridge with host Node 25.9, or 0.11.1 and newer with private Node",
     );
   });
 
-  test("unpinned retired manifests fail as compatibility errors, not malformed artifacts", () => {
+  test("unpinned pre-anchor manifests fail as compatibility errors, not malformed artifacts", () => {
     const home = join(work, "home");
     mkdirSync(home, { recursive: true });
     const artifact = makeSyntheticArtifact(work);
     const manifestPath = writeManifest(work, artifact);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.runtimeVersion = "0.10.0";
-    manifest.releaseTag = "agenc-v0.10.0";
-    manifest.artifacts[0].runtimeVersion = "0.10.0";
+    manifest.runtimeVersion = "0.11.0";
+    manifest.releaseTag = "agenc-v0.11.0";
+    manifest.artifacts[0].runtimeVersion = "0.11.0";
     writeFileSync(manifestPath, JSON.stringify(manifest));
 
     const result = runInstaller({ home, manifest: manifestPath, args: ["--no-daemon"] });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      "runtime 0.10.0 has no supported standalone activation contract",
+      "runtime 0.11.0 has no supported standalone activation contract",
     );
     expect(result.stderr).not.toContain("manifest artifact identity is invalid");
   });

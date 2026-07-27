@@ -219,7 +219,7 @@ test("immutable runtime release inventory accepts only the exact asset graph", (
 });
 
 test("future patch releases do not republish the immutable Node bootstrap", () => {
-  const futureVersion = "0.11.1";
+  const futureVersion = "0.11.2";
   const valid = fixture(() => {}, { runtimeVersion: futureVersion });
   try {
     const result = run(valid);

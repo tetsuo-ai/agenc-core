@@ -437,8 +437,8 @@ describe("reproducible install and release contract", () => {
     );
     expect(nativeContract.nodeBootstrap).toMatchObject({
       schemaVersion: 1,
-      minimumRuntimeVersion: "0.11.0",
-      releaseTag: "agenc-v0.11.0",
+      minimumRuntimeVersion: "0.11.1",
+      releaseTag: "agenc-v0.11.1",
       licenseExpression: "GPL-3.0-or-later WITH GCC-exception-3.1",
       licenses: {
         copying3Sha256: "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
@@ -510,8 +510,8 @@ describe("reproducible install and release contract", () => {
         "name|epoch|version|release|arch|sha256header|payloaddigest|payloaddigestalgo|rsaheader-pgpsig",
       signatureKeyIds: ["15af5dac6d745a60"],
       sha256: {
-        x64: "59512994add5fd7459df93586bac1855877a232a71ee3a114c941d66ba4dab0d",
-        arm64: "c352613f54e67597cfd7af3534d163798455cef42c2e4be3741d36a837da71ce",
+        x64: "0cf2f72faf2019701463fabc01a78c0cc893d51b2517fc7f4ce7cd65e76c2b02",
+        arm64: "3739ba86a1767e0ed5cc94eaf235ae3d1d9709ab45880c7dca366283068f8e19",
       },
     });
   });
