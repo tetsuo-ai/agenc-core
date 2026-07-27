@@ -73,12 +73,28 @@ describe("homebrew packaging", () => {
     );
     expect(existsSync(formulaPath)).toBe(true);
     const formula = readFileSync(formulaPath, "utf8");
+    expect(formula).toContain(`  homepage "https://github.com/tetsuo-ai/agenc-core"
+  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.2/agenc-runtime-0.11.2-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
+  version "0.11.2"
+  arm64_sha256 = "REPLACE_WITH_DARWIN_ARM64_SHA256"
+  x64_sha256 = "REPLACE_WITH_DARWIN_X64_SHA256"
+  sha256 Hardware::CPU.arm? ? arm64_sha256 : x64_sha256
+  license "MIT"`);
     expect(formula).toContain("class Agenc < Formula");
     expect(formula).not.toContain("disable!");
     expect(formula).not.toContain('depends_on "node"');
-    expect(formula).toContain("depends_on :macos => :ventura");
+    expect(formula).toContain("depends_on macos: :ventura");
+    expect(formula).not.toContain("depends_on :macos => :ventura");
     expect(formula).toContain('MacOS.full_version < "13.5"');
     expect(formula).toContain('depends_on "ripgrep"');
+    expect(formula).toContain(
+      'darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz',
+    );
+    expect(formula).not.toContain("on_arm do");
+    expect(formula).not.toContain("on_intel do");
+    expect(formula).toContain(
+      "sha256 Hardware::CPU.arm? ? arm64_sha256 : x64_sha256",
+    );
     expect(formula).toContain('libexec/"node_modules/.agenc-node/bin/node"');
     expect(formula).toContain(
       'libexec/"node_modules/@tetsuo-ai/runtime/bin/agenc"',
@@ -105,6 +121,7 @@ describe("homebrew packaging", () => {
     expect(formula).toContain("OWNER-PUBLISH STEP");
     // Homebrew installs the immutable artifact directly and never performs
     // nested network installation during a formula build.
-    expect(formula).toContain("libexec.install");
+    expect(formula).toContain('libexec.install "node_modules"');
+    expect(formula).not.toContain('libexec.install Dir["node_modules"]');
   });
 });

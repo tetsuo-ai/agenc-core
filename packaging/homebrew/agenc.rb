@@ -6,27 +6,21 @@
 class Agenc < Formula
   desc "Daemon-backed, terminal-native coding agent"
   homepage "https://github.com/tetsuo-ai/agenc-core"
+  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.2/agenc-runtime-0.11.2-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
   version "0.11.2"
+  arm64_sha256 = "REPLACE_WITH_DARWIN_ARM64_SHA256"
+  x64_sha256 = "REPLACE_WITH_DARWIN_X64_SHA256"
+  sha256 Hardware::CPU.arm? ? arm64_sha256 : x64_sha256
   license "MIT"
-
-  on_arm do
-    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.2/agenc-runtime-0.11.2-darwin-arm64-node26-abi147.tar.gz"
-    sha256 "REPLACE_WITH_DARWIN_ARM64_SHA256"
-  end
-
-  on_intel do
-    url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.2/agenc-runtime-0.11.2-darwin-x64-node26-abi147.tar.gz"
-    sha256 "REPLACE_WITH_DARWIN_X64_SHA256"
-  end
 
   # The runtime artifact includes its reviewed Node 26.5.0 executable. Keep
   # ripgrep as the only host tool dependency used by the coding-agent surface.
-  depends_on :macos => :ventura
+  depends_on macos: :ventura
   depends_on "ripgrep"
 
   def install
     odie "AgenC requires macOS 13.5 or newer." if MacOS.full_version < "13.5"
-    libexec.install Dir["node_modules"]
+    libexec.install "node_modules"
 
     node_bin = libexec/"node_modules/.agenc-node/bin/node"
     runtime_bin = libexec/"node_modules/@tetsuo-ai/runtime/bin/agenc"
