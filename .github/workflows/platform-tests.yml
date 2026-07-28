@@ -477,7 +477,7 @@ jobs:
           const [resultsPath] = process.argv.slice(2);
           if (!resultsPath) throw new Error("missing PowerShell-test results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
-          const expectedTests = 19;
+          const expectedTests = 20;
           const expectedFiles = [
             "tests/budget/admitted-legacy-powershell.powershell.test.ts",
             "tests/packaging/install-ps1.powershell.test.ts",
