@@ -83,6 +83,7 @@ import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, 
 import { isInProcessEnabled } from '../../../utils/swarm/backends/registry.js';
 import { syncTeammateMode } from '../../../utils/swarm/teamHelpers.js';
 import type { TeamSummary } from '../../../utils/teamDiscovery.js';
+import { permissionModeShortTitle } from '../../../permissions/mode-display.js';
 import { getTeammateColor } from '../../../utils/teammate.js';
 import { isInProcessTeammate } from '../../../utils/teammateContext.js';
 import { writeToMailbox } from '../../../utils/teammateMailbox.js';
@@ -575,6 +576,7 @@ function PromptInput({
   // leaking into TextInput/footer handlers and stacking a second dialog.
   const upstreamModalOverlayActive = useIsModalOverlayActive() || isLocalJSXCommandActive;
   const workbenchComposerFocused = useWorkbenchComposerFocus();
+  const isWorkbenchComposer = workbenchComposerFocused !== null || isWorkbenchEnabled();
   const composerInputEnabled = workbenchComposerFocused ?? true;
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [exitMessage, setExitMessage] = useState<{
@@ -656,6 +658,7 @@ function PromptInput({
   const setAppState = useSetAppState();
   const tasks = useAppState(s => s.tasks);
   const teamContext = useAppState(s => s.teamContext);
+  const swarmMode = useAppState(s => s.swarmMode === true);
   const queuedCommands = useCommandQueue();
   const promptSuggestionState = useAppState(s => s.promptSuggestion);
   const speculation = useAppState(s => s.speculation);
@@ -2771,7 +2774,7 @@ function PromptInput({
     return 'lineSoft';
   };
   if (isExternalEditorActive) {
-    return <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1}>
+    return <Box flexDirection="row" alignItems="center" justifyContent="center" width="100%" paddingX={1} backgroundColor="surfaceBackground" opaque>
         <Text dimColor italic>
           Save and close editor to continue...
         </Text>
@@ -2779,7 +2782,13 @@ function PromptInput({
   }
   const textInputElement = <ConfiguredPromptTextInput baseProps={baseProps} vimMode={vimMode} onVimModeChange={setVimMode} />;
   const promptGlyphs = selectAgenCTuiGlyphs();
-  return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
+  return <Box
+      flexDirection="column"
+      marginTop={isWorkbenchComposer || briefOwnsGap ? 0 : 1}
+      paddingBottom={isWorkbenchComposer ? 1 : 0}
+      backgroundColor="#000000"
+      opaque
+    >
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>
           <Text dimColor>Waiting for permission…</Text>
@@ -2803,12 +2812,35 @@ function PromptInput({
             </Box>
           </Box>
           <Text color={swarmBanner.bgColor}>{promptGlyphs.horizontal.repeat(columns)}</Text>
-        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1} backgroundColor={mode === 'bash' ? 'workerWash' : undefined} borderText={onboardingInput !== undefined ? {
-          content: ' setup ',
-          position: 'top',
-          align: 'start',
-          offset: 1
-        } : buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
+        </> : <Box
+          flexDirection="row"
+          alignItems="flex-start"
+          justifyContent="flex-start"
+          borderColor={isWorkbenchComposer ? undefined : "#ffffff"}
+          borderStyle={isWorkbenchComposer ? undefined : "single"}
+          width="100%"
+          paddingX={isWorkbenchComposer ? 2 : 1}
+          backgroundColor="#000000"
+          opaque
+        >
+          {isWorkbenchComposer ? (
+            <>
+              <Text color="inverseText" backgroundColor="text" bold>
+                {` ${
+                  effectiveToolPermissionContext.mode === "bypassPermissions"
+                    ? "YOLO"
+                    : permissionModeShortTitle(effectiveToolPermissionContext.mode).toUpperCase()
+                } `}
+              </Text>
+              {swarmMode ? (
+                <>
+                  <Box width={2} flexShrink={0} />
+                  <Text color="text" bold>◆ SWARM</Text>
+                </>
+              ) : null}
+              <Box width={2} flexShrink={0} />
+            </>
+          ) : null}
           <PromptInputModeIndicator mode={mode} permissionMode={effectiveToolPermissionContext.mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
             {textInputElement}
@@ -2823,7 +2855,7 @@ function PromptInput({
           via its own early return. */}
       {onboardingInput !== undefined ? <Box paddingX={2}>
           <Text dimColor>{onboardingInput.footerHint}</Text>
-        </Box> : <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />}
+        </Box> : isWorkbenchComposer && suggestions.length === 0 && !helpOpen ? null : <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />}
       {onboardingInput !== undefined || isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {onboardingInput === undefined && isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner
@@ -2842,7 +2874,7 @@ function PromptInput({
     // bottom row. Keeping Notifications mounted prevents AutoUpdater's
     // initial-check effect from re-firing on every slash-completion
     // toggle (PR#22413).
-    <Box position="absolute" marginTop={briefOwnsGap ? -2 : -1} height={suggestions.length === 0 && !showAutoModeOptIn ? 1 : 0} width="100%" paddingLeft={2} paddingRight={1} flexDirection="column" justifyContent="flex-end" overflow="hidden">
+    <Box position="absolute" marginTop={briefOwnsGap ? -2 : -1} height={suggestions.length === 0 && !showAutoModeOptIn ? 1 : 0} width="100%" paddingLeft={2} paddingRight={1} flexDirection="column" justifyContent="flex-end" overflow="hidden" backgroundColor="surfaceBackground" opaque>
           <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} />
         </Box> : null}
     </Box>;

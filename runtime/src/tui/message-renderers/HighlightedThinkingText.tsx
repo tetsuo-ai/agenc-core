@@ -17,25 +17,32 @@ type Props = {
   useBriefLayout?: boolean;
   timestamp?: string;
   showPointer?: boolean;
+  bold?: boolean;
 };
 
-function ThinkingTextParts({ text }: { readonly text: string }): React.ReactNode {
+function ThinkingTextParts({
+  text,
+  bold = false,
+}: {
+  readonly text: string;
+  readonly bold?: boolean;
+}): React.ReactNode {
   const triggers = isUltrathinkEnabled() ? findThinkingTriggerPositions(text) : [];
-  if (triggers.length === 0) return <Text color="text">{text}</Text>;
+  if (triggers.length === 0) return <Text color="text" bold={bold}>{text}</Text>;
 
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   for (const trigger of triggers) {
     if (trigger.start > cursor) {
       parts.push(
-        <Text key={`plain-${cursor}`} color="text">
+        <Text key={`plain-${cursor}`} color="text" bold={bold}>
           {text.slice(cursor, trigger.start)}
         </Text>,
       );
     }
     for (let i = trigger.start; i < trigger.end; i++) {
       parts.push(
-        <Text key={`rb-${i}`} color={getRainbowColor(i - trigger.start)}>
+        <Text key={`rb-${i}`} color={getRainbowColor(i - trigger.start)} bold={bold}>
           {text[i]}
         </Text>,
       );
@@ -44,12 +51,12 @@ function ThinkingTextParts({ text }: { readonly text: string }): React.ReactNode
   }
   if (cursor < text.length) {
     parts.push(
-      <Text key={`plain-${cursor}`} color="text">
+      <Text key={`plain-${cursor}`} color="text" bold={bold}>
         {text.slice(cursor)}
       </Text>,
     );
   }
-  return <Text>{parts}</Text>;
+  return <Text bold={bold}>{parts}</Text>;
 }
 
 export function HighlightedThinkingText({
@@ -57,6 +64,7 @@ export function HighlightedThinkingText({
   useBriefLayout,
   timestamp,
   showPointer = true,
+  bold = false,
 }: Props): React.ReactNode {
   const isQueued = useQueuedMessage()?.isQueued ?? false;
   const isSelected = useContext(MessageActionsSelectedContext);
@@ -80,15 +88,15 @@ export function HighlightedThinkingText({
           <Text color={labelColor}>You</Text>
           {ts ? <Text dimColor> {ts}</Text> : null}
         </Box>
-        <Text color={textColor} wrap={wrapMode}>{text}</Text>
+        <Text color={textColor} wrap={wrapMode} bold={bold}>{text}</Text>
       </Box>
     );
   }
 
   return (
-    <Text wrap={wrapMode}>
+    <Text wrap={wrapMode} bold={bold}>
       {showPointer ? <Text color={pointerColor}>{figures.pointer} </Text> : null}
-      <ThinkingTextParts text={text} />
+      <ThinkingTextParts text={text} bold={bold} />
     </Text>
   );
 }

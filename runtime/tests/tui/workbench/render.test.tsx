@@ -34,7 +34,7 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
 import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
 import { Text } from "../../../src/tui/ink.js";
 import type { ScrollBoxHandle } from "../../../src/tui/ink/components/ScrollBox.js";
-import { WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
+import { AGENC_LOGO_MARK_COMPACT_LINES, WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorerRow, ProjectFileActionPrompt, projectTreeViewport } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { useWorkbenchComposerFocus } from "../../../src/tui/workbench/composerFocusContext.js";
@@ -148,7 +148,7 @@ describe("workbench render contract", () => {
     ["deleted", "D"],
     ["renamed", "R"],
     ["unmerged", "U"],
-    ["untracked", "?"],
+    ["untracked", "new"],
     ["ignored", "!"],
   ] as const)("renders explorer git state %s with its badge", async (gitState, marker) => {
     const output = await renderToString(
@@ -496,7 +496,11 @@ describe("workbench render contract", () => {
     expect(viewport.below).toBeGreaterThan(0);
   });
 
-  it("changes footer hints and displays composer attachment context", async () => {
+  it("renders a monochrome discoverability footer independent of surface mode", async () => {
+    // WorkbenchFooter is no longer a surface-specific hint strip ("Preview:",
+    // attachment context). The monochrome redesign keeps a stable global
+    // shortcut bar so / and @ stay discoverable without competing with
+    // pane-local chrome.
     const state = {
       ...getDefaultAppState(),
       workbench: {
@@ -525,18 +529,18 @@ describe("workbench render contract", () => {
       100,
     );
 
-    expect(output).toContain("Preview:");
-    expect(output).toContain("context src/app.ts");
+    expect(output).toContain("/ commands");
+    expect(output).toContain("@ attach");
+    expect(output).toContain("? shortcuts");
+    expect(output).not.toContain("Preview:");
+    expect(output).not.toContain("src/app.ts");
     expect(output).not.toContain("src/stale.ts");
   });
 
-  it("gives the composer footer a readable hint that advertises / and @ and explains the surface chord", async () => {
-    // The composer-pane footer used to read "Composer: write prompt  ctrl+w k
-    // surface" — the trailing "ctrl+w k surface" was opaque (what is a
-    // surface?) and the line advertised neither the `/` command nor the `@`
-    // attach affordance. It now glosses the chord ("focus transcript") and
-    // surfaces both discoverability hints. Revert-sensitive: restoring the old
-    // string (no "/ commands", no "@ attach file", bare "ctrl+w k surface")
+  it("gives the composer footer a readable hint that advertises / and @", async () => {
+    // Stable monochrome footer: advertise the two highest-value composer
+    // affordances plus mode/transcript/shortcut chords. Revert-sensitive:
+    // restoring the old "Composer: write prompt … ctrl+w k surface" string
     // fails the assertions below.
     const state = {
       ...getDefaultAppState(),
@@ -554,22 +558,23 @@ describe("workbench render contract", () => {
 
     const hintLine = output
       .split(/\r?\n/u)
-      .find((line) => line.includes("Composer: write prompt"));
+      .map((line) => line.trimEnd())
+      .find((line) => line.includes("/ commands") && line.includes("@ attach"));
     expect(hintLine).toBeDefined();
-    // Discoverability: `/` opens commands and `@` attaches a file, advertised
-    // where the user types.
     expect(hintLine).toContain("/ commands");
-    expect(hintLine).toContain("@ attach file");
-    // The surface chord is glossed instead of left as a bare token.
-    expect(hintLine).toContain("ctrl+w k focus transcript");
+    expect(hintLine).toContain("@ attach");
+    expect(hintLine).toContain("shift+tab mode");
+    expect(hintLine).toContain("ctrl+o transcript");
+    expect(hintLine).toContain("? shortcuts");
+    expect(hintLine).not.toContain("Composer: write prompt");
     expect(hintLine).not.toContain("ctrl+w k surface");
   });
 
-  it("advertises ctrl+r rail in the composer footer while a file surface is open", async () => {
-    // The rail toggle is global, but buffer/preview hints only render when
-    // those panes are focused. With a file open and the composer focused
-    // (the moment the user wants to rail the file), the toggle must still be
-    // discoverable — the composer footer gains "ctrl+r rail" then.
+  it("keeps the monochrome footer stable while a file surface is open", async () => {
+    // Surface-local chords (ctrl+r rail) moved out of the global footer so the
+    // composer strip stays a short, always-valid discoverability bar. With a
+    // buffer open the footer must still advertise / and @ without regressing
+    // to the old Composer:/Preview: strings.
     const state = {
       ...getDefaultAppState(),
       workbench: {
@@ -587,18 +592,18 @@ describe("workbench render contract", () => {
 
     const hintLine = output
       .split(/\r?\n/u)
-      .find((line) => line.includes("Composer: write prompt"));
+      .map((line) => line.trimEnd())
+      .find((line) => line.includes("/ commands") && line.includes("@ attach"));
     expect(hintLine).toBeDefined();
-    expect(hintLine).toContain("ctrl+r rail");
+    expect(hintLine).toContain("/ commands");
+    expect(hintLine).toContain("@ attach");
+    expect(hintLine).not.toContain("Composer: write prompt");
   });
 
-  it("indents the surface-hint footer line to match the composer footer", async () => {
-    // The composer's own "? for shortcuts" hint is rendered inside a
-    // paddingX={2} box (PromptInputFooter). The workbench surface-hint line
-    // used to render flush at column 0, so the two stacked footer lines had
-    // mismatched left margins. WorkbenchFooter now shares the same 2-column
-    // inset. Revert-sensitive: dropping paddingX={2} from WorkbenchFooter makes
-    // the leading-space assertion fail.
+  it("indents the monochrome footer line to match the composer chrome", async () => {
+    // PromptInputFooter uses paddingX={2}. WorkbenchFooter shares that inset
+    // so the stacked chrome lines align. Revert-sensitive: dropping
+    // paddingX={2} from WorkbenchFooter makes the leading-space assertion fail.
     const output = await renderToString(
       <AppStateProvider initialState={getDefaultAppState()}>
         <WorkbenchFooter />
@@ -608,11 +613,11 @@ describe("workbench render contract", () => {
 
     const hintLine = output
       .split(/\r?\n/u)
-      .find((line) => line.includes("Composer: write prompt"));
+      .find((line) => line.includes("/ commands") && line.includes("@ attach"));
 
     expect(hintLine).toBeDefined();
     expect(hintLine).toMatch(/^ {2}\S/u);
-    expect(hintLine?.startsWith("Composer:")).toBe(false);
+    expect(hintLine?.startsWith("/")).toBe(false);
   });
 
   it.each([
@@ -725,8 +730,8 @@ describe("workbench render contract", () => {
 
   it("keeps the welcome hero on screen at 80 cols when the transcript is at cold start", async () => {
     // The cold-start clip lived in the sticky-bottom ScrollBox pinning the
-    // welcome panel to the bottom on a short viewport, scrolling the `agenc.`
-    // brand line off the top. The behaviour-determining wiring (the
+    // welcome panel to the bottom on a short viewport, scrolling the official
+    // brand mark off the top. The behaviour-determining wiring (the
     // stickyScroll prop) is asserted in the dedicated revert-sensitive spec
     // (TranscriptSurface.welcome.test.tsx); this smoke check just confirms the
     // hero still renders through the surface at 80 cols.
@@ -738,8 +743,8 @@ describe("workbench render contract", () => {
       { columns: 80, rows: 14 },
     );
 
-    expect(output).toContain("agenc.");
-    expect(output).toContain("a netrunner with hands on every file");
+    expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0]);
+    expect(output).not.toContain("a netrunner with hands on every file");
   });
 
   it("renders fullscreen slash-command suggestions from the composer overlay portal", async () => {
@@ -880,11 +885,10 @@ describe("workbench render contract", () => {
       120,
     );
 
-    // Title bar shows the product name and active surface. The surface label
-    // uses the same uppercase casing as the pane header ("TRANSCRIPT"), not the
-    // lowercase surface-mode id, so the two render sites stay consistent.
-    expect(output).toContain("AgenC Workbench");
-    expect(output).toContain("TRANSCRIPT");
+    // Monochrome title bar: product mark + WORKBENCH mode chip, model, and
+    // runtime version. Surface mode labels live in pane chrome, not here.
+    expect(output).toMatch(/agenc\s+\/\s+WORKBENCH/u);
+    expect(output).not.toContain("AgenC Workbench");
     expect(output).not.toContain("| transcript");
     // ...but must NOT surface the live terminal width as a debug-style segment.
     expect(output).not.toMatch(/\d+\s+cols/u);

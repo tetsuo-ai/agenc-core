@@ -5,6 +5,7 @@ import type { Command } from '../../commands.js'
 import type { Tools } from '../../tools/Tool.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { AppStateProvider, getDefaultAppState } from '../state/AppState.js'
+import { AGENC_LOGO_MARK_LINES } from './v2/primitives.js'
 import { Messages } from './Messages.js'
 
 vi.mock('bun:bundle', () => ({
@@ -55,7 +56,7 @@ describe('Messages welcome model wiring', () => {
       120,
     )
 
-    expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).toContain('grok-build-0.1')
     expect(output).not.toContain('default model')
   })

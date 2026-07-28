@@ -3,15 +3,7 @@ import React, { useMemo, type RefObject } from "react";
 import { Box, NoSelect, Text } from "../ink.js";
 import { ModalContext } from "../context/modalContext.js";
 import { ContentWidthProvider } from "../context/contentWidthContext.js";
-import { useAppState, useAppStateMaybeOutsideOfProvider } from "../state/AppState.js";
-import type { AppState } from "../state/AppStateStore.js";
-import {
-  getDefaultMainLoopModelSetting,
-  parseUserSpecifiedModel,
-  renderModelName,
-} from "../../utils/model/model.js";
-import { permissionModeShortTitle } from "../../permissions/mode-display.js";
-import type { PermissionMode } from "../../permissions/types.js";
+import { useAppState } from "../state/AppState.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
@@ -20,10 +12,7 @@ import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/Pro
 import type { PendingRequest } from "../permission-requests.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
-import { LedgerStatus } from "../components/LedgerStatus.js";
-import { SwarmStatusIndicator } from "../components/SwarmStatusIndicator.js";
 import { PreviewSurface } from "./surfaces/PreviewSurface.js";
-import { isDangerousPermissionMode } from "./WorkbenchContextStrip.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
 import { ActiveWorkSurface } from "./surfaces/ActiveWorkSurface.js";
 import { WorkbenchComposerFocusProvider } from "./composerFocusContext.js";
@@ -58,69 +47,9 @@ type Props = {
    * Rendered in the status bar next to the model/mode/cwd strip.
    */
   readonly contextPctLabel?: string | null;
+  /** Live cumulative spend projected from bridge `token_count` events. */
+  readonly sessionCostUsd?: number;
 };
-
-function selectComposerMode(state: AppState): PermissionMode {
-  return state.toolPermissionContext.mode;
-}
-
-function selectComposerModel(state: AppState): string {
-  return (
-    state.mainLoopModelForSession ??
-    state.mainLoopModel ??
-    getDefaultMainLoopModelSetting()
-  );
-}
-
-/**
- * Always-visible composer context row: `mode · model · ctx%` directly above
- * the composer box — where the eyes already are while typing. The top status
- * bar carries the same facts, but the composer is the point of input: the
- * permission mode is safety-relevant (dangerous modes in warning color, plan
- * mode in teal) and the ctx label is the real context-window usage computed
- * by the caller (null until the first assistant usage block lands — never a
- * fabricated number).
- */
-function ComposerContextRow({
-  contextPctLabel,
-}: {
-  readonly contextPctLabel: string | null;
-}): React.ReactElement {
-  const mode =
-    useAppStateMaybeOutsideOfProvider(selectComposerMode) ?? "default";
-  const modelSetting =
-    useAppStateMaybeOutsideOfProvider(selectComposerModel) ??
-    getDefaultMainLoopModelSetting();
-  const modelLabel = renderModelName(parseUserSpecifiedModel(modelSetting));
-  const modeLabel = permissionModeShortTitle(mode).toLowerCase();
-  const dangerous = isDangerousPermissionMode(mode);
-  // Swarm status sits next to the mode: visible only while swarm mode is on
-  // and carrying the live running-agent count from AppState.
-  const swarmMode =
-    useAppStateMaybeOutsideOfProvider((state) => state.swarmMode) === true;
-  const tasks = useAppStateMaybeOutsideOfProvider((state) => state.tasks) ?? {};
-  const runningAgents = Object.values(tasks).filter(
-    (task: any) =>
-      task?.type !== "local_bash" &&
-      (task?.status === "running" || task?.status === "pending"),
-  ).length;
-  return (
-    <Box flexDirection="row" paddingX={1} height={1} overflowY="hidden" justifyContent="space-between">
-      <Box flexDirection="row">
-        <Text color={mode === "plan" ? "planMode" : dangerous ? "warning" : "inactive"}>
-          {modeLabel}
-        </Text>
-        {swarmMode ? (
-          <SwarmStatusIndicator runningAgents={runningAgents} />
-        ) : null}
-        <Text color="inactive" wrap="truncate-end">
-          {` · ${modelLabel}${contextPctLabel !== null ? ` · ${contextPctLabel}` : ""}`}
-        </Text>
-      </Box>
-      <LedgerStatus />
-    </Box>
-  );
-}
 
 export function WorkbenchLayout({
   transcript,
@@ -133,6 +62,7 @@ export function WorkbenchLayout({
   atWelcome,
   activityMode = null,
   contextPctLabel = null,
+  sessionCostUsd = 0,
 }: Props): React.ReactElement {
   const { columns, rows } = useTerminalSize();
   const workbench = useWorkbenchState();
@@ -140,10 +70,17 @@ export function WorkbenchLayout({
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
   const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
-  const explorerWidth = layoutSize === "wide" ? 30 : 26;
-  // Agents rail: 38 cols (was 30) — task rows were truncating hard at 30 and
-  // the rail had room to spare in wide layouts; explorer/chat keep theirs.
-  const agentsWidth = 38;
+  // One terminal-cell breathing room around the frame plus the frame's own
+  // left/right border leaves four columns unavailable to the pane grid.
+  const frameColumns = Math.max(1, columns - 4);
+  // The reference uses a balanced 20 / 61 / 19 split. Keeping the side rails
+  // proportional on ultrawide terminals avoids the old tiny-islands-at-the-
+  // edges look while the minimums preserve usability at the wide breakpoint.
+  const explorerWidth =
+    layoutSize === "wide"
+      ? Math.max(26, Math.floor(frameColumns * 0.2))
+      : 26;
+  const agentsWidth = Math.max(24, Math.floor(frameColumns * 0.19));
   const showExplorer = workbench.explorerVisible && layoutSize !== "narrow";
   // The Agents rail auto-hides only while the REVIEW rail is open and there
   // are no agent tasks to show: an empty "No background agents" column next
@@ -164,13 +101,13 @@ export function WorkbenchLayout({
   const railWidth = showRail
     ? Math.min(
         88,
-        Math.max(44, Math.floor(columns * 0.45)),
-        columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - 46,
+        Math.max(44, Math.floor(frameColumns * 0.45)),
+        frameColumns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - 46,
       )
     : 44;
   const surfaceWidth = Math.max(
     1,
-    columns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - (showRail ? railWidth : 0),
+    frameColumns - (showExplorer ? explorerWidth : 0) - (showAgents ? agentsWidth : 0) - (showRail ? railWidth : 0),
   );
   const surfaceContentWidth = Math.max(1, surfaceWidth - 2);
   const visiblePanes = useMemo(
@@ -214,80 +151,99 @@ export function WorkbenchLayout({
   );
 
   return (
-    <Box flexDirection="column" width="100%" height={rows} overflow="hidden">
-      {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={columns} contextPctLabel={contextPctLabel} /> : null}
-      {/* On the cold-start welcome the surface row sizes to its content so the
-          composer sits directly under the welcome panel instead of pinned to
-          the bottom of a tall terminal with a dead gulf between them; the
-          spacer after the footer absorbs the remaining rows. Once messages
-          arrive the row grows again and the composer returns to the bottom. */}
-      <Box flexDirection="row" flexGrow={atWelcome ? 0 : 1} flexShrink={1} overflow="hidden">
-        {showExplorer ? (
-          <NoSelect flexShrink={0} width={explorerWidth} height="100%">
-            <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
-          </NoSelect>
-        ) : null}
-        <ContentWidthProvider width={surfaceContentWidth}>
-          <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
-        </ContentWidthProvider>
-        {showRail ? (
-          <NoSelect flexShrink={0} width={railWidth} height="100%">
-            <PreviewSurface focused={focusedPane === "rail"} pathOverride={workbench.fileRailPath} />
-          </NoSelect>
-        ) : null}
-        {showAgents ? (
-          <NoSelect flexShrink={0} width={agentsWidth} height="100%">
-            <AgentsRail focused={focusedPane === "agents"} width={agentsWidth} />
-          </NoSelect>
-        ) : null}
-      </Box>
-      {overlay ? (
-        <Box flexDirection="column" borderColor="warning" borderTop paddingX={1}>
-          {overlay}
+    <Box width="100%" height={rows} paddingX={1} paddingY={1} backgroundColor="#000000">
+      <Box
+        flexDirection="column"
+        width="100%"
+        height="100%"
+        overflow="hidden"
+        backgroundColor="#000000"
+        borderStyle="single"
+        borderColor="lineSoft"
+      >
+        {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={frameColumns} contextPctLabel={contextPctLabel} /> : null}
+        <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+          {showExplorer ? (
+            <NoSelect flexShrink={0} width={explorerWidth} height="100%">
+              <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
+            </NoSelect>
+          ) : null}
+          <ContentWidthProvider width={surfaceContentWidth}>
+            <ActiveWorkSurface focused={focusedPane === "surface"} transcript={transcript} pendingApproval={pendingApproval} scrollRef={scrollRef} atWelcome={atWelcome} />
+          </ContentWidthProvider>
+          {showRail ? (
+            <NoSelect flexShrink={0} width={railWidth} height="100%">
+              <PreviewSurface focused={focusedPane === "rail"} pathOverride={workbench.fileRailPath} />
+            </NoSelect>
+          ) : null}
+          {showAgents ? (
+            <NoSelect flexShrink={0} width={agentsWidth} height="100%">
+              <AgentsRail
+                focused={focusedPane === "agents"}
+                width={agentsWidth}
+                sessionCostUsd={sessionCostUsd}
+              />
+            </NoSelect>
+          ) : null}
         </Box>
-      ) : null}
-      <Box flexDirection="column" flexShrink={0} borderTop borderColor={focusedPane === "composer" ? "suggestion" : "gray"}>
-        <ComposerContextRow contextPctLabel={contextPctLabel} />
-        <PromptSuggestionsOverlay />
-        <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
-          {composer}
-        </WorkbenchComposerFocusProvider>
-      </Box>
-      <PromptDialogOverlay />
-      {rows >= 5 ? <WorkbenchFooter /> : null}
-      {atWelcome ? <Box flexGrow={1} /> : null}
-      {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
-        <Box position="absolute" right={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
-          <NoSelect width={Math.min(34, columns)} height="100%">
-            <AgentsRail focused={true} width={Math.min(34, columns)} />
-          </NoSelect>
-        </Box>
-      ) : null}
-      {layoutSize === "narrow" && workbench.explorerVisible && focusedPane === "explorer" ? (
-        <Box position="absolute" left={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>
-          <NoSelect width={Math.min(34, columns)} height="100%">
-            <ProjectExplorer focused={true} width={Math.min(34, columns)} />
-          </NoSelect>
-        </Box>
-      ) : null}
-      {modal ? (
-        <ModalContext value={{
-          rows: Math.max(0, rows - 4),
-          columns: Math.max(0, columns - 2),
-          scrollRef: modalScrollRef ?? null,
-        }}>
-          <Box position="absolute" left={0} right={0} bottom={0} flexDirection="column" opaque borderTop borderColor="gray" paddingX={1}>
-            {modal}
+        {overlay ? (
+          <Box flexDirection="column" borderColor="warning" borderTop paddingX={1}>
+            {overlay}
           </Box>
-        </ModalContext>
-      ) : null}
-      {workbench.pendingBlockedOverlay ? (
-        <Box position="absolute" left={0} right={0} top={1} flexDirection="column" opaque borderColor="warning" borderBottom paddingX={1}>
-          <Text color="warning" wrap="truncate-end">
-            Approval required before {workbench.pendingBlockedOverlay.attemptedAction}
-          </Text>
+        ) : null}
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      paddingTop={1}
+      backgroundColor="#000000"
+      borderTop
+      borderTopColor="lineSoft"
+      opaque
+        >
+          <PromptSuggestionsOverlay availableColumns={frameColumns} />
+          <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
+            {composer}
+          </WorkbenchComposerFocusProvider>
         </Box>
-      ) : null}
+        <PromptDialogOverlay />
+        {rows >= 5 ? <WorkbenchFooter /> : null}
+        {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
+          <Box position="absolute" right={0} top={2} bottom={2} width={Math.min(34, frameColumns)} opaque>
+            <NoSelect width={Math.min(34, frameColumns)} height="100%">
+              <AgentsRail
+                focused={true}
+                width={Math.min(34, frameColumns)}
+                sessionCostUsd={sessionCostUsd}
+              />
+            </NoSelect>
+          </Box>
+        ) : null}
+        {layoutSize === "narrow" && workbench.explorerVisible && focusedPane === "explorer" ? (
+          <Box position="absolute" left={0} top={2} bottom={2} width={Math.min(34, frameColumns)} opaque>
+            <NoSelect width={Math.min(34, frameColumns)} height="100%">
+              <ProjectExplorer focused={true} width={Math.min(34, frameColumns)} />
+            </NoSelect>
+          </Box>
+        ) : null}
+        {modal ? (
+          <ModalContext value={{
+            rows: Math.max(0, rows - 6),
+            columns: Math.max(0, frameColumns - 2),
+            scrollRef: modalScrollRef ?? null,
+          }}>
+            <Box position="absolute" left={0} right={0} bottom={0} flexDirection="column" opaque borderTop borderColor="lineSoft" paddingX={1}>
+              {modal}
+            </Box>
+          </ModalContext>
+        ) : null}
+        {workbench.pendingBlockedOverlay ? (
+          <Box position="absolute" left={0} right={0} top={2} flexDirection="column" opaque borderColor="warning" borderBottom paddingX={1}>
+            <Text color="warning" wrap="truncate-end">
+              Approval required before {workbench.pendingBlockedOverlay.attemptedAction}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
     </Box>
   );
 }

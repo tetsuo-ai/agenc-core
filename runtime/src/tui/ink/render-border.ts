@@ -1,6 +1,5 @@
-import chalk from 'chalk'
 import cliBoxes, { type Boxes, type BoxStyle } from 'cli-boxes'
-import { applyColor } from './colorize.js'
+import { applyTextStyles } from './colorize.js'
 import type { DOMNode } from './dom.js'
 import type Output from './output.js'
 import { stringWidth } from './stringWidth.js'
@@ -71,12 +70,9 @@ function styleBorderLine(
   line: string,
   color: Color | undefined,
   dim: boolean | undefined,
+  backgroundColor: Color | undefined,
 ): string {
-  let styled = applyColor(line, color)
-  if (dim) {
-    styled = chalk.dim(styled)
-  }
-  return styled
+  return applyTextStyles(line, { color, dim, backgroundColor })
 }
 
 const renderBorder = (
@@ -101,6 +97,12 @@ const renderBorder = (
     const leftBorderColor = node.style.borderLeftColor ?? node.style.borderColor
     const rightBorderColor =
       node.style.borderRightColor ?? node.style.borderColor
+    // A border occupies the outer cells of a box, so those cells need the
+    // box background as well as the border foreground. Without an explicit
+    // background SGR the terminal's profile background leaks through behind
+    // the line glyph, producing a full-cell gray/purple halo around an
+    // otherwise white border.
+    const borderBackgroundColor = node.style.backgroundColor
 
     const dimTopBorderColor =
       node.style.borderTopDimColor ?? node.style.borderDimColor
@@ -141,14 +143,25 @@ const renderBorder = (
         box.top,
       )
       topBorder =
-        styleBorderLine(before, topBorderColor, dimTopBorderColor) +
-        text +
-        styleBorderLine(after, topBorderColor, dimTopBorderColor)
+        styleBorderLine(
+          before,
+          topBorderColor,
+          dimTopBorderColor,
+          borderBackgroundColor,
+        ) +
+        applyTextStyles(text, { backgroundColor: borderBackgroundColor }) +
+        styleBorderLine(
+          after,
+          topBorderColor,
+          dimTopBorderColor,
+          borderBackgroundColor,
+        )
     } else if (showTopBorder) {
       topBorder = styleBorderLine(
         topBorderLine,
         topBorderColor,
         dimTopBorderColor,
+        borderBackgroundColor,
       )
     }
 
@@ -164,21 +177,23 @@ const renderBorder = (
 
     verticalBorderHeight = Math.max(0, verticalBorderHeight)
 
-    let leftBorder = (applyColor(box.left, leftBorderColor) + '\n').repeat(
-      verticalBorderHeight,
-    )
+    const leftBorder = (
+      styleBorderLine(
+        box.left,
+        leftBorderColor,
+        dimLeftBorderColor,
+        borderBackgroundColor,
+      ) + '\n'
+    ).repeat(verticalBorderHeight)
 
-    if (dimLeftBorderColor) {
-      leftBorder = chalk.dim(leftBorder)
-    }
-
-    let rightBorder = (applyColor(box.right, rightBorderColor) + '\n').repeat(
-      verticalBorderHeight,
-    )
-
-    if (dimRightBorderColor) {
-      rightBorder = chalk.dim(rightBorder)
-    }
+    const rightBorder = (
+      styleBorderLine(
+        box.right,
+        rightBorderColor,
+        dimRightBorderColor,
+        borderBackgroundColor,
+      ) + '\n'
+    ).repeat(verticalBorderHeight)
 
     const bottomBorderLine = showBottomBorder
       ? (showLeftBorder ? box.bottomLeft : '') +
@@ -197,14 +212,25 @@ const renderBorder = (
         box.bottom,
       )
       bottomBorder =
-        styleBorderLine(before, bottomBorderColor, dimBottomBorderColor) +
-        text +
-        styleBorderLine(after, bottomBorderColor, dimBottomBorderColor)
+        styleBorderLine(
+          before,
+          bottomBorderColor,
+          dimBottomBorderColor,
+          borderBackgroundColor,
+        ) +
+        applyTextStyles(text, { backgroundColor: borderBackgroundColor }) +
+        styleBorderLine(
+          after,
+          bottomBorderColor,
+          dimBottomBorderColor,
+          borderBackgroundColor,
+        )
     } else if (showBottomBorder) {
       bottomBorder = styleBorderLine(
         bottomBorderLine,
         bottomBorderColor,
         dimBottomBorderColor,
+        borderBackgroundColor,
       )
     }
 

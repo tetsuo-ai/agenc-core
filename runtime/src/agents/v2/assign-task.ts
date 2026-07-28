@@ -25,6 +25,7 @@ export function createTriggerTurnTaskTool(
     description: TRIGGER_TURN_TASK_DESCRIPTION,
     metadata: toolMetadata("agent", {
       mutating: true,
+      virtualNoFsWrites: true,
       keywords: config.keywords,
     }),
     recoveryCategory: "side-effecting",

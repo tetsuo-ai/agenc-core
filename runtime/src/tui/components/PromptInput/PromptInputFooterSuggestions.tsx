@@ -89,26 +89,25 @@ function getRightAlignedRowParts(
 
 function getSuggestionHeaderCopy(type: SuggestionType): {
   title: string
-  label: string
   acceptVerb: string
 } {
   switch (type) {
     case 'command':
-      return { title: 'SLASH COMMANDS', label: 'command', acceptVerb: 'run' }
+      return { title: 'SLASH COMMANDS', acceptVerb: 'run' }
     case 'file':
-      return { title: 'FILES & RESOURCES', label: 'file', acceptVerb: 'insert' }
+      return { title: 'FILES & RESOURCES', acceptVerb: 'insert' }
     case 'directory':
-      return { title: 'DIRECTORIES', label: 'directory', acceptVerb: 'insert' }
+      return { title: 'DIRECTORIES', acceptVerb: 'insert' }
     case 'agent':
-      return { title: 'AGENTS', label: 'agent', acceptVerb: 'message' }
+      return { title: 'AGENTS', acceptVerb: 'message' }
     case 'shell':
-      return { title: 'SHELL COMPLETIONS', label: 'shell', acceptVerb: 'complete' }
+      return { title: 'SHELL COMPLETIONS', acceptVerb: 'complete' }
     case 'custom-title':
-      return { title: 'SESSION TITLES', label: 'session', acceptVerb: 'resume' }
+      return { title: 'SESSION TITLES', acceptVerb: 'resume' }
     case 'slack-channel':
-      return { title: 'SLACK CHANNELS', label: 'channel', acceptVerb: 'mention' }
+      return { title: 'SLACK CHANNELS', acceptVerb: 'mention' }
     case 'none':
-      return { title: 'SUGGESTIONS', label: 'suggestion', acceptVerb: 'select' }
+      return { title: 'SUGGESTIONS', acceptVerb: 'select' }
   }
 }
 
@@ -158,11 +157,9 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   const selectedPrefix = `${glyphs.pointer} `
   const prefixWidth = stringWidth(selectedPrefix)
   const selectionPrefix = isSelected ? selectedPrefix : ' '.repeat(prefixWidth)
-  const rowBackgroundColor: keyof Theme = isSelected
-    ? 'userMessageBackground'
-    : 'surfaceBackground'
+  const rowBackgroundColor: keyof Theme = isSelected ? 'text' : 'surfaceBackground'
   const textColor: keyof Theme | undefined = isSelected
-    ? 'text'
+    ? 'inverseText'
     : item.color
   // Every row is one line. The expanded second-line description was
   // dropped after it kept reading as a duplicate of the inline
@@ -269,6 +266,7 @@ type Props = {
   selectedSuggestion: number
   maxColumnWidth?: number
   overlay?: boolean
+  availableColumns?: number
   suggestionType?: SuggestionType
 }
 
@@ -277,6 +275,7 @@ export function PromptInputFooterSuggestions({
   selectedSuggestion,
   maxColumnWidth: maxColumnWidthProp,
   overlay,
+  availableColumns,
   suggestionType,
 }: Props): ReactNode {
   const { rows, columns } = useTerminalSize()
@@ -315,16 +314,19 @@ export function PromptInputFooterSuggestions({
   const hiddenBefore = startIndex
 
   const glyphs = selectAgenCTuiGlyphs()
-  const width = getSuggestionPopupWidth(columns, overlay)
+  // Overlay popups live inside a frame in workbench mode. Their parent can be
+  // narrower than the terminal, so use that measured width when supplied;
+  // sizing to terminal columns pushes the right border outside the viewport.
+  const width = getSuggestionPopupWidth(availableColumns ?? columns, overlay)
   const contentWidth = Math.max(1, width - 4)
   const headerCopy = getSuggestionHeaderCopy(suggestionType ?? inferSuggestionType(suggestions))
   const headerHint = suggestions.length === 1
     ? '1 match'
     : `${suggestions.length} matches`
   const titleRow = getRightAlignedRowParts(headerCopy.title, headerHint, contentWidth)
-  const commandHintRow = getRightAlignedRowParts(
-    headerCopy.label,
-    `navigate ${glyphs.arrowUp}${glyphs.arrowDown} ${glyphs.separator} ${headerCopy.acceptVerb} ${glyphs.enter}`,
+  const footerHintRow = getRightAlignedRowParts(
+    'type to filter',
+    `${glyphs.arrowUp}${glyphs.arrowDown} navigate ${glyphs.separator} ${glyphs.enter} ${headerCopy.acceptVerb} ${glyphs.separator} esc close`,
     contentWidth,
   )
 
@@ -335,9 +337,10 @@ export function PromptInputFooterSuggestions({
       width={width}
       marginX={overlay ? 0 : 1}
       borderStyle="single"
-      borderColor="agenc"
+      borderColor="#ffffff"
       paddingX={1}
       backgroundColor="surfaceBackground"
+      opaque={true}
     >
       <Box
         width="100%"
@@ -346,17 +349,6 @@ export function PromptInputFooterSuggestions({
       >
         <Text color="inactive" bold>{titleRow.left}</Text>
         <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
-      </Box>
-      <Box
-        width="100%"
-        opaque={true}
-        backgroundColor="surfaceBackground"
-      >
-        <Text color="agenc">{commandHintRow.left}</Text>
-        <Text color="inactive">
-          {commandHintRow.gap}
-          {commandHintRow.right}
-        </Text>
       </Box>
       {hiddenBefore > 0 ? (
         <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
@@ -385,7 +377,11 @@ export function PromptInputFooterSuggestions({
         </Box>
       ) : null}
       <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
-        <Text color="inactive">type to filter {glyphs.separator} esc closes</Text>
+        <Text color="inactive">{footerHintRow.left}</Text>
+        <Text color="inactive">
+          {footerHintRow.gap}
+          {footerHintRow.right}
+        </Text>
       </Box>
     </Box>
   )

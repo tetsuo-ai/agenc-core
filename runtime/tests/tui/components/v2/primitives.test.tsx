@@ -1,16 +1,31 @@
 import React from 'react'
+import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
-import { Text } from '../../ink.js'
+import { Box, Text } from '../../ink.js'
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import {
+  AssistantMessageMetadataProvider,
+  WorkbenchTranscriptLayoutProvider,
+} from '../../workbench/transcriptLayoutContext.js'
+import {
+  AGENC_LOGO_RASTER_SIZE,
+  AGENC_LOGO_RGBA_ZLIB_BASE64,
+} from './agencLogoGraphics.generated.js'
+import {
+  AGENC_LOGO_MARK_COMPACT_LINES,
+  AGENC_LOGO_MARK_LINES,
+  kittyLogoPlaceholderRows,
+  kittyLogoUploadCommand,
   MenuModal,
   ModeSwitcher,
   Msg,
   PlanList,
   SlashPalette,
   StatusSegment,
+  supportsKittyGraphics,
   TerminalFrame,
   Tool,
   WelcomeColdPanel,
@@ -107,8 +122,8 @@ describe('v2 primitives', () => {
       { columns: 120, rows: 24 },
     )
 
-    expect(output).toContain('agenc.')
-    expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).not.toContain('a netrunner with hands on every file')
     expect(output).toContain('workspace')
     expect(output).toContain('model')
     expect(output).toContain('last session')
@@ -121,12 +136,49 @@ describe('v2 primitives', () => {
     expect(output).not.toContain('/claim')
   })
 
+  it('carries a valid exact RGBA raster for the official logo', () => {
+    const raster = inflateSync(
+      Buffer.from(AGENC_LOGO_RGBA_ZLIB_BASE64, 'base64'),
+    )
+
+    expect(raster.byteLength).toBe(
+      AGENC_LOGO_RASTER_SIZE * AGENC_LOGO_RASTER_SIZE * 4,
+    )
+    // Transparent canvas plus opaque white brand geometry.
+    expect(raster.includes(Buffer.from([0, 0, 0, 0]))).toBe(true)
+    expect(raster.includes(Buffer.from([255, 255, 255, 255]))).toBe(true)
+  })
+
+  it('detects Kitty directly but keeps multiplexers and other terminals on the fallback', () => {
+    expect(supportsKittyGraphics({ KITTY_WINDOW_ID: '1' })).toBe(true)
+    expect(supportsKittyGraphics({ TERM: 'xterm-kitty' })).toBe(true)
+    expect(
+      supportsKittyGraphics({
+        KITTY_WINDOW_ID: '1',
+        TMUX: '/tmp/tmux-1000/default,1,0',
+      }),
+    ).toBe(false)
+    expect(supportsKittyGraphics({ TERM: 'xterm-256color' })).toBe(false)
+  })
+
+  it('builds a quiet Kitty virtual placement and cell-perfect placeholders', () => {
+    const upload = kittyLogoUploadCommand(16, 8)
+    const placeholders = kittyLogoPlaceholderRows(16, 8)
+
+    expect(upload).toMatch(/^\x1b_G/)
+    expect(upload).toContain('a=T,q=2,o=z,f=32,C=1,U=1')
+    expect(upload).toContain('s=160,v=160,c=16,r=8,i=16777215;')
+    expect(upload).toMatch(/\x1b\\$/)
+    expect(placeholders).toHaveLength(8)
+    expect(placeholders.every(row => stringWidth(row) === 16)).toBe(true)
+  })
+
   it('fabricates no session data when the caller has none', async () => {
     // The production caller (Messages.tsx) only passes `model` — with no real
     // recent-session feed the card and the last-session row must not render.
     const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
 
-    expect(output).toContain('agenc.')
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).toContain('workspace')
     expect(output).toContain('model')
     expect(output).not.toContain('last session')
@@ -152,6 +204,18 @@ describe('v2 primitives', () => {
     expect(output).toContain('type a task and press')
     expect(output).toContain('/ for commands')
     expect(output).toContain('@ to attach')
+    expect(output).toContain('START HERE')
+    expect(output).toContain('COMMANDS')
+    expect(output).toContain('browse every action')
+    expect(output).toContain('ATTACH')
+    expect(output).toContain('add files to context')
+    expect(output).toContain('PERMISSIONS')
+    expect(output).toContain('choose how AgenC can act')
+    expect(output).toContain('TRANSCRIPT')
+    expect(output).toContain('inspect the full run')
+    expect(output).toContain('SHIFT+TAB')
+    expect(output).toContain('CTRL+O')
+    expect(output).not.toContain('⇧')
     // "? for shortcuts" moved out of this line: the composer footer already
     // shows it, and the welcome screen was saying it twice.
     expect(output).not.toContain('? for shortcuts')
@@ -162,11 +226,29 @@ describe('v2 primitives', () => {
   it('drops whole hint segments on a narrow pane instead of cutting mid-word', async () => {
     const output = await renderToString(<WelcomeColdPanel />, { columns: 44, rows: 24 })
 
+    expect(output).toContain(AGENC_LOGO_MARK_COMPACT_LINES[0])
+    expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
     // The first segment always survives…
     expect(output).toContain('type a task and press')
     // …and narrower panes lose trailing segments whole: no mid-word ellipsis
     // like "@ to atta…" (the literal regression this guards against).
     expect(output).not.toMatch(/@ to att\S*…/)
+  })
+
+  it('centers the compact mark above metadata and actions at 80 columns', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 80, rows: 30 })
+    const lines = output.split(/\r?\n/u)
+    const brandRowIndex = lines.findIndex(line =>
+      line.includes(AGENC_LOGO_MARK_COMPACT_LINES[0]),
+    )
+    const workspaceRowIndex = lines.findIndex(line => line.includes('workspace'))
+    const startRowIndex = lines.findIndex(line => line.includes('START HERE'))
+
+    expect(brandRowIndex).toBeGreaterThanOrEqual(0)
+    expect(lines[brandRowIndex]!.indexOf(AGENC_LOGO_MARK_COMPACT_LINES[0])).toBeGreaterThan(20)
+    expect(lines[brandRowIndex]).not.toContain('workspace')
+    expect(workspaceRowIndex).toBeGreaterThan(brandRowIndex)
+    expect(startRowIndex).toBeGreaterThan(workspaceRowIndex)
   })
 
   it('omits the resume affordance when there are no recent sessions', async () => {
@@ -228,6 +310,7 @@ describe('v2 primitives', () => {
     )
 
     expect(output).toContain('item-18')
+    expect(output).toContain('▌')
     expect(output).toContain('scroll 16-22/30')
     expect(output).not.toContain('item-00')
     expect(output).not.toContain('item-29')
@@ -289,6 +372,43 @@ describe('Tool call header paren spacing', () => {
 })
 
 describe('Msg role gutter', () => {
+  it('aligns workbench prompt and response bodies with only the timestamp above the response', async () => {
+    const output = await renderToString(
+      <WorkbenchTranscriptLayoutProvider>
+        <Box flexDirection="column">
+          <Msg role="user">
+            <Text>question body</Text>
+          </Msg>
+          <AssistantMessageMetadataProvider timestamp="28 Jul · 21:42">
+            <Msg role="agenc" label="agenc">
+              <Text>answer body</Text>
+            </Msg>
+          </AssistantMessageMetadataProvider>
+        </Box>
+      </WorkbenchTranscriptLayoutProvider>,
+      { columns: 80, rows: 12 },
+    )
+
+    const lines = output.split('\n')
+    const questionLine = lines.find(line => line.includes('question body'))
+    const headerLine = lines.find(line => line.includes('28 Jul · 21:42'))
+    const answerLine = lines.find(line => line.includes('answer body'))
+
+    expect(questionLine).toBeDefined()
+    expect(headerLine).toContain('28 Jul · 21:42')
+    expect(output).not.toContain('AGENC')
+    expect(answerLine).toBeDefined()
+    expect(headerLine && answerLine).toBeTruthy()
+    expect(lines.indexOf(headerLine!)).toBeLessThan(lines.indexOf(answerLine!))
+    expect(questionLine!.indexOf('question body')).toBe(
+      answerLine!.indexOf('answer body'),
+    )
+    expect(headerLine!.indexOf('28 Jul · 21:42')).toBeGreaterThan(
+      answerLine!.indexOf('answer body'),
+    )
+    expect(answerLine).not.toContain('21:42')
+  })
+
   it('renders a full-height left gutter (no single-row ▮ marker)', async () => {
     const output = await renderToString(
       <Msg role="agenc" label="agenc">

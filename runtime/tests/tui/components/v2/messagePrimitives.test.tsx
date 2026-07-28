@@ -121,10 +121,31 @@ describe('v2 message primitives', () => {
       80,
     )
 
-    expect(output).toContain('Thinking...')
+    expect(output).toContain('Reasoning')
     expect(output).toContain('working')
+    expect(output).not.toContain('Thinking...')
     expect(output).not.toContain('∴')
     expect(output).not.toContain('…')
+  })
+
+  it('keeps the ellipsis only while thinking is actively streaming', async () => {
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+
+    const output = await renderToString(
+      <AppStateProvider>
+        <ThinkingMessage
+          param={{ type: 'thinking', thinking: 'working' }}
+          addMargin={false}
+          isTranscriptMode={true}
+          verbose={false}
+          active
+        />
+      </AppStateProvider>,
+      80,
+    )
+
+    expect(output).toContain('Thinking...')
+    expect(output).not.toContain('Reasoning')
   })
 
   it('uses ASCII redacted-thinking labels when ASCII glyph mode is requested', async () => {

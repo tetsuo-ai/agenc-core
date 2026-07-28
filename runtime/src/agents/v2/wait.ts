@@ -212,6 +212,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       "If no mailbox update arrives before the deadline, returns a timeout summary.",
     metadata: toolMetadata("agent", {
       mutating: true,
+      virtualNoFsWrites: true,
       keywords: ["agent", "wait", "status"],
     }),
     // Draining already-durable local receipts mutates mailbox state, but the

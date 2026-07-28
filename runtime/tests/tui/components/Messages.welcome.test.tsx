@@ -10,6 +10,7 @@ import {
 } from '../../utils/model/model.js'
 import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import { stringWidth } from '../ink/stringWidth.js'
+import { AGENC_LOGO_MARK_LINES } from './v2/primitives.js'
 import { Messages } from './Messages.js'
 
 vi.mock('bun:bundle', () => ({
@@ -44,8 +45,8 @@ describe('Messages welcome state', () => {
   it('renders the v2 cold-start welcome panel for an empty transcript', async () => {
     const output = await renderToString(<Messages {...baseProps} />, 120)
 
-    expect(output).toContain('agenc.')
-    expect(output).toContain('a netrunner with hands on every file')
+    expect(output).toContain(AGENC_LOGO_MARK_LINES[0])
+    expect(output).not.toContain('a netrunner with hands on every file')
     expect(output).toContain(
       parseUserSpecifiedModel(getDefaultMainLoopModelSetting()),
     )
@@ -63,7 +64,7 @@ describe('Messages welcome state', () => {
   it('does not render the welcome panel when hidden by the caller', async () => {
     const output = await renderToString(<Messages {...baseProps} hideLogo={true} />, 120)
 
-    expect(output).not.toContain('a netrunner with hands on every file')
+    expect(output).not.toContain(AGENC_LOGO_MARK_LINES[0])
     expect(output).not.toContain('/claim')
   })
 

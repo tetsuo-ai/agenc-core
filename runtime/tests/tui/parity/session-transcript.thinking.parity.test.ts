@@ -7,19 +7,30 @@ type Evt = {
   msg: { type: string; payload?: Record<string, unknown> };
 };
 
-function turnStart(turnId = "t1"): Evt {
+function turnStart(turnId = "t1", startedAt?: number): Evt {
   return {
     id: `turn-start-${turnId}`,
-    msg: { type: "turn_started", payload: { turnId } },
+    msg: {
+      type: "turn_started",
+      payload: { turnId, ...(startedAt === undefined ? {} : { startedAt }) },
+    },
   };
 }
 
-function turnComplete(turnId = "t1", lastAgentMessage?: string): Evt {
+function turnComplete(
+  turnId = "t1",
+  lastAgentMessage?: string,
+  completedAt?: number,
+): Evt {
   return {
     id: `turn-complete-${turnId}`,
     msg: {
       type: "turn_complete",
-      payload: { turnId, ...(lastAgentMessage ? { lastAgentMessage } : {}) },
+      payload: {
+        turnId,
+        ...(lastAgentMessage ? { lastAgentMessage } : {}),
+        ...(completedAt === undefined ? {} : { completedAt }),
+      },
     },
   };
 }
@@ -119,6 +130,50 @@ describe("session-transcript reducer accumulates streamingThinking", () => {
     expect(t.streamingThinking?.isStreaming).toBe(false);
     expect(t.streamingThinking?.thinking).toBe("Done.");
     expect(t.streamingThinking?.streamingEndedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  test("turn_complete closes thinking even when the provider omitted block_stop", () => {
+    const t = adaptTranscriptEvents([
+      turnStart(),
+      thinkStart(0),
+      thinkDelta(0, "Finished reasoning"),
+      agentMessageDelta("Final answer"),
+      turnComplete("t1", "Final answer"),
+    ]);
+
+    expect(t.streamingThinking).toBeNull();
+    const visibleBlocks = t.messages.flatMap((message: any) =>
+      Array.isArray(message.message?.content) ? message.message.content : [],
+    );
+    expect(visibleBlocks.map((block: any) => block.type)).toEqual([
+      "thinking",
+      "text",
+    ]);
+    expect(visibleBlocks[1]?.text).toBe("Final answer");
+  });
+
+  test("assistant timestamps come from the durable turn boundary", () => {
+    const startedAt = Date.UTC(2026, 6, 28, 19, 40);
+    const completedAt = Date.UTC(2026, 6, 28, 19, 41);
+    const events = [
+      turnStart("t1", startedAt),
+      agentMessage("Final answer"),
+      turnComplete("t1", "Final answer", completedAt),
+    ];
+
+    const first = adaptTranscriptEvents(events);
+    const second = adaptTranscriptEvents(events);
+    const firstAnswer = first.messages.find((message: any) =>
+      message.type === "assistant" &&
+      message.message?.content?.some((block: any) => block.type === "text"),
+    );
+    const secondAnswer = second.messages.find((message: any) =>
+      message.type === "assistant" &&
+      message.message?.content?.some((block: any) => block.type === "text"),
+    );
+
+    expect(firstAnswer?.timestamp).toBe(new Date(completedAt).toISOString());
+    expect(secondAnswer?.timestamp).toBe(firstAnswer?.timestamp);
   });
 
   test("agent_thinking appends a transcript message and dedupes against repeats", () => {

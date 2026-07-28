@@ -22,6 +22,14 @@ const COLLABORATION_CONTROL_TOOLS = [
   "send_message",
 ] as const;
 
+const MUTATING_COLLABORATION_CONTROL_TOOLS = [
+  "spawn_agent",
+  "assign_task",
+  "wait_agent",
+  "close_agent",
+  "send_message",
+] as const;
+
 function collaborationRegistry() {
   const options: MultiAgentV2Options = {
     getSession: () => null,
@@ -61,6 +69,18 @@ describe("collaboration control admission classification", () => {
       cancellationUsage: "zero",
       metadata: expect.objectContaining({ mutating: true }),
     });
+  });
+
+  it("keeps collaboration control effects out of filesystem write-target inference", () => {
+    const registry = collaborationRegistry();
+
+    for (const name of MUTATING_COLLABORATION_CONTROL_TOOLS) {
+      const tool = registry.tools.find((candidate) => candidate.name === name);
+      expect(tool?.metadata, name).toMatchObject({
+        mutating: true,
+        virtualNoFsWrites: true,
+      });
+    }
   });
 
   it("admits each control effect as a zero-cost tool_exec boundary", async () => {

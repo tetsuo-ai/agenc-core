@@ -5,21 +5,15 @@ import { ContentWidthProvider } from '../../../../src/tui/context/contentWidthCo
 import { renderToAnsiString, renderToString } from '../../../utils/staticRender.js'
 import { WelcomeColdPanel } from '../../../../src/tui/components/v2/primitives.js'
 
-// Regression for the cold-start workbench welcome layout: the "workspace"
-// summary card and the "recent" card used to be fixed shrink-to-content boxes,
-// so (a) they rendered at MISMATCHED widths (~40 vs ~45 cols) and (b) neither
-// grew with a wide transcript pane, leaving a jarring empty band on the right.
-// They now share one width that grows with the available pane up to a tasteful
-// cap. These tests are revert-sensitive against re-introducing the tiny fixed
-// width: reverting the `width={cardWidth}` props (so the boxes shrink to their
-// own content again) makes the equal-width and grow-to-cap assertions fail.
+// Regression coverage for the centered cold-start hero. Workspace and model
+// now share one quiet metadata line beneath the official mark; only honest
+// recent-session data earns a bordered card. The hero/recent width tracks its
+// pane up to a restrained cap instead of stretching across a wide transcript.
 
-const CARD_BORDER = /^[┌└][─]+[┐┘]$/u
+const CARD_BORDER = /[┌└][─]+[┐┘]/u
 
-// Explicit fixture sessions for the two-card tests: production no longer
-// fabricates default recent sessions (honest-chrome rule), so the "recent"
-// card renders only when real session data is passed — tests that exercise
-// the summary+recent shared-width contract must supply it themselves.
+// Production no longer fabricates default recent sessions (honest-chrome
+// rule), so card-width tests must supply real session data.
 const RECENT_SESSIONS = [
   { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
   { keyName: '2', title: 'runtime coverage', detail: '1h ago · dev · dirty' },
@@ -29,13 +23,13 @@ const RECENT_SESSIONS = [
 function cardWidths(output: string): readonly number[] {
   return output
     .split(/\r?\n/u)
-    .map((line) => line.trimEnd())
-    .filter((line) => CARD_BORDER.test(line))
+    .map((line) => line.match(CARD_BORDER)?.[0])
+    .filter((line): line is string => line !== undefined)
     .map((line) => [...line].length)
 }
 
-describe('WelcomeColdPanel summary/recent cards', () => {
-  it('renders both cards at the SAME width', async () => {
+describe('WelcomeColdPanel centered hero', () => {
+  it('renders only the honest recent-session section as a bordered card', async () => {
     const output = await renderToString(
       <ContentWidthProvider width={92}>
         <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
@@ -44,12 +38,15 @@ describe('WelcomeColdPanel summary/recent cards', () => {
     )
 
     const widths = cardWidths(output)
-    // Two cards, each contributing a top + bottom border line.
-    expect(widths.length).toBe(4)
+    // One recent-session card contributes one top and one bottom border.
+    expect(widths.length).toBe(2)
     expect(new Set(widths).size).toBe(1)
+    expect(output).toContain('workspace')
+    expect(output).toContain('model')
+    expect(output).toContain('START HERE')
   })
 
-  it('grows the cards with the pane up to the tasteful cap on a wide pane', async () => {
+  it('grows the recent card with the pane up to the hero cap on a wide pane', async () => {
     const output = await renderToString(
       <ContentWidthProvider width={92}>
         <WelcomeColdPanel recentSessions={RECENT_SESSIONS} />
@@ -59,8 +56,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
 
     const widths = cardWidths(output)
     const width = widths[0]!
-    // Caps at 64 instead of stretching to fill the ~92-col pane, but is far
-    // wider than the old ~40/45 fixed boxes — the regression we are guarding.
+    // Caps at 64 instead of stretching to fill the ~92-col pane.
     expect(width).toBe(64)
     expect(widths.every((value) => value === width)).toBe(true)
   })
@@ -74,7 +70,7 @@ describe('WelcomeColdPanel summary/recent cards', () => {
     )
 
     const widths = cardWidths(output)
-    expect(widths.length).toBe(4)
+    expect(widths.length).toBe(2)
     expect(new Set(widths).size).toBe(1)
     // Tracks the pane (50 - 2 inset) rather than a fixed tiny value, and stays
     // below the cap.
@@ -104,42 +100,32 @@ describe('WelcomeColdPanel summary/recent cards', () => {
     })
 
     const widths = cardWidths(output)
-    expect(widths.length).toBe(4)
+    expect(widths.length).toBe(2)
     expect(new Set(widths).size).toBe(1)
     expect(widths[0]).toBe(64)
   })
 
-  // Dark-theme SGR truecolor sequences for the colors that meet on the summary
-  // card. The labels ("workspace"/"model"/"last session") used to render in
-  // `muted3` (rgb(64,64,70)), nearly identical to the card's `lineSoft` border
-  // (rgb(34,35,39)) — so they read as chrome. They now render in the brighter,
-  // clearly-readable `inactive` tone (rgb(139,120,157)).
-  const INACTIVE_SGR = '[38;2;139;120;157m'
-  const MUTED3_SGR = '[38;2;64;64;70m'
-  const LINESOFT_SGR = '[38;2;34;35;39m'
+  // Monochrome-theme SGR truecolor sequences for metadata labels.
+  const INACTIVE_SGR = '[38;2;112;112;112m'
+  const MUTED3_SGR = '[38;2;68;68;68m'
 
-  // The SGR escape that immediately precedes a label's text on its row.
+  // Adjacent Ink Text nodes may insert reset/style SGR codes between the
+  // foreground color and the label. Read the last foreground SGR before it.
   function sgrBefore(out: string, label: string): string | undefined {
-    const match = out.match(new RegExp(`(\\u001b\\[[0-9;]*m)${label}`, 'u'))
-    return match?.[1]
+    const labelIndex = out.indexOf(label)
+    if (labelIndex < 0) return undefined
+    const prefix = out.slice(Math.max(0, labelIndex - 160), labelIndex)
+    return prefix.match(/\u001b\[38;2;[0-9;]+m/gu)?.at(-1)
   }
 
-  it('styles the summary-card labels in the readable label tone, not the dim border tone', async () => {
+  it('styles metadata labels in the readable secondary tone', async () => {
     const out = await renderToAnsiString(
       <WelcomeColdPanel model="qwen3.6-27b-fp8" lastSession="2h ago" />,
       { columns: 80, rows: 40, color: true },
     )
 
-    // The box border still draws in the dim `lineSoft` tone.
-    expect(out).toContain(LINESOFT_SGR)
-
-    // Each summary-card label is now colored with the brighter, readable
-    // `inactive` tone — NOT the near-border `muted3` tone it used to use.
-    // Scoped per-label (the unrelated "recent" card legitimately still uses
-    // muted3, so a global not.toContain would over-assert). Revert-sensitive:
-    // switching the label color back to "muted3" flips each preceding SGR to
-    // MUTED3_SGR and fails these checks.
-    for (const label of ['workspace', 'model', 'last session']) {
+    // Each label uses the readable `inactive` tone, not near-black chrome.
+    for (const label of ['workspace', 'model', 'agenc core', 'last session']) {
       const sgr = sgrBefore(out, label)
       expect(sgr).toBe(INACTIVE_SGR)
       expect(sgr).not.toBe(MUTED3_SGR)

@@ -17,6 +17,7 @@ export function createSendMessageTool(opts: MultiAgentV2Options): Tool {
       "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
     metadata: toolMetadata("agent", {
       mutating: true,
+      virtualNoFsWrites: true,
       keywords: ["agent", "message", "mailbox"],
     }),
     recoveryCategory: "side-effecting",

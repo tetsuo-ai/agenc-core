@@ -651,11 +651,11 @@ const MessagesImpl = ({
           </Msg>
         </Box>}
 
-      {shouldRenderStreamingThinking(streamingThinking, screen, verbose) && streamingThinking && !isBriefOnly && <Box marginTop={1}>
+      {!streamingText && shouldRenderStreamingThinking(streamingThinking, screen, verbose) && streamingThinking && !isBriefOnly && <Box marginTop={1}>
           <AssistantThinkingMessage param={{
         type: 'thinking',
         thinking: streamingThinking.thinking
-      }} addMargin={false} isTranscriptMode={isTranscriptMode} verbose={verbose} hideInTranscript={false} />
+      }} addMargin={false} isTranscriptMode={isTranscriptMode} verbose={verbose} hideInTranscript={false} active={streamingThinking.isStreaming} />
         </Box>}
     </>;
 };

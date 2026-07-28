@@ -135,8 +135,12 @@ function PromptInputFooter({
     suggestionType
   } : null, [isFullscreen, shouldShowSuggestions, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
   useSetPromptOverlay(overlayData);
-  if (shouldShowSuggestions && !isFullscreen) {
-    return <Box paddingX={2} paddingY={0}>
+  if (shouldShowSuggestions) {
+    // Fullscreen/workbench suggestions are rendered by
+    // PromptSuggestionsOverlay. Do not also render the ordinary footer below
+    // the composer: it duplicated "? for shortcuts" while the popup was open.
+    if (isFullscreen) return null;
+    return <Box paddingX={2} paddingY={0} backgroundColor="surfaceBackground" opaque>
         <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} suggestionType={suggestionType} />
       </Box>;
   }
@@ -144,7 +148,7 @@ function PromptInputFooter({
     return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} />;
   }
   return <>
-      <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1}>
+      <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>
         <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
           {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} vimMode={vimMode} />}
           <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />

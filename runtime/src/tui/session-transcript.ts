@@ -97,6 +97,14 @@ export interface AdaptedTranscript {
     readonly cache_creation_input_tokens: number;
     readonly cache_read_input_tokens: number;
   } | null;
+  /**
+   * Cumulative provider cost for this session, derived from every
+   * `token_count` event seen by the TUI bridge. The daemon owns the canonical
+   * CostSidecar, so process-local getters in the TUI client stay at zero when
+   * connected over the bridge. Keeping this projection beside `latestUsage`
+   * makes workbench chrome update on the same render as the completed turn.
+   */
+  readonly sessionCostUsd: number;
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -335,6 +343,17 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
+function timestampFromUnixMillis(value: unknown): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  try {
+    return new Date(value).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -473,11 +492,12 @@ export function makeUserMessage(content: unknown, uuid: string = randomUUID()): 
 export function makeAssistantTextMessage(
   content: string,
   uuid: string = randomUUID(),
+  messageTimestamp: string = timestamp(),
 ): any {
   return {
     type: "assistant",
     uuid,
-    timestamp: timestamp(),
+    timestamp: messageTimestamp,
     message: {
       id: randomUUID(),
       container: null,
@@ -503,11 +523,12 @@ export function makeAssistantThinkingMessage(
   thinking: string,
   redacted: boolean = false,
   uuid: string = randomUUID(),
+  messageTimestamp: string = timestamp(),
 ): any {
   return {
     type: "assistant",
     uuid,
-    timestamp: timestamp(),
+    timestamp: messageTimestamp,
     message: {
       id: randomUUID(),
       container: null,
@@ -1088,6 +1109,13 @@ function formatTokenCountUpdate(payload: Record<string, unknown>): string {
   }
 
   return `Token ledger update: ${details.join(" · ")}`;
+}
+
+function tokenCountCostUsd(event: SessionTranscriptEvent): number {
+  const unwrapped = unwrap(event);
+  if (unwrapped.type !== "token_count") return 0;
+  const usage = usageFromTokenCountPayload(payloadRecord(unwrapped.payload));
+  return computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS).costUsd;
 }
 
 function compactWhitespace(value: string): string {
@@ -1755,6 +1783,7 @@ export function adaptTranscriptEvents(
   let realtimeStreamingText = "";
   let turnStreamedChars = 0;
   let latestUsage: AdaptedTranscript["latestUsage"] = null;
+  let sessionCostUsd = 0;
   let streamingThinking:
     | {
         thinking: string;
@@ -1766,14 +1795,21 @@ export function adaptTranscriptEvents(
     | null = null;
   let lastThinkingText = "";
   let currentTurnId: string | null = null;
+  let currentTurnTimestamp: string | undefined;
+  let currentTurnAssistantMessageIndexes: number[] = [];
   let lastAssistantText = "";
   let isStreaming = false;
 
-  const persistAssistantText = (content: string, nextUuid: () => string): void => {
+  const persistAssistantText = (
+    content: string,
+    nextUuid: () => string,
+    messageTimestamp: string = currentTurnTimestamp ?? "",
+  ): void => {
     if (content.trim().length === 0 || content === lastAssistantText) {
       return;
     }
-    out.push(makeAssistantTextMessage(content, nextUuid()));
+    currentTurnAssistantMessageIndexes.push(out.length);
+    out.push(makeAssistantTextMessage(content, nextUuid(), messageTimestamp));
     lastAssistantText = content;
   };
 
@@ -1836,6 +1872,8 @@ export function adaptTranscriptEvents(
         streamingThinking = null;
         lastThinkingText = "";
         currentTurnId = null;
+        currentTurnTimestamp = undefined;
+        currentTurnAssistantMessageIndexes = [];
         lastAssistantText = "";
         isStreaming = false;
         break;
@@ -1858,6 +1896,8 @@ export function adaptTranscriptEvents(
         streamingThinking = null;
         lastThinkingText = "";
         currentTurnId = null;
+        currentTurnTimestamp = undefined;
+        currentTurnAssistantMessageIndexes = [];
         lastAssistantText = "";
         isStreaming = false;
         const replacement = (payload as HistoryReplacedEvent["payload"]).messages;
@@ -1895,6 +1935,8 @@ export function adaptTranscriptEvents(
         turnStreamedChars = 0;
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
+        currentTurnTimestamp = timestampFromUnixMillis(payload.startedAt);
+        currentTurnAssistantMessageIndexes = [];
         // Clear streaming tool state when a new turn boundary arrives. Any
         // partially-streamed tool inputs from the previous turn are abandoned
         // because they will never receive a matching completion event in this
@@ -1910,13 +1952,51 @@ export function adaptTranscriptEvents(
         lastThinkingText = "";
         break;
       case "turn_complete": {
+        const completionTimestamp =
+          timestampFromUnixMillis(payload.completedAt) ?? currentTurnTimestamp ?? "";
+        // `turn_complete` is the authoritative end of every provider stream.
+        // Some adapters can omit `assistant_thinking_block_stop`; leaving the
+        // accumulator untouched in that case kept a live "Thinking..." row
+        // mounted underneath an already-final assistant response. Preserve
+        // any otherwise-unpersisted reasoning before the answer, then clear
+        // the live state unconditionally.
+        if (
+          streamingThinking !== null &&
+          !streamingThinking.redacted &&
+          streamingThinking.thinking.trim().length > 0 &&
+          streamingThinking.thinking !== lastThinkingText
+        ) {
+          out.push(
+            makeAssistantThinkingMessage(
+              streamingThinking.thinking,
+              false,
+              nextUuid(),
+              completionTimestamp,
+            ),
+          );
+          lastThinkingText = streamingThinking.thinking;
+        }
+        streamingThinking = null;
         const content =
           typeof payload.lastAgentMessage === "string"
             ? payload.lastAgentMessage
             : typeof payload.content === "string"
               ? payload.content
               : streamingText;
-        persistAssistantText(content, nextUuid);
+        persistAssistantText(content, nextUuid, completionTimestamp);
+        if (completionTimestamp.length > 0) {
+          for (const messageIndex of currentTurnAssistantMessageIndexes) {
+            const assistantMessage = out[messageIndex];
+            if (assistantMessage?.type === "assistant") {
+              out[messageIndex] = {
+                ...assistantMessage,
+                timestamp: completionTimestamp,
+              };
+            }
+          }
+        }
+        currentTurnTimestamp = undefined;
+        currentTurnAssistantMessageIndexes = [];
         streamingText = "";
         streamingToolUses.length = 0;
         suppressedStreamingToolCallIds.clear();
@@ -1958,6 +2038,8 @@ export function adaptTranscriptEvents(
         streamingText = "";
         streamingThinking = null;
         isStreaming = false;
+        currentTurnTimestamp = undefined;
+        currentTurnAssistantMessageIndexes = [];
         if (
           typeof payload.turnId !== "string" ||
           currentTurnId === null ||
@@ -2144,8 +2226,7 @@ export function adaptTranscriptEvents(
               ),
             );
           } else {
-            out.push(makeAssistantTextMessage(payload.message, nextUuid()));
-            lastAssistantText = payload.message;
+            persistAssistantText(payload.message, nextUuid);
           }
         }
         streamingText = "";
@@ -2443,6 +2524,10 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage("Context compacted", "info", nextUuid()));
         break;
       case "token_count":
+        sessionCostUsd += computeUsdCostWithResolution(
+          usageFromTokenCountPayload(payload),
+          DEFAULT_MODEL_COSTS,
+        ).costUsd;
         latestUsage = {
           input_tokens: nonNegativeInteger(payload.promptTokens),
           output_tokens: nonNegativeInteger(payload.completionTokens),
@@ -2822,6 +2907,7 @@ export function adaptTranscriptEvents(
     streamingThinking,
     turnStreamedChars,
     latestUsage,
+    sessionCostUsd,
   };
 }
 
@@ -2829,6 +2915,7 @@ interface TranscriptState {
   readonly events: readonly SessionTranscriptEvent[];
   readonly keys: ReadonlySet<string>;
   readonly maxSeq: number | null;
+  readonly sessionCostUsd: number;
 }
 
 type TranscriptAction =
@@ -2941,6 +3028,7 @@ function buildTranscriptState(
   const keys = new Set<string>();
   const events: SessionTranscriptEvent[] = [];
   let maxSeq: number | null = null;
+  let sessionCostUsd = 0;
 
   for (const event of orderSequencedEvents(unorderedEvents)) {
     const key = eventKey(event);
@@ -2955,13 +3043,14 @@ function buildTranscriptState(
     }
     if (keys.has(key)) continue;
     keys.add(key);
+    sessionCostUsd += tokenCountCostUsd(event);
     events.push(clampEventForStorage(event));
     maxSeq = maxEventSeq(maxSeq, event);
   }
 
   evictOldestEvents(events, keys);
 
-  return { events, keys, maxSeq };
+  return { events, keys, maxSeq, sessionCostUsd };
 }
 
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -2977,7 +3066,12 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         isTranscriptResetEvent(action.event) ||
         (seq !== null && state.maxSeq !== null && seq < state.maxSeq)
       ) {
-        return buildTranscriptState([...state.events, action.event]);
+        const rebuilt = buildTranscriptState([...state.events, action.event]);
+        return {
+          ...rebuilt,
+          sessionCostUsd:
+            state.sessionCostUsd + tokenCountCostUsd(action.event),
+        };
       }
 
       // Clone the key Set rather than mutating `state.keys` in place: a reducer
@@ -2995,6 +3089,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
         events,
         keys,
         maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
+        sessionCostUsd: state.sessionCostUsd + tokenCountCostUsd(action.event),
       };
     }
     case "appendBatch": {
@@ -3015,23 +3110,37 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
             })(),
         )
       ) {
-        return buildTranscriptState([...state.events, ...action.events]);
+        const knownKeys = new Set(state.keys);
+        let addedCostUsd = 0;
+        for (const event of action.events) {
+          const key = eventKey(event);
+          if (knownKeys.has(key)) continue;
+          knownKeys.add(key);
+          addedCostUsd += tokenCountCostUsd(event);
+        }
+        const rebuilt = buildTranscriptState([...state.events, ...action.events]);
+        return {
+          ...rebuilt,
+          sessionCostUsd: state.sessionCostUsd + addedCostUsd,
+        };
       }
       const keys = state.keys as Set<string>;
       const pending: SessionTranscriptEvent[] = [];
       let maxSeq = state.maxSeq;
+      let sessionCostUsd = state.sessionCostUsd;
       for (const event of action.events) {
         const key = eventKey(event);
         if (keys.has(key)) continue;
         pending.push(clampEventForStorage(event));
         keys.add(key);
+        sessionCostUsd += tokenCountCostUsd(event);
         const seq = eventSeq(event);
         maxSeq = seq === null ? maxSeq : maxEventSeq(maxSeq, event);
       }
       if (pending.length === 0) return state;
       const events = [...state.events, ...pending];
       evictOldestEvents(events, keys);
-      return { events, keys, maxSeq };
+      return { events, keys, maxSeq, sessionCostUsd };
     }
   }
 }
@@ -3040,7 +3149,7 @@ export function createSessionTranscriptStateForTesting(
   events: readonly SessionTranscriptEvent[],
 ): TranscriptState {
   return reducer(
-    { events: [], keys: new Set(), maxSeq: null },
+    { events: [], keys: new Set(), maxSeq: null, sessionCostUsd: 0 },
     { kind: "reset", events },
   );
 }
@@ -3105,6 +3214,7 @@ export function useSessionTranscript(
     events: [],
     keys: new Set(),
     maxSeq: null,
+    sessionCostUsd: 0,
   });
 
   useEffect(() => {
@@ -3170,8 +3280,13 @@ export function useSessionTranscript(
     };
   }, [session]);
 
-  return useMemo(
-    () => adaptTranscriptEvents(state.events, startupMessages),
-    [state.events, startupMessages],
-  );
+  return useMemo(() => {
+    const adapted = adaptTranscriptEvents(state.events, startupMessages);
+    // `state.sessionCostUsd` survives the event ring buffer and transcript
+    // clear/replacement events; the adapter's local total covers standalone
+    // callers and matches this value until old events are evicted.
+    return adapted.sessionCostUsd === state.sessionCostUsd
+      ? adapted
+      : { ...adapted, sessionCostUsd: state.sessionCostUsd };
+  }, [state.events, state.sessionCostUsd, startupMessages]);
 }

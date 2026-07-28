@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
+import { VERSION } from '../../../../src/version.js'
 import { WelcomeColdPanel } from './primitives.js'
 
 // Regression for "welcome-model": the TUI welcome/home box used to show the
@@ -20,6 +21,8 @@ describe('WelcomeColdPanel model row', () => {
 
     expect(output).toContain('model')
     expect(output).toContain('grok-build-0.1')
+    expect(output).toContain('core')
+    expect(output).toContain(VERSION)
     expect(output).not.toContain('default model')
   })
 

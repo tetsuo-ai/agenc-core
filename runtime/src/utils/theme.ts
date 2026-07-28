@@ -511,7 +511,7 @@ const lightDaltonizedTheme: Theme = {
  * Dark theme using explicit RGB values to avoid inconsistencies
  * from users' custom terminal ANSI color definitions
  */
-const darkTheme: Theme = {
+const chromaticDarkTheme: Theme = {
   autoAccept: 'rgb(206,92,255)', // hot violet
   bashBorder: 'rgb(255,132,66)', // command orange
   agenc: 'rgb(206,92,255)', // neon purple
@@ -599,6 +599,50 @@ const darkTheme: Theme = {
   rainbow_indigo_shimmer: 'rgb(195,180,230)',
   rainbow_violet_shimmer: 'rgb(230,180,210)',
 }
+
+// The default dark experience is deliberately absolute monochrome: every
+// painted surface is black and every semantic foreground is white. Meaning is
+// carried by copy, glyphs, weight, and layout rather than hue.
+const monochromeBackgroundTokens = new Set<keyof Theme>([
+  'background',
+  'diffAdded',
+  'diffRemoved',
+  'diffAddedDimmed',
+  'diffRemovedDimmed',
+  'clawd_background',
+  'surfaceBackground',
+  'userMessageBackground',
+  'userMessageBackgroundHover',
+  'messageActionsBackground',
+  'selectionBg',
+  'bashMessageBackgroundColor',
+  'agencWash',
+  'workerWash',
+  'successWash',
+  'errorWash',
+  'planModeWash',
+  'memoryBackgroundColor',
+  'rate_limit_empty',
+])
+
+const monochromeToneOverrides: Partial<Theme> = {
+  inactive: 'rgb(112,112,112)',
+  inactiveShimmer: 'rgb(142,142,142)',
+  subtle: 'rgb(82,82,82)',
+  muted3: 'rgb(68,68,68)',
+  line: 'rgb(48,48,48)',
+  lineSoft: 'rgb(34,34,34)',
+}
+
+const darkTheme = Object.fromEntries(
+  (Object.keys(chromaticDarkTheme) as Array<keyof Theme>).map((token) => [
+    token,
+    monochromeToneOverrides[token] ??
+      (monochromeBackgroundTokens.has(token) || token === 'inverseText'
+        ? 'rgb(0,0,0)'
+        : 'rgb(255,255,255)'),
+  ]),
+) as Theme
 
 /**
  * Dark daltonized theme (color-blind friendly) using explicit RGB values

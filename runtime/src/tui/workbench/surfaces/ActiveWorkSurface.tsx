@@ -1,11 +1,13 @@
 import React, { type RefObject } from "react";
 
-import { Box } from "../../ink.js";
+import { Box, Text } from "../../ink.js";
 import type { ScrollBoxHandle } from "../../ink/components/ScrollBox.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
+import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import type { PendingRequest } from "../../permission-requests.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import { WorkbenchTranscriptLayoutProvider } from "../transcriptLayoutContext.js";
 import type { ActiveSurfaceMode, WorkbenchState } from "../types.js";
 import { AgentSurface } from "./AgentSurface.js";
 import { BufferSurface } from "./BufferSurface.js";
@@ -120,6 +122,9 @@ export function ActiveWorkSurface({
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const descriptor = descriptorForSurface(workbench.activeSurfaceMode);
+  const { columns } = useTerminalSize();
+  const isTranscript = descriptor.mode === "transcript";
+  const showSurfaceHeader = columns >= 100 && !isTranscript;
   useRegisterKeybindingContext("Surface", focused);
   useKeybindings(
     {
@@ -129,8 +134,39 @@ export function ActiveWorkSurface({
   );
 
   return (
-    <Box flexDirection="column" flexGrow={1} height="100%" overflow="hidden" paddingX={1}>
-      {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })}
+    <Box flexDirection="column" flexGrow={1} height="100%" overflow="hidden" backgroundColor="surfaceBackground">
+      {showSurfaceHeader ? (
+        <Box
+          height={1}
+          paddingX={1}
+          borderBottom
+          borderColor={focused ? "text" : "lineSoft"}
+          backgroundColor="surfaceBackground"
+        >
+          <Text
+            color={focused ? "text" : "inactive"}
+            bold={focused}
+            wrap="truncate-end"
+          >
+            {descriptor.title(workbench)}
+          </Text>
+        </Box>
+      ) : null}
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        overflow="hidden"
+        paddingX={isTranscript ? 3 : 1}
+        paddingTop={isTranscript ? 1 : 0}
+      >
+        {isTranscript ? (
+          <WorkbenchTranscriptLayoutProvider>
+            {descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })}
+          </WorkbenchTranscriptLayoutProvider>
+        ) : (
+          descriptor.renderBody({ focused, transcript, pendingApproval, scrollRef, atWelcome })
+        )}
+      </Box>
     </Box>
   );
 }

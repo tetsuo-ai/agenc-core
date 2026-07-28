@@ -101,6 +101,7 @@ export function createCloseAgentTool(opts: MultiAgentV2Options): Tool {
     description: "Close a spawned agent and its descendants.",
     metadata: toolMetadata("agent", {
       mutating: true,
+      virtualNoFsWrites: true,
       keywords: ["agent", "close", "stop"],
     }),
     requiresApproval: true,

@@ -33,7 +33,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const store = getProjectTreeStore();
   const { rows: terminalRows } = useTerminalSize();
   const [fileAction, setFileAction] = useState(null);
-  const maxTreeRows = Math.max(1, terminalRows - 8);
+  const maxTreeRows = Math.max(1, terminalRows - 12);
   const attachedPaths = useMemo(
     () => composerAttachmentsForState(workbench).flatMap((item) => item.path ? [item.path] : []),
     [workbench.attachments, workbench.composerAttachmentIds],
@@ -228,46 +228,45 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   // collapsed directory hides its children from the rows, which would undercount
   // a multi-file project (e.g. an agent-created subpackage showing "WORKSPACE 1").
   const itemCount = snapshot.fileCount;
+  const directoryCount =
+    snapshot.directoryCount ??
+    snapshot.rows.filter((row) => row.kind === "directory").length;
   const dirtyCount = snapshot.rows.filter((row) => row.gitState && row.gitState !== "clean").length;
-  const headerLabel = "WORKSPACE";
-  const headerLabelWidth = stringWidth(headerLabel);
-  const headerContentWidth = Math.max(0, width - 3);
-  const renderedHeaderLabelWidth = Math.min(headerLabelWidth, headerContentWidth);
   const headerMeta = `${itemCount}${dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}${snapshot.loading ? " sync" : ""}`;
-  const headerMetaWidth = Math.max(0, headerContentWidth - renderedHeaderLabelWidth - 1);
   const glyphs = selectAgenCTuiGlyphs();
 
   return (
-    <Box ref={paneRef} flexDirection="column" width={width} height="100%" borderRight borderColor={focused ? "suggestion" : "gray"} paddingX={1}>
-      <Box height={1} flexShrink={0}>
-        {renderedHeaderLabelWidth > 0 ? (
-          <Box width={renderedHeaderLabelWidth} flexShrink={0}>
-            <Text color={focused ? "suggestion" : "gray"} wrap={renderedHeaderLabelWidth < headerLabelWidth ? "truncate-end" : "wrap"}>{headerLabel}</Text>
-          </Box>
-        ) : null}
-        {headerMetaWidth > 0 ? (
-          <Box width={headerMetaWidth} marginLeft={1} flexShrink={1} overflow="hidden">
-            <Text dimColor wrap="truncate-end">{headerMeta}</Text>
-          </Box>
-        ) : null}
+    <Box ref={paneRef} flexDirection="column" width={width} height="100%" borderRight borderColor="lineSoft" backgroundColor="#000000">
+      <Box
+        height={2}
+        flexShrink={0}
+        paddingX={2}
+        alignItems="center"
+        backgroundColor="#000000"
+        borderBottom
+        borderBottomColor="lineSoft"
+      >
+        <Text color={focused ? "text" : "inactive"} wrap="truncate-end">WORKSPACE</Text>
+        <Box flexGrow={1} />
+        <Text color="inactive" wrap="truncate-end">{headerMeta}</Text>
       </Box>
-      {snapshot.error ? (
-        <Box height={1} flexShrink={0}>
-          <Text color="error" wrap="truncate-end">{snapshot.error}</Text>
-        </Box>
-      ) : null}
-      {fileAction ? (
-        <ProjectFileActionPrompt
-          focused={focused}
-          action={fileAction}
-          width={Math.max(8, width - 2)}
-          onChange={(value) => setFileAction((current) => current ? { ...current, value } : current)}
-          onSubmit={submitFileAction}
-          onConfirmDelete={confirmDelete}
-          onCancel={closeFileAction}
-        />
-      ) : null}
-      <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
+        {snapshot.error ? (
+          <Box height={1} flexShrink={0}>
+            <Text color="error" wrap="truncate-end">{snapshot.error}</Text>
+          </Box>
+        ) : null}
+        {fileAction ? (
+          <ProjectFileActionPrompt
+            focused={focused}
+            action={fileAction}
+            width={Math.max(8, width - 3)}
+            onChange={(value) => setFileAction((current) => current ? { ...current, value } : current)}
+            onSubmit={submitFileAction}
+            onConfirmDelete={confirmDelete}
+            onCancel={closeFileAction}
+          />
+        ) : null}
         {viewport.above > 0 ? (
           <Box height={1} flexShrink={0}>
             {/* "N above" / "N below" reads as a position (how far the window
@@ -283,6 +282,19 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
             <Text color="inactive" wrap="truncate-end">{glyphs.arrowDown} {viewport.below} below</Text>
           </Box>
         ) : null}
+      </Box>
+      <Box
+        height={2}
+        flexShrink={0}
+        paddingX={2}
+        alignItems="center"
+        borderTop
+        borderTopColor="lineSoft"
+        backgroundColor="#000000"
+      >
+        <Text color="inactive" wrap="truncate-end">
+          {itemCount} files · {directoryCount} dirs
+        </Text>
       </Box>
     </Box>
   );
@@ -399,16 +411,18 @@ export function ProjectExplorerRow({
   const marker = markerForRow(row, glyphs);
   const badges = rowBadges(row, glyphs);
   const prefix = `${branch}${marker} `;
-  // Directories carry a trailing slash so they scan differently from files at
-  // a glance, without spending a color on the distinction.
-  const rawLabel = row.kind === "directory" ? `${row.label}/` : row.label;
+  const rawLabel = row.label;
   const labelWidth = Math.max(1, width - stringWidth(prefix) - stringWidth(badges) - 1);
   const label = trim(rawLabel, labelWidth);
   const gap = Math.max(0, width - stringWidth(prefix) - stringWidth(label) - stringWidth(badges));
-  const color = colorForRow(row);
   return (
     <Box height={1} flexShrink={0} onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}>
-      <Text color={color} inverse={row.focused} wrap="truncate-end">
+      <Text
+        color={row.selected ? "#000000" : row.label.startsWith(".") ? "inactive" : "text"}
+        backgroundColor={row.selected ? "#ffffff" : "#000000"}
+        bold={row.selected || row.kind === "root"}
+        wrap="truncate-end"
+      >
         {prefix}{label}{" ".repeat(gap)}{badges}
       </Text>
     </Box>
@@ -424,11 +438,8 @@ function indentPrefix(row: ProjectTreeRow): string {
 }
 
 function markerForRow(row: ProjectTreeRow, glyphs: ReturnType<typeof selectAgenCTuiGlyphs>): string {
-  // Folders get a real folder icon (open when expanded) instead of the bare
-  // arrow — editor-style affordance (UX request). The root (workspace) is
-  // always expanded.
-  if (row.kind === "root") return glyphs.folderOpen;
-  if (row.kind === "directory") return row.expanded ? glyphs.folderOpen : glyphs.folderClosed;
+  if (row.kind === "root") return "▾";
+  if (row.kind === "directory") return row.expanded ? "▾" : "▸";
   if (row.kind === "loading") return glyphs.ellipsis;
   // An empty workspace is a normal cold-start state, so its marker is a neutral
   // space — the "!" below is reserved for genuine error rows.
@@ -460,7 +471,7 @@ function gitMarker(state: ProjectTreeRow["gitState"]): string {
     case "unmerged":
       return "U";
     case "untracked":
-      return "?";
+      return "new";
     case "ignored":
       return "!";
     default:

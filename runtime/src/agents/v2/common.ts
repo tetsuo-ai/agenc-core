@@ -70,6 +70,7 @@ export function toolMetadata(
     readonly deferred?: boolean;
     readonly hiddenByDefault?: boolean;
     readonly keywords?: readonly string[];
+    readonly virtualNoFsWrites?: boolean;
   } = {},
 ): Tool["metadata"] {
   return {
@@ -77,6 +78,7 @@ export function toolMetadata(
     source: "builtin",
     hiddenByDefault: opts.hiddenByDefault ?? false,
     mutating: opts.mutating ?? false,
+    ...(opts.virtualNoFsWrites === true ? { virtualNoFsWrites: true } : {}),
     deferred: opts.deferred ?? false,
     keywords: opts.keywords ?? [family],
     preferredProfiles: ["coding", "operator", "general"],

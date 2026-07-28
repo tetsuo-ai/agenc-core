@@ -15,6 +15,7 @@ import { Box } from '../../ink.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
 import {
+  AGENC_LOGO_MARK_LINES,
   ApprovalCard,
   ChatBody,
   DiffInline,
@@ -1653,7 +1654,7 @@ const DESIGN_STATES: readonly DesignState[] = [
   {
     id: '01a',
     title: 'welcome cold',
-    expected: ['agenc.', 'a netrunner with hands on every file', 'recent', 'mode · default'],
+    expected: [AGENC_LOGO_MARK_LINES[0], 'recent', 'mode · default'],
     render: viewport => (
       <Frame
         viewport={viewport}

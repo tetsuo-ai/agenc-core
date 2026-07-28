@@ -817,6 +817,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     description: buildSpawnAgentDescription(opts.getSession()),
     metadata: toolMetadata("agent", {
       mutating: true,
+      // Spawning mutates collaboration/runtime state, while any child file
+      // writes are enforced by that child's own sandbox. Worktree paths are
+      // derived and contained by the trusted worktree manager.
+      virtualNoFsWrites: true,
       keywords: ["agent", "spawn", "delegate", "subagent"],
     }),
     requiresApproval: true,

@@ -5,80 +5,131 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AgenC — Agents that cook</title>
   <meta name="description" content="AgenC is a lean coding CLI runtime with sandboxed tools, multi-agent orchestration, and a daemon-backed workflow. Intent in. Diff out." />
-  <meta name="theme-color" content="#000000" />
+  <meta name="theme-color" content="#05060a" />
   <meta property="og:title" content="AgenC — Agents that cook" />
   <meta property="og:description" content="Sandboxed tools. Multi-agent loops. A coding runtime built to ship." />
   <meta property="og:type" content="website" />
   <link rel="icon" href="logo-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="logo-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="site-header">
+  <div class="bg-grid" aria-hidden="true"></div>
+  <div class="bg-glow" aria-hidden="true"></div>
+  <div class="bg-noise" aria-hidden="true"></div>
+
+  <header class="site-header" id="header">
     <div class="nav-shell">
       <a class="logo" href="#top" aria-label="AgenC home">
-        <img class="logo-mark" src="logo-mark.svg" width="20" height="20" alt="" />
+        <img class="logo-mark" src="logo-mark.svg" width="22" height="22" alt="" />
         <span class="logo-word">AgenC</span>
       </a>
       <nav class="nav" aria-label="Primary">
         <a href="#features">Features</a>
         <a href="#how">How it works</a>
-        <a href="#proof">Why AgenC</a>
+        <a href="#workflow">Workflow</a>
         <a href="#install">Install</a>
       </nav>
       <div class="header-actions">
         <a class="nav-link" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub</a>
         <a class="btn btn-sm" href="#install">Get started</a>
       </div>
-      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false">
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-nav">
         <span></span><span></span>
       </button>
     </div>
+    <nav class="mobile-nav" id="mobile-nav" aria-label="Mobile">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a class="btn btn-primary mobile-cta" href="#install">Get started</a>
+    </nav>
   </header>
 
   <main id="top">
     <section class="hero">
       <div class="hero-copy reveal">
-        <p class="eyebrow">Daemon-backed coding runtime</p>
-        <h1>Agents that don’t just chat.<br /><span class="hero-em">They cook.</span></h1>
+        <p class="eyebrow">
+          <span class="pulse"></span>
+          Daemon-backed coding runtime
+        </p>
+        <h1>
+          Agents that don’t just chat.
+          <span class="hero-em">They cook.</span>
+        </h1>
         <p class="hero-sub">
           A lean coding CLI — plan, edit, test, and orchestrate agents in your repo
           with sandboxed tools and a real terminal workflow.
         </p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="#install">Install AgenC</a>
-          <a class="btn btn-ghost" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">View on GitHub</a>
+          <a class="btn btn-ghost" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+        <div class="hero-meta">
+          <span>Node 25.9+</span>
+          <span class="dot"></span>
+          <span>Open source</span>
+          <span class="dot"></span>
+          <span>npm · @tetsuo-ai/agenc</span>
         </div>
       </div>
 
       <div class="hero-stage reveal" aria-label="AgenC terminal session preview">
         <div class="device">
           <div class="device-bar">
-            <span class="traffic" aria-hidden="true"></span>
+            <span class="traffic" aria-hidden="true">
+              <i></i><i></i><i></i>
+            </span>
             <span class="device-title">agenc — ~/project</span>
+            <span class="device-badge">live</span>
           </div>
-          <div class="device-screen terminal-body" id="terminal" aria-live="polite">
-            <!-- filled by script.js -->
-          </div>
+          <div class="device-screen terminal-body" id="terminal" aria-live="polite"></div>
+        </div>
+        <div class="hero-float hero-float-a" aria-hidden="true">
+          <span class="chip-dot ok"></span>
+          sandbox · allow
+        </div>
+        <div class="hero-float hero-float-b" aria-hidden="true">
+          <span class="chip-dot warn"></span>
+          3 agents · parallel
         </div>
       </div>
     </section>
 
     <section class="marquee" aria-label="Capabilities">
-      <div class="marquee-inner reveal">
-        <p>Built for serious coding agents</p>
-        <ul>
-          <li>Sandboxed tools</li>
-          <li>Multi-agent</li>
-          <li>Daemon CLI</li>
-          <li>Gateway channels</li>
-          <li>Plan mode</li>
-          <li>Verification</li>
-        </ul>
+      <div class="marquee-track">
+        <div class="marquee-inner">
+          <span>Sandboxed tools</span>
+          <span>Multi-agent swarm</span>
+          <span>Daemon CLI</span>
+          <span>Gateway channels</span>
+          <span>Plan mode</span>
+          <span>Adversarial verification</span>
+          <span>Durable memory</span>
+          <span>Terminal-native TUI</span>
+        </div>
+        <div class="marquee-inner" aria-hidden="true">
+          <span>Sandboxed tools</span>
+          <span>Multi-agent swarm</span>
+          <span>Daemon CLI</span>
+          <span>Gateway channels</span>
+          <span>Plan mode</span>
+          <span>Adversarial verification</span>
+          <span>Durable memory</span>
+          <span>Terminal-native TUI</span>
+        </div>
       </div>
     </section>
 
-    <section id="features" class="band band-dark features">
+    <section id="features" class="band features">
       <div class="section-head reveal">
         <p class="eyebrow">Features</p>
         <h2>Everything you need<br />to run agents on real code.</h2>
@@ -87,37 +138,65 @@
 
       <div class="bento">
         <article class="tile tile-lg reveal">
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+          </div>
           <p class="tile-kicker">Security</p>
           <h3>Sandboxed execution</h3>
           <p>Shell and file tools run behind a permission model so agents stay productive without going rogue.</p>
           <div class="tile-visual tile-visual-sandbox" aria-hidden="true">
-            <span></span><span></span><span></span>
+            <div class="perm-row"><span class="perm-dot ok"></span> read workspace</div>
+            <div class="perm-row"><span class="perm-dot ok"></span> edit local files</div>
+            <div class="perm-row"><span class="perm-dot warn"></span> network · ask</div>
+            <div class="perm-row"><span class="perm-dot deny"></span> system root · blocked</div>
           </div>
         </article>
+
         <article class="tile reveal">
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8L15.5 7.2M8.2 13.2L15.5 16.8"/></svg>
+          </div>
           <p class="tile-kicker">Scale</p>
           <h3>Multi-agent orchestration</h3>
           <p>Spawn specialized agents, fan out research and implementation, then integrate in one session.</p>
         </article>
+
         <article class="tile reveal">
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h16M4 16h16M8 4v16M16 4v16" opacity=".35"/><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </div>
           <p class="tile-kicker">Channels</p>
           <h3>Gateway everywhere</h3>
           <p>Connect Slack, Discord, Telegram, and more so AgenC meets your team where work already happens.</p>
         </article>
+
         <article class="tile reveal">
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v18M5 8h14M7 12h10M9 16h6"/></svg>
+          </div>
           <p class="tile-kicker">Continuity</p>
           <h3>Memory & planning</h3>
           <p>Durable memory, plan mode, and task tracking keep long coding sessions coherent across turns.</p>
         </article>
+
         <article class="tile reveal">
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h6M7 13h10M7 17h4"/></svg>
+          </div>
           <p class="tile-kicker">Craft</p>
           <h3>Terminal-native TUI</h3>
           <p>Fullscreen workbench, streaming transcript, and prompt chrome that feels like an editor.</p>
         </article>
+
         <article class="tile tile-wide reveal">
-          <p class="tile-kicker">Trust</p>
-          <h3>Adversarial verification</h3>
-          <p>Non-trivial changes get independent checks before you call it done. Trust, but prove it.</p>
+          <div class="tile-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2.5 2.5L16 9"/><circle cx="12" cy="12" r="9"/></svg>
+          </div>
+          <div class="tile-wide-copy">
+            <p class="tile-kicker">Trust</p>
+            <h3>Adversarial verification</h3>
+            <p>Non-trivial changes get independent checks before you call it done. Trust, but prove it.</p>
+          </div>
           <div class="tile-visual tile-visual-check" aria-hidden="true">
             <div class="check-row"><span>✓</span> Tests green</div>
             <div class="check-row"><span>✓</span> Diff reviewed</div>
@@ -127,9 +206,9 @@
       </div>
     </section>
 
-    <section id="how" class="band band-light how">
+    <section id="how" class="band how">
       <div class="section-head center reveal">
-        <p class="eyebrow dark">How it works</p>
+        <p class="eyebrow">How it works</p>
         <h2>Intent in. Diff out.</h2>
         <p class="section-sub">A tight loop from vague idea to verified change — without the ceremony.</p>
       </div>
@@ -158,7 +237,55 @@
       </ol>
     </section>
 
-    <section id="proof" class="band band-dark proof">
+    <section id="workflow" class="band workflow">
+      <div class="workflow-grid">
+        <div class="section-head reveal">
+          <p class="eyebrow">Workflow</p>
+          <h2>Built for the way real code gets shipped.</h2>
+          <p class="section-sub">
+            AgenC stays in your terminal, respects your permissions, and keeps long-running work coherent
+            with memory, plans, and independent verification.
+          </p>
+          <ul class="workflow-list">
+            <li>
+              <strong>Local-first by default</strong>
+              <span>Work happens in your repo with tools you can audit and approve.</span>
+            </li>
+            <li>
+              <strong>Swarm when it helps</strong>
+              <span>Fan out research and implementation across agents with disjoint scopes.</span>
+            </li>
+            <li>
+              <strong>Prove before done</strong>
+              <span>Verification agents challenge non-trivial changes before you ship.</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="workflow-panel reveal" aria-hidden="true">
+          <div class="wf-card">
+            <div class="wf-row">
+              <span class="wf-tag">plan</span>
+              <span>Map landing surface + brand tokens</span>
+            </div>
+            <div class="wf-row">
+              <span class="wf-tag run">run</span>
+              <span>Spawn explorer · writer · verifier</span>
+            </div>
+            <div class="wf-row">
+              <span class="wf-tag ok">ok</span>
+              <span>Layout, a11y, reduced-motion checks</span>
+            </div>
+            <div class="wf-meter">
+              <div class="wf-meter-fill"></div>
+            </div>
+            <p class="wf-foot">session · durable memory · ready to ship</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="stack" class="band stack">
       <div class="section-head center reveal">
         <p class="eyebrow">Why teams care</p>
         <h2>Less theater.<br />More throughput.</h2>
@@ -179,7 +306,7 @@
       </div>
     </section>
 
-    <section id="install" class="band band-black install">
+    <section id="install" class="band install">
       <div class="section-head center reveal">
         <p class="eyebrow">Install</p>
         <h2>Get AgenC on your machine.</h2>
@@ -191,19 +318,22 @@
 
       <div class="install-card reveal">
         <div class="install-header">
-          <span>Quick start</span>
+          <span class="install-label">
+            <span class="pulse"></span>
+            Quick start
+          </span>
           <button class="btn btn-secondary copy-btn" type="button" data-copy="curl -fsSL https://get.agenc.ag/install.sh | sh">
             Copy
           </button>
         </div>
         <pre class="install-code" tabindex="0"><code><span class="code-comment"># macOS / Linux — installs AgenC with its private Node runtime</span>
-curl -fsSL https://get.agenc.ag/install.sh | sh
+<span class="code-cmd">curl -fsSL https://get.agenc.ag/install.sh | sh</span>
 
 <span class="code-comment"># run in any repo</span>
-agenc</code></pre>
+<span class="code-cmd">agenc</span></code></pre>
         <div class="install-actions">
-          <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Open install docs</a>
-          <a class="btn btn-secondary" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub repository</a>
+          <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">Open repository</a>
+          <a class="btn btn-secondary" href="https://github.com/tetsuo-ai/agenc-core/issues" target="_blank" rel="noopener noreferrer">Report an issue</a>
         </div>
         <p class="install-note">Includes a private Node.js 26.5 runtime · No host Node required</p>
       </div>
@@ -215,8 +345,8 @@ agenc</code></pre>
         <h2>Time to cook.</h2>
         <p>Drop AgenC into your workflow and turn the next vague idea into a shipped artifact.</p>
         <div class="cta-actions">
-          <a class="btn btn-primary" href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Install AgenC</a>
-          <a class="btn btn-ghost-light" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">Star on GitHub</a>
+          <a class="btn btn-primary" href="#install">Install AgenC</a>
+          <a class="btn btn-ghost" href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">Star on GitHub</a>
         </div>
       </div>
     </section>
@@ -236,7 +366,6 @@ agenc</code></pre>
         <a href="#how">How it works</a>
         <a href="#install">Install</a>
         <a href="https://github.com/tetsuo-ai/agenc-core" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="https://github.com/tetsuo-ai/agenc-core/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">Docs</a>
       </div>
       <p class="copyright">© <span id="year">2026</span> AgenC. Open source under the project license.</p>
     </div>

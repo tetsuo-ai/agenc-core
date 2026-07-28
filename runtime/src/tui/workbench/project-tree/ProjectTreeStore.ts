@@ -21,6 +21,7 @@ const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   activePath: null,
   expandedPaths: [],
   fileCount: 0,
+  directoryCount: 0,
 });
 const DEFAULT_VIEWPORT_ROWS = 20;
 const WORKSPACE_TREE_IGNORE = [
@@ -425,6 +426,7 @@ export class ProjectTreeStore {
       // currently-visible rows, so the WORKSPACE header never undercounts a
       // project whose files sit inside a collapsed directory.
       fileCount: countFilePaths(this.#paths),
+      directoryCount: collectDirectoryPaths(this.#paths).size,
     };
     for (const listener of this.#listeners) listener();
   }

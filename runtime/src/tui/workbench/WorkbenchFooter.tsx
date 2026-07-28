@@ -3,9 +3,6 @@ import React from "react";
 import { Box, Text } from "../ink.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
-import { footerHintsForSurface } from "./surfaces/ActiveWorkSurface.js";
-import { composerAttachmentsForState, visibleWorkbenchPane } from "./reducer.js";
-import { useWorkbenchState } from "./state.js";
 
 // Hints are `<label>: <segment>  <segment>  …` with double-space separators.
 // On narrow terminals whole trailing segments are dropped instead of
@@ -24,40 +21,42 @@ export function fitFooterHints(hints: string, available: number): string {
 }
 
 export function WorkbenchFooter(): React.ReactElement {
-  const workbench = useWorkbenchState();
   const { columns } = useTerminalSize();
-  const hints = hintsForPane(visibleWorkbenchPane(workbench), workbench.activeSurfaceMode, workbench.fileRailPath !== null);
-  const composerAttachments = composerAttachmentsForState(workbench);
-  // paddingX={2} on both sides, and leave the attachments suffix whatever
-  // room it needs before the hints claim the rest.
-  const fittedHints = fitFooterHints(hints, Math.max(1, columns - 4));
+  const showMode = columns >= 58;
+  const showTranscript = columns >= 76;
   return (
-    // paddingX={2} matches the composer's own footer hint inset
-    // (PromptInputFooter), so the stacked "? for shortcuts" line and this
-    // surface-hint line share a consistent left margin instead of one being
-    // indented two columns and the other flush at column 0.
-    <Box height={1} width="100%" paddingX={2}>
-      <Text dimColor wrap="truncate-end">{fittedHints}</Text>
-      {composerAttachments.length > 0 ? (
-        <Text color="suggestion" wrap="truncate-end"> | context {composerAttachments.map((item) => item.label).join(", ")}</Text>
+    <Box
+      height={3}
+      width="100%"
+      paddingX={2}
+      paddingTop={1}
+      alignItems="center"
+      backgroundColor="#000000"
+      borderTop
+      borderTopColor="lineSoft"
+    >
+      <Text color="text">/</Text>
+      <Text color="inactive"> commands</Text>
+      <Box width={3} />
+      <Text color="text">@</Text>
+      <Text color="inactive"> attach</Text>
+      {showMode ? (
+        <>
+          <Box width={3} />
+          <Text color="text" bold>shift+tab</Text>
+          <Text color="inactive"> mode</Text>
+        </>
       ) : null}
+      {showTranscript ? (
+        <>
+          <Box width={3} />
+          <Text color="text" bold>ctrl+o</Text>
+          <Text color="inactive"> transcript</Text>
+        </>
+      ) : null}
+      <Box width={3} />
+      <Text color="text">?</Text>
+      <Text color="inactive"> shortcuts</Text>
     </Box>
   );
-}
-
-function hintsForPane(pane: string, surface: string, railOpen: boolean): string {
-  if (pane === "explorer") return "Explorer: j/k move  h/l fold  enter/o edit  a add  r rename  d delete  @ attach  esc composer";
-  if (pane === "agents") return "Agents: enter detail  ctrl+w w next  esc composer";
-  if (pane === "composer") {
-    const base = "Composer: write prompt  / commands  @ attach file  ctrl+w k focus transcript";
-    // The rail toggle is global, but the buffer/preview hints only show while
-    // those panes are FOCUSED — with a file open and the user typing in the
-    // composer (the exact moment they want to rail the file), the toggle was
-    // undiscoverable. Advertise it here whenever a file is open or railed.
-    if (railOpen || surface === "buffer" || surface === "preview") {
-      return `${base}  ctrl+r rail`;
-    }
-    return base;
-  }
-  return footerHintsForSurface(surface as never);
 }

@@ -2,7 +2,11 @@ import { Box } from "../ink.js";
 import { usePromptOverlay, usePromptOverlayDialog } from "../context/promptOverlayContext.js";
 import PromptInputFooterSuggestions from "./PromptInput/PromptInputFooterSuggestions.js";
 
-export function PromptSuggestionsOverlay(): React.ReactElement | null {
+export function PromptSuggestionsOverlay({
+  availableColumns,
+}: {
+  readonly availableColumns?: number;
+}): React.ReactElement | null {
   const data = usePromptOverlay();
   if (!data || data.suggestions.length === 0) {
     return null;
@@ -26,6 +30,7 @@ export function PromptSuggestionsOverlay(): React.ReactElement | null {
         maxColumnWidth={data.maxColumnWidth}
         suggestionType={data.suggestionType}
         overlay={true}
+        availableColumns={availableColumns}
       />
     </Box>
   );

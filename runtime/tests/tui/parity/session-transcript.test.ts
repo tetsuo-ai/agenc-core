@@ -194,6 +194,7 @@ describe("AgenC TUI session transcript", () => {
       content:
         "Token ledger update: 1.2K in · 450 out · 1.6K total · 300 cache read · 50 cache write · 25 reasoning · 1 web search · $0.019 · openai/gpt-5.4",
     });
+    expect(transcript.sessionCostUsd).toBeCloseTo(0.019, 3);
   });
 
   test("token ledger fallback total never re-adds cached tokens", () => {

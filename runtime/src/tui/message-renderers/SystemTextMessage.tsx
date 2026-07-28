@@ -29,6 +29,7 @@ import { getPillLabel } from '../../tasks/pillLabel';
 import { useSelectedMessageBg } from '../components/messageActions';
 import { AGENT_MESSAGE_THEME_COLOR } from '../message-theme.js';
 import { ProtocolEvent } from '../components/v2/primitives.js';
+import { useWorkbenchTranscriptLayout } from '../workbench/transcriptLayoutContext.js';
 type Props = {
   message: SystemMessage;
   addMargin: boolean;
@@ -55,6 +56,14 @@ export function shouldRenderStopHookSummary(message: SystemStopHookSummaryMessag
   return totalDurationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS;
 }
 
+export function isWorkbenchChromeBookkeepingMessage(content: string): boolean {
+  return (
+    content.startsWith("Token ledger update:") ||
+    content === "Background agent running" ||
+    content.startsWith("Background agent running:")
+  );
+}
+
 export function SystemTextMessage({
   message,
   addMargin,
@@ -62,6 +71,19 @@ export function SystemTextMessage({
   isTranscriptMode,
 }: Props): React.ReactNode {
   const bg = useSelectedMessageBg();
+  const useWorkbenchLayout = useWorkbenchTranscriptLayout();
+  // The workbench already owns live activity and spend chrome. Repeating
+  // bridge bookkeeping after every turn breaks the conversational rhythm and
+  // makes real assistant content harder to scan. Keep these messages in the
+  // underlying transcript (and therefore ctrl+o/audit views), but omit them
+  // from the live workbench surface.
+  if (
+    useWorkbenchLayout &&
+    typeof message.content === "string" &&
+    isWorkbenchChromeBookkeepingMessage(message.content)
+  ) {
+    return null;
+  }
   if (message.subtype === "protocol_event") {
     return <ProtocolEventSystemMessage message={message} addMargin={addMargin} />;
   }

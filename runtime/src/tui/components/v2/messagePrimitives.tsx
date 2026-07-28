@@ -337,6 +337,7 @@ type ThinkingMessageProps = {
   readonly isTranscriptMode: boolean
   readonly verbose: boolean
   readonly hideInTranscript?: boolean
+  readonly active?: boolean
 }
 
 function thinkingLabel(prefix: string): string {
@@ -349,6 +350,7 @@ export function ThinkingMessage({
   isTranscriptMode,
   verbose,
   hideInTranscript = false,
+  active = false,
 }: ThinkingMessageProps): React.ReactNode {
   const { thinking } = param
   if (!thinking || hideInTranscript) return null
@@ -368,13 +370,17 @@ export function ThinkingMessage({
     )
   }
 
-  const label = thinkingLabel(glyphs.thinkingPrefix)
+  const label = active
+    ? thinkingLabel(glyphs.thinkingPrefix)
+    : glyphs.thinkingPrefix.length > 0
+      ? `${glyphs.thinkingPrefix} Reasoning`
+      : 'Reasoning'
 
   return (
     <Box flexDirection="column" gap={1} marginTop={addMargin ? 1 : 0} width="100%">
       <ThemedText color="subtle" italic>
         {label}
-        {glyphs.thinkingEllipsis}
+        {active ? glyphs.thinkingEllipsis : null}
       </ThemedText>
       <Box paddingLeft={2}>
         <Markdown dimColor>{thinking}</Markdown>

@@ -6,6 +6,7 @@ import { BLOCKQUOTE_BAR } from '../constants/figures.js'
 import { stringWidth } from '../tui/ink/stringWidth.js'
 import { supportsHyperlinks } from '../tui/ink/supports-hyperlinks.js'
 import type { CliHighlight } from './cliHighlight.js'
+import type { Theme as CliHighlightTheme } from 'cli-highlight'
 import { logForDebugging } from 'src/utils/debug.js'
 import { createHyperlink } from './hyperlink.js'
 import { stripPromptXMLTags } from './messages.js'
@@ -15,6 +16,61 @@ import type { ThemeName } from './theme.js'
 // breaks the character-to-segment mapping in applyStylesToWrappedText,
 // causing styled text to shift right.
 const EOL = '\n'
+
+// The default dark TUI is intentionally monochrome, but cli-highlight ships
+// its own ANSI palette and therefore bypasses AgenC's theme tokens. A complete
+// token map is required: any missing key falls back to cli-highlight's colored
+// default theme. Hierarchy here comes from weight and luminance only.
+const codeWhite = (part: string): string => chalk.white(part)
+const codeStrong = (part: string): string => chalk.white.bold(part)
+const codeMuted = (part: string): string => chalk.rgb(150, 150, 150)(part)
+const codeEmphasis = (part: string): string => chalk.white.italic(part)
+const codeUnderline = (part: string): string => chalk.white.underline(part)
+
+const MONOCHROME_CODE_THEME = {
+  default: codeWhite,
+  keyword: codeStrong,
+  built_in: codeStrong,
+  type: codeStrong,
+  literal: codeStrong,
+  number: codeWhite,
+  regexp: codeWhite,
+  string: codeWhite,
+  subst: codeWhite,
+  symbol: codeStrong,
+  class: codeStrong,
+  function: codeStrong,
+  title: codeStrong,
+  params: codeWhite,
+  comment: codeMuted,
+  doctag: codeMuted,
+  meta: codeStrong,
+  'meta-keyword': codeStrong,
+  'meta-string': codeWhite,
+  section: codeUnderline,
+  tag: codeStrong,
+  name: codeStrong,
+  'builtin-name': codeStrong,
+  attr: codeWhite,
+  attribute: codeWhite,
+  variable: codeWhite,
+  bullet: codeStrong,
+  code: codeWhite,
+  emphasis: codeEmphasis,
+  strong: codeStrong,
+  formula: codeWhite,
+  link: codeUnderline,
+  quote: codeMuted,
+  'selector-tag': codeStrong,
+  'selector-id': codeStrong,
+  'selector-class': codeStrong,
+  'selector-attr': codeWhite,
+  'selector-pseudo': codeStrong,
+  'template-tag': codeStrong,
+  'template-variable': codeWhite,
+  addition: codeStrong,
+  deletion: codeMuted,
+} satisfies CliHighlightTheme
 
 // CommonMark soft line breaks inside a paragraph render like ordinary spaces
 // in HTML. Preserve explicit hard breaks (`br` tokens) separately, but do not
@@ -90,7 +146,10 @@ export function formatToken(
           )
         }
       }
-      return highlight.highlight(token.text, { language }) + EOL
+      return highlight.highlight(token.text, {
+        language,
+        ...(theme === 'dark' ? { theme: MONOCHROME_CODE_THEME } : {}),
+      }) + EOL
     }
     case 'codespan': {
       // inline code

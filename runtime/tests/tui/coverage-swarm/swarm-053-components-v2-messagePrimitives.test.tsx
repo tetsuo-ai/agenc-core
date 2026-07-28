@@ -284,7 +284,7 @@ describe('messagePrimitives coverage swarm 053', () => {
     expect(collapsed).not.toContain('Thinking')
     expect(collapsed).toContain('ctrl+o')
     expect(collapsed).not.toContain('private chain of thought')
-    expect(verbose).toContain('Thinking...')
+    expect(verbose).toContain('Reasoning')
     expect(verbose).toContain('visible reasoning summary')
   })
 })

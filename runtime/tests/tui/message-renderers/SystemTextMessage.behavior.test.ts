@@ -8,6 +8,7 @@ import {
   formatHookDuration,
   getStopHookTotalDurationMs,
   getSystemMessageContentWidth,
+  isWorkbenchChromeBookkeepingMessage,
   shouldRenderStopHookSummary,
 } from './SystemTextMessage.js'
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../tools/hooks.js'
@@ -69,5 +70,21 @@ describe('SystemTextMessage width behavior', () => {
     expect(getSystemMessageContentWidth(120)).toBe(110)
     expect(getSystemMessageContentWidth(10)).toBe(1)
     expect(getSystemMessageContentWidth(1)).toBe(1)
+  })
+})
+
+describe('SystemTextMessage workbench bookkeeping behavior', () => {
+  it('moves repetitive live accounting and running notices into workbench chrome', () => {
+    expect(
+      isWorkbenchChromeBookkeepingMessage(
+        'Token ledger update: 12K in · 40 out · $0.031',
+      ),
+    ).toBe(true)
+    expect(isWorkbenchChromeBookkeepingMessage('Background agent running')).toBe(true)
+    expect(
+      isWorkbenchChromeBookkeepingMessage('Background agent running: reading files'),
+    ).toBe(true)
+    expect(isWorkbenchChromeBookkeepingMessage('Context compacted')).toBe(false)
+    expect(isWorkbenchChromeBookkeepingMessage('Background agent completed')).toBe(false)
   })
 })

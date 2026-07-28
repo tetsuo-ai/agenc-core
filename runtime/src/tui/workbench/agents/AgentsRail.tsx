@@ -9,16 +9,19 @@ import { isTerminalTaskStatus } from "../../../tasks/types.js";
 import { formatNumber } from "../../../utils/format.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { SpiralDots } from "../../components/spinner/SpiralDots.js";
-import { stopWorkbenchTask, workbenchStopActionForTask } from "../tasks/stopActions.js";
+import { stopWorkbenchTask } from "../tasks/stopActions.js";
 import { formatTaskElapsed } from "./activity.js";
 import { nonEmptyString as nonBlankString } from "../../../utils/stringUtils.js";
+import { formatUsdCost } from "../../../session/cost.js";
 
 export function AgentsRail({
   focused,
   width,
+  sessionCostUsd = 0,
 }: {
   readonly focused: boolean;
   readonly width: number;
+  readonly sessionCostUsd?: number;
 }): React.ReactElement {
   const tasks = useAppState((state) => state.tasks);
   const remoteCount = useAppState((state) => state.remoteBackgroundTaskCount);
@@ -26,7 +29,17 @@ export function AgentsRail({
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
   const taskList = useStableAgentTasks(Object.values(tasks ?? {}).filter((task: any) => task.type !== "local_bash"));
-  const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
+  const activeCount = taskList.filter(
+    (task: any) => task.status === "running" || task.status === "pending",
+  ).length;
+  const statusLabel =
+    activeCount > 0
+      ? `${activeCount} ACTIVE`
+      : remoteCount > 0
+        ? `${remoteCount} REMOTE`
+        : taskList.length > 0
+          ? `${taskList.length} RECENT`
+          : "0 ACTIVE";
   const { selectedId, selectedTask } = resolveAgentSelection(taskList, workbench.selectedAgentTaskId);
   const selectByDelta = (delta: number) => {
     const nextId = nextAgentSelectionId(taskList, selectedId, delta);
@@ -53,22 +66,60 @@ export function AgentsRail({
   );
 
   return (
-    <Box flexDirection="column" width={width} height="100%" borderLeft borderColor={focused ? "suggestion" : "gray"} paddingX={1}>
-      <Box height={1}>
-        <Text color={focused ? "suggestion" : "gray"} wrap="truncate-end">Agents</Text>
+    <Box flexDirection="column" width={width} height="100%" borderLeft borderColor="lineSoft" backgroundColor="#000000">
+      <Box
+        height={2}
+        flexShrink={0}
+        paddingX={2}
+        alignItems="center"
+        backgroundColor="#000000"
+        borderBottom
+        borderBottomColor="lineSoft"
+      >
+        <Text color={focused ? "text" : "inactive"} wrap="truncate-end">AGENTS</Text>
+        <Box flexGrow={1} />
+        <Text color="inactive" wrap="truncate-end">{statusLabel}</Text>
       </Box>
-      {taskList.length === 0 && remoteCount > 0 ? (
-        <Text wrap="truncate-end">remote tasks: {remoteCount}</Text>
-      ) : null}
-      {taskList.length === 0 && remoteCount === 0 ? <Text dimColor>No background agents</Text> : null}
-      {taskList.length >= 2 ? (
-        <SwarmPanel tasks={taskList} selectedId={selectedId} />
-      ) : (
-        <>
-          <AgentRailSection label="active" tasks={activeTasks} selectedId={selectedId} />
-          <AgentRailSection label="background" tasks={backgroundTasks} selectedId={selectedId} />
-        </>
-      )}
+      <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={2} paddingTop={1}>
+        {taskList.length === 0 && remoteCount > 0 ? (
+          <Text color="inactive" wrap="wrap">Waiting for agent details…</Text>
+        ) : null}
+        {taskList.length === 0 && remoteCount === 0 ? (
+          <Text color="inactive" wrap="wrap">Delegate work to track progress here.</Text>
+        ) : null}
+        {taskList.map((task: any) => (
+          <AgentRailRow
+            key={task.id}
+            task={task}
+            selected={selectedId === task.id}
+            width={Math.max(8, width - 5)}
+          />
+        ))}
+      </Box>
+      <AgentRailSpend sessionCostUsd={sessionCostUsd} />
+    </Box>
+  );
+}
+
+function AgentRailSpend({
+  sessionCostUsd,
+}: {
+  readonly sessionCostUsd: number;
+}): React.ReactElement {
+  const spend = formatUsdCost(sessionCostUsd);
+  return (
+    <Box
+      height={2}
+      flexShrink={0}
+      paddingX={2}
+      alignItems="center"
+      borderTop
+      borderTopColor="lineSoft"
+      backgroundColor="#000000"
+    >
+      <Text color="inactive">session spend</Text>
+      <Box flexGrow={1} />
+      <Text color="text" bold>{spend}</Text>
     </Box>
   );
 }
@@ -265,9 +316,11 @@ function AgentRailSection({
 function AgentRailRow({
   task,
   selected,
+  width = 20,
 }: {
   readonly task: any;
   readonly selected: boolean;
+  readonly width?: number;
 }): React.ReactElement {
   const progress = task.progress ?? {};
   const activity =
@@ -276,27 +329,28 @@ function AgentRailRow({
     nonBlankString(task.status) ??
     "unknown";
   const label = agentRowLabel(task);
-  const stopAction = workbenchStopActionForTask(task);
-  const diffCount = progress.diffCount ?? task.diffCount;
-  const approvalPending = task.approvalPending === true || task.pendingApproval === true;
-  // Semantic state color (working/done/failed/stopped/idle) on the marker so a
-  // fan-out reads at a glance instead of as a wall of identical rows. When the
-  // agent is waiting on a human decision, the marker shifts to the warning
-  // accent regardless of run state so "needs you" stands out.
-  const markerColor = approvalPending ? "warning" : statusColor(task.status);
+  const running = task.status === "running";
+  const statusLabel = task.status === "pending" ? "queued" : task.status;
+  const activityWidth = Math.max(4, width);
+  const activeWidth = Math.max(2, Math.floor(activityWidth * 0.58));
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Text wrap="truncate-end">
-        <Text color={markerColor}>{statusMarker(task.status)}</Text>
-        <Text color={selected ? "suggestion" : undefined}> {label}</Text>
+    <Box flexDirection="column" marginBottom={1} width="100%">
+      <Box height={1}>
+        <Text color="text" bold={selected || running} wrap="truncate-end">{label}</Text>
+        <Box flexGrow={1} />
+        <Text color="text">{running ? "■" : "□"}</Text>
+      </Box>
+      <Text color="inactive" wrap="truncate-end">
+        {statusLabel}{running || task.endTime ? ` · ${formatTaskElapsed(task)}` : ""}
       </Text>
-      <Text dimColor wrap="truncate-end">{activity}</Text>
-      <Text dimColor wrap="truncate-end">
-        {formatTaskElapsed(task)} · tools {progress.toolUseCount ?? 0} tokens {progress.tokenCount ?? 0}
-        {typeof diffCount === "number" && diffCount > 0 ? ` · diffs ${diffCount}` : ""}
-        {approvalPending ? " · approval" : ""}
-        {stopAction ? " · x stop" : ""}
-      </Text>
+      {running ? (
+        <Text wrap="truncate-end">
+          <Text color="text">{"━".repeat(activeWidth)}</Text>
+          <Text color="lineSoft">{"━".repeat(Math.max(0, activityWidth - activeWidth))}</Text>
+        </Text>
+      ) : activity !== statusLabel ? (
+        <Text color="inactive" wrap="truncate-end">{activity}</Text>
+      ) : null}
     </Box>
   );
 }

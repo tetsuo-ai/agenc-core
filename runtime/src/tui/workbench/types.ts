@@ -146,6 +146,8 @@ export type ProjectTreeSnapshot = {
    * which is the "what exists" anchor the header is meant to convey.
    */
   readonly fileCount: number;
+  /** Collapse-independent directory count for the explorer footer. */
+  readonly directoryCount?: number;
 };
 
 export type SearchMatch = {

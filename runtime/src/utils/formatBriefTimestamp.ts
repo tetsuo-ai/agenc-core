@@ -51,6 +51,34 @@ export function formatBriefTimestamp(
 }
 
 /**
+ * Compact but unambiguous metadata stamp for the workbench chat header.
+ * Unlike `formatBriefTimestamp`, this always includes the calendar date so a
+ * long-running transcript never leaves the reader guessing which day a reply
+ * belongs to.
+ */
+export function formatChatTimestamp(isoString: string): string {
+  const d = new Date(isoString)
+  if (Number.isNaN(d.getTime())) {
+    return ''
+  }
+
+  const locale = getLocale()
+  const date = d.toLocaleDateString(locale, {
+    day: '2-digit',
+    month: 'short',
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: 'numeric' as const }),
+  })
+  const time = d.toLocaleTimeString(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
+  return `${date} · ${time}`
+}
+
+/**
  * Derive a BCP 47 locale tag from POSIX env vars.
  * LC_ALL > LC_TIME > LANG, falls back to undefined (system default).
  * Converts POSIX format (en_GB.UTF-8) to BCP 47 (en-GB).
