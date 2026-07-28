@@ -2786,7 +2786,7 @@ function PromptInput({
       flexDirection="column"
       marginTop={isWorkbenchComposer || briefOwnsGap ? 0 : 1}
       paddingBottom={isWorkbenchComposer ? 1 : 0}
-      backgroundColor="#000000"
+      backgroundColor="surfaceBackground"
       opaque
     >
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
@@ -2816,11 +2816,11 @@ function PromptInput({
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          borderColor={isWorkbenchComposer ? undefined : "#ffffff"}
+          borderColor={isWorkbenchComposer ? undefined : "text"}
           borderStyle={isWorkbenchComposer ? undefined : "single"}
           width="100%"
           paddingX={isWorkbenchComposer ? 2 : 1}
-          backgroundColor="#000000"
+          backgroundColor="surfaceBackground"
           opaque
         >
           {isWorkbenchComposer ? (

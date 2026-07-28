@@ -49,13 +49,13 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
   })
 
   test.each([
-    ['shell', 'SHELL COMPLETIONS', 'shell', 'complete'],
-    ['custom-title', 'SESSION TITLES', 'session', 'resume'],
-    ['slack-channel', 'SLACK CHANNELS', 'channel', 'mention'],
-    ['none', 'SUGGESTIONS', 'suggestion', 'select'],
+    ['shell', 'SHELL COMPLETIONS', 'complete'],
+    ['custom-title', 'SESSION TITLES', 'resume'],
+    ['slack-channel', 'SLACK CHANNELS', 'mention'],
+    ['none', 'SUGGESTIONS', 'select'],
   ] as const)(
     'renders explicit %s copy in the header and keyboard hint',
-    async (suggestionType, title, label, acceptVerb) => {
+    async (suggestionType, title, acceptVerb) => {
       const output = await renderSuggestions(
         [
           {
@@ -69,8 +69,7 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
 
       expect(output).toContain(title)
       expect(output).toContain('1 match')
-      expect(output).toContain(label)
-      expect(output).toContain(`navigate ^v - ${acceptVerb} Enter`)
+      expect(output).toContain(`^v navigate - Enter ${acceptVerb}`)
     },
   )
 
@@ -92,8 +91,7 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
 
     expect(output).toContain('DIRECTORIES')
     expect(output).toContain('4 matches')
-    expect(output).toContain('directory')
-    expect(output).toContain('navigate ^v - insert Enter')
+    expect(output).toContain('^v navigate - Enter insert')
     expect(output).toContain('^ 2 more above')
     expect(output).toContain('v 1 more below')
     expect(output).toContain('> dir-2')
@@ -153,7 +151,7 @@ describe('PromptInputFooterSuggestions coverage swarm row 080', () => {
 
     expect(output).toContain('SUGGESTIONS')
     expect(output).toContain('2 matches')
-    expect(output).toContain('navigate ^v - select Enter')
+    expect(output).toContain('^v navigate - Enter select')
     expect(output).toContain('[hot] Alpha branch details')
     expect(output).toContain('beta')
     expect(output).not.toContain('> alpha')

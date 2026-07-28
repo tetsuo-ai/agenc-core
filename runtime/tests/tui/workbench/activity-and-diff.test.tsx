@@ -215,24 +215,22 @@ describe("title bar / body spinner glyph color agreement", () => {
     // before unification the title bar used color="agenc" (a different purple
     // than the body's "suggestion"), so this equality fails on the old code.
     expect(titleColor).toBe(bodyColor);
-    // Belt-and-suspenders: in the default theme "suggestion" is rgb(178,95,255).
-    // Reverting the title bar to "agenc" (rgb(206,92,255)) changes this escape.
-    expect(titleColor).toContain("178;95;255");
-    expect(titleColor).not.toContain("206;92;255");
+    // The monochrome workbench maps both activity surfaces to exact white.
+    expect(titleColor).toContain("255;255;255");
   });
 });
 
 describe("WorkbenchStatusBar working indicator", () => {
   it("shows the indicator only when a turn is active", async () => {
     const idle = await renderToString(withState(<WorkbenchStatusBar activityMode={null} />), 120);
-    expect(idle).toContain("AgenC Workbench");
+    expect(idle).toContain("WORKBENCH");
     expect(idle).not.toContain("working");
 
     const busy = await renderToString(
       withState(<WorkbenchStatusBar activityMode="requesting" />),
       120,
     );
-    expect(busy).toContain("AgenC Workbench");
+    expect(busy).toContain("WORKBENCH");
     // Title-cased verb, matching the composer body spinner for the same turn.
     expect(busy).toContain("Working");
   });

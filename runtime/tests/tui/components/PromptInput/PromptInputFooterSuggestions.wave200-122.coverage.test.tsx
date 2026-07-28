@@ -29,8 +29,7 @@ describe('PromptInputFooterSuggestions wave200-122 coverage', () => {
 
     expect(output).toContain('AGENTS')
     expect(output).toContain('8 matches')
-    expect(output).toContain('agent')
-    expect(output).toContain('message')
+    expect(output).toContain('↑↓ navigate · ↵ message')
     expect(output).toContain('↑ 2 more above')
     expect(output).toContain('↓ 1 more below')
     expect(output).toContain('* Agent 4 - Handles phase 4')

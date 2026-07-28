@@ -637,7 +637,7 @@ export function BackgroundTasksPanel({
       count={summary}
       summary="unified background panel"
       headerRight={listSelectedTaskCanStop ? "↑↓ select · ⏎ open · x stop" : "↑↓ select · ⏎ open"}
-      columns={[2, 8, 18, 28, 18, 12, 8, 8]}
+      columns={[2, 8, 18, 26, 18, 14, 8, 8]}
       headers={["", "kind", "id · status", "label", "target", "progress", "elapsed", "cost"]}
       items={sorted}
       activeIndex={selectedIndex}

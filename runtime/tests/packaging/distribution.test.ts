@@ -12,6 +12,11 @@ import { describe, expect, test } from "vitest";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..", "..");
 const DOCKER_DIR = join(REPO_ROOT, "packaging", "docker");
+const RELEASE_VERSION = (
+  JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 
 describe("docker packaging", () => {
   test("Dockerfile: non-root user, pinned bases, canonical locked artifact", () => {
@@ -74,8 +79,8 @@ describe("homebrew packaging", () => {
     expect(existsSync(formulaPath)).toBe(true);
     const formula = readFileSync(formulaPath, "utf8");
     expect(formula).toContain(`  homepage "https://github.com/tetsuo-ai/agenc-core"
-  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v0.11.2/agenc-runtime-0.11.2-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
-  version "0.11.2"
+  url "https://github.com/tetsuo-ai/agenc-releases/releases/download/agenc-v${RELEASE_VERSION}/agenc-runtime-${RELEASE_VERSION}-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}-node26-abi147.tar.gz"
+  version "${RELEASE_VERSION}"
   arm64_sha256 = "REPLACE_WITH_DARWIN_ARM64_SHA256"
   x64_sha256 = "REPLACE_WITH_DARWIN_X64_SHA256"
   sha256 Hardware::CPU.arm? ? arm64_sha256 : x64_sha256

@@ -4,8 +4,10 @@ import PromptInputFooterSuggestions from "./PromptInput/PromptInputFooterSuggest
 
 export function PromptSuggestionsOverlay({
   availableColumns,
+  availableRows,
 }: {
   readonly availableColumns?: number;
+  readonly availableRows?: number;
 }): React.ReactElement | null {
   const data = usePromptOverlay();
   if (!data || data.suggestions.length === 0) {
@@ -19,7 +21,6 @@ export function PromptSuggestionsOverlay({
       left={0}
       right={0}
       paddingX={0}
-      paddingTop={1}
       flexDirection="column"
       opaque={true}
       backgroundColor="surfaceBackground"
@@ -31,6 +32,7 @@ export function PromptSuggestionsOverlay({
         suggestionType={data.suggestionType}
         overlay={true}
         availableColumns={availableColumns}
+        availableRows={availableRows}
       />
     </Box>
   );

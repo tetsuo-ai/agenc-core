@@ -487,17 +487,8 @@ export function FullscreenLayout(t0) {
     } else {
       t13 = $[23];
     }
-    let t15;
-    let t16;
-    if ($[29] === Symbol.for("react.memo_cache_sentinel")) {
-      t15 = <PromptSuggestionsOverlay />;
-      t16 = <PromptDialogOverlay />;
-      $[29] = t15;
-      $[30] = t16;
-    } else {
-      t15 = $[29];
-      t16 = $[30];
-    }
+    const t15 = <PromptSuggestionsOverlay availableRows={layoutBudget.bottomMaxHeight} />;
+    const t16 = <PromptDialogOverlay />;
     const t14Content = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}{t16}</Box>;
     const showFileTreeGutter = shouldShowFileTreeGutter(columns, terminalRows, modal != null) && fileTreeGutter !== undefined && fileTreeGutter !== null && fileTreeGutter !== false;
     const t14 = showFileTreeGutter ? <Box flexGrow={1} flexDirection="row" overflow="hidden">{fileTreeGutter}{t14Content}</Box> : t14Content;

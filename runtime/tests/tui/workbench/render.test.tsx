@@ -67,6 +67,21 @@ function SuggestionsWriter(): React.ReactNode {
   return <Text>composer body</Text>;
 }
 
+function ManySuggestionsWriter(): React.ReactNode {
+  useSetPromptOverlay({
+    suggestions: Array.from({ length: 10 }, (_, index) => ({
+      id: `command-${index}`,
+      displayText: `/command-${index}`,
+      description: `run command ${index}`,
+    })),
+    selectedSuggestion: 8,
+    maxColumnWidth: 18,
+    suggestionType: "command",
+  });
+
+  return <Text>composer body</Text>;
+}
+
 function DialogWriter(): React.ReactNode {
   useSetPromptOverlayDialog(<Text>floating dialog marker</Text>);
   return <Text>composer body</Text>;
@@ -763,6 +778,25 @@ describe("workbench render contract", () => {
 
     expect(compactOutput).toContain("SLASHCOMMANDS");
     expect(compactOutput).toContain("/statusshowstatus");
+  });
+
+  it("keeps the selected suggestion visible inside a 14-row workbench", async () => {
+    const output = await renderToString(
+      <PromptOverlayProvider>
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <WorkbenchLayout
+            transcript={<Text>scroll body</Text>}
+            composer={<ManySuggestionsWriter />}
+          />
+        </AppStateProvider>
+      </PromptOverlayProvider>,
+      { columns: 120, rows: 14 },
+    );
+    const compactOutput = output.replace(/\s+/gu, "");
+
+    expect(output.split("\n")).toHaveLength(14);
+    expect(compactOutput).toContain("/command-8runcommand8");
+    expect(compactOutput).not.toContain("/command-0");
   });
 
   it("renders prompt dialogs over the workbench surface", async () => {

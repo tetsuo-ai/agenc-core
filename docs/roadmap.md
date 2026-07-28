@@ -1,6 +1,6 @@
 # AgenC product roadmap
 
-**As of 2026-07-27.** Product line **0.11.2** (SDK package **0.3.0**). What is
+**As of 2026-07-28.** Product line **0.12.0** (SDK package **0.3.0**). What is
 shipped in-tree versus open backlog.
 
 This replaces the competitive parity plan. Historical research and phase
@@ -19,7 +19,7 @@ shipped / open summary.
 
 ---
 
-## Shipped (in product as of 2026-07-27 / 0.11.2)
+## Shipped (in product as of 2026-07-28 / 0.12.0)
 
 ### Core coding agent
 
@@ -39,8 +39,8 @@ shipped / open summary.
 - Trajectory export → SFT/DPO curation (`agenc trajectories export`)
 - SLM transaction guard (Ollama court, fail closed, `agenc doctor`)
 - Embedded Neovim BUFFER (`auto|neovim|inline|external`)
-- TUI workbench rails for project review, live agent progress, and daemon-backed
-  todo visibility
+- Monochrome TUI workbench rails for project review, live agent progress, and
+  daemon-backed todo visibility
 
 ### Onboarding & distribution
 

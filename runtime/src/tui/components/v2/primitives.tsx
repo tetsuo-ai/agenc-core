@@ -811,7 +811,9 @@ export const AGENC_LOGO_MARK_COMPACT_LINES = [
 // foreground color. White therefore gives us a collision-resistant ID while
 // keeping even the protocol's otherwise-invisible carrier cells monochrome.
 const KITTY_LOGO_IMAGE_ID = 0xffffff
-const KITTY_LOGO_IMAGE_COLOR = '#ffffff'
+const KITTY_LOGO_IMAGE_COLOR = (
+  `#${KITTY_LOGO_IMAGE_ID.toString(16).padStart(6, '0')}`
+) as `#${string}`
 const KITTY_PLACEHOLDER = '\u{10eeee}'
 const KITTY_PLACEHOLDER_DIACRITICS = [
   '\u0305',
@@ -1044,13 +1046,17 @@ function WelcomeMetaLine({
   return (
     <Box flexDirection="column" alignItems="center">
       <Box flexDirection="row" justifyContent="center" width="100%">
-        <ThemedText color="inactive">workspace </ThemedText>
+        <Box flexShrink={0}>
+          <ThemedText color="inactive">workspace </ThemedText>
+        </Box>
         <Box flexShrink={1} minWidth={0}>
           <ThemedText color="text" wrap="truncate-middle">
             {workspace}
           </ThemedText>
         </Box>
-        <ThemedText color="inactive">  ·  model </ThemedText>
+        <Box flexShrink={0}>
+          <ThemedText color="inactive">  ·  model </ThemedText>
+        </Box>
         <Box flexShrink={0}>
           <ThemedText color="text" wrap="truncate-end">
             {model}

@@ -244,7 +244,7 @@ describe("BUFFER workbench rendering", () => {
 
     expect(output).toContain("WORKSPACE");
     expect(output).toContain("BUFFER");
-    expect(output).toContain("Agents");
+    expect(output).toContain("AGENTS");
     expect(output).toContain("composer-inactive");
     expect(output).toContain("embedded Neovim test");
     expect(output).not.toContain("transcript-anchor");

@@ -331,6 +331,16 @@ function AgentRailRow({
   const label = agentRowLabel(task);
   const running = task.status === "running";
   const statusLabel = task.status === "pending" ? "queued" : task.status;
+  const statusDetails = [
+    statusLabel,
+    running || task.endTime ? formatTaskElapsed(task) : null,
+    progress.toolUseCount !== undefined
+      ? `${formatNumber(progress.toolUseCount)} tools`
+      : null,
+    progress.tokenCount !== undefined
+      ? `${formatNumber(progress.tokenCount)} tok`
+      : null,
+  ].filter((detail): detail is string => typeof detail === "string" && detail.length > 0);
   const activityWidth = Math.max(4, width);
   const activeWidth = Math.max(2, Math.floor(activityWidth * 0.58));
   return (
@@ -341,7 +351,7 @@ function AgentRailRow({
         <Text color="text">{running ? "■" : "□"}</Text>
       </Box>
       <Text color="inactive" wrap="truncate-end">
-        {statusLabel}{running || task.endTime ? ` · ${formatTaskElapsed(task)}` : ""}
+        {statusDetails.join(" · ")}
       </Text>
       {running ? (
         <Text wrap="truncate-end">

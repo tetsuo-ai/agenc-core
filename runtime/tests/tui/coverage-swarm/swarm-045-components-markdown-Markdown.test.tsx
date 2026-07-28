@@ -301,7 +301,10 @@ describe('Markdown coverage swarm row 045', () => {
     )
     expect(highlightMock.highlighter.highlight).toHaveBeenCalledWith(
       'const row045Highlight = true',
-      { language: 'ts' },
+      expect.objectContaining({
+        language: 'ts',
+        theme: expect.any(Object),
+      }),
     )
   })
 

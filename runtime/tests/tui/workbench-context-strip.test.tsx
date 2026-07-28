@@ -19,6 +19,7 @@ import {
 } from "../../src/tui/workbench/WorkbenchContextStrip.js";
 import type { PermissionMode } from "../../src/permissions/types.js";
 import { renderToString } from "../../src/utils/staticRender.js";
+import { VERSION } from "../../src/version.js";
 
 // The context strip restores the always-on session context (model · permission
 // mode · cwd) to the workbench status bar after the welcome summary box scrolls
@@ -184,20 +185,18 @@ describe("WorkbenchStatusBar context strip rendering", () => {
       { columns: 80, rows: 3 },
     );
 
-    expect(pressured).toContain("AgenC Workbench");
+    expect(pressured).toContain("agenc");
+    expect(pressured).toContain("WORKBENCH");
     expect(shrinkableControl).not.toContain("SHRINKABLE TITLE");
   });
 
-  test("shows model, a non-default permission mode, and a compact cwd at a wide width", async () => {
-    const { getCwdState } = await import("../../src/bootstrap/state.js");
+  test("shows model and runtime version in the redesigned wide title bar", async () => {
     const out = await renderStatusBar(120, { mode: "plan" });
     expect(out).toContain(TEST_MODEL);
-    expect(out).toContain("plan");
-    // Compact cwd: the basename of the session cwd (the same stable source the
-    // strip reads) is present; the strip never shows the full long path raw.
-    const expectedCwd = compactCwd(getCwdState());
-    const tail = basenameOf(expectedCwd);
-    expect(out).toContain(tail);
+    expect(out).toContain(VERSION);
+    // Permission mode and cwd live in the footer/workspace pane now, avoiding
+    // duplicate context in the title bar.
+    expect(out).not.toContain("plan");
   });
 
   test("hides the permission-mode segment entirely in the default mode", async () => {
@@ -211,13 +210,13 @@ describe("WorkbenchStatusBar context strip rendering", () => {
   test("shows the dangerous mode label (bypass) when elevated", async () => {
     const out = await renderStatusBar(120, { mode: "bypassPermissions" });
     expect(out).toContain(TEST_MODEL);
-    // permissionModeShortTitle("bypassPermissions") === "Bypass" -> lowercased.
-    expect(out).toContain("bypass");
+    expect(out).not.toContain("bypass");
   });
 
   test("the title label is always present alongside the strip", async () => {
     const out = await renderStatusBar(120);
-    expect(out).toContain("AgenC Workbench");
+    expect(out).toContain("agenc");
+    expect(out).toContain("WORKBENCH");
   });
 });
 
@@ -245,21 +244,18 @@ describe("WorkbenchContextStrip dangerous-mode styling (ANSI)", () => {
     return (out.match(/\u001b\[[0-9;]*m/gu) ?? []).length;
   }
 
-  test("dangerous mode uses the warning color; normal mode does not", async () => {
-    // Dark theme 'warning' resolves to truecolor amber (rgb(255,151,72)).
-    const WARNING_SGR = "\u001b[38;2;255;151;72m";
+  test("dangerous mode stays emphasized in the monochrome palette", async () => {
     const dangerous = await renderStripAnsi("bypassPermissions");
     // "plan" is the non-default comparison mode: the default mode no longer
     // renders a mode segment at all, so it cannot carry styling either way.
     const normal = await renderStripAnsi("plan");
 
-    // Both render the model + mode label; only the dangerous one styles the
-    // mode segment in the warning color.
+    // Both render the model + mode label. In the monochrome palette, bold is
+    // the safety distinction for the dangerous one.
     expect(dangerous).toContain("bypass");
     expect(normal).toContain("plan");
-    expect(dangerous).toContain(WARNING_SGR);
-    expect(normal).not.toContain(WARNING_SGR);
-    // The warning styling is *extra*, so the dangerous render has more SGR codes.
+    expect(dangerous).toContain("\u001b[1m");
+    expect(normal).not.toContain("\u001b[1m");
     expect(sgrCount(dangerous)).toBeGreaterThan(sgrCount(normal));
   });
 });
@@ -286,23 +282,16 @@ describe("WorkbenchContextStrip never overflows the row", () => {
 });
 
 describe("WorkbenchContextStrip revert sensitivity (present vs absent)", () => {
-  // When no column budget reaches the strip (status bar omits it), the strip's
-  // values must be absent — proving the strip is what surfaces them.
-  test("strip absent when no columns are available to it", async () => {
-    const tiny = await renderToString(
+  test("uses the normal wide title-bar budget when columns are omitted", async () => {
+    const out = await renderToString(
       <AppStateProvider initialState={stateWith({ model: TEST_MODEL, mode: "default" })}>
-        {/* columns omitted -> stripAvailable = 0 -> strip not rendered */}
         <WorkbenchStatusBar />
       </AppStateProvider>,
       { columns: 120, rows: 3 },
     );
-    const wide = await renderStatusBar(120, { model: TEST_MODEL, mode: "default" });
 
-    // The same app state, but the model only appears once the strip has room.
-    expect(statusRow(tiny)).not.toContain(TEST_MODEL);
-    expect(statusRow(wide)).toContain(TEST_MODEL);
-    // The title label is present in both (it is not part of the strip).
-    expect(tiny).toContain("AgenC Workbench");
+    expect(statusRow(out)).toContain(TEST_MODEL);
+    expect(out).toContain("WORKBENCH");
   });
 
   test("a bare strip with zero budget renders nothing", async () => {

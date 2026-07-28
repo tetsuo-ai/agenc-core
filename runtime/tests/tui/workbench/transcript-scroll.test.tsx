@@ -215,7 +215,7 @@ describe("workbench transcript scroll ownership", () => {
       );
 
       expect(scrollRef.current).not.toBeNull();
-      expect(output()).toContain("TRANSCRIPT");
+      expect(output()).not.toContain("TRANSCRIPT");
       expect(output()).toContain("workbench-scroll-anchor");
       expect(output()).toContain("composer-anchor");
 
@@ -265,13 +265,13 @@ describe("workbench transcript scroll ownership", () => {
       );
 
       await waitForCondition(
-        () => output().includes("modal-size-8x98-ref-ok"),
+        () => output().includes("modal-size-6x94-ref-ok"),
         "WorkbenchLayout modal context did not reach modal content",
       );
 
       expect(output()).toContain("modal-transcript-anchor");
       expect(output()).toContain("modal-composer-anchor");
-      expect(output()).toContain("modal-size-8x98-ref-ok");
+      expect(output()).toContain("modal-size-6x94-ref-ok");
     } finally {
       root.unmount();
       stdin.end();

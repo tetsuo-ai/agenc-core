@@ -71,7 +71,7 @@ describe('PromptInputFooterSuggestions', () => {
   })
 
   it.each([48, 80, 120])(
-    'keeps the command header run hint visible at %i columns',
+    'keeps the command footer run hint visible at %i columns',
     async columns => {
       const suggestions: SuggestionItem[] = [
         {
@@ -89,7 +89,8 @@ describe('PromptInputFooterSuggestions', () => {
         columns,
       )
 
-      expect(output).toContain('navigate ↑↓ · run ↵')
+      expect(output).toContain('↑↓ navigate · ↵ run')
+      expect(output).not.toContain('↵ ru…')
     },
   )
 
@@ -133,8 +134,7 @@ describe('PromptInputFooterSuggestions', () => {
     )
 
     expect(output).toContain('FILES & RESOURCES')
-    expect(output).toContain('file')
-    expect(output).toContain('insert')
+    expect(output).toContain('↑↓ navigate · ↵ insert')
     expect(output).not.toContain('SLASH COMMANDS')
   })
 
@@ -193,6 +193,49 @@ describe('PromptInputFooterSuggestions', () => {
     expect([...rightCols][0]).toBe(columns - 1)
   })
 
+  it.each([5, 7])(
+    'keeps a windowed overlay within an exact %i-row budget',
+    async availableRows => {
+      const suggestions: SuggestionItem[] = Array.from({ length: 10 }, (_, index) => ({
+        id: `command-${index}`,
+        displayText: `/command-${index}`,
+        description: `Run command ${index}`,
+      }))
+
+      const output = await renderToString(
+        <PromptInputFooterSuggestions
+          suggestions={suggestions}
+          selectedSuggestion={8}
+          overlay={true}
+          availableRows={availableRows}
+        />,
+        80,
+      )
+
+      expect(output.split('\n')).toHaveLength(availableRows)
+      expect(output).toContain(`${figures.pointer} /command-8`)
+      expect(output).not.toContain('/command-0')
+    },
+  )
+
+  it('does not render a bordered overlay when fewer than five rows are available', async () => {
+    const output = await renderToString(
+      <PromptInputFooterSuggestions
+        suggestions={[{
+          id: 'command-help',
+          displayText: '/help',
+          description: 'Show help',
+        }]}
+        selectedSuggestion={0}
+        overlay={true}
+        availableRows={4}
+      />,
+      80,
+    )
+
+    expect(output.trim()).toBe('')
+  })
+
   it('clamps inline popup width to tiny terminals instead of forcing the old minimum', () => {
     expect(getSuggestionPopupWidth(80, false)).toBe(70)
     expect(getSuggestionPopupWidth(48, false)).toBe(38)
@@ -223,7 +266,7 @@ describe('PromptInputFooterSuggestions', () => {
       )
 
       expect(output).toContain('> * docs')
-      expect(output).toContain('navigate ^v - insert Enter')
+      expect(output).toContain('^v navigate - Enter insert')
       expect(output).not.toContain('◇')
       expect(output).not.toContain('❯')
       expect(output).not.toContain('↵')

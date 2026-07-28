@@ -73,6 +73,13 @@ export function WorkbenchLayout({
   // One terminal-cell breathing room around the frame plus the frame's own
   // left/right border leaves four columns unavailable to the pane grid.
   const frameColumns = Math.max(1, columns - 4);
+  // Keep completion popups inside the framed workbench on short terminals.
+  // Four rows belong to the outer padding/frame; at most half of the remaining
+  // content may float above the composer.
+  const suggestionOverlayRows = Math.max(
+    0,
+    Math.ceil(Math.max(0, rows - 4) / 2),
+  );
   // The reference uses a balanced 20 / 61 / 19 split. Keeping the side rails
   // proportional on ultrawide terminals avoids the old tiny-islands-at-the-
   // edges look while the minimums preserve usability at the wide breakpoint.
@@ -191,16 +198,19 @@ export function WorkbenchLayout({
             {overlay}
           </Box>
         ) : null}
-    <Box
-      flexDirection="column"
-      flexShrink={0}
-      paddingTop={1}
-      backgroundColor="#000000"
-      borderTop
-      borderTopColor="lineSoft"
-      opaque
+        <Box
+          flexDirection="column"
+          flexShrink={0}
+          paddingTop={1}
+          backgroundColor="#000000"
+          borderTop
+          borderTopColor="lineSoft"
+          opaque
         >
-          <PromptSuggestionsOverlay availableColumns={frameColumns} />
+          <PromptSuggestionsOverlay
+            availableColumns={frameColumns}
+            availableRows={suggestionOverlayRows}
+          />
           <WorkbenchComposerFocusProvider active={focusedPane === "composer"}>
             {composer}
           </WorkbenchComposerFocusProvider>

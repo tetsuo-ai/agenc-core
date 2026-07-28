@@ -43,6 +43,7 @@ const runtimeVersion = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "..", "..", "..", "runtime", "package.json"), "utf8"),
 ).version;
 const tag = `agenc-v${runtimeVersion}`;
+const publishesNodeBootstrap = tag === PRIVATE_NODE_BOOTSTRAP_RELEASE_TAG;
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const releaseToolchain = JSON.parse(
   readFileSync(join(repoRoot, "release-toolchain.json"), "utf8"),
@@ -715,12 +716,7 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       const bootstrap = exactSourceToolchain.nodeBootstrap[key];
       bootstrap.sha256 = sha256(bytes);
       bootstrap.bytes = bytes.length;
-      bootstrap.url = bootstrap.url.replace(
-        /\/releases\/download\/[^/]+\/[^/]+$/,
-        `/releases/download/${tag}/${bootstrap.file}`,
-      );
     }
-    exactSourceToolchain.nodeBootstrap.releaseTag = tag;
     const exactSourceToolchainBytes = Buffer.from(
       `${JSON.stringify(exactSourceToolchain, null, 2)}\n`,
     );
@@ -787,11 +783,19 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       readSourceFile,
     });
     const outputNames = readdirSync(output).sort();
-    assert.equal(outputNames.length, 23);
+    assert.equal(outputNames.length, 21 + (publishesNodeBootstrap ? 2 : 0));
     assert.ok(outputNames.includes("SHA256SUMS"));
     for (const [key, bytes] of bootstrapFixtures) {
       const name = exactSourceToolchain.nodeBootstrap[key].file;
-      assert.deepEqual(readFileSync(join(output, name)), bytes);
+      if (publishesNodeBootstrap) {
+        assert.deepEqual(readFileSync(join(output, name)), bytes);
+      } else {
+        assert.equal(
+          existsSync(join(output, name)),
+          false,
+          "later releases must reuse rather than republish the immutable bootstrap",
+        );
+      }
     }
     assert.ok(
       exactSourceReads.filter((path) => path === "release-toolchain.json").length >= 2,
@@ -800,7 +804,10 @@ test("release asset preparation revalidates and binds every provenance sidecar",
     assert.equal(statSync(join(output, "install.sh")).mode & 0o777, 0o755);
     assert.equal(statSync(join(output, "agenc-runtime-manifest.json")).mode & 0o777, 0o644);
     assert.equal(statSync(join(output, "agenc-runtime-manifest-v2.json")).mode & 0o777, 0o644);
-    assert.equal(readFileSync(join(output, "SHA256SUMS"), "utf8").trim().split("\n").length, 22);
+    assert.equal(
+      readFileSync(join(output, "SHA256SUMS"), "utf8").trim().split("\n").length,
+      20 + (publishesNodeBootstrap ? 2 : 0),
+    );
 
     const attestedOutput = join(work, "attested-upload");
     const verifiedNames = [];
@@ -829,7 +836,10 @@ test("release asset preparation revalidates and binds every provenance sidecar",
       readdirSync(attestedOutput).filter((name) => name.endsWith(".sigstore.json")).length,
       5,
     );
-    assert.equal(readdirSync(attestedOutput).length, 23);
+    assert.equal(
+      readdirSync(attestedOutput).length,
+      21 + (publishesNodeBootstrap ? 2 : 0),
+    );
 
     const pinnedGh = join(work, "pinned-gh");
     const pinnedGhLog = join(work, "pinned-gh.log");
@@ -1116,7 +1126,7 @@ test("full release manifest accepts the combined workflow download and exact pla
       const workflowArtifact = join(work, `agenc-runtime-${platform}-${arch}`);
       mkdirSync(workflowArtifact);
       addArtifact(workflowArtifact, platform, arch, `${platform}-${arch}`);
-      if (platform === "linux") {
+      if (platform === "linux" && publishesNodeBootstrap) {
         writeFileSync(
           join(
             workflowArtifact,

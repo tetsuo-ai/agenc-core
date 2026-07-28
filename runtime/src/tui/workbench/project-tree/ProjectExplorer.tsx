@@ -240,15 +240,20 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       <Box
         height={2}
         flexShrink={0}
-        paddingX={2}
+        paddingLeft={2}
+        paddingRight={1}
         alignItems="center"
         backgroundColor="#000000"
         borderBottom
         borderBottomColor="lineSoft"
       >
-        <Text color={focused ? "text" : "inactive"} wrap="truncate-end">WORKSPACE</Text>
+        <Box flexShrink={0}>
+          <Text color={focused ? "text" : "inactive"}>WORKSPACE</Text>
+        </Box>
         <Box flexGrow={1} />
-        <Text color="inactive" wrap="truncate-end">{headerMeta}</Text>
+        <Box flexShrink={1} minWidth={0}>
+          <Text color="inactive" wrap="truncate-end">{headerMeta}</Text>
+        </Box>
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {snapshot.error ? (

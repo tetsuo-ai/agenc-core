@@ -33,9 +33,10 @@ describe("AgentsRail", () => {
       width: 32,
     });
 
-    expect(remoteOnly.output).toContain("remote tasks: 3");
-    expect(remoteOnly.output).not.toContain("No background agents");
-    expect(emptyFocusedOut.output).toContain("No background agents");
+    expect(remoteOnly.output).toContain("3 REMOTE");
+    expect(remoteOnly.output).toContain("Waiting for agent details");
+    expect(emptyFocusedOut.output).toContain("Delegate work to track");
+    expect(emptyFocusedOut.output).toContain("progress here");
   });
 
   it("routes focus, selection, open, and stop keybindings through workbench state", async () => {
@@ -119,7 +120,7 @@ describe("AgentsRail", () => {
       rawTasks: undefined,
     });
 
-    expect(output).toContain("No background agents");
+    expect(output).toContain("Delegate work to track progress");
   });
 
   it("renders active/background rows, row badges, and resilient empty text fallbacks", async () => {
@@ -147,7 +148,6 @@ describe("AgentsRail", () => {
             diffCount: 3,
             lastActivity: { toolName: "edit" },
           },
-          pendingApproval: true,
           startTime: 4_000,
         }),
         agentTask("agent-failed", "failed", {
@@ -174,17 +174,12 @@ describe("AgentsRail", () => {
       width: 90,
     })).output;
 
-    expect(output).toContain("─ Agent Swarm ─");
-    // Numbered swarm rows with per-agent status glyphs and stats (Kimi-style
-    // fan-out view for 2+ agents).
-    expect(output).toContain("001");
-    expect(output).toContain("002");
+    expect(output).toContain("AGENTS");
+    expect(output).toContain("1 ACTIVE");
     expect(output).toContain("unknown");
-    expect(output).toContain("✗");
-    expect(output).toContain("✓");
     expect(output).toContain("pending agent");
     expect(output).toContain("edit");
-    expect(output).toContain("2 tools · 120 tok");
+    expect(output).toContain("queued · 2 tools · 120 tok");
     expect(output).toContain("failed agent");
     expect(output).toContain("completed agent");
     expect(output).toContain("killed agent");
@@ -235,8 +230,8 @@ describe("AgentsRail", () => {
 
     // The exact bug was a frozen `tools 0 tokens 0`; the rail must now show the
     // real values plumbed through the daemon collab status event.
-    expect(output).toContain("tools 9 tokens 73210");
-    expect(output).not.toContain("tools 0 tokens 0");
+    expect(output).toContain("9 tools · 73.2k tok");
+    expect(output).not.toContain("0 tools · 0 tok");
   });
 
   it("does not advertise stop shortcuts for stale task kinds without a stop action", async () => {
@@ -251,7 +246,8 @@ describe("AgentsRail", () => {
       }],
     })).output;
 
-    expect(output).toContain("* stale running");
+    expect(output).toContain("stale running");
+    expect(output).toContain("running");
     expect(output).not.toContain("x stop");
   });
 
@@ -347,7 +343,7 @@ describe("AgentsRail", () => {
   });
 });
 
-describe("AgentsRail lifecycle legibility (color + friendly label)", () => {
+describe("AgentsRail lifecycle legibility (monochrome state + friendly label)", () => {
   // Dark is the default render theme (ThemeProvider DEFAULT_THEME); pin it
   // explicitly so the asserted SGR codes never drift with user settings.
   const theme = getTheme("dark");
@@ -363,8 +359,6 @@ describe("AgentsRail lifecycle legibility (color + friendly label)", () => {
   const RUNNING_SGR = fgSgr(theme.worker);
   const COMPLETED_SGR = fgSgr(theme.success);
   const FAILED_SGR = fgSgr(theme.error);
-  const KILLED_SGR = fgSgr(theme.muted3);
-  const APPROVAL_SGR = fgSgr(theme.warning);
 
   async function renderRailAnsi(tasks: readonly any[]): Promise<string> {
     return renderToAnsiString(
@@ -387,38 +381,28 @@ describe("AgentsRail lifecycle legibility (color + friendly label)", () => {
     );
   }
 
-  it("color-codes completed vs failed vs running markers distinctly", async () => {
+  it("surfaces completed, failed, and running lifecycle labels", async () => {
     const out = await renderRailAnsi([
       agentTask("agent-run", "running", { description: "scanning", startTime: 3_000 }),
       agentTask("agent-ok", "completed", { description: "wrote tests", startTime: 2_000 }),
       agentTask("agent-bad", "failed", { description: "crashed", startTime: 1_000 }),
     ]);
 
-    // Each lifecycle state surfaces its own semantic color on the marker.
+    expect(out).toContain("running");
+    expect(out).toContain("completed");
+    expect(out).toContain("failed");
+    // The workbench deliberately uses one monochrome foreground palette.
     expect(out).toContain(RUNNING_SGR);
     expect(out).toContain(COMPLETED_SGR);
     expect(out).toContain(FAILED_SGR);
-    // The three colors are genuinely different (legibility at a glance).
-    expect(new Set([RUNNING_SGR, COMPLETED_SGR, FAILED_SGR]).size).toBe(3);
+    expect(new Set([RUNNING_SGR, COMPLETED_SGR, FAILED_SGR]).size).toBe(1);
   });
 
-  it("colors a stopped agent in the muted/grey state and a needs-approval agent in the warning accent", async () => {
+  it("surfaces stopped lifecycle states in text", async () => {
     const killed = await renderRailAnsi([
       agentTask("agent-killed", "killed", { description: "stopped", startTime: 1_000 }),
     ]);
-    expect(killed).toContain(KILLED_SGR);
-
-    const approval = await renderRailAnsi([
-      agentTask("agent-wait", "running", {
-        description: "awaiting decision",
-        pendingApproval: true,
-        startTime: 1_000,
-      }),
-    ]);
-    // Needs-input/approval overrides the run color with the warning accent so
-    // "needs you" stands out from a plain working agent.
-    expect(approval).toContain(APPROVAL_SGR);
-    expect(approval).not.toContain(RUNNING_SGR);
+    expect(killed).toContain("killed");
   });
 
   it("labels rows with the friendly title (+ role), never the raw prompt", async () => {

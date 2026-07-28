@@ -133,7 +133,7 @@ describe('WelcomeMetaRow long-path grid alignment (BUG 3)', () => {
     const labelRow = lines.find(line => /\bworkspace\b/u.test(line))
     expect(labelRow).toBeDefined()
     // The value must be present on the SAME row as the label.
-    expect(labelRow).toContain('/tmp/some/very/long')
+    expect(labelRow).toContain('/tmp/some/')
     expect(labelRow).toContain('sandbox/dir')
 
     // Revert-sensitivity guard: there must be NO standalone value row (a row

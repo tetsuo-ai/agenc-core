@@ -244,8 +244,11 @@ describe('PromptInputFooter coverage branch render', () => {
       },
     )
 
-    expect(fullscreenOutput).toContain('StatusLine:msg-1')
-    expect(fullscreenOutput).toContain('Left:true:none:true:false')
+    // Fullscreen suggestions render through PromptSuggestionsOverlay. The
+    // ordinary footer intentionally contributes no duplicate status/hint rows.
+    expect(fullscreenOutput.trim()).toBe('')
+    expect(fullscreenOutput).not.toContain('StatusLine:')
+    expect(fullscreenOutput).not.toContain('Left:')
     expect(fullscreenOutput).not.toContain('Notifications:')
     expect(fullscreenOutput).not.toContain('Suggestions:')
     expect(harness.overlays.at(-1)).toMatchObject({

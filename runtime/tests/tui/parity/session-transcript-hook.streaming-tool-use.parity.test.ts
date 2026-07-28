@@ -14,7 +14,10 @@ describe("R5 useSessionTranscript exposes streamingToolUses on transcript snapsh
   test("B5.6 session-transcript.ts memoizes the adaptTranscriptEvents result, so any field added to AdaptedTranscript (including streamingToolUses) is automatically surfaced to App.tsx", () => {
     const source = readSource();
     expect(source).toMatch(
-      /useMemo\s*\(\s*\(\)\s*=>\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*\)/,
+      /const\s+adapted\s*=\s*adaptTranscriptEvents\s*\(\s*state\.events\s*,\s*startupMessages\s*\)/,
+    );
+    expect(source).toMatch(
+      /return\s+adapted\.sessionCostUsd\s*===\s*state\.sessionCostUsd\s*\?\s*adapted\s*:\s*\{\s*\.\.\.adapted\s*,\s*sessionCostUsd:\s*state\.sessionCostUsd\s*\}/s,
     );
   });
 

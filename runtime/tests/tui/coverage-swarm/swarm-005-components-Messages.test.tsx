@@ -376,7 +376,9 @@ describe('Messages coverage swarm row 005', () => {
       // streaming→settled transition. Revert-sensitive: if the streaming render
       // falls back to a bare `●` marker (no Msg wrapper), this is empty.
       expect(harness.msgMarkers).toContainEqual({ label: 'agenc', role: 'agenc' })
-      expect(harness.thinkingMessages).toContain('still thinking')
+      // Once visible answer text exists, the compact streaming surface shows
+      // the answer instead of duplicating the still-open thinking block.
+      expect(harness.thinkingMessages).not.toContain('still thinking')
       expect(harness.progress).toHaveBeenCalledWith('completed')
     } finally {
       await rendered.dispose()

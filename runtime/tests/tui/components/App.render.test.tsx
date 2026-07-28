@@ -2170,13 +2170,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       />,
     );
 
-    expect(output).toContain("spinner:thinking:");
+    expect(output).toContain("spinner:responding:");
     const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
     expect(layoutProps).toBeDefined();
     expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
     expect(providerProbe.spinnerProps.at(-1)).toEqual(
       expect.objectContaining({
-        mode: "thinking",
+        mode: "responding",
         hasActiveTools: false,
       }),
     );

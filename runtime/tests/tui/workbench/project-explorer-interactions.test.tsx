@@ -398,7 +398,7 @@ describe("ProjectExplorer interactions", () => {
     try {
       expect(explorerHarness.activePathCalls.at(-1)).toBe("src/app.ts");
       expect(explorerHarness.attachedPathCalls.at(-1)).toEqual(["src/app.ts"]);
-      expect(explorerHarness.viewportRowsCalls.at(-1)).toBe(16);
+      expect(explorerHarness.viewportRowsCalls.at(-1)).toBe(12);
     } finally {
       cleanupExplorer(root, stdin, stdout);
     }

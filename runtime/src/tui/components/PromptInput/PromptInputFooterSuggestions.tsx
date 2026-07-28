@@ -267,6 +267,7 @@ type Props = {
   maxColumnWidth?: number
   overlay?: boolean
   availableColumns?: number
+  availableRows?: number
   suggestionType?: SuggestionType
 }
 
@@ -276,12 +277,28 @@ export function PromptInputFooterSuggestions({
   maxColumnWidth: maxColumnWidthProp,
   overlay,
   availableColumns,
+  availableRows,
   suggestionType,
 }: Props): ReactNode {
   const { rows, columns } = useTerminalSize()
-  const maxVisibleItems = overlay ? OVERLAY_MAX_ITEMS : Math.min(6, Math.max(1, rows - 3))
+  const overlayRowBudget =
+    overlay && availableRows !== undefined
+      ? Number.isFinite(availableRows)
+        ? Math.max(0, Math.floor(availableRows))
+        : 0
+      : null
+  const overlayBodyRows =
+    overlayRowBudget !== null
+      ? Math.max(0, overlayRowBudget - 4)
+      : null
+  let maxVisibleItems = overlay
+    ? Math.min(OVERLAY_MAX_ITEMS, overlayBodyRows ?? OVERLAY_MAX_ITEMS)
+    : Math.min(6, Math.max(1, rows - 3))
 
-  if (suggestions.length === 0) {
+  // A bordered popup needs four chrome rows (two borders, title, footer) plus
+  // at least one result row. If the caller cannot spare five rows, rendering
+  // nothing is safer than overflowing and clipping the composer beneath it.
+  if (suggestions.length === 0 || overlayBodyRows === 0) {
     return null
   }
 
@@ -289,14 +306,32 @@ export function PromptInputFooterSuggestions({
     maxColumnWidthProp ??
     Math.max(...suggestions.map(item => stringWidth(item.displayText))) + 2
 
-  const startIndex = Math.max(
-    0,
-    Math.min(
-      selectedSuggestion - Math.floor(maxVisibleItems / 2),
-      suggestions.length - maxVisibleItems,
-    ),
-  )
-  const endIndex = Math.min(startIndex + maxVisibleItems, suggestions.length)
+  const getWindow = (limit: number): { start: number; end: number } => {
+    const start = Math.max(
+      0,
+      Math.min(
+        selectedSuggestion - Math.floor(limit / 2),
+        suggestions.length - limit,
+      ),
+    )
+    return {
+      start,
+      end: Math.min(start + limit, suggestions.length),
+    }
+  }
+  let window = getWindow(maxVisibleItems)
+  if (overlayBodyRows !== null) {
+    while (maxVisibleItems > 1) {
+      const markerRows =
+        (window.start > 0 ? 1 : 0) +
+        (window.end < suggestions.length ? 1 : 0)
+      if (maxVisibleItems + markerRows <= overlayBodyRows) break
+      maxVisibleItems -= 1
+      window = getWindow(maxVisibleItems)
+    }
+  }
+  const startIndex = window.start
+  const endIndex = window.end
   const visibleItems = suggestions.slice(startIndex, endIndex)
   // Size the name column to the widest VISIBLE row, not the widest row in the
   // whole result set: one long command anywhere in a 40-entry list was padding
@@ -312,6 +347,14 @@ export function PromptInputFooterSuggestions({
   // visible rows look identical to a 5-entry directory.
   const hiddenAfter = suggestions.length - endIndex
   const hiddenBefore = startIndex
+  const overflowRowBudget =
+    overlayBodyRows === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, overlayBodyRows - visibleItems.length)
+  const showHiddenBefore = hiddenBefore > 0 && overflowRowBudget > 0
+  const showHiddenAfter =
+    hiddenAfter > 0 &&
+    overflowRowBudget > (showHiddenBefore ? 1 : 0)
 
   const glyphs = selectAgenCTuiGlyphs()
   // Overlay popups live inside a frame in workbench mode. Their parent can be
@@ -324,9 +367,28 @@ export function PromptInputFooterSuggestions({
     ? '1 match'
     : `${suggestions.length} matches`
   const titleRow = getRightAlignedRowParts(headerCopy.title, headerHint, contentWidth)
+  const primaryFooterHint =
+    `${glyphs.arrowUp}${glyphs.arrowDown} navigate ${glyphs.separator} ${glyphs.enter} ${headerCopy.acceptVerb}`
+  const extendedFooterHint =
+    `${primaryFooterHint} ${glyphs.separator} esc close`
+  // Keep the accept action whole on narrow popups. The filter prompt is
+  // secondary, so abbreviate it before allowing the key/action pair to be
+  // ellipsized (for example, "↵ ru…" taught no usable action at 48 columns).
+  const fullFooterLeft = 'type to filter'
+  const compactFooterLeft = 'filter'
+  const footerLeft =
+    stringWidth(fullFooterLeft) + 1 + stringWidth(primaryFooterHint) <= contentWidth
+      ? fullFooterLeft
+      : compactFooterLeft
+  const availableFooterRight = Math.max(
+    0,
+    contentWidth - stringWidth(footerLeft) - 1,
+  )
   const footerHintRow = getRightAlignedRowParts(
-    'type to filter',
-    `${glyphs.arrowUp}${glyphs.arrowDown} navigate ${glyphs.separator} ${glyphs.enter} ${headerCopy.acceptVerb} ${glyphs.separator} esc close`,
+    footerLeft,
+    stringWidth(extendedFooterHint) <= availableFooterRight
+      ? extendedFooterHint
+      : primaryFooterHint,
     contentWidth,
   )
 
@@ -337,7 +399,7 @@ export function PromptInputFooterSuggestions({
       width={width}
       marginX={overlay ? 0 : 1}
       borderStyle="single"
-      borderColor="#ffffff"
+      borderColor="text"
       paddingX={1}
       backgroundColor="surfaceBackground"
       opaque={true}
@@ -350,7 +412,7 @@ export function PromptInputFooterSuggestions({
         <Text color="inactive" bold>{titleRow.left}</Text>
         <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
       </Box>
-      {hiddenBefore > 0 ? (
+      {showHiddenBefore ? (
         <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
           <Text dimColor>{glyphs.arrowUp} {hiddenBefore} more above</Text>
         </Box>
@@ -371,7 +433,7 @@ export function PromptInputFooterSuggestions({
           </Box>
         )
       })}
-      {hiddenAfter > 0 ? (
+      {showHiddenAfter ? (
         <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
           <Text dimColor>{glyphs.arrowDown} {hiddenAfter} more below</Text>
         </Box>
