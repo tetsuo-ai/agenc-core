@@ -102,10 +102,9 @@ async function runLinuxSandboxOptions(
     selfCommand,
     preparedProxy?.serializedSpec ?? null,
   );
-  const extraBindRoots = [
-    ...inferredInnerLauncherBindRoots(selfCommand),
-    ...(preparedProxy === null ? [] : [preparedProxy.socketDir]),
-  ];
+  const extraReadOnlyBindRoots = inferredInnerLauncherBindRoots(selfCommand);
+  const extraWritableBindRoots =
+    preparedProxy === null ? [] : [preparedProxy.socketDir];
   const proxyRoutedNetwork = options.allowNetworkForProxy;
   const seccompMode = networkSeccompMode(
     network,
@@ -124,7 +123,8 @@ async function runLinuxSandboxOptions(
         mountProc: options.mountProc,
         networkMode,
         ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
-        extraBindRoots,
+        extraReadOnlyBindRoots,
+        extraWritableBindRoots,
       },
     );
     if (!bwrapArgs.usesBubblewrap) {
@@ -159,7 +159,8 @@ async function runLinuxSandboxOptions(
           mountProc: false,
           networkMode,
           ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
-          extraBindRoots,
+          extraReadOnlyBindRoots,
+          extraWritableBindRoots,
         },
       );
     }

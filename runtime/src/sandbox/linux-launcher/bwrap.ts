@@ -21,7 +21,8 @@ export interface BwrapOptions {
   readonly mountProc: boolean;
   readonly networkMode: BwrapNetworkMode;
   readonly seccompFd?: number;
-  readonly extraBindRoots?: readonly string[];
+  readonly extraReadOnlyBindRoots?: readonly string[];
+  readonly extraWritableBindRoots?: readonly string[];
 }
 
 export interface BwrapCommandArgs {
@@ -202,7 +203,10 @@ function createFilesystemArgs(
   for (const root of writableRoots) {
     appendWritableRoot(args, root, protectedCreateTargets);
   }
-  for (const root of options.extraBindRoots ?? []) {
+  for (const root of options.extraReadOnlyBindRoots ?? []) {
+    appendReadOnlyIfExists(args, root);
+  }
+  for (const root of options.extraWritableBindRoots ?? []) {
     appendBindIfExists(args, root);
   }
   for (const root of unreadableTargets.filter(isNestedUnreadable)) {

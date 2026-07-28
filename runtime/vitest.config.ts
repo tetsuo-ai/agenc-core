@@ -118,6 +118,11 @@ export const NATIVE_TEST_INCLUDE = Object.freeze([
   'tests/utils/execFileNoThrow.win32.test.ts',
 ]);
 
+/** Real Linux-kernel sandbox coverage executed on a disposable hosted runner. */
+export const KERNEL_TEST_INCLUDE = Object.freeze([
+  'tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts',
+]);
+
 /** PowerShell integration tests executed by the pinned hosted capability lane. */
 export const POWERSHELL_TEST_INCLUDE = Object.freeze([
   'tests/budget/admitted-legacy-powershell.powershell.test.ts',
@@ -153,6 +158,7 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   ...DESIGN_TEST_INCLUDE,
   ...CROSS_REPO_TEST_INCLUDE,
   ...NATIVE_TEST_INCLUDE,
+  ...KERNEL_TEST_INCLUDE,
   ...POWERSHELL_TEST_INCLUDE,
   ...NEOVIM_TEST_INCLUDE,
 ]);
@@ -174,6 +180,7 @@ export type AgenCVitestMode =
   | 'design'
   | 'cross-repo'
   | 'native'
+  | 'kernel'
   | 'powershell'
   | 'neovim';
 
@@ -452,6 +459,16 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = 'default') {
               include: [...NATIVE_TEST_INCLUDE],
               exclude: [...configDefaults.exclude],
             }
+          : mode === 'kernel'
+            ? {
+                // The disposable hosted lane loads the narrow AppArmor profile
+                // and fails closed on missing kernel facilities, while the
+                // ordinary hermetic environment still strips credentials and
+                // isolates AgenC state.
+                setupFiles: ['./vitest.setup.ts'],
+                include: [...KERNEL_TEST_INCLUDE],
+                exclude: [...configDefaults.exclude],
+              }
           : mode === 'powershell'
             ? {
                 // The hosted capability lane provisions an exact PowerShell

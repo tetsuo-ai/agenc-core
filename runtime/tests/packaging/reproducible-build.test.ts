@@ -121,6 +121,17 @@ describe("reproducible install and release contract", () => {
     const toolchain = JSON.parse(
       readFileSync(join(REPO_ROOT, "release-toolchain.json"), "utf8"),
     ) as {
+      bubblewrapTestRuntime: {
+        schemaVersion: number;
+        version: string;
+        "ubuntu-24.04-x64": {
+          packageVersion: string;
+          file: string;
+          url: string;
+          sha256: string;
+          bytes: number;
+        };
+      };
       powershellTestRuntime: {
         schemaVersion: number;
         version: string;
@@ -142,6 +153,17 @@ describe("reproducible install and release contract", () => {
         };
       };
     };
+    expect(toolchain.bubblewrapTestRuntime).toEqual({
+      schemaVersion: 1,
+      version: "0.9.0",
+      "ubuntu-24.04-x64": {
+        packageVersion: "0.9.0-1ubuntu0.1",
+        file: "bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
+        url: "https://security.ubuntu.com/ubuntu/pool/main/b/bubblewrap/bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
+        sha256: "1b506492bd9c7fd0cdb4f02ac822f1d3e336b0aead5113c1239baf8db5db562a",
+        bytes: 50_178,
+      },
+    });
     expect(toolchain.powershellTestRuntime).toEqual({
       schemaVersion: 1,
       version: "7.6.4",
@@ -168,10 +190,68 @@ describe("reproducible install and release contract", () => {
       "utf8",
     );
     expect(workflow).toContain("\n  pull_request:");
+    expect(workflow).toContain("\n  linux-kernel-sandbox:");
     expect(workflow).toContain("\n  powershell:");
     expect(workflow).toContain("\n  neovim:");
     expect(workflow).toContain("\n  macos-native:");
     expect(workflow).toContain("\n  windows-native:");
+
+    const linuxKernelJob = workflow.slice(
+      workflow.indexOf("\n  linux-kernel-sandbox:"),
+      workflow.indexOf("\n  powershell:"),
+    );
+    expect(linuxKernelJob).toContain("runs-on: ubuntu-24.04");
+    expect(linuxKernelJob).toContain(
+      '["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]',
+    );
+    expect(linuxKernelJob).toContain("sudo dpkg --install");
+    expect(linuxKernelJob).toContain(
+      "stat --format='%U:%G:%a' /usr/bin/bwrap",
+    );
+    expect(linuxKernelJob).toContain("getcap -n /usr/bin/bwrap");
+    expect(linuxKernelJob).toContain(
+      'node_copy="/opt/agenc-kernel-e2e-node"',
+    );
+    expect(linuxKernelJob).toContain(
+      'stat --format=\'%U:%G:%a\' "$node_copy"',
+    );
+    expect(linuxKernelJob).toContain('test "$(id -u)" -ne 0');
+    expect(linuxKernelJob).toContain('[[ "$cap_eff" =~ ^0+$ ]]');
+    expect(linuxKernelJob).toContain(
+      'test "$(cat "$apparmor_userns_path")" = "1"',
+    );
+    expect(linuxKernelJob).toContain("renderAgenCAppArmorProfile");
+    expect(linuxKernelJob).toContain("sudo apparmor_parser -r");
+    expect(linuxKernelJob).toContain("sudo apparmor_parser -R");
+    expect(linuxKernelJob).toContain("--require-zero-skips");
+    expect(linuxKernelJob).toContain("--config vitest.kernel.config.ts");
+    expect(linuxKernelJob).toContain(
+      "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts",
+    );
+    expect(linuxKernelJob).toContain("numTotalTestSuites: 1");
+    expect(linuxKernelJob).toContain("numTotalTests: 1");
+    expect(linuxKernelJob).toContain("pgrep -x bwrap");
+    expect(linuxKernelJob).toContain(
+      "agenc-kernel-e2e-[0-9a-f]{8}-[0-9a-f]{4}",
+    );
+    expect(linuxKernelJob).toContain('kill -TERM "$pid"');
+    expect(linuxKernelJob).toContain('kill -KILL "$pid"');
+    expect(linuxKernelJob).toContain(
+      "refusing to unconfine a leaked kernel-test process",
+    );
+    expect(linuxKernelJob).toContain('test ! -e "$wrapper"');
+    expect(linuxKernelJob).toContain('test ! -e "$node_copy"');
+    expect(linuxKernelJob).toContain("wrapper_installed=1");
+    expect(linuxKernelJob).toContain("node_copy_installed=1");
+    expect(linuxKernelJob).toContain(
+      "git status --porcelain=v1 --untracked-files=all",
+    );
+    expect(linuxKernelJob).not.toContain("sysctl -w");
+    expect(linuxKernelJob).not.toContain(
+      "kernel.apparmor_restrict_unprivileged_userns=0",
+    );
+    expect(linuxKernelJob).not.toContain("--privileged");
+    expect(linuxKernelJob).not.toContain("sudo bwrap");
 
     const powershellJob = workflow.slice(
       workflow.indexOf("\n  powershell:"),
@@ -252,11 +332,11 @@ describe("reproducible install and release contract", () => {
 
     expect(workflow.match(
       /actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/g,
-    )).toHaveLength(4);
+    )).toHaveLength(5);
     expect(workflow.match(
       /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
-    )).toHaveLength(3);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(4);
+    )).toHaveLength(4);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(5);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");

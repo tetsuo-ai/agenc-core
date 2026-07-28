@@ -58,6 +58,10 @@ const NATIVE_TEST_FILES = [
   'tests/utils/execFileNoThrow.win32.test.ts',
 ] as const;
 
+const KERNEL_TEST_FILES = [
+  'tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts',
+] as const;
+
 const POWERSHELL_TEST_FILES = [
   'tests/budget/admitted-legacy-powershell.powershell.test.ts',
   'tests/packaging/install-ps1.powershell.test.ts',
@@ -131,6 +135,13 @@ describe('hermetic test discovery', () => {
       ).not.toContain(nativeFile);
     }
 
+    for (const kernelFile of KERNEL_TEST_FILES) {
+      expect(
+        files,
+        `${kernelFile} leaked into the ordinary Linux suite`,
+      ).not.toContain(kernelFile);
+    }
+
     for (const powershellFile of POWERSHELL_TEST_FILES) {
       expect(
         files,
@@ -183,6 +194,29 @@ describe('hermetic test discovery', () => {
       const source = readFileSync(resolve(runtimeRoot, file), 'utf8');
       expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
     }
+  });
+
+  it('kernel discovery is an exact fail-closed real-bubblewrap allowlist', () => {
+    expect(listTestFiles('vitest.kernel.config.ts')).toEqual([
+      ...KERNEL_TEST_FILES,
+    ]);
+    const source = readFileSync(resolve(runtimeRoot, KERNEL_TEST_FILES[0]), 'utf8');
+    expect(source).not.toMatch(/\b(?:runIf|skip|skipIf)\b/u);
+    expect(source).toContain('new SandboxExecutionBroker({');
+    expect(source).toContain('const status = broker.status()');
+    expect(source).toContain('broker.prepareSpawn("tool"');
+    expect(source).toContain('agenc-native-userns (unconfined)');
+    expect(source).toContain('tcpRoundTrip(address.port, baselineToken)');
+    expect(source).toContain('error: "EPERM"');
+    expect(source).toContain('evidence.namespaces.mnt');
+    expect(source).toContain('evidence.namespaces.net');
+    expect(source).toContain('evidence.namespaces.pid');
+    expect(source).toContain('evidence.namespaces.user');
+    expect(source).toContain('expect(hostConnections).toBe(0)');
+    expect(source).toContain('expect(existsSync(descendantLeakMarker)).toBe(false)');
+    expect(source).toContain('visibleInProc: true');
+    expect(source).toContain('expect(readFileSync(hostSentinel, "utf8")).toBe(');
+    expect(source).toContain('expect(readFileSync(launcherSentinel, "utf8")).toBe(');
   });
 
   it('PowerShell discovery is an exact hosted capability allowlist without skip gates', () => {
@@ -327,6 +361,11 @@ describe('hermetic test discovery', () => {
       resolve(runtimeRoot, 'vitest.native.config.ts'),
       runtimeRoot,
     );
+    const kernelResult = await loadConfigFromFile(
+      environment,
+      resolve(runtimeRoot, 'vitest.kernel.config.ts'),
+      runtimeRoot,
+    );
     const powershellResult = await loadConfigFromFile(
       environment,
       resolve(runtimeRoot, 'vitest.powershell.config.ts'),
@@ -353,6 +392,9 @@ describe('hermetic test discovery', () => {
       './vitest.setup.ts',
     ]);
     expect(nativeResult?.config.test?.setupFiles).toEqual([
+      './vitest.setup.ts',
+    ]);
+    expect(kernelResult?.config.test?.setupFiles).toEqual([
       './vitest.setup.ts',
     ]);
     expect(powershellResult?.config.test?.setupFiles).toEqual([

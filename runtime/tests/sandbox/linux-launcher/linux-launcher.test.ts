@@ -188,6 +188,35 @@ describe("Linux sandbox launcher", () => {
     expect(args).toContain("--unshare-net");
   });
 
+  it("mounts launcher roots read-only and keeps proxy roots explicitly writable", () => {
+    const root = withTempDir("agenc-linux-launcher-extra-roots-");
+    const workspace = path.join(root, "workspace");
+    const launcherRoot = path.join(root, "launcher");
+    const proxyRoot = path.join(root, "proxy");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(launcherRoot);
+    fs.mkdirSync(proxyRoot);
+
+    const args = createBwrapCommandArgs(
+      ["/bin/true"],
+      restrictedFileSystemPolicy([
+        { path: { kind: "special", value: { kind: "root" } }, access: "read" },
+        { path: { kind: "path", path: workspace }, access: "write" },
+      ]),
+      workspace,
+      workspace,
+      {
+        mountProc: true,
+        networkMode: "isolated",
+        extraReadOnlyBindRoots: [launcherRoot],
+        extraWritableBindRoots: [proxyRoot],
+      },
+    ).args;
+
+    expect(bindModeForDestination(args, launcherRoot)).toBe("--ro-bind");
+    expect(bindModeForDestination(args, proxyRoot)).toBe("--bind");
+  });
+
   it("fails closed for missing read-only carveouts that cannot be typed", () => {
     const root = withTempDir("agenc-linux-launcher-missing-ro-");
     const policy = restrictedFileSystemPolicy([
@@ -826,6 +855,22 @@ function writeExecutable(filePath: string, source: string): void {
 function sliceAfter(args: readonly string[], flag: string): string[] {
   const index = args.indexOf(flag);
   return index === -1 ? [] : args.slice(index + 1, index + 3);
+}
+
+function bindModeForDestination(
+  args: readonly string[],
+  destination: string,
+): "--bind" | "--ro-bind" | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (
+      (value === "--bind" || value === "--ro-bind") &&
+      args[index + 2] === destination
+    ) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function listenOn(server: net.Server, host: string, port: number): Promise<void> {

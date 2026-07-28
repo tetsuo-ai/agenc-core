@@ -378,8 +378,9 @@ it receives background-network suppression flags, but only `npm test` provides
 the authoritative OS egress boundary.
 
 **Required checks:** the complete platform-independent suite runs locally.
-GitHub Actions carries only exact, narrow PowerShell, Neovim, macOS, and
-Windows capability lanes. Before merge, the PR records the exact locally
+GitHub Actions carries only exact, narrow Linux-kernel sandbox, PowerShell,
+Neovim, macOS, and Windows capability lanes. Before merge, the PR records the
+exact locally
 tested SHA, commands, results, and skips. Release verification repeats
 the same local gates against the immutable release-tag commit and retains the
 defined local evidence record. Manual release workflows may build artifacts

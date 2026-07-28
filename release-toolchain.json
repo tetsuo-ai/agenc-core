@@ -10,6 +10,17 @@
     "url": "https://registry.npmjs.org/npm/-/npm-11.17.0.tgz",
     "sha256": "b290bbb35b9e72c3ef84edbe041f28c4479c4d9ee79f555817b8caafe7ce4bba"
   },
+  "bubblewrapTestRuntime": {
+    "schemaVersion": 1,
+    "version": "0.9.0",
+    "ubuntu-24.04-x64": {
+      "packageVersion": "0.9.0-1ubuntu0.1",
+      "file": "bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
+      "url": "https://security.ubuntu.com/ubuntu/pool/main/b/bubblewrap/bubblewrap_0.9.0-1ubuntu0.1_amd64.deb",
+      "sha256": "1b506492bd9c7fd0cdb4f02ac822f1d3e336b0aead5113c1239baf8db5db562a",
+      "bytes": 50178
+    }
+  },
   "powershellTestRuntime": {
     "schemaVersion": 1,
     "version": "7.6.4",

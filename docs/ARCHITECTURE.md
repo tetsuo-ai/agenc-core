@@ -373,9 +373,10 @@ crashing the process.
   pristine checkouts to prove byte-identical recursive OCI layouts with an
   exact Buildx client and digest-pinned BuildKit daemon.
 - **Local required verification** — the complete platform-independent stable
-  contract runs locally. GitHub Actions carries only exact, narrow PowerShell,
-  Neovim, macOS, and Windows capability lanes. Each PR records the exact
-  locally tested SHA, commands, results, and skips before merge; release
+  contract runs locally. GitHub Actions carries only exact, narrow Linux-kernel
+  sandbox, PowerShell, Neovim, macOS, and Windows capability lanes. Each PR
+  records the exact locally tested SHA, commands, results, and skips before
+  merge; release
   verification repeats the gates on the immutable release-tag commit and
   retains the defined local evidence record. GitHub remains the
   branch/PR/merge record; manual release workflows

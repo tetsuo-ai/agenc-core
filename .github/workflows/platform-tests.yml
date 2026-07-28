@@ -16,6 +16,329 @@ env:
   NPM_VERSION: "11.17.0"
 
 jobs:
+  linux-kernel-sandbox:
+    name: linux-kernel-sandbox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bind the checkout and provision pinned bubblewrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "tetsuo-ai/agenc-core"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(id -u)" -ne 0
+          cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/self/status)"
+          [[ "$cap_eff" =~ ^0+$ ]]
+
+          npm_archive="$RUNNER_TEMP/npm-${NPM_VERSION}.tgz"
+          node scripts/fetch-pinned-npm.mjs "$npm_archive"
+          npm install --global "$npm_archive" \
+            --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "$NPM_VERSION"
+
+          bwrap_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["version"])')"
+          bwrap_package_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]["packageVersion"])')"
+          bwrap_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]["file"])')"
+          bwrap_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]["url"])')"
+          bwrap_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]["sha256"])')"
+          bwrap_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["bubblewrapTestRuntime"]["ubuntu-24.04-x64"]["bytes"])')"
+          test "$bwrap_file" = "bubblewrap_${bwrap_package_version}_amd64.deb"
+          [[ "$bwrap_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$bwrap_bytes" =~ ^[1-9][0-9]*$ ]]
+
+          bwrap_archive="$RUNNER_TEMP/$bwrap_file"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --fail --location --silent --show-error \
+            "$bwrap_url" --output "$bwrap_archive"
+          test "$(sha256sum "$bwrap_archive" | awk '{print $1}')" = "$bwrap_sha"
+          test "$(stat --format='%s' "$bwrap_archive")" = "$bwrap_bytes"
+          test "$(dpkg-deb --field "$bwrap_archive" Package)" = "bubblewrap"
+          test "$(dpkg-deb --field "$bwrap_archive" Version)" = \
+            "$bwrap_package_version"
+          test "$(dpkg-deb --field "$bwrap_archive" Architecture)" = "amd64"
+          sudo dpkg --install "$bwrap_archive"
+
+          test "$(command -v bwrap)" = "/usr/bin/bwrap"
+          test "$(dpkg-query --show --showformat='${Version}' bubblewrap)" = \
+            "$bwrap_package_version"
+          test -z "$(dpkg --verify bubblewrap)"
+          test "$(stat --format='%U:%G:%a' /usr/bin/bwrap)" = "root:root:755"
+          test ! -w /usr/bin/bwrap
+          test -z "$(getcap -n /usr/bin/bwrap)"
+          test "$(bwrap --version)" = "bubblewrap ${bwrap_version}"
+          test "$(command -v apparmor_parser)" = "/usr/sbin/apparmor_parser"
+          echo "kernel capability uses bubblewrap ${bwrap_package_version}"
+
+      - name: Install and build the production launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm rebuild esbuild
+          npm run build --workspace=@tetsuo-ai/runtime
+          test -x runtime/bin/agenc-linux-sandbox
+          test -r runtime/dist/sandbox/linux-launcher/main.js
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Run the exact real-kernel bubblewrap lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          userns_clone_path="/proc/sys/kernel/unprivileged_userns_clone"
+          apparmor_userns_path="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+          profile="$RUNNER_TEMP/agenc-native-userns"
+          wrapper="/opt/agenc-kernel-e2e"
+          node_copy="/opt/agenc-kernel-e2e-node"
+          profile_loaded=0
+          wrapper_installed=0
+          node_copy_installed=0
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            leaks_remaining=0
+            mapfile -t leaked_pids < <(
+              {
+                pgrep -x bwrap || true
+                pgrep -f -- \
+                  'agenc-kernel-e2e-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
+                  true
+              } | sort -un
+            )
+            if test "${#leaked_pids[@]}" -gt 0; then
+              echo "kernel capability lane leaked process(es):" >&2
+              for pid in "${leaked_pids[@]}"; do
+                ps -o pid=,ppid=,stat=,args= -p "$pid" >&2 || true
+                kill -TERM "$pid" 2>/dev/null || true
+              done
+              status=1
+              for _ in {1..50}; do
+                live=0
+                for pid in "${leaked_pids[@]}"; do
+                  if kill -0 "$pid" 2>/dev/null; then live=1; fi
+                done
+                if test "$live" = "0"; then break; fi
+                sleep 0.1
+              done
+              for pid in "${leaked_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  kill -KILL "$pid" 2>/dev/null || true
+                fi
+              done
+              for _ in {1..50}; do
+                live=0
+                for pid in "${leaked_pids[@]}"; do
+                  if kill -0 "$pid" 2>/dev/null; then live=1; fi
+                done
+                if test "$live" = "0"; then break; fi
+                sleep 0.1
+              done
+              for pid in "${leaked_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  echo "failed to terminate leaked process $pid" >&2
+                  leaks_remaining=1
+                  status=1
+                fi
+              done
+            fi
+            if test "$profile_loaded" = "1" &&
+              test "$leaks_remaining" = "0"; then
+              if ! sudo apparmor_parser -R "$profile"; then
+                echo "failed to unload the kernel-test AppArmor profile" >&2
+                status=1
+              fi
+            elif test "$profile_loaded" = "1"; then
+              echo "refusing to unconfine a leaked kernel-test process" >&2
+              status=1
+            fi
+            if sudo grep -q '^agenc-native-userns ' \
+              /sys/kernel/security/apparmor/profiles; then
+              echo "kernel capability lane leaked its AppArmor profile" >&2
+              status=1
+            fi
+            if test "$wrapper_installed" = "1" &&
+              test "$leaks_remaining" = "0"; then
+              sudo unlink "$wrapper" || status=1
+            fi
+            if test "$node_copy_installed" = "1" &&
+              test "$leaks_remaining" = "0"; then
+              sudo unlink "$node_copy" || status=1
+            fi
+            if test "$(cat "$apparmor_userns_path")" != "1"; then
+              echo "AppArmor user-namespace restriction changed" >&2
+              status=1
+            fi
+            if test -r "$userns_clone_path" &&
+              test "$(cat "$userns_clone_path")" != "1"; then
+              echo "unprivileged user-namespace setting changed" >&2
+              status=1
+            fi
+            if test -n "$(git status --porcelain=v1 --untracked-files=all)"; then
+              echo "kernel capability lane dirtied the checkout" >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          test "$(id -u)" -ne 0
+          cap_eff="$(awk '$1 == "CapEff:" { print $2 }' /proc/self/status)"
+          [[ "$cap_eff" =~ ^0+$ ]]
+          test -r "$apparmor_userns_path"
+          test "$(cat "$apparmor_userns_path")" = "1"
+          if test -r "$userns_clone_path"; then
+            test "$(cat "$userns_clone_path")" = "1"
+          fi
+          test "$(cat /proc/sys/user/max_user_namespaces)" -gt 0
+          test -e /proc/self/ns/user
+          test -e /proc/self/ns/pid
+          test -e /proc/self/ns/net
+          test -e /proc/self/ns/mnt
+          test ! -e /etc/apparmor.d/local/agenc-native-userns
+          if sudo grep -q '^agenc-native-userns ' \
+            /sys/kernel/security/apparmor/profiles; then
+            echo "kernel-test AppArmor profile already exists" >&2
+            exit 1
+          fi
+
+          denied_probe="$RUNNER_TEMP/bwrap-denied-before-profile.txt"
+          if bwrap \
+            --unshare-user \
+            --unshare-pid \
+            --unshare-net \
+            --ro-bind / / \
+            --proc /proc \
+            -- /bin/true >"$denied_probe" 2>&1; then
+            echo "bubblewrap unexpectedly worked before the scoped profile" >&2
+            exit 1
+          fi
+          grep -Eq \
+            'Failed RTM_NEW(ADDR|LINK)|setting up uid map: (Permission denied|Operation not permitted)' \
+            "$denied_probe"
+
+          wrapper_source="$RUNNER_TEMP/agenc-kernel-e2e-wrapper"
+          test ! -e "$wrapper"
+          test ! -L "$wrapper"
+          test ! -e "$node_copy"
+          test ! -L "$node_copy"
+          sudo install --owner=root --group=root --mode=0755 \
+            "$(realpath "$(command -v node)")" "$node_copy"
+          node_copy_installed=1
+          test "$(stat --format='%U:%G:%a' "$node_copy")" = "root:root:755"
+          test ! -w "$node_copy"
+          test -z "$(getcap -n "$node_copy")"
+          test "$("$node_copy" --version)" = "v${NODE_VERSION}"
+          node_bin="$node_copy"
+          runtime_bin="$(realpath runtime/scripts/run-hermetic-vitest.mjs)"
+          node --input-type=module - \
+            "$wrapper_source" "$node_bin" "$runtime_bin" \
+            "$RUNNER_TEMP/agenc-home" <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { renderGeneratedWrapperContent } from "./packages/agenc/lib/generated-wrapper.mjs";
+
+          const [path, nodeBin, runtimeBin, agencHome] = process.argv.slice(2);
+          if (!path || !nodeBin || !runtimeBin || !agencHome) {
+            throw new Error("missing generated-wrapper input");
+          }
+          writeFileSync(
+            path,
+            renderGeneratedWrapperContent({
+              kind: "posix",
+              nodeBin,
+              runtimeBin,
+              agencHome,
+            }),
+            { flag: "wx", mode: 0o755 },
+          );
+          NODE
+          sudo install --owner=root --group=root --mode=0755 \
+            "$wrapper_source" "$wrapper"
+          wrapper_installed=1
+          test "$(stat --format='%U:%G:%a' "$wrapper")" = "root:root:755"
+          test ! -w "$wrapper"
+
+          ./node_modules/.bin/tsx --eval \
+            'import { renderAgenCAppArmorProfile } from "./runtime/src/sandbox/apparmor.ts"; process.stdout.write(renderAgenCAppArmorProfile(process.argv[1]));' \
+            "$wrapper" > "$profile"
+          grep -Fqx \
+            'profile agenc-native-userns "/opt/agenc-kernel-e2e" flags=(unconfined) {' \
+            "$profile"
+          test "$(grep -Fxc '  userns,' "$profile")" = "1"
+          sudo apparmor_parser -r "$profile"
+          profile_loaded=1
+          sudo grep -q '^agenc-native-userns ' \
+            /sys/kernel/security/apparmor/profiles
+          test "$(cat "$apparmor_userns_path")" = "1"
+
+          results="$RUNNER_TEMP/kernel-test-results.json"
+          "$wrapper" \
+            --require-zero-skips \
+            run \
+            --config vitest.kernel.config.ts \
+            --allowOnly=false \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json "$results"
+          node --input-type=module - "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing kernel-test results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedFile =
+            "tests/sandbox/linux-launcher/linux-launcher.kernel.test.ts";
+          const exactCounts = {
+            numTotalTestSuites: 1,
+            numPassedTestSuites: 1,
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numTotalTests: 1,
+            numPassedTests: 1,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(exactCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `kernel-test result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (
+            results.success !== true ||
+            !Array.isArray(results.testResults) ||
+            results.testResults.length !== 1
+          ) {
+            throw new Error("kernel-test result did not report one successful file");
+          }
+          const file = relative(
+            resolve("runtime"),
+            results.testResults[0].name,
+          ).split("\\").join("/");
+          if (file !== expectedFile) {
+            throw new Error(
+              `kernel-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
+            );
+          }
+          console.log(
+            "real-kernel bubblewrap lane passed 1 test in 1 file with zero skipped",
+          );
+          NODE
+
   powershell:
     name: powershell
     runs-on: ubuntu-24.04

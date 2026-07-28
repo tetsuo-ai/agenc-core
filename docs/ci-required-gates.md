@@ -834,7 +834,19 @@ authorize release of a different squash-merged commit.
 
 [`platform-tests.yml`](../.github/workflows/platform-tests.yml) carries only
 tests whose required runtime or operating system is unavailable to the normal
-Linux local gate. Its `powershell` job installs the digest- and byte-pinned
+Linux local gate. Its `linux-kernel-sandbox` job installs the digest- and
+byte-pinned Ubuntu bubblewrap package from
+[`release-toolchain.json`](../release-toolchain.json), keeps Ubuntu's global
+AppArmor user-namespace restriction enabled, and loads the narrow profile
+rendered by AgenC for a root-owned generated wrapper. The one-test allowlist
+then exercises the production broker, manager, packaged launcher, bubblewrap,
+user/PID/mount/network namespaces, network seccomp, filesystem mounts, and
+descendant cleanup as an unprivileged process with no effective capabilities.
+The job proves host loopback reachability before the sandbox, requires the
+sandboxed socket syscall to fail with `EPERM`, and unloads the profile with
+process- and checkout-cleanliness postconditions.
+
+The `powershell` job installs the digest- and byte-pinned
 PowerShell runtime from [`release-toolchain.json`](../release-toolchain.json),
 enters the same credential-stripped, private-home Vitest boundary as the
 default suite, and runs an exact four-file allowlist. The Node tripwire remains
@@ -1064,7 +1076,7 @@ PTY supervisor run locally. PR descriptions are the human-reviewed evidence
 record and must follow the exact-SHA protocol above. Release records use the
 defined local evidence path and immutable-tag protocol. No dedicated GitHub
 App or active App-bound ruleset is claimed or required in local-only mode.
-The hosted platform workflow supplements PRs with the four narrow capability
+The hosted platform workflow supplements PRs with the five narrow capability
 lanes above; the same native probes also run before tagged native artifacts
 are built. The optional multi-UID systemd/App design has not been activated.
 
