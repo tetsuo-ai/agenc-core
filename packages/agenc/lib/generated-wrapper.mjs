@@ -136,6 +136,62 @@ export function renderGeneratedWrapperContent({
   ].join("\n");
 }
 
+// Releases 0.6.2 through 0.10.0 emitted this immutable metadata-v1 shape
+// before standalone installs carried a private Node runtime. Keep the renderer
+// private: it exists only so ownership can be proven by exact full-file
+// reconstruction, never by trusting the historical marker or metadata alone.
+function renderPrePrivateNodeWrapperContent({
+  kind,
+  nodeBin,
+  runtimeBin,
+  agencHome,
+}) {
+  if (kind !== "posix" && kind !== "cmd") {
+    throw new TypeError(`unsupported wrapper kind: ${String(kind)}`);
+  }
+  const values = { nodeBin, runtimeBin, agencHome };
+  validateValues(kind, values);
+  const metadata = Buffer.from(JSON.stringify({
+    nodeBin,
+    runtimeBin,
+    agencHome,
+  }), "utf8").toString("base64url");
+  if (kind === "cmd") {
+    const batch = (value) => value.replaceAll("%", "%%");
+    return [
+      "@echo off",
+      "setlocal DisableDelayedExpansion",
+      `rem ${CMD_WRAPPER_SIGNATURE} - rewritten on every install/upgrade.`,
+      `rem ${WRAPPER_METADATA_PREFIX} ${metadata}`,
+      `if not defined AGENC_HOME set "AGENC_HOME=${batch(agencHome)}"`,
+      `"${batch(nodeBin)}" "${batch(runtimeBin)}" %*`,
+      "",
+    ].join("\r\n");
+  }
+  const quote = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
+  return [
+    "#!/bin/sh",
+    `# ${POSIX_WRAPPER_SIGNATURE} — rewritten on every install/upgrade.`,
+    `# ${WRAPPER_METADATA_PREFIX} ${metadata}`,
+    'if [ -z "${AGENC_HOME:-}" ]; then',
+    `  export AGENC_HOME=${quote(agencHome)}`,
+    "fi",
+    "# Capture one V8 near-heap-limit snapshot unless the operator already configured it.",
+    'case " ${NODE_OPTIONS:-} " in',
+    "  *heapsnapshot-near-heap-limit*)",
+    `    exec ${quote(nodeBin)} ${quote(runtimeBin)} "$@"`,
+    "    ;;",
+    "  *)",
+    '    mkdir -p "${AGENC_HOME}/oom-snapshots" 2>/dev/null || :',
+    `    exec ${quote(nodeBin)} --heapsnapshot-near-heap-limit=1 ` +
+      '--diagnostic-dir="${AGENC_HOME}/oom-snapshots" ' +
+      `${quote(runtimeBin)} "$@"`,
+    "    ;;",
+    "esac",
+    "",
+  ].join("\n");
+}
+
 function decodeCanonicalMetadata(encoded) {
   try {
     const bytes = Buffer.from(encoded, "base64url");
@@ -178,7 +234,12 @@ function parseModern(path, content) {
   if (values === undefined) return undefined;
   try {
     const wrapper = { kind, path, ...values };
-    return renderGeneratedWrapperContent(wrapper) === content ? wrapper : undefined;
+    if (renderGeneratedWrapperContent(wrapper) === content) return wrapper;
+    if (
+      values.nodeLibraryPath === undefined &&
+      renderPrePrivateNodeWrapperContent(wrapper) === content
+    ) return wrapper;
+    return undefined;
   } catch {
     return undefined;
   }
