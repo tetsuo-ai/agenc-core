@@ -45,10 +45,11 @@ export type NeovimDiscoveryResult =
       readonly version?: NeovimVersion;
     };
 
-// Creating the supervised Job Object boundary can exceed one second on a
-// cold Windows host (notably while endpoint protection inspects nvim.exe).
-// Keep the tighter POSIX deadline while avoiding a false fallback on Windows.
-const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 5000 : 1200;
+// Creating the supervised Job Object boundary can exceed five seconds on a
+// cold Windows host (notably while PowerShell compiles the broker and endpoint
+// protection inspects nvim.exe). Keep the tighter POSIX deadline while
+// avoiding a false fallback on Windows.
+const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 10_000 : 1200;
 const DEFAULT_MIN_VERSION = [0, 9, 0] as const;
 const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
 
@@ -199,7 +200,10 @@ function probeNeovimVersion(executable: string, timeoutMs: number): Promise<Prob
       if (cleanupPromise) return cleanupPromise;
       cleanupPromise = terminateProcessTreeAndWait(child, {
         terminateGraceMs: 50,
-        killGraceMs: Math.max(250, timeoutMs),
+        // Cleanup verification is a separate bounded phase, not a second copy
+        // of the probe deadline. Job Objects and the POSIX containment
+        // boundaries fail closed if they cannot prove teardown in this grace.
+        killGraceMs: 1_000,
         label: "Neovim version probe",
       });
       // An early leader exit begins cleanup before `close` drains the pipes.

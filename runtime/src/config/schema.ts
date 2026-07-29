@@ -1013,7 +1013,6 @@ export function defaultConfig(): AgenCConfig {
       show_tabs: "auto",
       neovim: Object.freeze({
         init: "auto",
-        discovery_timeout_ms: 1_200,
         startup_timeout_ms: 10_000,
         operation_timeout_ms: 10_000,
         cleanup_timeout_ms: 1_000,

@@ -60,7 +60,7 @@ show_tabs = "auto"      # auto | always | never
 [buffer.neovim]
 executable = "/usr/bin/nvim"
 init = "auto"           # auto | user | clean
-discovery_timeout_ms = 1200
+# discovery_timeout_ms = 1200  # optional override; default 1200, or 10000 on Windows
 startup_timeout_ms = 10000
 operation_timeout_ms = 10000
 cleanup_timeout_ms = 1000

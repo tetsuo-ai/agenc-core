@@ -48,7 +48,14 @@ describe("embedded Neovim discovery deadline", () => {
       usable: false,
       reasonCode: "probe-timeout",
     });
-    expect(processMocks.terminateProcessTreeAndWait).toHaveBeenCalledTimes(1);
+    expect(processMocks.terminateProcessTreeAndWait).toHaveBeenCalledWith(
+      child,
+      {
+        terminateGraceMs: 50,
+        killGraceMs: 1_000,
+        label: "Neovim version probe",
+      },
+    );
     expect(child.stdout.destroyed).toBe(true);
     expect(child.stderr.destroyed).toBe(true);
   });

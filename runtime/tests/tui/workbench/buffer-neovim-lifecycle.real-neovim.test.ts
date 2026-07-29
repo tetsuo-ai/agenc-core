@@ -51,7 +51,7 @@ beforeAll(async () => {
     useUserInit: false,
   });
   neovim = discovery;
-});
+}, 30_000);
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agenc-real-nvim-lifecycle-"));
