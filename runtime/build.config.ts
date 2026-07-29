@@ -2,6 +2,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   statSync,
@@ -42,6 +43,14 @@ const processBrokerSource = resolve(
 const processBrokerDist = resolve(
   runtimeRoot,
   'dist/agenc-process-broker',
+);
+const windowsProcessBrokerSource = resolve(
+  runtimeRoot,
+  'native/agenc-process-job-broker.cs',
+);
+const windowsProcessBrokerDist = resolve(
+  runtimeRoot,
+  'dist/agenc-process-job-broker.exe',
 );
 const agencRoot = resolve(runtimeRoot, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
@@ -153,6 +162,132 @@ function compileLinuxProcessBroker(): void {
     );
   }
   chmodSync(processBrokerDist, 0o755);
+}
+
+function compileWindowsProcessBroker(): void {
+  if (process.platform !== 'win32') return;
+  const compilers = windowsCSharpCompilerCandidates();
+  if (compilers.length === 0) {
+    throw new Error(
+      'Windows process-broker build requires the Visual Studio or .NET Framework C# compiler',
+    );
+  }
+
+  const errors: string[] = [];
+  for (const compiler of compilers) {
+    const result = spawnSync(
+      compiler,
+      [
+        '/nologo',
+        '/target:exe',
+        '/optimize+',
+        '/checked+',
+        '/deterministic+',
+        `/pathmap:${runtimeRoot}=.`,
+        `/out:${windowsProcessBrokerDist}`,
+        windowsProcessBrokerSource,
+      ],
+      {
+        cwd: runtimeRoot,
+        env: {
+          ...process.env,
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+          DOTNET_NOLOGO: '1',
+        },
+        encoding: 'utf8',
+        windowsHide: true,
+      },
+    );
+    if (
+      result.error === undefined &&
+      result.status === 0 &&
+      existsSync(windowsProcessBrokerDist)
+    ) {
+      chmodSync(windowsProcessBrokerDist, 0o755);
+      return;
+    }
+    errors.push(
+      `${compiler}: ${
+        result.error?.message ??
+        result.stderr?.trim() ??
+        `exit ${result.status ?? 'unknown'}`
+      }`,
+    );
+  }
+  throw new Error(
+    `Windows process-broker build failed:\n${errors.join('\n')}`,
+  );
+}
+
+function windowsCSharpCompilerCandidates(): string[] {
+  const candidates: string[] = [];
+  const programFilesX86 = process.env['ProgramFiles(x86)'];
+  const programFiles = process.env.ProgramFiles;
+  const visualStudioRoots = [programFilesX86, programFiles].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (programFilesX86) {
+    const vswhere = resolve(
+      programFilesX86,
+      'Microsoft Visual Studio/Installer/vswhere.exe',
+    );
+    if (isTrustedWindowsBuildTool(vswhere, visualStudioRoots)) {
+      const discovered = spawnSync(
+        vswhere,
+        [
+          '-latest',
+          '-products',
+          '*',
+          '-requires',
+          'Microsoft.Component.MSBuild',
+          '-find',
+          'MSBuild\\**\\Bin\\Roslyn\\csc.exe',
+        ],
+        {
+          encoding: 'utf8',
+          windowsHide: true,
+        },
+      );
+      if (discovered.status === 0) {
+        for (const line of discovered.stdout.split(/\r?\n/u)) {
+          const candidate = line.trim();
+          if (
+            candidate &&
+            isTrustedWindowsBuildTool(candidate, visualStudioRoots)
+          ) {
+            candidates.push(candidate);
+          }
+        }
+      }
+    }
+  }
+
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (systemRoot) {
+    for (const relativePath of [
+      'Microsoft.NET/Framework64/v4.0.30319/csc.exe',
+      'Microsoft.NET/Framework/v4.0.30319/csc.exe',
+    ]) {
+      const candidate = resolve(systemRoot, relativePath);
+      if (isTrustedWindowsBuildTool(candidate, [systemRoot])) {
+        candidates.push(candidate);
+      }
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+function isTrustedWindowsBuildTool(
+  path: string,
+  trustedRoots: readonly string[],
+): boolean {
+  try {
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) return false;
+    return trustedRoots.some((root) => isWithin(resolve(root), resolve(path)));
+  } catch {
+    return false;
+  }
 }
 
 function aliasedSourceBases(base: string): string[] {
@@ -326,6 +461,7 @@ const agencRuntimeAssets = {
     build.onEnd(() => {
       copyYoloClassifierPrompts();
       compileLinuxProcessBroker();
+      compileWindowsProcessBroker();
     });
   },
 };

@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -82,279 +82,7 @@ const MAX_PROCESS_TABLE_RECORDS = 32_768;
 const MAX_OWNED_PROCESS_IDENTITIES = 4_096;
 const LINUX_SUBREAPER_BROKER_NAME = "agenc-process-broker";
 
-const WINDOWS_JOB_BROKER_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$program = [Text.Encoding]::UTF8.GetString(
-  [Convert]::FromBase64String($env:AGENC_PROCESS_JOB_PROGRAM)
-)
-$commandLine = [Text.Encoding]::UTF8.GetString(
-  [Convert]::FromBase64String($env:AGENC_PROCESS_JOB_COMMAND_LINE)
-)
-$agencOwnerProcessId = [int]$env:AGENC_PROCESS_JOB_OWNER_PID
-Remove-Item Env:AGENC_PROCESS_JOB_PROGRAM -ErrorAction SilentlyContinue
-Remove-Item Env:AGENC_PROCESS_JOB_COMMAND_LINE -ErrorAction SilentlyContinue
-Remove-Item Env:AGENC_PROCESS_JOB_OWNER_PID -ErrorAction SilentlyContinue
-$source = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-
-namespace AgenC {
-  public static class ProcessJob {
-    const uint CREATE_SUSPENDED = 0x00000004;
-    const uint STARTF_USESTDHANDLES = 0x00000100;
-    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
-    const uint SYNCHRONIZE = 0x00100000;
-    const uint INFINITE = 0xffffffff;
-    const uint WAIT_OBJECT_0 = 0x00000000;
-    const uint WAIT_FAILED = 0xffffffff;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct STARTUPINFO {
-      public int cb;
-      public string lpReserved;
-      public string lpDesktop;
-      public string lpTitle;
-      public int dwX;
-      public int dwY;
-      public int dwXSize;
-      public int dwYSize;
-      public int dwXCountChars;
-      public int dwYCountChars;
-      public int dwFillAttribute;
-      public uint dwFlags;
-      public short wShowWindow;
-      public short cbReserved2;
-      public IntPtr lpReserved2;
-      public IntPtr hStdInput;
-      public IntPtr hStdOutput;
-      public IntPtr hStdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct PROCESS_INFORMATION {
-      public IntPtr hProcess;
-      public IntPtr hThread;
-      public uint dwProcessId;
-      public uint dwThreadId;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
-      public long PerProcessUserTimeLimit;
-      public long PerJobUserTimeLimit;
-      public uint LimitFlags;
-      public UIntPtr MinimumWorkingSetSize;
-      public UIntPtr MaximumWorkingSetSize;
-      public uint ActiveProcessLimit;
-      public UIntPtr Affinity;
-      public uint PriorityClass;
-      public uint SchedulingClass;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct IO_COUNTERS {
-      public ulong ReadOperationCount;
-      public ulong WriteOperationCount;
-      public ulong OtherOperationCount;
-      public ulong ReadTransferCount;
-      public ulong WriteTransferCount;
-      public ulong OtherTransferCount;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-      public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
-      public IO_COUNTERS IoInfo;
-      public UIntPtr ProcessMemoryLimit;
-      public UIntPtr JobMemoryLimit;
-      public UIntPtr PeakProcessMemoryUsed;
-      public UIntPtr PeakJobMemoryUsed;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern IntPtr CreateJobObject(IntPtr attributes, string name);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool SetInformationJobObject(
-      IntPtr job,
-      int infoClass,
-      IntPtr information,
-      uint informationLength
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern bool CreateProcess(
-      string applicationName,
-      StringBuilder commandLine,
-      IntPtr processAttributes,
-      IntPtr threadAttributes,
-      bool inheritHandles,
-      uint creationFlags,
-      IntPtr environment,
-      string currentDirectory,
-      ref STARTUPINFO startupInfo,
-      out PROCESS_INFORMATION processInformation
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern uint ResumeThread(IntPtr thread);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern IntPtr OpenProcess(
-      uint desiredAccess,
-      bool inheritHandle,
-      uint processId
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern uint WaitForMultipleObjects(
-      uint count,
-      IntPtr[] handles,
-      bool waitAll,
-      uint milliseconds
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool CloseHandle(IntPtr handle);
-
-    [DllImport("kernel32.dll")]
-    static extern IntPtr GetStdHandle(int standardHandle);
-
-    static void Check(bool result, string operation) {
-      if (!result) throw new Win32Exception(
-        Marshal.GetLastWin32Error(),
-        operation
-      );
-    }
-
-    public static int Run(
-      string applicationName,
-      string commandLine,
-      string currentDirectory,
-      int ownerProcessId
-    ) {
-      IntPtr job = IntPtr.Zero;
-      IntPtr owner = IntPtr.Zero;
-      PROCESS_INFORMATION process = new PROCESS_INFORMATION();
-      bool processCreated = false;
-      bool resumed = false;
-      try {
-        owner = OpenProcess(SYNCHRONIZE, false, (uint)ownerProcessId);
-        if (owner == IntPtr.Zero) throw new Win32Exception(
-          Marshal.GetLastWin32Error(),
-          "OpenProcess(owner)"
-        );
-        job = CreateJobObject(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) throw new Win32Exception(
-          Marshal.GetLastWin32Error(),
-          "CreateJobObject"
-        );
-
-        var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-        limits.BasicLimitInformation.LimitFlags =
-          JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        int limitSize = Marshal.SizeOf(limits);
-        IntPtr limitBuffer = Marshal.AllocHGlobal(limitSize);
-        try {
-          Marshal.StructureToPtr(limits, limitBuffer, false);
-          Check(
-            SetInformationJobObject(job, 9, limitBuffer, (uint)limitSize),
-            "SetInformationJobObject"
-          );
-        } finally {
-          Marshal.FreeHGlobal(limitBuffer);
-        }
-
-        var startup = new STARTUPINFO();
-        startup.cb = Marshal.SizeOf(startup);
-        startup.dwFlags = STARTF_USESTDHANDLES;
-        startup.hStdInput = GetStdHandle(-10);
-        startup.hStdOutput = GetStdHandle(-11);
-        startup.hStdError = GetStdHandle(-12);
-        Check(
-          CreateProcess(
-            applicationName,
-            new StringBuilder(commandLine),
-            IntPtr.Zero,
-            IntPtr.Zero,
-            true,
-            CREATE_SUSPENDED,
-            IntPtr.Zero,
-            currentDirectory,
-            ref startup,
-            out process
-          ),
-          "CreateProcess"
-        );
-        processCreated = true;
-        Check(
-          AssignProcessToJobObject(job, process.hProcess),
-          "AssignProcessToJobObject"
-        );
-        if (ResumeThread(process.hThread) == 0xffffffff) {
-          throw new Win32Exception(
-            Marshal.GetLastWin32Error(),
-            "ResumeThread"
-          );
-        }
-        resumed = true;
-        var waitHandles = new IntPtr[] { process.hProcess, owner };
-        uint waitResult = WaitForMultipleObjects(
-          (uint)waitHandles.Length,
-          waitHandles,
-          false,
-          INFINITE
-        );
-        if (waitResult == WAIT_FAILED) {
-          throw new Win32Exception(
-            Marshal.GetLastWin32Error(),
-            "WaitForMultipleObjects"
-          );
-        }
-        if (waitResult == WAIT_OBJECT_0 + 1) {
-          // Closing the KILL_ON_JOB_CLOSE handle in finally is the ownership
-          // backstop; terminate the leader first so its exit is immediate.
-          TerminateProcess(process.hProcess, 1);
-          return 1;
-        }
-        if (waitResult != WAIT_OBJECT_0) throw new InvalidOperationException(
-          "Unexpected process ownership wait result: " + waitResult
-        );
-        uint exitCode;
-        Check(GetExitCodeProcess(process.hProcess, out exitCode), "GetExitCodeProcess");
-        return unchecked((int)exitCode);
-      } finally {
-        if (processCreated && !resumed) {
-          TerminateProcess(process.hProcess, 1);
-        }
-        if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
-        if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
-        if (job != IntPtr.Zero) CloseHandle(job);
-        if (owner != IntPtr.Zero) CloseHandle(owner);
-      }
-    }
-  }
-}
-'@
-$null = Add-Type -TypeDefinition $source -Language CSharp
-exit [AgenC.ProcessJob]::Run(
-  $program,
-  $commandLine,
-  (Get-Location).Path,
-  $agencOwnerProcessId
-)
-`;
+const WINDOWS_JOB_BROKER_NAME = "agenc-process-job-broker.exe";
 
 const LINUX_CGROUP_OWNER_WATCHDOG_SCRIPT = String.raw`
 set -u
@@ -682,6 +410,8 @@ const linuxSubreaperBoundaries =
   new WeakMap<object, LinuxSubreaperBoundary>();
 let compiledLinuxSubreaperBroker: string | undefined;
 let compiledLinuxSubreaperBrokerRoot: string | undefined;
+let compiledWindowsJobBroker: string | undefined;
+let compiledWindowsJobBrokerRoot: string | undefined;
 
 type LinuxCgroupWatchdogPendingRegistration = {
   readonly child: ChildProcessWithoutNullStreams;
@@ -1426,27 +1156,233 @@ function unrefProcessPipe(pipe: object): void {
   candidate.unref?.();
 }
 
+function resolveWindowsJobBroker(): string {
+  if (compiledWindowsJobBroker !== undefined) {
+    if (isTrustedWindowsJobBroker(compiledWindowsJobBroker)) {
+      return compiledWindowsJobBroker;
+    }
+    cleanupCompiledWindowsJobBroker();
+  }
+
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const bundledCandidates = [
+    join(moduleDirectory, WINDOWS_JOB_BROKER_NAME),
+    resolve(moduleDirectory, "..", WINDOWS_JOB_BROKER_NAME),
+    // Vitest imports this source module directly after the hosted lane builds
+    // production dist. Exercise that exact precompiled helper instead of the
+    // source-only compiler fallback.
+    resolve(moduleDirectory, "../../dist", WINDOWS_JOB_BROKER_NAME),
+  ];
+  const bundled = bundledCandidates.find(isTrustedWindowsJobBroker);
+  if (bundled !== undefined) {
+    compiledWindowsJobBroker = bundled;
+    return bundled;
+  }
+
+  const sourceCandidates = [
+    resolve(moduleDirectory, "../../native/agenc-process-job-broker.cs"),
+    resolve(moduleDirectory, "../native/agenc-process-job-broker.cs"),
+  ];
+  const sourcePath = sourceCandidates.find(isTrustedRegularFile);
+  if (sourcePath === undefined) {
+    throw new Error(
+      "Windows process containment requires the bundled Job Object broker",
+    );
+  }
+  const compilers = trustedWindowsCSharpCompilerCandidates();
+  if (compilers.length === 0) {
+    throw new Error(
+      "Windows process containment requires the bundled Job Object broker; " +
+        "no trusted development C# compiler was found",
+    );
+  }
+
+  const buildRoot = mkdtempSync(
+    join(tmpdir(), "agenc-process-job-broker-"),
+  );
+  chmodSync(buildRoot, 0o700);
+  const outputPath = join(buildRoot, WINDOWS_JOB_BROKER_NAME);
+  const sourceRoot = resolve(dirname(sourcePath), "..");
+  const errors: string[] = [];
+  try {
+    for (const compiler of compilers) {
+      const compilerProfiles = [
+        ["/deterministic+", `/pathmap:${sourceRoot}=.`],
+        [],
+      ] as const;
+      for (const profile of compilerProfiles) {
+        try {
+          execFileSync(
+            compiler,
+            [
+              "/nologo",
+              "/target:exe",
+              "/optimize+",
+              "/checked+",
+              ...profile,
+              `/out:${outputPath}`,
+              sourcePath,
+            ],
+            {
+              cwd: sourceRoot,
+              env: {
+                ...process.env,
+                DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+                DOTNET_NOLOGO: "1",
+              },
+              stdio: "pipe",
+              windowsHide: true,
+            },
+          );
+          chmodSync(outputPath, 0o500);
+          if (!isTrustedWindowsJobBroker(outputPath)) {
+            throw new Error(
+              "compiled broker failed executable integrity checks",
+            );
+          }
+          compiledWindowsJobBroker = outputPath;
+          compiledWindowsJobBrokerRoot = buildRoot;
+          process.once("exit", cleanupCompiledWindowsJobBroker);
+          return outputPath;
+        } catch (error) {
+          rmSync(outputPath, { force: true });
+          errors.push(`${compiler}: ${toError(error).message}`);
+        }
+      }
+    }
+  } catch (error) {
+    rmSync(buildRoot, { force: true, recursive: true });
+    throw error;
+  }
+  rmSync(buildRoot, { force: true, recursive: true });
+  throw new Error(
+    `Windows process containment broker build failed:\n${errors.join("\n")}`,
+  );
+}
+
+function trustedWindowsCSharpCompilerCandidates(): string[] {
+  const candidates: string[] = [];
+  const programFilesX86 = process.env["ProgramFiles(x86)"];
+  const programFiles = process.env.ProgramFiles;
+  const visualStudioRoots = [programFilesX86, programFiles].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (programFilesX86) {
+    const vswhere = resolve(
+      programFilesX86,
+      "Microsoft Visual Studio/Installer/vswhere.exe",
+    );
+    if (isTrustedWindowsTool(vswhere, visualStudioRoots)) {
+      try {
+        const output = execFileSync(
+          vswhere,
+          [
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.Component.MSBuild",
+            "-find",
+            "MSBuild\\**\\Bin\\Roslyn\\csc.exe",
+          ],
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+            windowsHide: true,
+          },
+        );
+        for (const line of output.split(/\r?\n/u)) {
+          const candidate = line.trim();
+          if (
+            candidate &&
+            isTrustedWindowsTool(candidate, visualStudioRoots)
+          ) {
+            candidates.push(candidate);
+          }
+        }
+      } catch {
+        // The fixed .NET Framework compiler candidates remain available.
+      }
+    }
+  }
+
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (systemRoot) {
+    for (const relativePath of [
+      "Microsoft.NET/Framework64/v4.0.30319/csc.exe",
+      "Microsoft.NET/Framework/v4.0.30319/csc.exe",
+    ]) {
+      const candidate = resolve(systemRoot, relativePath);
+      if (isTrustedWindowsTool(candidate, [systemRoot])) {
+        candidates.push(candidate);
+      }
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+function isTrustedWindowsTool(
+  path: string,
+  trustedRoots: readonly string[],
+): boolean {
+  if (!isRegularNonSymlinkFile(path)) return false;
+  const resolvedPath = resolve(path);
+  return trustedRoots.some((root) => {
+    const rel = relative(resolve(root), resolvedPath);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  });
+}
+
+function isRegularNonSymlinkFile(path: string): boolean {
+  if (!isAbsolute(path)) return false;
+  try {
+    const metadata = lstatSync(path);
+    return metadata.isFile() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedRegularFile(path: string): boolean {
+  if (!isRegularNonSymlinkFile(path)) return false;
+  try {
+    const metadata = lstatSync(path);
+    return (
+      process.platform === "win32" ||
+      (metadata.mode & 0o022) === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedWindowsJobBroker(path: string): boolean {
+  if (!isTrustedRegularFile(path)) return false;
+  try {
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupCompiledWindowsJobBroker(): void {
+  const buildRoot = compiledWindowsJobBrokerRoot;
+  compiledWindowsJobBroker = undefined;
+  compiledWindowsJobBrokerRoot = undefined;
+  if (buildRoot === undefined) return;
+  rmSync(buildRoot, {
+    force: true,
+    recursive: true,
+  });
+}
+
 function spawnWindowsJobContainedProcess(
   program: string,
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
 ): ChildProcessWithoutNullStreams {
-  const systemRoot = options.env.SystemRoot ?? options.env.SYSTEMROOT;
-  if (!systemRoot) {
-    throw new Error("Windows process containment requires SystemRoot");
-  }
-  const powershell = join(
-    systemRoot,
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
-  if (!existsSync(powershell)) {
-    throw new Error(
-      `Windows process containment requires trusted PowerShell: ${powershell}`,
-    );
-  }
+  const broker = resolveWindowsJobBroker();
   const commandLine = [options.argv0 ?? program, ...args]
     .map(quoteWindowsCommandLineArgument)
     .join(" ");
@@ -1458,28 +1394,12 @@ function spawnWindowsJobContainedProcess(
       Buffer.from(commandLine, "utf8").toString("base64"),
     AGENC_PROCESS_JOB_OWNER_PID: String(process.pid),
   };
-  const encodedScript = Buffer.from(
-    WINDOWS_JOB_BROKER_SCRIPT,
-    "utf16le",
-  ).toString("base64");
-  const child = spawn(
-    powershell,
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-EncodedCommand",
-      encodedScript,
-    ],
-    {
-      cwd: options.cwd,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
+  const child = spawn(broker, [], {
+    cwd: options.cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
   windowsJobBoundaries.add(child);
   return child;
 }

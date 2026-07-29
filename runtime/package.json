@@ -23,7 +23,8 @@
     "README.md"
   ],
   "agencExecutableFiles": [
-    "dist/agenc-process-broker"
+    "dist/agenc-process-broker",
+    "dist/agenc-process-job-broker.exe"
   ],
   "scripts": {
     "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",

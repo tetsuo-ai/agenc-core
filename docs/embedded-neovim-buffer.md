@@ -60,7 +60,7 @@ show_tabs = "auto"      # auto | always | never
 [buffer.neovim]
 executable = "/usr/bin/nvim"
 init = "auto"           # auto | user | clean
-# discovery_timeout_ms = 1200  # optional override; default 1200, or 30000 on Windows
+# discovery_timeout_ms = 1200  # optional override; default 1200, or 5000 on Windows
 startup_timeout_ms = 10000
 operation_timeout_ms = 10000
 cleanup_timeout_ms = 1000
@@ -316,9 +316,9 @@ broker establishes
 `PR_SET_CHILD_SUBREAPER` before launching Neovim, arms `PR_SET_PDEATHSIG`, and
 kills and reaps every orphaned descendant before reporting cleanup complete.
 That kernel reparenting boundary cannot miss a child that immediately calls
-`setsid` and outlives its leader. Windows starts Neovim suspended, assigns it
-to a `KILL_ON_JOB_CLOSE` Job Object, and watches the exact parent-process
-handle.
+`setsid` and outlives its leader. Windows uses a bundled, precompiled broker
+to start Neovim suspended, assign it to a `KILL_ON_JOB_CLOSE` Job Object, and
+watch the exact parent-process handle without compiling code during startup.
 
 Darwin has no equivalent public, unprivileged recursive ownership API. AgenC
 therefore terminates Neovim's process group and retains start-time identities

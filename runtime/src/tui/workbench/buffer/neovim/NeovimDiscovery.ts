@@ -45,11 +45,10 @@ export type NeovimDiscoveryResult =
       readonly version?: NeovimVersion;
     };
 
-// Creating the supervised Job Object boundary can exceed ten seconds on a
-// cold Windows host (notably while PowerShell compiles the broker and endpoint
-// protection inspects nvim.exe). Keep the tighter POSIX deadline while
-// avoiding a false fallback on Windows.
-const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 1200;
+// The precompiled Job Object broker removes Windows' former runtime C#
+// compilation cost. Retain modest cold endpoint-protection headroom without
+// turning a broken executable into a long startup stall.
+const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 5_000 : 1200;
 const DEFAULT_MIN_VERSION = [0, 9, 0] as const;
 const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
 

@@ -1042,6 +1042,94 @@ describe("process-tree root safety", () => {
     },
   );
 
+  it("ships one precompiled Windows Job Object broker per runtime build", () => {
+    const brokerSource = readFileSync(
+      new URL("../../native/agenc-process-job-broker.cs", import.meta.url),
+      "utf8",
+    );
+    const buildConfig = readFileSync(
+      new URL("../../build.config.ts", import.meta.url),
+      "utf8",
+    );
+    const supervisionSource = readFileSync(
+      new URL("../../src/utils/supervisedProcess.ts", import.meta.url),
+      "utf8",
+    );
+    const discoverySource = readFileSync(
+      new URL(
+        "../../src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const packageManifest = JSON.parse(
+      readFileSync(
+        new URL("../../package.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { readonly agencExecutableFiles?: readonly string[] };
+    const entrypointCheck = readFileSync(
+      new URL(
+        "../../scripts/check-package-entrypoints.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(brokerSource).toContain("JobObjectLimitKillOnJobClose");
+    expect(brokerSource).toContain("CreateSuspended");
+    expect(brokerSource).toContain("AssignProcessToJobObject");
+    expect(brokerSource).toContain("WaitForMultipleObjects");
+    expect(brokerSource).toContain("CloseHandle(job)");
+    const launch = brokerSource.indexOf(
+      "CreateProcess(\n                        applicationName,",
+    );
+    const assignment = brokerSource.indexOf(
+      "AssignProcessToJobObject(job, process.hProcess)",
+      launch,
+    );
+    const resume = brokerSource.indexOf(
+      "ResumeThread(process.hThread)",
+      assignment,
+    );
+    expect(launch).toBeGreaterThanOrEqual(0);
+    expect(assignment).toBeGreaterThan(launch);
+    expect(resume).toBeGreaterThan(assignment);
+    const clearOwnerInput = brokerSource.indexOf(
+      '"AGENC_PROCESS_JOB_OWNER_PID",\n                    null',
+    );
+    expect(clearOwnerInput).toBeGreaterThanOrEqual(0);
+    expect(clearOwnerInput).toBeLessThan(launch);
+
+    expect(buildConfig).toContain("compileWindowsProcessBroker");
+    expect(buildConfig).toContain("/deterministic+");
+    expect(buildConfig).toContain("/pathmap:");
+    expect(buildConfig).toContain("Visual Studio/Installer/vswhere.exe");
+    expect(supervisionSource).toContain(
+      'resolve(moduleDirectory, "../../dist", WINDOWS_JOB_BROKER_NAME)',
+    );
+    expect(supervisionSource).toContain(
+      'mkdtempSync(\n    join(tmpdir(), "agenc-process-job-broker-")',
+    );
+    expect(supervisionSource).toContain(
+      'process.once("exit", cleanupCompiledWindowsJobBroker)',
+    );
+    expect(supervisionSource).toContain("spawn(broker, [],");
+    expect(supervisionSource).not.toContain("Add-Type -TypeDefinition");
+    expect(supervisionSource).not.toContain(
+      "WINDOWS_JOB_BROKER_SCRIPT",
+    );
+    expect(packageManifest.agencExecutableFiles).toContain(
+      "dist/agenc-process-job-broker.exe",
+    );
+    expect(entrypointCheck).toContain(
+      '"dist/agenc-process-job-broker.exe"',
+    );
+    expect(discoverySource).toContain(
+      'process.platform === "win32" ? 5_000 : 1200',
+    );
+  });
+
   it("guards PID 1 inside the detached POSIX owner watchdog", () => {
     const source = readFileSync(
       new URL("../../src/utils/supervisedProcess.ts", import.meta.url),
