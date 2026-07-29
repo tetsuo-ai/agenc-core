@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -103,6 +103,7 @@ export default async function (session) {
       throw new Error(`dirty :q! unexpectedly saved the buffer: ${JSON.stringify(afterForceQuit)}`);
     }
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    // The runner closes the PTY before removing its owned gate root;
+    // Windows cannot delete a live process cwd.
   }
 }

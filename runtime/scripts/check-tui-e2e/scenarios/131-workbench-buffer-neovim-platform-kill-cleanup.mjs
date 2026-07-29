@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,7 +103,8 @@ export default async function (session) {
         // The watchdog won the cleanup race.
       }
     }
-    await rm(cwd, { recursive: true, force: true });
+    // The runner closes the PTY before removing its owned gate root;
+    // Windows cannot delete a live process cwd.
   }
 }
 

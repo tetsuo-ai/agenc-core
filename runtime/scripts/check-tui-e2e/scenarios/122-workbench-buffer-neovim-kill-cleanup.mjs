@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -61,6 +61,7 @@ export default async function (session) {
       throw new Error(`TUI kill wrote dirty Neovim text that should have remained unsaved: ${saved}`);
     }
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    // The runner closes the PTY before removing its owned gate root;
+    // Windows cannot delete a live process cwd.
   }
 }

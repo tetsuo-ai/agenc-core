@@ -142,6 +142,61 @@ describe("TUI E2E harness state isolation", () => {
     expect(runner).not.toContain("restartDaemon()");
   });
 
+  it("removes embedded-Neovim workspaces only after PTY cleanup", () => {
+    const runner = readFileSync(
+      new URL("../scripts/check-tui-e2e/runner.mjs", import.meta.url),
+      "utf8",
+    );
+    const runScenarioStart = runner.indexOf(
+      "export async function runScenario(",
+    );
+    const sessionCleanup = runner.indexOf(
+      "await session.cleanup();",
+      runScenarioStart,
+    );
+    const scenarioReturn = runner.indexOf("\n  return {", sessionCleanup);
+    const runScenarioEntryStart = runner.indexOf(
+      "async function runScenarioEntry(",
+      scenarioReturn,
+    );
+    const scenarioRun = runner.indexOf(
+      "result = await runScenario(",
+      runScenarioEntryStart,
+    );
+    const gateTeardown = runner.indexOf(
+      "await teardownTuiGateState(gateState, BIN_AGENC);",
+      scenarioRun,
+    );
+
+    expect(runScenarioStart).toBeGreaterThan(-1);
+    expect(sessionCleanup).toBeGreaterThan(runScenarioStart);
+    expect(scenarioReturn).toBeGreaterThan(sessionCleanup);
+    expect(runScenarioEntryStart).toBeGreaterThan(scenarioReturn);
+    expect(scenarioRun).toBeGreaterThan(runScenarioEntryStart);
+    expect(gateTeardown).toBeGreaterThan(scenarioRun);
+
+    for (const scenario of [
+      "120-workbench-buffer-neovim.mjs",
+      "121-workbench-buffer-neovim-missing-fallback.mjs",
+      "122-workbench-buffer-neovim-kill-cleanup.mjs",
+      "123-workbench-buffer-neovim-runtime-exit.mjs",
+      "124-workbench-buffer-neovim-visual-render.mjs",
+      "130-workbench-buffer-neovim-platform-gate.mjs",
+      "131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
+    ]) {
+      const source = readFileSync(
+        new URL(
+          `../scripts/check-tui-e2e/scenarios/${scenario}`,
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      expect(source).toContain("mkdtemp(join(tmpdir(),");
+      expect(source).toContain("Windows cannot delete a live process cwd.");
+      expect(source).not.toMatch(/\brm\s*\(/u);
+    }
+  });
+
   it("forces deterministic gate controls after scenario overrides", () => {
     const env = tuiGateEnvironment("/private/gate", {
       AGENC_AUTH_BACKEND: "remote",

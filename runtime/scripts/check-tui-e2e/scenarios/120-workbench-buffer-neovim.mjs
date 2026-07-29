@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -277,7 +277,8 @@ export default async function (session) {
     }
     await waitForPidsGone(neovimPids, 5_000, "embedded Neovim");
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    // The runner closes the PTY before removing its owned gate root;
+    // Windows cannot delete a live process cwd.
   }
 }
 
