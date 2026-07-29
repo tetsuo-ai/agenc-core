@@ -56,6 +56,10 @@ function outsidePath(...segments: readonly string[]): string {
   return join(TEST_OUTSIDE_ROOT, ...segments);
 }
 
+function normalizedTestPath(pathValue: string): string {
+  return pathValue.replaceAll("\\", "/");
+}
+
 describe("embedded Neovim BUFFER provider", () => {
   it("opens through the injected embedded session and publishes bounded terminal snapshots", async () => {
     const harness = createHarness();
@@ -177,9 +181,9 @@ describe("embedded Neovim BUFFER provider", () => {
       expect(commands[1]).toMatchObject({
         type: "handoffToComposer",
         attachment: {
-          id: `editor-selection:${outsidePath("shared", "app.ts")}:4:2:6:8:17`,
-          path: outsidePath("shared", "app.ts"),
-          label: `${outsidePath("shared", "app.ts")}:4-6`,
+          id: `editor-selection:${normalizedTestPath(outsidePath("shared", "app.ts"))}:4:2:6:8:17`,
+          path: normalizedTestPath(outsidePath("shared", "app.ts")),
+          label: `${normalizedTestPath(outsidePath("shared", "app.ts"))}:4-6`,
         },
       });
       expect(commands[2]).toMatchObject({
@@ -815,8 +819,13 @@ describe("embedded Neovim BUFFER provider", () => {
     await provider.open({ filePath: "src/active.ts" });
     await provider.open({ filePath: "src/hidden.ts" });
     const before = provider.getSnapshot().buffers
-      .filter((buffer) => buffer.filePath?.startsWith("src/"))
-      .map((buffer) => ({ handle: buffer.handle, filePath: buffer.filePath }));
+      .filter((buffer) =>
+        normalizedTestPath(buffer.filePath ?? "").startsWith("src/")
+      )
+      .map((buffer) => ({
+        handle: buffer.handle,
+        filePath: normalizedTestPath(buffer.filePath!),
+      }));
 
     await expect(provider.synchronizePathRename("src", "lib")).resolves.toEqual({
       ok: true,
@@ -833,18 +842,25 @@ describe("embedded Neovim BUFFER provider", () => {
         ),
       })),
     );
-    expect(provider.getSnapshot()).toMatchObject({
-      providerStatus: "ready",
-      filePath: "lib/hidden.ts",
-    });
-    expect(provider.getSnapshot().buffers).toEqual(expect.arrayContaining(
+    expect(provider.getSnapshot().providerStatus).toBe("ready");
+    expect(normalizedTestPath(provider.getSnapshot().filePath ?? "")).toBe(
+      "lib/hidden.ts",
+    );
+    expect(provider.getSnapshot().buffers.map((buffer) => ({
+      ...buffer,
+      filePath:
+        buffer.filePath === null
+          ? null
+          : normalizedTestPath(buffer.filePath),
+    }))).toEqual(expect.arrayContaining(
       before.map((buffer) => expect.objectContaining({
         handle: buffer.handle,
         filePath: `lib/${buffer.filePath?.slice("src/".length)}`,
       })),
     ));
     expect(provider.getSnapshot().buffers.some(
-      (buffer) => buffer.filePath?.startsWith("src/"),
+      (buffer) =>
+        normalizedTestPath(buffer.filePath ?? "").startsWith("src/"),
     )).toBe(false);
   });
 
@@ -959,7 +975,9 @@ describe("embedded Neovim BUFFER provider", () => {
     await provider.open({ filePath: "src/active.ts" });
     await provider.open({ filePath: "src/hidden.ts" });
     const affected = provider.getSnapshot().buffers
-      .filter((buffer) => buffer.filePath?.startsWith("src/"));
+      .filter((buffer) =>
+        normalizedTestPath(buffer.filePath ?? "").startsWith("src/")
+      );
 
     await expect(provider.synchronizePathDelete("src")).resolves.toEqual({
       ok: true,
@@ -973,7 +991,8 @@ describe("embedded Neovim BUFFER provider", () => {
       })),
     );
     expect(provider.getSnapshot().buffers.some(
-      (buffer) => buffer.filePath?.startsWith("src/"),
+      (buffer) =>
+        normalizedTestPath(buffer.filePath ?? "").startsWith("src/"),
     )).toBe(false);
     for (const buffer of affected) {
       await expect(provider.selectBuffer(buffer.handle)).resolves.toBe(false);

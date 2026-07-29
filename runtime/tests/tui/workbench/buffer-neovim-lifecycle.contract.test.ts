@@ -50,14 +50,14 @@ describe("embedded Neovim lifecycle", () => {
     killNeovimChild(detachedChild, true, "SIGTERM");
     expect(detachedChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const exitedChild = fakeChild({ exitCode: 0, pid: 444 });
+    const exitedChild = fakeChild({ exitCode: 0, pid: 2_000_000_444 });
     await expect(waitForNeovimExit(exitedChild, 10)).resolves.toBeUndefined();
 
-    const hangingChild = fakeChild({ pid: 555 });
+    const hangingChild = fakeChild({ pid: 2_000_000_555 });
     await expect(waitForNeovimExit(hangingChild, 1)).resolves.toBeUndefined();
     expect(hangingChild.kill).toHaveBeenCalledWith("SIGTERM");
 
-    const delayedExitChild = fakeChild({ pid: 556 });
+    const delayedExitChild = fakeChild({ pid: 2_000_000_556 });
     const forceKillObserved = controlled<void>();
     delayedExitChild.kill = vi.fn(() => {
       delayedExitChild.killed = true;
@@ -75,10 +75,10 @@ describe("embedded Neovim lifecycle", () => {
     delayedExitChild.emit("exit");
     await delayedExitWait;
 
-    const unkillableChild = fakeChild({ pid: 557 });
+    const unkillableChild = fakeChild({ pid: 2_000_000_557 });
     unkillableChild.kill = vi.fn(() => true);
     await expect(waitForNeovimExit(unkillableChild, 1)).rejects.toThrow(
-      "Neovim process 557 did not exit after SIGKILL",
+      "Neovim process 2000000557 did not exit after SIGKILL",
     );
   });
 
