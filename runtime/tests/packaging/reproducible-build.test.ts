@@ -321,21 +321,27 @@ describe("reproducible install and release contract", () => {
     const windowsJob = workflow.slice(workflow.indexOf("\n  windows-native:"));
     expect(windowsJob).toContain("runs-on: windows-2025");
     expect(windowsJob).toContain(
+      "npm.cmd run build --workspace=@tetsuo-ai/runtime",
+    );
+    expect(windowsJob).toContain(
+      "tests/app-server/windows-named-pipe.win32.test.ts",
+    );
+    expect(windowsJob).toContain(
       "tests/durability/atomic-artifact.win32.test.ts",
     );
     expect(windowsJob).toContain(
       "tests/utils/execFileNoThrow.win32.test.ts",
     );
     expect(windowsJob).toContain("--config vitest.native.config.ts");
-    expect(windowsJob).toContain("numTotalTestSuites: 3");
-    expect(windowsJob).toContain("numTotalTests: 3");
+    expect(windowsJob).toContain("numTotalTestSuites: 4");
+    expect(windowsJob).toContain("numTotalTests: 5");
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
     expect(windowsJob).not.toContain("npm.cmd rebuild");
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
-      "Windows native capability lane passed 3 tests in 2 files with zero skipped",
+      "Windows native capability lane passed 5 tests in 3 files with zero skipped",
     );
 
     expect(workflow.match(
