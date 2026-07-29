@@ -158,6 +158,17 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("sandbox")).toBe(false);
   });
 
+  it("projects Ledger aliases and its subcommand hint into the TUI", () => {
+    const ledger = getCommandsSync().find(
+      (command) => command.name === "ledger",
+    );
+
+    expect(ledger?.aliases).toContain("wallet");
+    expect(ledger?.argumentHint).toContain("status");
+    expect(ledger?.argumentHint).toContain("install");
+    expect(ledger?.argumentHint).toContain("balances");
+  });
+
   it("keeps remote and bridge allowlists on the minimal command set", () => {
     const commands = getCommandsSync();
     const byName = new Map(commands.map((command) => [command.name, command]));

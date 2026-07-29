@@ -92,6 +92,7 @@ import {
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
 import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
+import { createLedgerWalletCliTools } from "../elicitation/ledger-wallet-cli.js";
 import { createImagineImageTool } from "../tools/system/imagine-image.js";
 import { createImagineVideoTool } from "../tools/system/imagine-video.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
@@ -3778,6 +3779,10 @@ export function createModelFacingTools(
     createNotebookEditTool(opts),
     createLspTool(opts),
     createRequestLedgerTransferTool(opts),
+    ...createLedgerWalletCliTools({
+      ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
+      ...(opts.env !== undefined ? { env: opts.env } : {}),
+    }),
     createRequestUserInputTool(opts),
     ...createPlanAndMessageTools(opts),
     ...createTaskTools(opts),

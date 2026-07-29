@@ -1634,6 +1634,36 @@ ${args || "Ask which API surface and language they are using."}
 Prefer live local source and official provider docs. For provider-specific behavior, use the official docs for the selected provider and adapt examples to AgenC's provider configuration.`;
 }
 
+function buildLedgerWalletCliPrompt(args: string): string {
+  return `# Ledger Wallet CLI
+
+Use Ledger's official \`wallet-cli\` for USB hardware-wallet operations.
+
+## Required setup flow
+
+1. Call \`ledger_wallet_cli_status\` before any shell probe.
+2. If it is missing, call \`install_ledger_wallet_cli\`. Its mandatory approval dialog is the user's confirmation. Never install through npm/Bun/pnpm/yarn and never download before approval.
+3. After installation, call \`ledger_wallet_cli_status\` again and use the exact executable path it returns.
+4. Never treat the unrelated \`ledger\`, \`hledger\`, or \`solana\` binaries as substitutes.
+
+The managed installer checks \`@ledgerhq/wallet-cli@latest\` on every approved install, verifies the platform package's sha512 integrity, and stores it under AgenC home.
+
+## Operation rules
+
+- With no specific task, start with \`session view --output human\`.
+- Supported wallet networks are Bitcoin, Ethereum, and Solana.
+- Read-only examples: \`session view\`, \`balances <label>\`, \`operations <label>\`, \`swap quote ...\`, \`swap status ...\`, \`assets token ...\`, \`earn yields\`, and \`earn positions <label>\`.
+- Device examples: \`account discover <network>\`, \`receive <label>\`, \`genuine-check\`, \`send ...\`, \`swap execute ...\`, \`earn deposit ...\`, \`earn withdraw ...\`, and \`ring ...\`.
+- Run device commands sequentially. Do not impose a timeout while wallet-cli is waiting for physical confirmation.
+- Before send, swap execution, deposit, withdrawal, or destructive key-ring work, make the destination, account, asset, amount, network, and fees unambiguous. The agent proposes; the human approves on the Ledger.
+- Never place a Ledger password or seed phrase in a command, transcript, environment assignment, or prompt. Ask the user to store passwords in the OS keychain and reference the keychain command only.
+- Do not claim a submitted transaction is confirmed on-chain.
+
+## User request
+
+${args.trim() || "Inspect the current Ledger Wallet CLI session safely."}`;
+}
+
 const VERIFY_FILES = {
   "examples/cli.md": `# CLI Verification
 
@@ -1713,6 +1743,20 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
     description: "Use AgenC runtime APIs or configured provider APIs correctly.",
     argumentHint: "[api task]",
     getPrompt: (args) => buildApiPrompt(args),
+  },
+  {
+    name: "ledger-wallet-cli",
+    description:
+      "Use Ledger's official wallet-cli, including safe missing-binary detection and approved latest-version installation.",
+    whenToUse:
+      "Use whenever the user means a Ledger hardware wallet, wallet-cli, Ledger device accounts, balances, receive/send, swaps, earn, genuine-check, or Ledger Key Ring.",
+    argumentHint: "[Ledger wallet task]",
+    allowedTools: [
+      "ledger_wallet_cli_status",
+      "install_ledger_wallet_cli",
+      "exec_command",
+    ],
+    getPrompt: (args) => buildLedgerWalletCliPrompt(args),
   },
   {
     name: "verify",

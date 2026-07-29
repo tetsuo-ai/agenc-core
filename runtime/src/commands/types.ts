@@ -97,6 +97,8 @@ export interface SlashCommand {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly description: string;
+  /** Optional composer hint shown after the command and its first space. */
+  readonly argumentHint?: string;
   /** Defaults to every surface. Restrict commands that need runtime-only APIs. */
   readonly supportedSurfaces?: readonly SlashCommandSurface[];
   /** Defaults to true. Only set when a command is conditionally visible. */

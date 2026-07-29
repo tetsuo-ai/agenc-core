@@ -233,6 +233,7 @@ function projectSlashCommand(
     get description() {
       return cmd.description;
     },
+    argumentHint: cmd.argumentHint,
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
     isEnabled: cmd.isEnabled,
     kind: cmd.kind,

@@ -61,6 +61,12 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   approved `@ledger` SOL transfer to a Ledger Flex. See
   [`docs/remote-control.md`](docs/remote-control.md) and the
   [Ledger security contract](docs/security/mobile-ledger-transfer.md).
+- **Ledger Wallet CLI** — Ledger hardware-wallet requests route through a
+  bundled skill and a read-only CLI status tool. If the official
+  `wallet-cli` is missing, AgenC asks before downloading anything; an approved
+  `/ledger install` (or agent install action) resolves
+  `@ledgerhq/wallet-cli@latest`, verifies the platform package's SHA-512
+  integrity, and installs it under `AGENC_HOME`.
 - **Built-in tools** — Bash, file read/write/edit, transactional `apply_patch`,
   web fetch/search, LSP, MCP, sub-agents; read-before-write and atomic-patch safety.
 - **Browser automation** — the `Browser` tool drives an isolated Chromium over a

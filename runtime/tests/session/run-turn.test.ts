@@ -700,7 +700,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     });
   });
 
-  test("adds trusted Ledger routing guidance only for an exact root-human @ledger turn", async () => {
+  test("routes exact @ledger transfers separately from Ledger Wallet CLI requests", async () => {
     const captureSystemPrompt = async (rootHumanTurnText: string): Promise<string> => {
       let seenSystemPrompt = "";
       const provider: LLMProvider = {
@@ -744,6 +744,16 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     );
     expect(ordinary).toContain("BASE_SYSTEM_INSTRUCTIONS");
     expect(ordinary).not.toContain("request_ledger_transfer");
+    expect(ordinary).toContain("invoke the ledger-wallet-cli skill");
+    expect(ordinary).toContain("ledger_wallet_cli_status");
+    expect(ordinary).toContain("install_ledger_wallet_cli");
+
+    const accounting = await captureSystemPrompt(
+      "post this journal entry to the accounting ledger",
+    );
+    expect(accounting).toContain("BASE_SYSTEM_INSTRUCTIONS");
+    expect(accounting).not.toContain("ledger-wallet-cli");
+    expect(accounting).not.toContain("request_ledger_transfer");
   });
 
   test("session memory post-sampling uses prepared context and warns on failure", async () => {

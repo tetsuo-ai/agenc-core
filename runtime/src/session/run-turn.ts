@@ -75,6 +75,10 @@ import {
   hasExactLedgerMention,
   LEDGER_ROOT_TURN_ROUTING_GUIDANCE,
 } from "../elicitation/request-ledger-transfer.js";
+import {
+  hasLedgerWalletCliMention,
+  LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
+} from "../elicitation/ledger-wallet-cli.js";
 import type {
   CompactionResult,
   RuntimeMessage,
@@ -3350,7 +3354,10 @@ export async function* runTurnKernel(
   const ledgerRootTurnGuidance =
     rootHumanTurnText !== undefined && hasExactLedgerMention(rootHumanTurnText)
       ? LEDGER_ROOT_TURN_ROUTING_GUIDANCE
-      : undefined;
+      : rootHumanTurnText !== undefined &&
+          hasLedgerWalletCliMention(rootHumanTurnText)
+        ? LEDGER_WALLET_CLI_ROUTING_GUIDANCE
+        : undefined;
 
   // agenc runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed

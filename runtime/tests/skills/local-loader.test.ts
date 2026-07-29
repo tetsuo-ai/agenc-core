@@ -86,11 +86,37 @@ describe("local skills loader", () => {
         "project-skill",
         "simplify",
         "loop",
+        "ledger-wallet-cli",
       ]),
     );
     expect(snapshot.pluginSkillRoots).toEqual([
       join(agencHome, "plugins", "demo", "skills"),
     ]);
+  });
+
+  it("ships Ledger Wallet CLI setup and safety guidance in core", async () => {
+    const agencHome = tmpRoot("ledger-skill-home");
+    const workspaceRoot = tmpRoot("ledger-skill-workspace");
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: {},
+    });
+
+    await expect(
+      services.skillsManager.renderSkill?.({
+        name: "ledger-wallet-cli",
+        args: "show my balances",
+      }),
+    ).resolves.toMatchObject({
+      skill: expect.objectContaining({
+        name: "ledger-wallet-cli",
+        scope: "bundled",
+      }),
+      content: expect.stringMatching(
+        /ledger_wallet_cli_status[\s\S]*install_ledger_wallet_cli[\s\S]*@ledgerhq\/wallet-cli@latest[\s\S]*show my balances/u,
+      ),
+    });
   });
 
   it("uses one root policy for compatibility discovery, rendering, watches, and manual cache clears", async () => {
