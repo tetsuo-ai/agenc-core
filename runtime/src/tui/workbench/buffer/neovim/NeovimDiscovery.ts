@@ -45,11 +45,11 @@ export type NeovimDiscoveryResult =
       readonly version?: NeovimVersion;
     };
 
-// Creating the supervised Job Object boundary can exceed five seconds on a
+// Creating the supervised Job Object boundary can exceed ten seconds on a
 // cold Windows host (notably while PowerShell compiles the broker and endpoint
 // protection inspects nvim.exe). Keep the tighter POSIX deadline while
 // avoiding a false fallback on Windows.
-const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 10_000 : 1200;
+const DEFAULT_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 1200;
 const DEFAULT_MIN_VERSION = [0, 9, 0] as const;
 const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
 

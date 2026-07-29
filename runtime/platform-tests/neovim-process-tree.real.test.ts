@@ -26,7 +26,6 @@ const cleanupPids = new Set<number>();
 beforeAll(async () => {
   const discovery = await discoverNeovim({
     executable: "nvim",
-    timeoutMs: 2_000,
     useUserInit: false,
   });
   if (!discovery.usable) {
@@ -36,7 +35,7 @@ beforeAll(async () => {
   }
   expect(discovery.version.raw).toBe("NVIM v0.12.1");
   neovim = discovery;
-});
+}, 45_000);
 
 afterAll(() => {
   for (const pid of cleanupPids) forceCleanupPid(pid);
@@ -65,7 +64,7 @@ describe("hosted-platform Neovim observed-descendant cleanup", () => {
       }
       await rm(dir, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 
   it("cleans a detached job when the Neovim leader exits naturally", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-neovim-platform-natural-"));
@@ -97,7 +96,7 @@ describe("hosted-platform Neovim observed-descendant cleanup", () => {
       }
       await rm(dir, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 });
 
 type OwnedNeovimJob = {
