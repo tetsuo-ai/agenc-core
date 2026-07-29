@@ -914,12 +914,20 @@ describe("embedded Neovim BUFFER provider", () => {
       expect(harness.session.rebaseFileBuffers).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({
-            fromPath: join(physicalRoot, "src", "active.ts"),
-            toPath: join(physicalRoot, "lib", "active.ts"),
+            fromPath: canonicalNeovimPath(
+              join(physicalRoot, "src", "active.ts"),
+            ),
+            toPath: canonicalNeovimPath(
+              join(physicalRoot, "lib", "active.ts"),
+            ),
           }),
           expect.objectContaining({
-            fromPath: join(physicalRoot, "src", "hidden.ts"),
-            toPath: join(physicalRoot, "lib", "hidden.ts"),
+            fromPath: canonicalNeovimPath(
+              join(physicalRoot, "src", "hidden.ts"),
+            ),
+            toPath: canonicalNeovimPath(
+              join(physicalRoot, "lib", "hidden.ts"),
+            ),
           }),
         ]),
       );

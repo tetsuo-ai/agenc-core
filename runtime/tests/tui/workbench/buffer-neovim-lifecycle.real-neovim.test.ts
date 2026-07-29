@@ -34,7 +34,6 @@ let neovim: UsableNeovim;
 beforeAll(async () => {
   const discovery = await discoverNeovim({
     executable: "nvim",
-    timeoutMs: 1000,
     useUserInit: false,
   });
   if (!discovery.usable) {
