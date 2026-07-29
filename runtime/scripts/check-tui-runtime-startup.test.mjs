@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -153,6 +154,77 @@ test("mock provider configuration must be injected explicitly", () => {
   assert.equal(env.OPENAI_COMPATIBLE_API_KEY, "local-test-key");
   assert.equal(env.OPENAI_COMPATIBLE_BASE_URL, "http://127.0.0.1:43210/v1");
   assert.equal(env.AGENC_PROVIDER, "openai-compatible");
+});
+
+test("private gate state publishes one canonical root through path aliases", async () => {
+  const fixtureRoot = mkdtempSync(
+    path.join(tmpdir(), "agenc-tui-root-alias-"),
+  );
+  const realParent = path.join(fixtureRoot, "canonical-parent");
+  const aliasParent = path.join(fixtureRoot, "alias-parent");
+  mkdirSync(realParent, { mode: 0o700 });
+  symlinkSync(
+    realParent,
+    aliasParent,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+
+  const platformDescriptor = Object.getOwnPropertyDescriptor(
+    process,
+    "platform",
+  );
+  if (platformDescriptor === undefined) {
+    throw new Error("process.platform descriptor is unavailable");
+  }
+  const originalTemp = {
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    TMPDIR: process.env.TMPDIR,
+  };
+  let state;
+  try {
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "win32",
+    });
+    process.env.TEMP = aliasParent;
+    process.env.TMP = aliasParent;
+    process.env.TMPDIR = aliasParent;
+
+    state = await createTuiGateState({
+      prefix: "agenc-tui-canonical-root-test-",
+    });
+
+    assert.equal(path.dirname(state.root), realpathSync(realParent));
+    assert.equal(state.root, realpathSync(state.root));
+    assert.equal(state.canonicalRoot, state.root);
+    assert.equal(state.home, state.root);
+    assert.equal(state.env.HOME, state.root);
+    assert.equal(state.agencHome, path.join(state.root, ".agenc"));
+    const owner = JSON.parse(
+      readFileSync(
+        path.join(state.root, ".agenc-tui-gate-owner.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(owner.root, state.root);
+
+    await teardownTuiGateState(state);
+    assert.equal(existsSync(state.root), false);
+  } finally {
+    Object.defineProperty(process, "platform", platformDescriptor);
+    for (const [key, value] of Object.entries(originalTemp)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    if (state && !state.cleaned) {
+      rmSync(state.root, { recursive: true, force: true });
+    }
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("private gate trust is canonical and deterministic without copied operator state", async () => {

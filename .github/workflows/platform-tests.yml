@@ -1075,6 +1075,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           & npm.cmd ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+          # Exercise the install-time ABI-147 SQLite prebuild needed by the
+          # built daemon lifecycle without changing the user install path.
+          & npm.cmd rebuild better-sqlite3 esbuild
+          if ($LASTEXITCODE -ne 0) { throw "native dependency rebuild failed" }
 
       - name: Build the runtime for the Windows daemon lifecycle
         shell: pwsh

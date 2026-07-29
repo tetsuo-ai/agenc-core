@@ -198,11 +198,11 @@ export async function createTuiGateState({
   injectedEnv = {},
   prefix = "agenc-tui-gate-",
 } = {}) {
-  const root = await createShortGateRoot();
+  const createdRoot = await createShortGateRoot();
   const ownerId = randomUUID();
   try {
-    await chmod(root, 0o700);
-    const canonicalRoot = await realpath(root);
+    await chmod(createdRoot, 0o700);
+    const root = await realpath(createdRoot);
     const env = tuiGateEnvironment(root, baseEnv, injectedEnv);
     assertShortSocketPath(env.AGENC_HOME);
     await makePrivateDirectories(env);
@@ -218,7 +218,7 @@ export async function createTuiGateState({
     );
     const state = {
       root,
-      canonicalRoot,
+      canonicalRoot: root,
       home: root,
       agencHome: env.AGENC_HOME,
       env,
@@ -235,7 +235,7 @@ export async function createTuiGateState({
     ACTIVE_STATES_BY_HOME.set(state.home, state);
     return state;
   } catch (error) {
-    await rm(root, { recursive: true, force: true });
+    await rm(createdRoot, { recursive: true, force: true });
     throw error;
   }
 }

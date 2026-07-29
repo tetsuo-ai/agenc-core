@@ -338,7 +338,10 @@ describe("reproducible install and release contract", () => {
     expect(windowsJob).toContain(
       "npm.cmd ci --ignore-scripts --no-audit --no-fund",
     );
-    expect(windowsJob).not.toContain("npm.cmd rebuild");
+    expect(windowsJob).toContain("npm.cmd rebuild better-sqlite3 esbuild");
+    expect(windowsJob).toContain(
+      'if ($LASTEXITCODE -ne 0) { throw "native dependency rebuild failed" }',
+    );
     expect(windowsJob).not.toContain("npm_config_build_from_source");
     expect(windowsJob).toContain(
       "Windows native capability lane passed 5 tests in 3 files with zero skipped",
