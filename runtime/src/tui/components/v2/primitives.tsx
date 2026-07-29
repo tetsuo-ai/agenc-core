@@ -17,6 +17,8 @@ import {
   useWorkbenchTranscriptLayout,
 } from '../../workbench/transcriptLayoutContext.js'
 import {
+  AGENC_LOGO_BRAILLE_COMPACT_LINES,
+  AGENC_LOGO_BRAILLE_LINES,
   AGENC_LOGO_RASTER_SIZE,
   AGENC_LOGO_RGBA_ZLIB_BASE64,
 } from './agencLogoGraphics.generated.js'
@@ -783,29 +785,12 @@ function useWelcomeHeroWidth(): number {
   return Math.min(capped, usable)
 }
 
-// Portable fallback for terminals without a graphics protocol. In Kitty the
-// component below replaces these block cells with the exact rasterization of
-// `tui/assets/agenc-logo.svg`, the official AgenC symbol served by
-// marketplace.agenc.tech.
-export const AGENC_LOGO_MARK_LINES = [
-  '▄█▀█▀█▄  ▄█▀█▀█▄',
-  '█▄    ▀██▀    ▄█',
-  '█▄   ▄█▀▀█▄   ▄█',
-  ' ▀█▄█▀    ▀█▄█▀',
-  ' ▄█▀█▄    ▄█▀█▄',
-  '█▀   ▀█▄▄█▀   ▀█',
-  '█▀    ▄██▄    ▀█',
-  '▀█▄█▄█▀  ▀█▄█▄█▀',
-] as const
-
-export const AGENC_LOGO_MARK_COMPACT_LINES = [
-  '▄▀▀▀█▄▄█▀▀▀▄',
-  '█   ▄██▄   █',
-  '▀█▄█▀  ▀█▄█▀',
-  '▄█▀█▄  ▄█▀█▄',
-  '█   ▀██▀   █',
-  '▀▄▄▄█▀▀█▄▄▄▀',
-] as const
+// Portable fallback for terminals without a graphics protocol. These Braille
+// cells are sampled from the same official raster used by Kitty, so Apple
+// Terminal and other text-only terminals no longer drift to a hand-drawn mark.
+export const AGENC_LOGO_MARK_LINES = AGENC_LOGO_BRAILLE_LINES
+export const AGENC_LOGO_MARK_COMPACT_LINES =
+  AGENC_LOGO_BRAILLE_COMPACT_LINES
 
 // Unicode image placeholders encode the low 24 bits of the image ID in their
 // foreground color. White therefore gives us a collision-resistant ID while
