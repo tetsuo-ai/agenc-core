@@ -1076,6 +1076,13 @@ jobs:
           & npm.cmd ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
+      - name: Build the runtime for the Windows daemon lifecycle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & npm.cmd run build --workspace=@tetsuo-ai/runtime
+          if ($LASTEXITCODE -ne 0) { throw "runtime build failed" }
+
       - name: Run the exact Windows native capability lane
         shell: pwsh
         run: |
@@ -1110,8 +1117,8 @@ jobs:
             numPassedTestSuites: 4,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 4,
-            numPassedTests: 4,
+            numTotalTests: 5,
+            numPassedTests: 5,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1134,7 +1141,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows native capability lane passed 4 tests in 3 files with zero skipped");
+          console.log("Windows native capability lane passed 5 tests in 3 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(
