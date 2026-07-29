@@ -69,7 +69,9 @@ import {
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   AgenCUnixSocketServer,
+  agenCDaemonLocalEndpoint,
   canConnectToUnixSocket,
+  isAgenCWindowsNamedPipePath,
 } from "./transport/unix-socket.js";
 import { AgenCWebSocketServer } from "./transport/websocket.js";
 import {
@@ -154,7 +156,6 @@ import { isRecord } from "../utils/record.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
-const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
 const AGENC_DAEMON_LOG_FILENAME = "daemon.log";
@@ -472,10 +473,11 @@ export function resolveAgenCDaemonPidPath(
 export function resolveAgenCDaemonSocketPath(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  return join(
+  return agenCDaemonLocalEndpoint(
     resolveAgenCDaemonHome(env, userHome),
-    AGENC_DAEMON_SOCKET_FILENAME,
+    platform,
   );
 }
 
@@ -783,6 +785,9 @@ async function isAgenCDaemonControlSocketReady(
   try {
     if ((await readFile(cookiePath, "utf8")).trim().length === 0) {
       return false;
+    }
+    if (isAgenCWindowsNamedPipePath(socketPath)) {
+      return canConnectToUnixSocket(socketPath);
     }
     if (!(await lstat(socketPath)).isSocket()) {
       return false;

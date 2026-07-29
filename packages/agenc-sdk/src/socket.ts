@@ -1,9 +1,10 @@
 /**
- * Unix-socket transport + `connect()` for the AgenC daemon.
+ * Local stream transport + `connect()` for the AgenC daemon.
  *
  * Wire contract (mirrors `runtime/src/app-server/transport/unix-socket.ts`
  * and the CLI client in `runtime/src/app-server/agent-cli.ts`):
- *   - socket at `${AGENC_HOME:-~/.agenc}/daemon.sock`
+ *   - Unix socket at `${AGENC_HOME:-~/.agenc}/daemon.sock`, or a stable
+ *     per-home named pipe on Windows
  *   - newline-delimited JSON frames
  *   - the first message on a connection MUST be `initialize` carrying the
  *     `authCookie` read from `${AGENC_HOME:-~/.agenc}/daemon.cookie`
@@ -18,9 +19,10 @@
  * launcher's in-process autostart path.
  */
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import {
@@ -65,8 +67,16 @@ export function resolveAgencHome(
 export function resolveDaemonSocketPath(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  return join(resolveAgencHome(env, userHome), "daemon.sock");
+  const daemonHome = resolveAgencHome(env, userHome);
+  if (platform !== "win32") {
+    return join(daemonHome, "daemon.sock");
+  }
+  const identity = createHash("sha256")
+    .update(win32.resolve(daemonHome).toLowerCase())
+    .digest("hex");
+  return `\\\\.\\pipe\\agenc-daemon-${identity}`;
 }
 
 export function resolveDaemonCookiePath(

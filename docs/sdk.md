@@ -15,7 +15,7 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 | | daemon transport | subprocess transport |
 |---|---|---|
 | entry                | `connect()` → `AgencClient`            | `promptViaSubprocess()`                                           |
-| wire                 | JSON-lines over `~/.agenc/daemon.sock` | `agenc -p --output-format stream-json --input-format stream-json` |
+| wire                 | JSON-lines over a Unix socket or Windows named pipe | `agenc -p --output-format stream-json --input-format stream-json` |
 | sessions             | persistent, resumable, multi-turn      | one-shot per spawn                                                |
 | permission callbacks | yes (approve or deny live)             | no — CLI auto-denies (exit code 2 = tool-denied giveup)           |
 | background agents    | spawn / attach / stop / logs           | no                                                                |
@@ -103,8 +103,9 @@ Usage/cost: after the turn ends the SDK fetches `session.snapshot` and puts
 
 The daemon requires the first message on a socket to be `initialize` carrying
 the `authCookie` read from `~/.agenc/daemon.cookie`; `connect()` does this for
-you. Socket path defaults to `~/.agenc/daemon.sock` (or
-`${AGENC_HOME}/daemon.sock`).
+you. The local endpoint defaults to `~/.agenc/daemon.sock` (or
+`${AGENC_HOME}/daemon.sock`) on Unix and a stable per-home named pipe on
+Windows.
 
 When the socket is not accepting connections and `autostart` is enabled
 (default), `connect()` runs `<agencCommand> daemon start` and polls the cookie

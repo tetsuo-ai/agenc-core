@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import {
   AgenCUnixSocketServer,
+  agenCDaemonLocalEndpoint,
   defaultAgenCDaemonSocketPath,
+  isAgenCWindowsNamedPipePath,
   prepareAgenCUnixSocketPath,
   resolveAgenCPrivateUnixSocketOwnerUid,
 } from "./transport/unix-socket.js";
@@ -63,6 +65,29 @@ describe("AgenC Unix socket transport", () => {
     expect(defaultAgenCDaemonSocketPath("/home/test")).toBe(
       "/home/test/.agenc/daemon.sock",
     );
+  });
+
+  it("derives a stable private Windows named pipe from the daemon home", () => {
+    const first = agenCDaemonLocalEndpoint(
+      String.raw`C:\Users\Test\.agenc`,
+      "win32",
+    );
+    const equivalent = agenCDaemonLocalEndpoint(
+      String.raw`c:\users\test\.agenc`,
+      "win32",
+    );
+    const other = agenCDaemonLocalEndpoint(
+      String.raw`C:\Users\Other\.agenc`,
+      "win32",
+    );
+
+    expect(isAgenCWindowsNamedPipePath(first)).toBe(true);
+    expect(first).toBe(equivalent);
+    expect(first).not.toBe(other);
+    expect(first).toMatch(/^\\\\\.\\pipe\\agenc-daemon-[a-f0-9]{64}$/u);
+    expect(
+      defaultAgenCDaemonSocketPath(String.raw`C:\Users\Test`, "win32"),
+    ).toBe(first);
   });
 
   itUnix("rejects a non-socket file at the daemon socket path", async () => {

@@ -63,7 +63,7 @@ Packaging units under `packaging/` (systemd, launchd, Windows service) run
 
 | File | Mode / notes |
 | --- | --- |
-| `daemon.sock` | Unix domain socket path clients connect to |
+| `daemon.sock` | Unix domain socket path clients connect to; Windows uses a stable per-home named pipe instead |
 | `daemon.cookie` | Shared secret; cookie auth for local clients |
 | `daemon.pid` | Detached process id |
 | `daemon.log` | Size-capped log sink |
@@ -78,7 +78,8 @@ export AGENC_HOME=/var/lib/agenc
 
 ## Transports & auth
 
-- **Default transport:** Unix socket at `$AGENC_HOME/daemon.sock`.
+- **Default local transport:** Unix socket at `$AGENC_HOME/daemon.sock`, or a
+  stable pipe derived from `AGENC_HOME` on Windows.
 - **Auth:** cookie file `$AGENC_HOME/daemon.cookie` (ensured on start; private
   socket owner identity + peer UID checks on supported platforms).
 - **Optional WebSocket transport** (remote control, SSH tunnels, VPS operators)
@@ -92,8 +93,8 @@ export AGENC_HOME=/var/lib/agenc
   | `AGENC_DAEMON_WEBSOCKET_PATH` | Path (default `/`) |
   | `AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK` | Set `1` to allow a non-loopback host; otherwise non-loopback binds are **refused** |
 
-  Prefer the Unix socket for local TUI/CLI; WebSocket is what remote/phone and
-  tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
+  Prefer the local socket/named pipe for TUI/CLI; WebSocket is what remote/phone
+  and tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
   `runtime/src/app-server/daemon-cli.ts` + `transport/`.
 - Config block `[daemon]` defaults: `transport = "unix"`, `autostart = true`
   (`runtime/src/config/schema.ts`).
@@ -300,7 +301,7 @@ agenc budget status    # cumulative autonomy ledger (not daemon-internal only)
 | Session lifecycle | `runtime/src/app-server/session-lifecycle.ts` |
 | Agent lifecycle | `runtime/src/app-server/agent-lifecycle.ts` |
 | Background runs | `runtime/src/app-server/background-agent-runner.ts` |
-| Unix socket | `runtime/src/app-server/transport/unix-socket.ts` |
+| Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts` |
 | Cookie auth | `runtime/src/app-server/transport/auth.ts` |
 | Health | `runtime/src/app-server/health.ts` |
 | Launcher autostart | `packages/agenc/src/launcher.mjs` |

@@ -53,6 +53,7 @@ const CROSS_REPO_TEST_FILES = [
 ] as const;
 
 const NATIVE_TEST_FILES = [
+  'tests/app-server/windows-named-pipe.win32.test.ts',
   'tests/durability/atomic-artifact.win32.test.ts',
   'tests/tools/runtimes/runtime.darwin.test.ts',
   'tests/utils/execFileNoThrow.win32.test.ts',

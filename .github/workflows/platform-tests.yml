@@ -1084,6 +1084,7 @@ jobs:
           & node runtime/scripts/run-hermetic-vitest.mjs `
             --require-zero-skips `
             run `
+            tests/app-server/windows-named-pipe.win32.test.ts `
             tests/durability/atomic-artifact.win32.test.ts `
             tests/utils/execFileNoThrow.win32.test.ts `
             --config vitest.native.config.ts `
@@ -1100,16 +1101,17 @@ jobs:
           if (!resultsPath) throw new Error("missing Windows-native results path");
           const results = JSON.parse(readFileSync(resultsPath, "utf8"));
           const expectedFiles = [
+            "tests/app-server/windows-named-pipe.win32.test.ts",
             "tests/durability/atomic-artifact.win32.test.ts",
             "tests/utils/execFileNoThrow.win32.test.ts",
           ];
           const exactCounts = {
-            numTotalTestSuites: 3,
-            numPassedTestSuites: 3,
+            numTotalTestSuites: 4,
+            numPassedTestSuites: 4,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 3,
-            numPassedTests: 3,
+            numTotalTests: 4,
+            numPassedTests: 4,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1132,7 +1134,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows native capability lane passed 3 tests in 2 files with zero skipped");
+          console.log("Windows native capability lane passed 4 tests in 3 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(

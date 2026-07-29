@@ -43,7 +43,8 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
    `AGENC_HOME`**. Owns agent/session lifecycle, JSON-RPC dispatch, command
    execution, provider-key vending, permission requests, realtime methods,
    health, recovery, and background-agent attachment. Clients authenticate
-   with a cookie on a Unix socket (optional WebSocket transport).
+   with a cookie on a Unix socket or Windows named pipe (optional WebSocket
+   transport).
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
    **background agents**, the **channel gateway**, **remote control**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
@@ -122,7 +123,7 @@ The daemon and runtime persist under one home. Relocate with an absolute
 
 | Path                                                               | Purpose                                                                                                                              |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `daemon.sock`                                                      | Unix domain socket (clients + SDK)                                                                                                   |
+| `daemon.sock`                                                      | Unix domain socket (clients + SDK); Windows uses a stable per-home named pipe instead                                                 |
 | `daemon.cookie`                                                    | Shared secret for local client auth (0600)                                                                                           |
 | `daemon.pid`                                                       | Detached daemon PID                                                                                                                  |
 | `daemon.log`                                                       | Daemon log sink                                                                                                                      |

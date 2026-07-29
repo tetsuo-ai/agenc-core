@@ -34,7 +34,10 @@ import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
 } from "../mcp/server/start.js";
-import { canConnectToUnixSocket } from "./transport/unix-socket.js";
+import {
+  canConnectToUnixSocket,
+  isAgenCWindowsNamedPipePath,
+} from "./transport/unix-socket.js";
 
 export type AgenCDaemonAutostartStatus = "already-running" | "started";
 
@@ -450,6 +453,9 @@ async function isAgenCDaemonPidAndCookieReady(
   try {
     if ((await readFile(cookiePath, "utf8")).trim().length === 0) {
       return false;
+    }
+    if (isAgenCWindowsNamedPipePath(socketPath)) {
+      return canConnectToUnixSocket(socketPath);
     }
     return (await lstat(socketPath)).isSocket();
   } catch (error) {

@@ -16,10 +16,12 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_NOTIFICATION_METHODS,
 } from "../../src/app-server/protocol/index.js";
+import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
 import {
   AGENC_SDK_DAEMON_METHODS,
   AGENC_SDK_DAEMON_NOTIFICATION_METHODS,
 } from "../../../packages/agenc-sdk/src/protocol";
+import { resolveDaemonSocketPath } from "../../../packages/agenc-sdk/src/socket";
 
 const packageProtocolPath = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -52,6 +54,18 @@ describe("agenc-sdk protocol mirror", () => {
     const source = readFileSync(packageProtocolPath, "utf8");
     expect(source).not.toMatch(/from "\.\.\/\.\.\/runtime\//);
     expect(source).not.toMatch(/@tetsuo-ai\/runtime/);
+  });
+
+  it("mirrors the runtime local endpoint on Unix and Windows", () => {
+    for (const [home, platform] of [
+      ["/tmp/agenc-sdk-home", "linux"],
+      [String.raw`C:\Users\Test\.agenc`, "win32"],
+    ] as const) {
+      const env = { AGENC_HOME: home };
+      expect(resolveDaemonSocketPath(env, home, platform)).toBe(
+        resolveAgenCDaemonSocketPath(env, home, platform),
+      );
+    }
   });
 });
 

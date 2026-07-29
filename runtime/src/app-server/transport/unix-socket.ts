@@ -11,9 +11,10 @@
  *     local daemon socket surface.
  */
 
+import { createHash } from "node:crypto";
 import { lstat, mkdir, chmod, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import {
   createConnection,
   createServer,
@@ -31,8 +32,37 @@ const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
 const AGENC_DAEMON_SOCKET_MODE = 0o600;
 const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
-export function defaultAgenCDaemonSocketPath(homeDir = homedir()): string {
-  return join(homeDir, ".agenc", "daemon.sock");
+const AGENC_WINDOWS_NAMED_PIPE_ROOT = "\\\\.\\pipe\\";
+const AGENC_DAEMON_WINDOWS_PIPE_PREFIX =
+  `${AGENC_WINDOWS_NAMED_PIPE_ROOT}agenc-daemon-`;
+
+export function isAgenCWindowsNamedPipePath(endpoint: string): boolean {
+  return endpoint.toLowerCase().startsWith(AGENC_WINDOWS_NAMED_PIPE_ROOT);
+}
+
+export function agenCDaemonLocalEndpoint(
+  daemonHome: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") {
+    return join(daemonHome, "daemon.sock");
+  }
+  const canonicalHome = win32.resolve(daemonHome).toLowerCase();
+  const identity = createHash("sha256")
+    .update(canonicalHome)
+    .digest("hex");
+  return `${AGENC_DAEMON_WINDOWS_PIPE_PREFIX}${identity}`;
+}
+
+export function defaultAgenCDaemonSocketPath(
+  homeDir = homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const daemonHome =
+    platform === "win32"
+      ? win32.join(homeDir, ".agenc")
+      : join(homeDir, ".agenc");
+  return agenCDaemonLocalEndpoint(daemonHome, platform);
 }
 
 export interface AgenCUnixSocketMessageContext {
@@ -100,9 +130,6 @@ export class AgenCUnixSocketServer {
   }
 
   async listen(): Promise<string> {
-    if (process.platform === "win32") {
-      throw new Error("AgenC Unix socket transport is not available on Windows");
-    }
     if (this.#server !== null) {
       throw new Error("AgenC Unix socket transport is already listening");
     }
@@ -141,7 +168,17 @@ export class AgenCUnixSocketServer {
     }
 
     const socketPath = this.socketPath;
-    await prepareAgenCUnixSocketPath(socketPath);
+    const namedPipe = process.platform === "win32";
+    if (namedPipe !== isAgenCWindowsNamedPipePath(socketPath)) {
+      throw new Error(
+        namedPipe
+          ? "AgenC Windows local transport requires a named-pipe endpoint"
+          : "AgenC Unix local transport does not accept a Windows named-pipe endpoint",
+      );
+    }
+    if (!namedPipe) {
+      await prepareAgenCUnixSocketPath(socketPath);
+    }
 
     const server = createServer((socket) => {
       this.#acceptConnection(socket);
@@ -156,18 +193,35 @@ export class AgenCUnixSocketServer {
         reject(error);
       };
       server.once("error", onError);
-      server.listen(socketPath, () => {
+      const onListening = () => {
         server.off("error", onError);
+        if (namedPipe) {
+          resolve();
+          return;
+        }
         void chmod(socketPath, AGENC_DAEMON_SOCKET_MODE).then(
           () => resolve(),
           (error: unknown) =>
             reject(error instanceof Error ? error : new Error(String(error))),
         );
-      });
+      };
+      if (namedPipe) {
+        server.listen(
+          {
+            path: socketPath,
+            readableAll: false,
+            writableAll: false,
+          },
+          onListening,
+        );
+      } else {
+        server.listen(socketPath, onListening);
+      }
     });
 
-    this.#privateSocketOwnerUid =
-      await resolveAgenCPrivateUnixSocketOwnerUid(socketPath);
+    this.#privateSocketOwnerUid = namedPipe
+      ? null
+      : await resolveAgenCPrivateUnixSocketOwnerUid(socketPath);
     return socketPath;
   }
 
@@ -195,7 +249,9 @@ export class AgenCUnixSocketServer {
       });
     }
 
-    await removeSocketPathIfPresent(this.socketPath);
+    if (process.platform !== "win32") {
+      await removeSocketPathIfPresent(this.socketPath);
+    }
   }
 
   #acceptConnection(socket: Socket): void {

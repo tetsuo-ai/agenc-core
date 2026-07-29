@@ -8,10 +8,10 @@
  *   node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
  *   node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
  *
- * The daemon transport talks JSON-RPC to `~/.agenc/daemon.sock` (starting
- * the daemon via `agenc daemon start` when needed). The subprocess
- * transport spawns `agenc -p --output-format stream-json` instead — no
- * daemon socket access required by this process.
+ * The daemon transport talks JSON-RPC over the local Unix socket or Windows
+ * named pipe (starting the daemon via `agenc daemon start` when needed). The
+ * subprocess transport spawns `agenc -p --output-format stream-json`
+ * instead — no daemon endpoint access required by this process.
  */
 
 import { connect, promptViaSubprocess } from "../dist/index.js";

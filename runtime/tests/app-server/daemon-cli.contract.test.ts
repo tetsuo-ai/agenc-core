@@ -537,6 +537,13 @@ describe("AgenC daemon CLI", () => {
     expect(
       resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
     ).toBe("/tmp/agenc-home/daemon.sock");
+    expect(
+      resolveAgenCDaemonSocketPath(
+        { AGENC_HOME: String.raw`C:\Users\Test\.agenc` },
+        String.raw`C:\Users\Test`,
+        "win32",
+      ),
+    ).toMatch(/^\\\\\.\\pipe\\agenc-daemon-[a-f0-9]{64}$/u);
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon.cookie",
     );

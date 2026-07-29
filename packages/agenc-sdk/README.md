@@ -8,7 +8,7 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 
 | API | What it does |
 | --- | --- |
-| `connect()` | Attach to (or CLI-start) the local daemon over `~/.agenc/daemon.sock`. Typed `createSession()` / `prompt()` event streams, permission + elicitation callbacks, background-agent spawn/attach/stop/logs. |
+| `connect()` | Attach to (or CLI-start) the local daemon over its Unix socket or Windows named pipe. Typed `createSession()` / `prompt()` event streams, permission + elicitation callbacks, background-agent spawn/attach/stop/logs. |
 | `promptViaSubprocess()` | Same event-iterable interface over `agenc -p --output-format stream-json` with no daemon socket access from your process. |
 | `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree. |
 | `client.reattachRun({ runId, afterSequence })` | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect. |
@@ -40,7 +40,7 @@ await client.close();
 
 ## Defaults
 
-- Socket: `${AGENC_HOME:-~/.agenc}/daemon.sock`
+- Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
 
