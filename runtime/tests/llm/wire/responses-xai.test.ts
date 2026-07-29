@@ -270,7 +270,7 @@ describe("responses-xai wire shim", () => {
       // an entry in `tools` byte-for-byte.
       tool_choice: {
         type: "function",
-        function: { name: TEST_TOOL_WIRE_NAME },
+        name: TEST_TOOL_WIRE_NAME,
       },
       tools: [
         {

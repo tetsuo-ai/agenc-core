@@ -50,9 +50,12 @@ function normalizeXaiResponsesToolChoice(
     ? toolChoice.name.trim()
     : "";
   if (toolChoice.type === "function" && directName.length > 0) {
+    // xAI's /v1/responses endpoint consumes the Responses-native flat
+    // ToolChoiceFunction shape. The nested Chat Completions shape is rejected
+    // with a 422 ModelToolChoice deserialization error.
     return {
       type: "function",
-      function: { name: encodeMcpToolNameForWire(directName) },
+      name: encodeMcpToolNameForWire(directName),
     };
   }
 
@@ -63,7 +66,7 @@ function normalizeXaiResponsesToolChoice(
   if (toolChoice.type === "function" && legacyName.length > 0) {
     return {
       type: "function",
-      function: { name: encodeMcpToolNameForWire(legacyName) },
+      name: encodeMcpToolNameForWire(legacyName),
     };
   }
 
