@@ -2,8 +2,9 @@ import React from "react";
 
 import { Box, Text } from "../ink.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
-import { SpiralDots } from "../components/spinner/SpiralDots.js";
+import { AgenCActivityMark } from "../components/spinner/AgenCActivityMark.js";
 import { titleVerbForMode } from "../components/spinner/utils.js";
+import { useAppStateMaybeOutsideOfProvider } from "../state/AppState.js";
 
 /**
  * Compact, always-visible "the model is working" indicator for the workbench
@@ -20,17 +21,17 @@ export function WorkbenchActivityIndicator({
   /** Current streaming phase, or null when the session is idle. */
   readonly mode: SpinnerMode | null;
 }): React.ReactElement | null {
+  const reducedMotion =
+    useAppStateMaybeOutsideOfProvider(
+      (state) => state.settings?.prefersReducedMotion ?? false,
+    ) ?? false;
+
   if (mode === null) return null;
 
   return (
     <Box flexShrink={0} flexDirection="row">
-      <Text dimColor wrap="truncate-end">{" · "}</Text>
-      {/*
-        The SAME live spiral as the composer body spinner and the agents rail:
-        one activity signal across the whole workbench, not three different
-        glyphs for the same in-flight turn.
-      */}
-      <SpiralDots />
+      <Text>{"  "}</Text>
+      <AgenCActivityMark color="text" reducedMotion={reducedMotion} />
       <Text color="text2" wrap="truncate-end"> {titleVerbForMode(mode)}…</Text>
     </Box>
   );

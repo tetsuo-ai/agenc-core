@@ -18,6 +18,7 @@ import {
   ctrlOToExpand,
 } from './CtrlOToExpand.js'
 import { InVirtualListContext } from './messageActions.js'
+import { WorkbenchTranscriptLayoutProvider } from '../workbench/transcriptLayoutContext.js'
 
 describe('CtrlOToExpand coverage', () => {
   test('renders the expand hint only outside suppressed contexts', async () => {
@@ -39,6 +40,12 @@ describe('CtrlOToExpand coverage', () => {
             <CtrlOToExpand />
           </Box>
         </InVirtualListContext.Provider>
+        <WorkbenchTranscriptLayoutProvider>
+          <Box>
+            <Text>workbench </Text>
+            <CtrlOToExpand />
+          </Box>
+        </WorkbenchTranscriptLayoutProvider>
       </Box>,
       100,
     )
@@ -46,6 +53,8 @@ describe('CtrlOToExpand coverage', () => {
     expect(output).toContain('visible (ctrl+o to expand)')
     expect(output).toContain('subagent')
     expect(output).toContain('virtual')
+    expect(output).toContain('workbench')
+    expect(output).not.toContain('workbench (')
     expect(output.match(/\bto expand\b/g) ?? []).toHaveLength(1)
 
     expect(stripAnsi(ctrlOToExpand())).toBe('(cmd+e to expand)')

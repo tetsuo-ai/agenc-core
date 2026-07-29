@@ -70,6 +70,14 @@ export function WorkbenchLayout({
   const layoutSize = layoutSizeForColumns(columns);
   const focusedPane = visibleWorkbenchPane(workbench);
   const editorOwnsKeys = focusedPane === "surface" && workbench.activeSurfaceMode === "buffer";
+  // The outer shell owns one row of breathing room above and below the frame
+  // when the viewport can afford it. Give the framed workbench an explicit
+  // drawable height instead of `100%`: percentage height plus padding can
+  // extend the bottom border past the live terminal viewport. Tiny terminals
+  // drop the decorative inset and shortcut strip so the work surface and
+  // composer retain usable rows.
+  const showFullChrome = rows >= 14;
+  const frameRows = Math.max(1, rows - (showFullChrome ? 2 : 0));
   // One terminal-cell breathing room around the frame plus the frame's own
   // left/right border leaves four columns unavailable to the pane grid.
   const frameColumns = Math.max(1, columns - 4);
@@ -158,18 +166,25 @@ export function WorkbenchLayout({
   );
 
   return (
-    <Box width="100%" height={rows} paddingX={1} paddingY={1} backgroundColor="#000000">
+    <Box width="100%" height={rows} paddingX={1} paddingY={showFullChrome ? 1 : 0} backgroundColor="#000000">
       <Box
         flexDirection="column"
         width="100%"
-        height="100%"
+        height={frameRows}
         overflow="hidden"
         backgroundColor="#000000"
         borderStyle="single"
         borderColor="lineSoft"
       >
         {rows >= 8 ? <WorkbenchStatusBar activityMode={activityMode} columns={frameColumns} contextPctLabel={contextPctLabel} /> : null}
-        <Box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+        <Box
+          flexDirection="row"
+          flexGrow={1}
+          flexShrink={1}
+          flexBasis={0}
+          minHeight={0}
+          overflow="hidden"
+        >
           {showExplorer ? (
             <NoSelect flexShrink={0} width={explorerWidth} height="100%">
               <ProjectExplorer focused={focusedPane === "explorer"} width={explorerWidth} />
@@ -216,7 +231,7 @@ export function WorkbenchLayout({
           </WorkbenchComposerFocusProvider>
         </Box>
         <PromptDialogOverlay />
-        {rows >= 5 ? <WorkbenchFooter /> : null}
+        {showFullChrome ? <WorkbenchFooter /> : null}
         {layoutSize !== "wide" && workbench.agentsVisible && focusedPane === "agents" ? (
           <Box position="absolute" right={0} top={2} bottom={2} width={Math.min(34, frameColumns)} opaque>
             <NoSelect width={Math.min(34, frameColumns)} height="100%">

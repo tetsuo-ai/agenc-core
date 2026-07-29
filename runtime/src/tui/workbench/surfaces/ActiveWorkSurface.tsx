@@ -155,6 +155,8 @@ export function ActiveWorkSurface({
       <Box
         flexDirection="column"
         flexGrow={1}
+        flexBasis={0}
+        minHeight={0}
         overflow="hidden"
         paddingX={isTranscript ? 3 : 1}
         paddingTop={isTranscript ? 1 : 0}

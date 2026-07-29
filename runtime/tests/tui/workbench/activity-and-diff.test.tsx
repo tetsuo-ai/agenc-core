@@ -13,6 +13,10 @@ import {
   type SpinnerAnimationRowProps,
 } from "../../../src/tui/components/spinner/SpinnerAnimationRow.js";
 import {
+  AGENC_ACTIVITY_MARK_FRAMES,
+  AGENC_ACTIVITY_MARK_STATIC,
+} from "../../../src/tui/components/spinner/AgenCActivityMark.js";
+import {
   getReducedMotionDot,
   titleVerbForMode,
   verbForMode,
@@ -77,16 +81,11 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
       </AppStateProvider>,
       80,
     );
-    // SpiralDots pins to its first frame (⣷) under reduced motion.
-    expect(out).toContain("⣷");
+    expect(out).toContain(AGENC_ACTIVITY_MARK_STATIC);
     expect(out).toContain("Working");
   });
 
-  // #16: when the animated glyph lands on its dot frame ("·") it sits next to
-  // the leading "·" separator and reads as a doubled "· ·". The separator must
-  // collapse for that frame. reduced-motion forces a deterministic, stable
-  // glyph so the assertion is frame-independent.
-  it("never renders a doubled '· ·' next to the verb", async () => {
+  it("replaces the generic separator dot with the AgenC activity mark", async () => {
     for (const mode of [
       "requesting",
       "responding",
@@ -98,7 +97,10 @@ describe("WorkbenchActivityIndicator (working / waiting-on-model signal)", () =>
         withState(<WorkbenchActivityIndicator mode={mode} />),
         80,
       );
-      expect(out).not.toContain("· ·");
+      expect(out).toContain(
+        `${AGENC_ACTIVITY_MARK_FRAMES[0]?.glyph} ${titleVerbForMode(mode)}…`,
+      );
+      expect(out).not.toContain(" · ");
     }
   });
 });
@@ -163,7 +165,7 @@ describe("title bar / body spinner glyph color agreement", () => {
       columns: 100,
       effortSuffix: "",
       foregroundedTeammate: undefined,
-      // hasActiveTools forces the static "⣷" status glyph (statusGlyph()).
+      // Active tools use the animated AgenC activity mark.
       hasActiveTools: true,
       hasRunningTeammates: false,
       leaderIsIdle: false,
@@ -175,7 +177,7 @@ describe("title bar / body spinner glyph color agreement", () => {
       mode: "tool-use",
       overrideColor: null,
       pauseStartTimeRef: { current: null },
-      reducedMotion: false,
+      reducedMotion: true,
       responseLengthRef: { current: 0 },
       shimmerColor: "agencShimmer",
       spinnerSuffix: null,
@@ -206,23 +208,23 @@ describe("title bar / body spinner glyph color agreement", () => {
       { columns: 100, color: true },
     );
 
-    const titleColor = colorBefore(titleAnsi, "⣷");
-    const bodyColor = colorBefore(bodyAnsi, "⣷");
+    const titleColor = colorBefore(titleAnsi, AGENC_ACTIVITY_MARK_STATIC);
+    const bodyColor = colorBefore(bodyAnsi, AGENC_ACTIVITY_MARK_STATIC);
 
     expect(titleColor).not.toBeNull();
     expect(bodyColor).not.toBeNull();
-    // Both glyphs must use the identical SGR color escape. Revert-sensitive:
-    // before unification the title bar used color="agenc" (a different purple
-    // than the body's "suggestion"), so this equality fails on the old code.
+    // Both glyphs use the same white foreground in the default monochrome
+    // theme, even though each surface supplies its own semantic color token.
     expect(titleColor).toBe(bodyColor);
-    // The monochrome workbench maps both activity surfaces to exact white.
     expect(titleColor).toContain("255;255;255");
+    expect(titleColor).not.toContain("178;95;255");
   });
 });
 
 describe("WorkbenchStatusBar working indicator", () => {
   it("shows the indicator only when a turn is active", async () => {
     const idle = await renderToString(withState(<WorkbenchStatusBar activityMode={null} />), 120);
+    expect(idle).toContain("agenc");
     expect(idle).toContain("WORKBENCH");
     expect(idle).not.toContain("working");
 
@@ -230,6 +232,7 @@ describe("WorkbenchStatusBar working indicator", () => {
       withState(<WorkbenchStatusBar activityMode="requesting" />),
       120,
     );
+    expect(busy).toContain("agenc");
     expect(busy).toContain("WORKBENCH");
     // Title-cased verb, matching the composer body spinner for the same turn.
     expect(busy).toContain("Working");

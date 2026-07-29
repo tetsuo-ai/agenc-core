@@ -227,12 +227,25 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   // snapshot, collapse-independent) rather than the currently-visible rows — a
   // collapsed directory hides its children from the rows, which would undercount
   // a multi-file project (e.g. an agent-created subpackage showing "WORKSPACE 1").
-  const itemCount = snapshot.fileCount;
+  const itemCount =
+    snapshot.fileCount ??
+    snapshot.rows.filter((row) => row.kind === "file").length;
   const directoryCount =
     snapshot.directoryCount ??
     snapshot.rows.filter((row) => row.kind === "directory").length;
   const dirtyCount = snapshot.rows.filter((row) => row.gitState && row.gitState !== "clean").length;
   const headerMeta = `${itemCount}${dirtyCount > 0 ? ` ${dirtyCount} changed` : ""}${snapshot.loading ? " sync" : ""}`;
+  // Render the header as one measured row. Two independently shrinking Text
+  // nodes can steal the last cell from WORKSPACE when the count exactly fills
+  // the pane ("WORKSPAC380…").
+  const headerContentWidth = Math.max(1, width - 4);
+  const headerLabel = trim("WORKSPACE", headerContentWidth);
+  const headerMetaWidth = Math.max(0, headerContentWidth - stringWidth(headerLabel));
+  const fittedHeaderMeta = trim(headerMeta, headerMetaWidth);
+  const headerGap = Math.max(
+    0,
+    headerContentWidth - stringWidth(headerLabel) - stringWidth(fittedHeaderMeta),
+  );
   const glyphs = selectAgenCTuiGlyphs();
 
   return (
@@ -247,13 +260,10 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
         borderBottom
         borderBottomColor="lineSoft"
       >
-        <Box flexShrink={0}>
-          <Text color={focused ? "text" : "inactive"}>WORKSPACE</Text>
-        </Box>
-        <Box flexGrow={1} />
-        <Box flexShrink={1} minWidth={0}>
-          <Text color="inactive" wrap="truncate-end">{headerMeta}</Text>
-        </Box>
+        <Text color={focused ? "text" : "inactive"} wrap="truncate-end">
+          {headerLabel}{" ".repeat(headerGap)}
+          <Text color="inactive">{fittedHeaderMeta}</Text>
+        </Text>
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {snapshot.error ? (
@@ -417,9 +427,17 @@ export function ProjectExplorerRow({
   const badges = rowBadges(row, glyphs);
   const prefix = `${branch}${marker} `;
   const rawLabel = row.label;
-  const labelWidth = Math.max(1, width - stringWidth(prefix) - stringWidth(badges) - 1);
+  // Git state belongs to the filename it describes. Keep it two cells after
+  // the label instead of stretching a large empty gap across a wide explorer
+  // pane, while preserving one trailing cell of breathing room.
+  const badgeGap = badges === "" ? "" : "  ";
+  const labelWidth = Math.max(
+    1,
+    width - stringWidth(prefix) - stringWidth(badgeGap) - stringWidth(badges) - (badges === "" ? 0 : 1),
+  );
   const label = trim(rawLabel, labelWidth);
-  const gap = Math.max(0, width - stringWidth(prefix) - stringWidth(label) - stringWidth(badges));
+  const content = `${prefix}${label}${badgeGap}${badges}`;
+  const trailingGap = Math.max(0, width - stringWidth(content));
   return (
     <Box height={1} flexShrink={0} onClick={onRowClick !== undefined ? () => onRowClick(row) : undefined}>
       <Text
@@ -428,7 +446,7 @@ export function ProjectExplorerRow({
         bold={row.selected || row.kind === "root"}
         wrap="truncate-end"
       >
-        {prefix}{label}{" ".repeat(gap)}{badges}
+        {content}{" ".repeat(trailingGap)}
       </Text>
     </Box>
   );

@@ -183,7 +183,7 @@ describe("SystemAPIErrorMessage coverage swarm row 228", () => {
     );
 
     expect(truncatedOutput).toContain(`${"x".repeat(1000)}...`);
-    expect(truncatedOutput).toContain("(ctrl+o to expand)");
+    expect(truncatedOutput).not.toContain("(ctrl+o to expand)");
     expect(truncatedOutput).not.toContain("x".repeat(1001));
 
     harness.reset();

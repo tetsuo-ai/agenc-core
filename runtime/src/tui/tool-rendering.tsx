@@ -7,7 +7,6 @@ import { Ansi } from "./ink/Ansi.js";
 import { stringWidth } from "./ink/stringWidth.js";
 import { stripUnderlineAnsi } from "./components/shell/OutputLine.js";
 import { selectAgenCTuiGlyphs } from "./glyphs.js";
-import { getShortcutDisplay } from "./keybindings/shortcutFormat.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
 import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
 import { isRecord } from "../utils/record.js";
@@ -466,28 +465,6 @@ function capPreviewLinesHeadTail(
 const BASH_PREVIEW_FAILURE_HEAD_LINES = 2;
 
 /**
- * "view full output" affordance for the `… +K lines` continuation marker.
- *
- * The line cap above keeps the inline footprint small, but — unlike the Edit
- * DIFF card, whose collapsed `… +N more · ctrl+w d for full diff` marker can
- * reach the full diff — a capped command output was a DEAD END: the hidden
- * lines were unreachable. This wires the marker to the same transcript-expand
- * mechanism the rest of the TUI already uses for "show the full thing": the
- * `app:toggleTranscript` shortcut (default `ctrl+o`, the same one
- * `CtrlOToExpand`/`AdvisorMessage` surface). When the transcript is expanded the
- * `verbose` prop (already plumbed into BashOutputView from
- * `UserToolSuccessMessage`) flips on and the FULL stdout/stderr is rendered
- * uncapped and scrollable — no bespoke pager/overlay required.
- *
- * `getShortcutDisplay` (not a hardcoded literal) so the hint honors a user's
- * rebind of `app:toggleTranscript`, matching `ctrlOToExpand`'s formatting.
- */
-function fullOutputAffordance(): string {
-  const shortcut = getShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o");
-  return ` · ${shortcut} for full output`;
-}
-
-/**
  * Live `exec_command` trailer line, e.g.
  * `[exec exit_code=0 wall_time=0.0300s tokens=69]`. The daemon appends this to
  * the raw stdout (preceded by blank lines). We strip it from the displayed body
@@ -659,7 +636,7 @@ export function BashOutputView({
         {stdoutCap.remaining > 0 ? (
           <Text dimColor>{`… +${stdoutCap.remaining} ${
             stdoutCap.remaining === 1 ? "line" : "lines"
-          }${fullOutputAffordance()}`}</Text>
+          }`}</Text>
         ) : null}
         {/* TAIL block (failure head+tail cap): the trailing verdict/exception
             lines that survive AFTER the `… +K lines` elision. Empty on success. */}
@@ -677,7 +654,7 @@ export function BashOutputView({
         {stderrCap && stderrCap.remaining > 0 ? (
           <Text dimColor>{`… +${stderrCap.remaining} ${
             stderrCap.remaining === 1 ? "line" : "lines"
-          }${fullOutputAffordance()}`}</Text>
+          }`}</Text>
         ) : null}
         {stderrCap
           ? stderrCap.tailLines.map((line, idx) =>

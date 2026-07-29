@@ -266,7 +266,19 @@ describe("Spinner render paths", () => {
     const rendered = await renderToText(<Spinner />);
 
     try {
-      expect(rendered.output()).toContain("⣷");
+      expect(rendered.output()).toContain("⣟⣹");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("moves the inner pixels around the square without shifting columns", async () => {
+    const rendered = await renderToText(<Spinner />);
+
+    try {
+      expect(rendered.output()).toContain("⣟⣹");
+      await sleep(400);
+      expect(rendered.output()).toContain("⣏⣿");
     } finally {
       await rendered.dispose();
     }

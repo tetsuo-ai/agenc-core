@@ -4,13 +4,12 @@ import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import { useAppState, useSetAppState } from "../../state/AppState.js";
-import { selectAgenCTuiGlyphs } from "../../glyphs.js";
-import { isTerminalTaskStatus } from "../../../tasks/types.js";
 import { formatNumber } from "../../../utils/format.js";
+import { stringWidth } from "../../ink/stringWidth.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
-import { SpiralDots } from "../../components/spinner/SpiralDots.js";
 import { stopWorkbenchTask } from "../tasks/stopActions.js";
 import { formatTaskElapsed } from "./activity.js";
+import { AgentActivityTrack } from "./AgentActivityTrack.js";
 import { nonEmptyString as nonBlankString } from "../../../utils/stringUtils.js";
 import { formatUsdCost } from "../../../session/cost.js";
 
@@ -25,6 +24,9 @@ export function AgentsRail({
 }): React.ReactElement {
   const tasks = useAppState((state) => state.tasks);
   const remoteCount = useAppState((state) => state.remoteBackgroundTaskCount);
+  const reducedMotion = useAppState(
+    (state) => state.settings?.prefersReducedMotion ?? false,
+  );
   const setAppState = useSetAppState();
   const workbench = useWorkbenchState();
   const dispatch = useWorkbenchDispatch();
@@ -93,6 +95,7 @@ export function AgentsRail({
             task={task}
             selected={selectedId === task.id}
             width={Math.max(8, width - 5)}
+            reducedMotion={reducedMotion}
           />
         ))}
       </Box>
@@ -124,66 +127,6 @@ function AgentRailSpend({
   );
 }
 
-/**
- * Swarm-style fan-out view (like other harnesses' agent panels): numbered
- * agents with a live status glyph (animated frame while running, ✓/✗ when
- * terminal), each agent's own tool/token/elapsed stats, and a totals row once
- * the swarm settles. Shown instead of the plain sections when 2+ agents are
- * on the board — a single agent keeps the classic rows.
- */
-function SwarmPanel({
-  tasks,
-  selectedId,
-}: {
-  readonly tasks: readonly any[];
-  readonly selectedId: string | null;
-}): React.ReactElement {
-  const glyphs = selectAgenCTuiGlyphs();
-  const totalTools = tasks.reduce((sum, task) => sum + (task.progress?.toolUseCount ?? 0), 0);
-  const totalTokens = tasks.reduce((sum, task) => sum + (task.progress?.tokenCount ?? 0), 0);
-  const allTerminal = tasks.every((task) => isTerminalTaskStatus(task.status));
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text dimColor wrap="truncate-end">─ Agent Swarm ─</Text>
-      {tasks.map((task: any, index: number) => {
-        const terminal = isTerminalTaskStatus(task.status);
-        const failed = task.status === "failed" || task.status === "killed";
-        const color = terminal ? (failed ? "error" : "success") : statusColor(task.status);
-        const progress = task.progress ?? {};
-        const activity =
-          nonBlankString(progress.lastActivity?.activityDescription) ??
-          nonBlankString(progress.lastActivity?.toolName) ??
-          nonBlankString(task.status) ??
-          "unknown";
-        const selected = selectedId === task.id;
-        return (
-          <Box key={task.id} flexDirection="column" marginTop={index === 0 ? 0 : 0}>
-            <Text wrap="truncate-end">
-              <Text dimColor>{String(index + 1).padStart(3, "0")} </Text>
-              {terminal ? (
-                <Text color={color}>{failed ? glyphs.statusError : glyphs.statusSuccess} </Text>
-              ) : (
-                // Live 9-dot spiral while the agent runs (real progress stats
-                // beside it come from task.progress).
-                <Text color={color}><SpiralDots /> </Text>
-              )}
-              <Text color={selected ? "suggestion" : undefined}>{agentRowLabel(task)}</Text>
-            </Text>
-            <Text dimColor wrap="truncate-end">
-              {"    "}{progress.toolUseCount ?? 0} tools · {formatNumber(progress.tokenCount ?? 0)} tok · {formatTaskElapsed(task)} · {activity}
-            </Text>
-          </Box>
-        );
-      })}
-      {allTerminal && tasks.length > 1 ? (
-        <Text dimColor wrap="truncate-end">
-          {" "}{tasks.length} agents finished · {totalTools} tools · {formatNumber(totalTokens)} tok
-        </Text>
-      ) : null}
-    </Box>
-  );
-}
-
 function useStableAgentTasks(tasks: readonly any[]): readonly any[] {
   const orderRef = React.useRef<readonly string[]>([]);
   const ordered = React.useMemo(() => orderAgentTasks(tasks, orderRef.current), [tasks]);
@@ -209,18 +152,16 @@ export function partitionAgentTasks(tasks: readonly any[]): {
 
 /**
  * The next selection id when arrow-navigating the rail by `delta`. Navigation
- * MUST follow the rendered order — active section then background section —
- * not the flat task list, or ↓ jumps between sections and skips rows the eye
- * expects next. Returns `null` when there is nothing to select or the target
- * row has no stable id (an unkeyed task must not dispatch `taskId: undefined`).
+ * MUST follow the stable rendered order or ↓ can select a row other than the
+ * one immediately below the cursor. Returns `null` when there is nothing to
+ * select or the target row has no stable id.
  */
 export function nextAgentSelectionId(
   taskList: readonly any[],
   selectedId: string | null,
   delta: number,
 ): string | null {
-  const { activeTasks, backgroundTasks } = partitionAgentTasks(taskList);
-  const renderedOrder = [...activeTasks, ...backgroundTasks];
+  const renderedOrder = orderAgentTasks(taskList);
   if (renderedOrder.length === 0) return null;
   const currentIndex = renderedOrder.findIndex((task: any) => taskIdOf(task) === selectedId);
   const base = currentIndex >= 0 ? currentIndex : 0;
@@ -287,40 +228,16 @@ function wrapIndex(index: number, length: number): number {
 function taskIdOf(task: any): string | null {
   return typeof task?.id === "string" ? task.id : null;
 }
-
-
-function AgentRailSection({
-  label,
-  tasks,
-  selectedId,
-}: {
-  readonly label: string;
-  readonly tasks: readonly any[];
-  readonly selectedId: string | null;
-}): React.ReactElement | null {
-  if (tasks.length === 0) return null;
-  return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text dimColor wrap="truncate-end">{label}</Text>
-      {tasks.map((task: any) => (
-        <AgentRailRow
-          key={task.id}
-          task={task}
-          selected={selectedId === task.id}
-        />
-      ))}
-    </Box>
-  );
-}
-
 function AgentRailRow({
   task,
   selected,
   width = 20,
+  reducedMotion,
 }: {
   readonly task: any;
   readonly selected: boolean;
   readonly width?: number;
+  readonly reducedMotion: boolean;
 }): React.ReactElement {
   const progress = task.progress ?? {};
   const activity =
@@ -330,36 +247,50 @@ function AgentRailRow({
     "unknown";
   const label = agentRowLabel(task);
   const running = task.status === "running";
-  const statusLabel = task.status === "pending" ? "queued" : task.status;
-  const statusDetails = [
-    statusLabel,
-    running || task.endTime ? formatTaskElapsed(task) : null,
-    progress.toolUseCount !== undefined
-      ? `${formatNumber(progress.toolUseCount)} tools`
-      : null,
-    progress.tokenCount !== undefined
-      ? `${formatNumber(progress.tokenCount)} tok`
-      : null,
-  ].filter((detail): detail is string => typeof detail === "string" && detail.length > 0);
-  const activityWidth = Math.max(4, width);
-  const activeWidth = Math.max(2, Math.floor(activityWidth * 0.58));
+  const needsApproval = running && task.pendingApproval === true;
+  const taskStatus = nonBlankString(task.status) ?? "unknown";
+  const statusLabel = needsApproval
+    ? "needs you"
+    : taskStatus === "pending"
+      ? "queued"
+      : taskStatus;
+  const hasActivityDetail = activity !== statusLabel && activity !== taskStatus;
+  const activityDetail = hasActivityDetail ? ` · ${activity}` : "";
+  const toolCount = progress.toolUseCount ?? 0;
+  const tokenCount = progress.tokenCount ?? 0;
+  const stats =
+    toolCount > 0 || tokenCount > 0
+      ? `${toolCount} tools · ${formatNumber(tokenCount)} tok`
+      : "";
+  const statsWidth = stringWidth(stats);
+  const showStats =
+    stats !== "" && width >= 2 + 6 + 1 + statsWidth;
+  const trackWidth = Math.max(
+    6,
+    width - 2 - (showStats ? statsWidth + 1 : 0),
+  );
   return (
     <Box flexDirection="column" marginBottom={1} width="100%">
       <Box height={1}>
+        <Text color={selected ? "text" : "surfaceBackground"}>{selected ? "› " : "  "}</Text>
         <Text color="text" bold={selected || running} wrap="truncate-end">{label}</Text>
-        <Box flexGrow={1} />
-        <Text color="text">{running ? "■" : "□"}</Text>
       </Box>
-      <Text color="inactive" wrap="truncate-end">
-        {statusDetails.join(" · ")}
-      </Text>
-      {running ? (
-        <Text wrap="truncate-end">
-          <Text color="text">{"━".repeat(activeWidth)}</Text>
-          <Text color="lineSoft">{"━".repeat(Math.max(0, activityWidth - activeWidth))}</Text>
+      <Box paddingLeft={2}>
+        <Text color="inactive" wrap="truncate-end">
+          {statusLabel}
+          {running || task.endTime ? ` · ${formatTaskElapsed(task)}` : ""}
+          {activityDetail}
         </Text>
-      ) : activity !== statusLabel ? (
-        <Text color="inactive" wrap="truncate-end">{activity}</Text>
+      </Box>
+      {running && !needsApproval ? (
+        <Box paddingLeft={2}>
+          <AgentActivityTrack
+            width={trackWidth}
+            seed={taskIdOf(task) ?? label}
+            reducedMotion={reducedMotion}
+          />
+          {showStats ? <Text color="inactive"> {stats}</Text> : null}
+        </Box>
       ) : null}
     </Box>
   );
@@ -376,49 +307,4 @@ function agentRowLabel(task: any): string {
   const title = nonBlankString(task.description) ?? nonBlankString(task.id) ?? "agent";
   const role = nonBlankString(task.agentType);
   return role && role !== "agent" && role !== title ? `${title} · ${role}` : title;
-}
-
-/**
- * Lifecycle glyph for the rail row. Kept ASCII (not the AURA glyph set used by
- * the wider fleet panel in CoordinatorAgentStatus) because the rail is a
- * narrow, dense column where a single-cell ASCII marker stays legible across
- * all terminals; the *semantic state* is now carried by color (statusColor),
- * matching the AURA panel's color intent without a risky cross-surface glyph
- * refactor.
- */
-function statusMarker(status: string): string {
-  switch (status) {
-    case "running":
-      return "*";
-    case "failed":
-      return "!";
-    case "completed":
-      return "ok";
-    case "killed":
-      return "x";
-    default:
-      return "-";
-  }
-}
-
-/**
- * Theme color token for an agent lifecycle state. Mirrors the fleet panel's
- * intent: working=accent, completed=green, failed=red, stopped=grey,
- * pending/idle=dim. Returns a theme key (resolved by ThemedText), never a raw
- * ANSI value.
- */
-function statusColor(status: string): "worker" | "success" | "error" | "muted3" | "inactive" {
-  switch (status) {
-    case "running":
-      return "worker";
-    case "completed":
-      return "success";
-    case "failed":
-      return "error";
-    case "killed":
-      return "muted3";
-    default:
-      // pending / unknown / idle — dim, awaiting work.
-      return "inactive";
-  }
 }

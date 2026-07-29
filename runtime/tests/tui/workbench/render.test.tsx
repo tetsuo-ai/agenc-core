@@ -32,7 +32,7 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
 });
 
 import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
-import { Text } from "../../../src/tui/ink.js";
+import { Box, Text } from "../../../src/tui/ink.js";
 import type { ScrollBoxHandle } from "../../../src/tui/ink/components/ScrollBox.js";
 import { AGENC_LOGO_MARK_COMPACT_LINES, WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
@@ -179,6 +179,24 @@ describe("workbench render contract", () => {
 
     expect(output).toContain(marker);
     expect(output).toContain("clean");
+  });
+
+  it("keeps file-state badges beside the filename instead of pinning them to the pane edge", async () => {
+    const output = await renderToString(
+      <ProjectExplorerRow
+        width={32}
+        row={{
+          ...row("src/game.cpp", "game.cpp", "file", 1),
+          gitState: "untracked",
+        }}
+      />,
+      32,
+    );
+
+    const rowLine = output.split(/\r?\n/u).find((line) => line.includes("game.cpp"));
+    expect(rowLine).toBeDefined();
+    expect(rowLine).toMatch(/game\.cpp {2}new/u);
+    expect(rowLine).not.toMatch(/game\.cpp {3,}new/u);
   });
 
   it("renders the empty-workspace row without the '!' error marker", async () => {
@@ -633,6 +651,37 @@ describe("workbench render contract", () => {
     expect(hintLine).toBeDefined();
     expect(hintLine).toMatch(/^ {2}\S/u);
     expect(hintLine?.startsWith("/")).toBe(false);
+  });
+
+  it("keeps the global shortcut footer visible when the transcript exceeds the viewport", async () => {
+    const scrollRef = React.createRef<ScrollBoxHandle>();
+    const longTranscript = (
+      <Box flexDirection="column">
+        {Array.from({ length: 80 }, (_, index) => (
+          <Text key={index}>long transcript line {index}</Text>
+        ))}
+      </Box>
+    );
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <WorkbenchLayout
+          transcript={longTranscript}
+          composer={(
+            <Box flexDirection="column" flexGrow={1}>
+              <Text>composer-anchor</Text>
+            </Box>
+          )}
+          scrollRef={scrollRef}
+        />
+      </AppStateProvider>,
+      { columns: 120, rows: 24 },
+    );
+
+    expect(output).toContain("composer-anchor");
+    expect(output).toContain("/ commands");
+    expect(output).toContain("@ attach");
+    expect(output).toContain("? shortcuts");
+    expect(output.split(/\r?\n/u).length).toBeLessThanOrEqual(24);
   });
 
   it.each([

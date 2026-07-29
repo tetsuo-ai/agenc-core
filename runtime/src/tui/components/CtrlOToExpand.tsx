@@ -7,6 +7,7 @@ import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import { InVirtualListContext } from './messageActions.js';
+import { useWorkbenchTranscriptLayout } from '../workbench/transcriptLayoutContext.js';
 
 // Context to track if we're inside a sub agent
 // Similar to MessageResponseContext, this helps us avoid showing
@@ -31,8 +32,12 @@ export function CtrlOToExpand() {
   const $ = _c(2);
   const isInSubAgent = useContext(SubAgentContext);
   const inVirtualList = useContext(InVirtualListContext);
+  const inWorkbenchTranscript = useWorkbenchTranscriptLayout();
   const expandShortcut = useShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o");
-  if (isInSubAgent || inVirtualList) {
+  // The workbench owns this shortcut in its persistent footer. Repeating
+  // "(ctrl+o to expand)" inside individual messages adds noise without adding
+  // discoverability, so transcript content stays clean.
+  if (isInSubAgent || inVirtualList || inWorkbenchTranscript) {
     return null;
   }
   let t0;

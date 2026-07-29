@@ -180,7 +180,7 @@ describe("SystemAPIErrorMessage", () => {
     );
 
     expect(output).toContain(`${"x".repeat(1000)}...`);
-    expect(output).toContain("(ctrl+o to expand)");
+    expect(output).not.toContain("(ctrl+o to expand)");
     expect(output).not.toContain("x".repeat(1001));
   });
 

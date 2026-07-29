@@ -12,8 +12,11 @@ type Props = {
   readonly verbose: boolean;
 };
 
+// The persistent workbench footer already owns transcript expansion. Error
+// blocks stay focused on the error and retry state instead of repeating the
+// shortcut under a potentially very long payload.
 function CtrlOToExpand(): React.ReactNode {
-  return <Text dimColor={true}>(ctrl+o to expand)</Text>;
+  return null;
 }
 
 export function SystemAPIErrorMessage({

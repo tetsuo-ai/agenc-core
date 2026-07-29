@@ -9,7 +9,7 @@ import { Box, Text } from '../../ink.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Byline } from '../design-system/Byline.js';
 import FullWidthRow from '../design-system/FullWidthRow.js';
-import { SpiralDots } from './SpiralDots.js';
+import { AgenCActivityMark } from './AgenCActivityMark.js';
 import type { SpinnerMode } from './types.js';
 import { computeSpinnerMessageMaxWidth, truncateSpinnerText } from './utils.js';
 
@@ -197,10 +197,8 @@ export function selectStallNote(input: {
 }
 
 export type SpinnerAnimationRowProps = {
-  // Kept in the public prop shape while the surrounding spinner code is
-  // migrated. The v2 visual contract keeps this row off the frame clock; a
-  // 1s wall-clock tick (see subscribeSecondTick) keeps the elapsed timer and
-  // stall note advancing through token silences.
+  // The activity mark owns its compact frame clock; a separate 1s wall-clock
+  // tick (see subscribeSecondTick) keeps elapsed metadata advancing.
   mode: SpinnerMode;
   reducedMotion: boolean;
   hasActiveTools: boolean;
@@ -231,6 +229,7 @@ function statusGlyph(mode: SpinnerMode, hasActiveTools: boolean): string {
 
 export function SpinnerAnimationRow({
   mode,
+  reducedMotion,
   hasActiveTools,
   responseLengthRef,
   message,
@@ -321,7 +320,9 @@ export function SpinnerAnimationRow({
         : null;
   let thinkingWidthValue = thinkingText ? stringWidth(thinkingText) : 0;
 
-  const messageWidth = stringWidth(visibleMessage) + 2;
+  // Two cells for the 4×4 Braille activity matrix plus one stable gap before
+  // the phase label.
+  const messageWidth = stringWidth(visibleMessage) + 3;
   const wantsThinking = thinkingStatus !== null;
   // The stall note is itself a liveness signal, so surface the timer/tokens
   // alongside it even before the usual 30s threshold.
@@ -411,11 +412,9 @@ export function SpinnerAnimationRow({
   return (
     <FullWidthRow>
       <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
-        <Box flexWrap="wrap" height={1} width={2}>
+        <Box flexWrap="wrap" height={1} width={3}>
           {hasActiveTools || mode === 'tool-use' || mode === 'tool-input' ? (
-            // Live 9-dot spiral spinner (rotating ring + cycling color) instead
-            // of the old static half-painted ◐.
-            <SpiralDots />
+            <AgenCActivityMark color={messageColor} reducedMotion={reducedMotion} />
           ) : (
             <Text color={messageColor}>{statusGlyph(mode, hasActiveTools)}</Text>
           )}

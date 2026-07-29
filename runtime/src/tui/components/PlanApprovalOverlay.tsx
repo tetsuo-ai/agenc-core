@@ -182,7 +182,7 @@ export function PlanApprovalOverlay({
       </Box>
       {/* The plan is the flexible section: with little vertical room Yoga
           shrinks THIS box (never the fixed options above — shrinking them
-          hid rows). maxHeight keeps a tall plan clamped; ctrl+o expands. */}
+          hid rows). maxHeight keeps a tall plan clamped. */}
       <Box
         flexDirection="column"
         flexShrink={1}
@@ -207,8 +207,8 @@ export function PlanApprovalOverlay({
         <Box>
           <Text color="muted3">
             {expanded
-              ? `ctrl+o collapse · ${planLineCount} lines`
-              : `first ${PLAN_PREVIEW_LINES} of ${planLineCount} lines · ctrl+o to expand`}
+              ? `${planLineCount} lines`
+              : `first ${PLAN_PREVIEW_LINES} of ${planLineCount} lines`}
           </Text>
         </Box>
       ) : null}

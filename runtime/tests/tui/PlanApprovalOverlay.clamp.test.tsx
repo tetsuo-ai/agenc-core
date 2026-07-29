@@ -55,7 +55,8 @@ describe('PlanApprovalOverlay clamp', () => {
   it('keeps the approval options visible by clamping long plans', async () => {
     const out = await renderOverlay()
     // The clamp hint reports the real line counts.
-    expect(out).toContain('first 14 of 26 lines · ctrl+o to expand')
+    expect(out).toContain('first 14 of 26 lines')
+    expect(out).not.toContain('ctrl+o to expand')
     // The options block is always visible (never pushed off by the plan).
     expect(out).toContain('would you like to proceed?')
     expect(out).toContain('yes, and auto-accept edits')

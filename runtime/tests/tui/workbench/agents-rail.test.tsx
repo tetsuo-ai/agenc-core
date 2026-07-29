@@ -15,9 +15,7 @@ vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
 import { syncCollabAgentEventToAppState } from "../../../src/tui/state/collabAgentTaskSync.js";
 import { AgentsRail } from "../../../src/tui/workbench/agents/AgentsRail.js";
-import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
-import { ThemeProvider } from "../../../src/tui/components/design-system/ThemeProvider.js";
-import { getTheme } from "../../../src/utils/theme.js";
+import { renderToString } from "../../../src/utils/staticRender.js";
 
 describe("AgentsRail", () => {
   beforeEach(() => {
@@ -35,8 +33,8 @@ describe("AgentsRail", () => {
 
     expect(remoteOnly.output).toContain("3 REMOTE");
     expect(remoteOnly.output).toContain("Waiting for agent details");
-    expect(emptyFocusedOut.output).toContain("Delegate work to track");
-    expect(emptyFocusedOut.output).toContain("progress here");
+    expect(emptyFocusedOut.output).toContain("Delegate work");
+    expect(emptyFocusedOut.output).toContain("progress here.");
   });
 
   it("routes focus, selection, open, and stop keybindings through workbench state", async () => {
@@ -123,7 +121,7 @@ describe("AgentsRail", () => {
     expect(output).toContain("Delegate work to track progress");
   });
 
-  it("renders active/background rows, row badges, and resilient empty text fallbacks", async () => {
+  it("renders stable rows, selection, activity copy, and resilient text fallbacks", async () => {
     const output = (await renderAgentsRail({
       tasks: [
         agentTask("agent-blank", "", {
@@ -148,6 +146,7 @@ describe("AgentsRail", () => {
             diffCount: 3,
             lastActivity: { toolName: "edit" },
           },
+          pendingApproval: true,
           startTime: 4_000,
         }),
         agentTask("agent-failed", "failed", {
@@ -174,12 +173,11 @@ describe("AgentsRail", () => {
       width: 90,
     })).output;
 
-    expect(output).toContain("AGENTS");
-    expect(output).toContain("1 ACTIVE");
+    expect(output).not.toContain("Agent Swarm");
+    expect(output).toContain("› pending agent");
     expect(output).toContain("unknown");
     expect(output).toContain("pending agent");
-    expect(output).toContain("edit");
-    expect(output).toContain("queued · 2 tools · 120 tok");
+    expect(output).toContain("queued · edit");
     expect(output).toContain("failed agent");
     expect(output).toContain("completed agent");
     expect(output).toContain("killed agent");
@@ -228,8 +226,6 @@ describe("AgentsRail", () => {
       width: 90,
     })).output;
 
-    // The exact bug was a frozen `tools 0 tokens 0`; the rail must now show the
-    // real values plumbed through the daemon collab status event.
     expect(output).toContain("9 tools · 73.2k tok");
     expect(output).not.toContain("0 tools · 0 tok");
   });
@@ -246,8 +242,9 @@ describe("AgentsRail", () => {
       }],
     })).output;
 
-    expect(output).toContain("stale running");
+    expect(output).toContain("› stale running");
     expect(output).toContain("running");
+    expect(output).toMatch(/[◆◇]/u);
     expect(output).not.toContain("x stop");
   });
 
@@ -343,66 +340,39 @@ describe("AgentsRail", () => {
   });
 });
 
-describe("AgentsRail lifecycle legibility (monochrome state + friendly label)", () => {
-  // Dark is the default render theme (ThemeProvider DEFAULT_THEME); pin it
-  // explicitly so the asserted SGR codes never drift with user settings.
-  const theme = getTheme("dark");
+describe("AgentsRail lifecycle legibility", () => {
+  it("uses explicit lifecycle copy and one visible selection gutter", async () => {
+    const output = (await renderAgentsRail({
+      tasks: [
+        agentTask("agent-run", "running", { description: "scanning", startTime: Date.now() }),
+        agentTask("agent-ok", "completed", { description: "wrote tests", startTime: Date.now() }),
+        agentTask("agent-bad", "failed", { description: "crashed", startTime: Date.now() }),
+      ],
+      selectedAgentTaskId: "agent-ok",
+      width: 48,
+    })).output;
 
-  // Truecolor foreground SGR for a theme rgb() token, matching what chalk emits
-  // at level 3 (renderToAnsiString({ color: true })).
-  function fgSgr(rgb: string): string {
-    const m = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(rgb.replaceAll(" ", ""));
-    if (m === null) throw new Error(`not an rgb token: ${rgb}`);
-    return `[38;2;${m[1]};${m[2]};${m[3]}m`;
-  }
-
-  const RUNNING_SGR = fgSgr(theme.worker);
-  const COMPLETED_SGR = fgSgr(theme.success);
-  const FAILED_SGR = fgSgr(theme.error);
-
-  async function renderRailAnsi(tasks: readonly any[]): Promise<string> {
-    return renderToAnsiString(
-      <ThemeProvider initialState="dark">
-        <AppStateProvider
-          initialState={{
-            ...getDefaultAppState(),
-            tasks: Object.fromEntries(tasks.map((t) => [t.id, t])),
-            remoteBackgroundTaskCount: 0,
-            workbench: {
-              ...getDefaultAppState().workbench,
-              selectedAgentTaskId: null,
-            },
-          }}
-        >
-          <AgentsRail focused={true} width={48} />
-        </AppStateProvider>
-      </ThemeProvider>,
-      { columns: 60, rows: 24, color: true },
-    );
-  }
-
-  it("surfaces completed, failed, and running lifecycle labels", async () => {
-    const out = await renderRailAnsi([
-      agentTask("agent-run", "running", { description: "scanning", startTime: 3_000 }),
-      agentTask("agent-ok", "completed", { description: "wrote tests", startTime: 2_000 }),
-      agentTask("agent-bad", "failed", { description: "crashed", startTime: 1_000 }),
-    ]);
-
-    expect(out).toContain("running");
-    expect(out).toContain("completed");
-    expect(out).toContain("failed");
-    // The workbench deliberately uses one monochrome foreground palette.
-    expect(out).toContain(RUNNING_SGR);
-    expect(out).toContain(COMPLETED_SGR);
-    expect(out).toContain(FAILED_SGR);
-    expect(new Set([RUNNING_SGR, COMPLETED_SGR, FAILED_SGR]).size).toBe(1);
+    expect(output).toContain("running");
+    expect(output).toContain("completed");
+    expect(output).toContain("failed");
+    expect(output).toContain("› wrote tests");
+    expect(output.match(/›/gu) ?? []).toHaveLength(1);
   });
 
-  it("surfaces stopped lifecycle states in text", async () => {
-    const killed = await renderRailAnsi([
-      agentTask("agent-killed", "killed", { description: "stopped", startTime: 1_000 }),
-    ]);
-    expect(killed).toContain("killed");
+  it("surfaces approval as 'needs you' and pauses the activity scan", async () => {
+    const output = (await renderAgentsRail({
+      tasks: [
+        agentTask("agent-wait", "running", {
+          description: "awaiting decision",
+          pendingApproval: true,
+          startTime: Date.now(),
+        }),
+      ],
+      width: 48,
+    })).output;
+
+    expect(output).toContain("needs you");
+    expect(output).not.toMatch(/[◆◇]/u);
   });
 
   it("labels rows with the friendly title (+ role), never the raw prompt", async () => {

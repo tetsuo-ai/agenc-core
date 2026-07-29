@@ -215,6 +215,8 @@ describe("workbench transcript scroll ownership", () => {
       );
 
       expect(scrollRef.current).not.toBeNull();
+      // The status bar identifies the Workbench; the transcript surface does
+      // not repeat a standalone TRANSCRIPT heading.
       expect(output()).not.toContain("TRANSCRIPT");
       expect(output()).toContain("workbench-scroll-anchor");
       expect(output()).toContain("composer-anchor");
@@ -270,7 +272,9 @@ describe("workbench transcript scroll ownership", () => {
       );
 
       expect(output()).toContain("modal-transcript-anchor");
-      expect(output()).toContain("modal-composer-anchor");
+      // On a 12-row viewport the opaque modal owns the bottom slot and may
+      // cover the inactive composer; the transcript remains visible above it.
+      expect(output()).not.toContain("modal-composer-anchor");
       expect(output()).toContain("modal-size-6x94-ref-ok");
     } finally {
       root.unmount();

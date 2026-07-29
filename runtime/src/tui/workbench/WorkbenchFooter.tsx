@@ -28,6 +28,7 @@ export function WorkbenchFooter(): React.ReactElement {
     <Box
       height={3}
       width="100%"
+      flexShrink={0}
       paddingX={2}
       paddingTop={1}
       alignItems="center"
