@@ -305,7 +305,7 @@ export const ledgerCommand: SlashCommand = {
   name: "ledger",
   aliases: ["wallet"],
   description:
-    "Ledger wallet · session, balances, receive, send, swap and earn",
+    "Ledger wallet · balances, receive, send, swap and earn",
   argumentHint:
     "[status|install|session|discover|balances|operations|receive|send|swap|earn|ring|help]",
   immediate: true,

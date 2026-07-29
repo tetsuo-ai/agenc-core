@@ -415,10 +415,9 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
     expect(findText(flat, "F....")).toBe(true);
 
     // The elision reports the HIDDEN MIDDLE count: 11 lines, 2 head + 3 tail
-    // visible → 11 - 5 = 6 hidden. The marker now also advertises the
-    // "view full output" affordance (the hidden lines are reachable by
-    // expanding the transcript), so it is no longer a dead end.
-    expect(findMore(flat)).toBe("… +6 lines · ctrl+o for full output");
+    // visible → 11 - 5 = 6 hidden. Transcript expansion lives in the
+    // persistent workbench footer, so this inline marker stays compact.
+    expect(findMore(flat)).toBe("… +6 lines");
   });
 
   test("STDOUT failure path: the bottom EXCEPTION line survives when it is the last line", () => {
@@ -432,9 +431,8 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
     expect(findText(flat, "ZeroDivisionError: division by zero")).toBe(true);
     // Head context preserved too.
     expect(findText(flat, "starting computation")).toBe(true);
-    // 8 lines, 2 head + 3 tail → 8 - 5 = 3 hidden. Marker carries the
-    // "view full output" affordance.
-    expect(findMore(flat)).toBe("… +3 lines · ctrl+o for full output");
+    // 8 lines, 2 head + 3 tail → 8 - 5 = 3 hidden.
+    expect(findMore(flat)).toBe("… +3 lines");
   });
 
   test("STDERR envelope path: traceback verdict survives the red cap", () => {
@@ -456,9 +454,8 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
     expect(verdict).toBeDefined();
     expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(true);
 
-    // The stderr elision count is correct (same 11-line body → 6 hidden), and
-    // the marker advertises the "view full output" affordance.
-    expect(findMore(flat)).toBe("… +6 lines · ctrl+o for full output");
+    // The stderr elision count is correct (same 11-line body → 6 hidden).
+    expect(findMore(flat)).toBe("… +6 lines");
   });
 
   test("SUCCESS path is unchanged: head-only cap, trailing lines truncated away", () => {
@@ -478,28 +475,23 @@ describe("BashOutputView — failure cap keeps the trailing verdict/exception (h
     // ...and the trailing verdict is truncated away (head-only, unchanged).
     expect(findText(flat, "FAILED (failures=1)")).toBe(false);
     expect(findText(flat, "Ran 5 tests in 0.001s")).toBe(false);
-    // Head-only elision: 11 - 5 = 6 remaining, with the "view full output"
-    // affordance on the marker.
-    expect(findMore(flat)).toBe("… +6 lines · ctrl+o for full output");
+    // Head-only elision: 11 - 5 = 6 remaining.
+    expect(findMore(flat)).toBe("… +6 lines");
   });
 });
 
 /**
- * "view full output" affordance: a capped command output used to be a DEAD END
- * — the hidden lines were unreachable, unlike the Edit DIFF card whose collapsed
- * `… +N more · ctrl+w d for full diff` marker reaches the full diff. The
- * `… +K lines` marker now advertises the existing transcript-expand mechanism
- * (`app:toggleTranscript`, default `ctrl+o`), and when the transcript is
- * expanded the `verbose` prop (already plumbed in from `UserToolSuccessMessage`)
- * lifts the cap so the FULL output is reachable and scrollable.
+ * Capped output remains reachable through the workbench's persistent
+ * transcript-expand control. The inline `… +K lines` marker stays concise
+ * because repeating the same shortcut on every truncated message adds noise.
+ * When the transcript is expanded, the `verbose` prop (already plumbed in from
+ * `UserToolSuccessMessage`) lifts the cap so the full output is scrollable.
  *
- * REVERT-SENSITIVITY: against the pre-fix renderer the marker was bare
- * `… +K lines` (no affordance) and `verbose` was ignored (`_verbose`), so the
- * "advertises the affordance" and "verbose lifts the cap" assertions go RED. The
- * "absent when not truncated" assertion holds both before and after (it pins
- * that the hint is gated on actual truncation, never shown spuriously).
+ * The compact-marker assertion guards the workbench polish that moved shortcut
+ * discovery into the footer. The expansion assertions keep the hidden output
+ * reachable and catch any regression that ignores `verbose`.
  */
-describe("BashOutputView — view-full-output affordance", () => {
+describe("BashOutputView — compact marker and transcript expansion", () => {
   const allTexts = (node: unknown): string[] =>
     flattenBash(node)
       .map((child) => child.props?.children)
@@ -508,18 +500,16 @@ describe("BashOutputView — view-full-output affordance", () => {
   const findMoreLine = (node: unknown): string | undefined =>
     allTexts(node).find((text) => text.startsWith("… +"));
 
-  test("a truncated success output marker advertises the full-output affordance", () => {
-    // 12 lines, exit 0 → head-only cap → 7 hidden. The marker now carries the
-    // affordance hint that points at the transcript-expand shortcut.
+  test("a truncated success output marker stays compact", () => {
+    // 12 lines, exit 0 → head-only cap → 7 hidden. The persistent footer owns
+    // the transcript-expand shortcut, so the message does not repeat it.
     const body = Array.from({ length: 12 }, (_, i) => `row-${i + 1}`).join("\n");
     const node = BashOutputView({
       content: `<bash-stdout>${body}</bash-stdout>[exit_code=0]`,
     });
     const more = findMoreLine(node);
-    expect(more).toBe("… +7 lines · ctrl+o for full output");
-    // Honors the configured shortcut for app:toggleTranscript (default ctrl+o).
-    expect(more).toContain("ctrl+o");
-    expect(more).toContain("for full output");
+    expect(more).toBe("… +7 lines");
+    expect(more).not.toContain("for full output");
   });
 
   test("the affordance is ABSENT when the output is not truncated (K === 0)", () => {

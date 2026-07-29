@@ -1,28 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { nextAgentSelectionId } from "../../../../src/tui/workbench/agents/AgentsRail.js";
 
-// M-TUI-9 (core-todo.md): arrow-nav walked the flat task list while the rail
-// renders two partitioned sections (active, then background). For
-// [A running, B completed, C running] the UI shows active [A, C] then
-// background [B], yet ↓ from A highlighted B (flat order) — skipping C and
-// jumping sections. Navigation must follow the rendered (partitioned) order,
-// and an unkeyed target must not dispatch taskId: undefined.
+// The current rail deliberately keeps rows in stable first-seen order instead
+// of moving them when an agent changes lifecycle state. Arrow navigation must
+// follow that same rendered order, and an unkeyed target must not dispatch
+// taskId: undefined.
 
 const A = { id: "A", status: "running" };
 const B = { id: "B", status: "completed" };
 const C = { id: "C", status: "running" };
-const taskList = [A, B, C]; // flat order: A, B, C — rendered order: A, C, B
+const taskList = [A, B, C]; // stable rendered order: A, B, C
 
-describe("AgentsRail nextAgentSelectionId — follows rendered order", () => {
-  it("↓ from an active row lands on the next active row, not the background one", () => {
-    // Rendered order is [A, C, B]; ↓ from A must be C (flat order would give B).
-    expect(nextAgentSelectionId(taskList, "A", 1)).toBe("C");
-    expect(nextAgentSelectionId(taskList, "C", 1)).toBe("B");
+describe("AgentsRail nextAgentSelectionId — follows stable rendered order", () => {
+  it("↓ lands on the immediately following rendered row", () => {
+    expect(nextAgentSelectionId(taskList, "A", 1)).toBe("B");
+    expect(nextAgentSelectionId(taskList, "B", 1)).toBe("C");
   });
 
   it("wraps around the rendered order in both directions", () => {
-    expect(nextAgentSelectionId(taskList, "B", 1)).toBe("A"); // wrap forward
-    expect(nextAgentSelectionId(taskList, "A", -1)).toBe("B"); // wrap backward
+    expect(nextAgentSelectionId(taskList, "C", 1)).toBe("A"); // wrap forward
+    expect(nextAgentSelectionId(taskList, "A", -1)).toBe("C"); // wrap backward
   });
 
   it("returns null for an empty list", () => {
@@ -36,7 +33,7 @@ describe("AgentsRail nextAgentSelectionId — follows rendered order", () => {
   });
 
   it("starts from the top of the rendered order when nothing is selected", () => {
-    // selectedId null -> base index 0 (A); +1 -> C in rendered order.
-    expect(nextAgentSelectionId(taskList, null, 1)).toBe("C");
+    // selectedId null -> base index 0 (A); +1 -> B in rendered order.
+    expect(nextAgentSelectionId(taskList, null, 1)).toBe("B");
   });
 });

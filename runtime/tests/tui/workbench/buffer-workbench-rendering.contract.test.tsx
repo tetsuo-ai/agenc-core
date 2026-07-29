@@ -284,7 +284,7 @@ describe("BUFFER workbench rendering", () => {
     expect(output).not.toContain("BUFFER_LINE_TAIL_SHOULD_NOT_RENDER");
     expect(output).not.toContain("COMMAND_TAIL_SHOULD_NOT_RENDER");
     expect(allRenderedLinesFit(output, 148)).toBe(true);
-    expect(provider.resize).toHaveBeenLastCalledWith({ rows: 16, columns: 89 });
+    expect(provider.resize).toHaveBeenLastCalledWith({ rows: 14, columns: 89 });
   });
 
   it("handles narrow and short workbench terminals without overlapping panes", async () => {
