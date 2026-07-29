@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import * as path from 'path';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useContentWidth } from '../../context/contentWidthContext.js';
 import { useNotifications } from '../../context/notifications.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import { type IDEAtMentioned, useIdeAtMentioned } from '../../hooks/useIdeAtMentioned.js';
@@ -104,9 +105,14 @@ import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
 import { materializeAttachmentMentions } from '../../workbench/commands.js';
+import {
+  capturedAttachmentsToPastedContents,
+  isCapturedWorkbenchAttachment,
+} from '../../workbench/capturedAttachments.js';
 import { useWorkbenchComposerFocus } from '../../workbench/composerFocusContext.js';
 import { composerAttachmentsForState } from '../../workbench/reducer.js';
 import { applyWorkbenchCommand, isWorkbenchEnabled } from '../../workbench/state.js';
+import type { WorkbenchAttachment } from '../../workbench/types.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksPanel } from '../tasks/BackgroundTasksPanel.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
@@ -124,7 +130,7 @@ import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
-import { clampPromptTextInputColumns, isNonSpacePrintable, isVimModeEnabled, pasteReferenceLineThreshold } from './utils.js';
+import { clampPromptTextInputColumns, clampWorkbenchPromptTextInputColumns, isNonSpacePrintable, isVimModeEnabled, pasteReferenceLineThreshold } from './utils.js';
 
 type PromptSuggestionHookProps = {
   inputValue: string;
@@ -427,6 +433,8 @@ type Props = {
     // still threaded through for future modes (e.g. memory) that
     // downstream callers may need to branch on.
     mode?: PromptInputMode;
+    /** Exact live-editor captures admitted through the normal paste channel. */
+    pastedContentsOverride?: Record<number, PastedContent>;
   }) => Promise<void>;
   onAgentSubmit?: (input: string, task: InProcessTeammateTaskState | LocalAgentTaskState, helpers: PromptInputHelpers) => Promise<void>;
   isSearchingHistory: boolean;
@@ -656,6 +664,31 @@ function PromptInput({
   );
   const store = useAppStateStore();
   const setAppState = useSetAppState();
+  const composerWorkbenchState = useAppState(s => s.workbench);
+  const renderedWorkbenchAttachments = useMemo(
+    () => composerWorkbenchState
+      ? composerAttachmentsForState(composerWorkbenchState)
+      : [],
+    [composerWorkbenchState],
+  );
+  const composerDraftRequest = composerWorkbenchState?.composerDraftRequest ?? null;
+  useEffect(() => {
+    if (composerDraftRequest === null) return;
+    const current = lastInternalInputRef.current;
+    const separator = current.trim().length > 0 ? "\n\n" : "";
+    const next = `${current}${separator}${composerDraftRequest.text}`;
+    trackAndSetInput(next);
+    setCurrentCursorOffset(next.length);
+    setAppState(prev => applyWorkbenchCommand(prev, {
+      type: "acknowledgeComposerDraft",
+      id: composerDraftRequest.id,
+    }));
+  }, [
+    composerDraftRequest,
+    setAppState,
+    setCurrentCursorOffset,
+    trackAndSetInput,
+  ]);
   const tasks = useAppState(s => s.tasks);
   const teamContext = useAppState(s => s.teamContext);
   const swarmMode = useAppState(s => s.swarmMode === true);
@@ -1438,11 +1471,26 @@ function PromptInput({
     const submitInput = hasWorkbenchAttachments
       ? materializeAttachmentMentions(inputParam, workbenchAttachments)
       : inputParam;
+    const capturedPastedContents = capturedAttachmentsToPastedContents(
+      workbenchAttachments,
+      allocatePasteId,
+    );
+    const hasCapturedAttachments =
+      Object.keys(capturedPastedContents).length > 0;
+    const submissionPastedContents = hasCapturedAttachments
+      ? { ...pastedContentsRef.current, ...capturedPastedContents }
+      : pastedContentsRef.current;
 
     // Route input to viewed agent (in-process teammate or named local_agent).
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
-      await onAgentSubmit(submitInput, activeAgent.task, {
+      const agentSubmitInput = hasCapturedAttachments
+        ? `${submitInput}\n\n${Object.values(capturedPastedContents)
+            .sort((a, b) => a.id - b.id)
+            .map(item => item.content)
+            .join("\n\n")}`
+        : submitInput;
+      await onAgentSubmit(agentSubmitInput, activeAgent.task, {
         setCursorOffset: setCurrentCursorOffset,
         clearBuffer,
         resetHistory
@@ -1546,7 +1594,10 @@ function PromptInput({
         enabled: isVimModeEnabled(),
         mode: vimMode,
         keys: []
-      }
+      },
+      ...(hasCapturedAttachments
+        ? { pastedContentsOverride: submissionPastedContents }
+        : {}),
     });
     if (hasWorkbenchAttachments) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
@@ -2413,6 +2464,27 @@ function PromptInput({
     const currentInput = lastInternalInputRef.current;
     const currentOffset = cursorOffsetRef.current;
 
+    // When the text composer is empty, Backspace removes the most recently
+    // attached workbench context chip. Keep this in the keyboard handler:
+    // insertTextAtCursor is also used by paste, quick-open, IDE, and editor
+    // callbacks, none of which have a key event.
+    if (
+      currentInput.length === 0 &&
+      key.backspace &&
+      renderedWorkbenchAttachments.length > 0
+    ) {
+      const lastAttachment =
+        renderedWorkbenchAttachments[renderedWorkbenchAttachments.length - 1];
+      if (lastAttachment) {
+        setAppState(prev => applyWorkbenchCommand(prev, {
+          type: "removeAttachment",
+          id: lastAttachment.id,
+        }));
+        event.stopImmediatePropagation();
+        return;
+      }
+    }
+
     // Type-to-exit footer: printable chars while a pill is selected refocus
     // the input and type the char. Nav keys are captured by useKeybindings
     // above, so anything reaching here is genuinely not a footer action.
@@ -2510,7 +2582,27 @@ function PromptInput({
     columns,
     rows
   } = useTerminalSize();
-  const textInputColumns = clampPromptTextInputColumns(columns);
+  const workbenchFrameColumns = useContentWidth();
+  const promptGlyphs = selectAgenCTuiGlyphs();
+  const workbenchPermissionLabel =
+    effectiveToolPermissionContext.mode === "bypassPermissions"
+      ? "YOLO"
+      : permissionModeShortTitle(effectiveToolPermissionContext.mode).toUpperCase();
+  const workbenchPromptGlyph =
+    viewingAgentName || mode !== "bash"
+      ? effectiveToolPermissionContext.mode === "bypassPermissions"
+        ? promptGlyphs.promptBypass
+        : promptGlyphs.pointer
+      : "!";
+  const textInputColumns =
+    isWorkbenchComposer && workbenchFrameColumns !== null
+      ? clampWorkbenchPromptTextInputColumns(
+          workbenchFrameColumns,
+          workbenchPermissionLabel,
+          workbenchPromptGlyph,
+          swarmMode,
+        )
+      : clampPromptTextInputColumns(columns);
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen TUI.
@@ -2781,7 +2873,6 @@ function PromptInput({
       </Box>;
   }
   const textInputElement = <ConfiguredPromptTextInput baseProps={baseProps} vimMode={vimMode} onVimModeChange={setVimMode} />;
-  const promptGlyphs = selectAgenCTuiGlyphs();
   return <Box
       flexDirection="column"
       marginTop={isWorkbenchComposer || briefOwnsGap ? 0 : 1}
@@ -2794,6 +2885,17 @@ function PromptInput({
           <Text dimColor>Waiting for permission…</Text>
         </Box>}
       <PromptInputStashNotice hasStash={stashedPrompt !== undefined} />
+      {renderedWorkbenchAttachments.length > 0 ? (
+        <WorkbenchAttachmentChips
+          attachments={renderedWorkbenchAttachments}
+          onRemove={(id) => {
+            setAppState(prev => applyWorkbenchCommand(prev, {
+              type: "removeAttachment",
+              id,
+            }));
+          }}
+        />
+      ) : null}
       {swarmBanner ? <>
           <Text color={swarmBanner.bgColor}>
             {swarmBanner.text ? <>
@@ -2826,11 +2928,7 @@ function PromptInput({
           {isWorkbenchComposer ? (
             <>
               <Text color="inverseText" backgroundColor="text" bold>
-                {` ${
-                  effectiveToolPermissionContext.mode === "bypassPermissions"
-                    ? "YOLO"
-                    : permissionModeShortTitle(effectiveToolPermissionContext.mode).toUpperCase()
-                } `}
+                {` ${workbenchPermissionLabel} `}
               </Text>
               {swarmMode ? (
                 <>
@@ -2855,7 +2953,7 @@ function PromptInput({
           via its own early return. */}
       {onboardingInput !== undefined ? <Box paddingX={2}>
           <Text dimColor>{onboardingInput.footerHint}</Text>
-        </Box> : isWorkbenchComposer && suggestions.length === 0 && !helpOpen ? null : <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />}
+        </Box> : isWorkbenchComposer && suggestions.length === 0 && !helpOpen && !exitMessage.show ? null : <PromptInputFooter apiKeyStatus={apiKeyStatus} agencHome={agencHome} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} suggestionType={suggestionType} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />}
       {onboardingInput !== undefined || isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {onboardingInput === undefined && isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner
@@ -2952,4 +3050,46 @@ function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastM
     offset: 0
   };
 }
+
+function WorkbenchAttachmentChips({
+  attachments,
+  onRemove,
+}: {
+  readonly attachments: readonly WorkbenchAttachment[];
+  readonly onRemove: (id: string) => void;
+}): React.ReactElement {
+  return (
+    <Box
+      flexDirection="row"
+      flexWrap="wrap"
+      paddingX={2}
+      columnGap={1}
+      backgroundColor="surfaceBackground"
+    >
+      {attachments.map((attachment) => {
+        const captured = isCapturedWorkbenchAttachment(attachment);
+        const suffix = captured && attachment.dirty
+          ? " · unsaved snapshot"
+          : captured
+            ? " · editor snapshot"
+            : "";
+        return (
+          <Box
+            key={attachment.id}
+            flexShrink={1}
+            onClick={(event) => {
+              event.stopImmediatePropagation();
+              onRemove(attachment.id);
+            }}
+          >
+            <Text color={captured ? "suggestion" : "inactive"} wrap="truncate-end">
+              {`[${attachment.label}${suffix} ×]`}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
 export default React.memo(PromptInput);

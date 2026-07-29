@@ -25,6 +25,11 @@ export function setPendingResumeSessionId(sessionId: string): void {
   pendingResumeSessionId = sessionId;
 }
 
+/** Clear any previously staged resume so a plain exit cannot inherit it. */
+export function clearPendingResumeSessionId(): void {
+  pendingResumeSessionId = null;
+}
+
 /**
  * Read and clear the pending resume id. Returns `null` when no resume was
  * requested. The consume-once semantics ensure a second boot does not
@@ -38,5 +43,5 @@ export function consumePendingResumeSessionId(): string | null {
 
 /** Test-only reset so the module-level slot does not leak across cases. */
 export function resetPendingResumeSessionIdForTestingOnly(): void {
-  pendingResumeSessionId = null;
+  clearPendingResumeSessionId();
 }

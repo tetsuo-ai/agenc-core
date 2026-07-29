@@ -1,5 +1,6 @@
 import type { SearchMatch, WorkbenchAttachment, WorkbenchCommand } from "./types.js";
 import { normalizeWorkspacePathForReferences } from "./pathReferences.js";
+import type { BufferIntegrationIntent } from "./buffer/providers/types.js";
 
 export function openPreviewCommand(
   path: string,
@@ -152,6 +153,11 @@ export function attachmentPromptMention(attachment: WorkbenchAttachment): string
     case "diff-hunk":
     case "task-error":
       return `@${path}${attachment.line ? `#L${attachment.line}` : ""}`;
+    case "editor-selection":
+    case "editor-diagnostic":
+      // These carry an exact live-buffer snapshot. Turning them into @path
+      // would make a dirty selection silently resolve to stale disk bytes.
+      return null;
   }
 }
 
@@ -168,6 +174,77 @@ export function materializeAttachmentMentions(
     );
   if (mentions.length === 0) return input;
   return `${mentions.join(" ")}\n\n${input}`;
+}
+
+export function bufferIntegrationIntentCommand(
+  intent: BufferIntegrationIntent,
+): WorkbenchCommand {
+  const context = intent.context;
+  const path = normalizeCommandPath(context.path);
+  const displayPath = path || "[No Name]";
+  const attachmentIdentity = path || `buffer-${context.bufferHandle}`;
+  const startLine = Math.max(1, context.range.start.line);
+  const endLine = Math.max(startLine, context.range.end.line);
+  const kind = context.kind === "diagnostic"
+    ? "editor-diagnostic"
+    : "editor-selection";
+  const attachment: WorkbenchAttachment = {
+    id: [
+      kind,
+      attachmentIdentity,
+      `${startLine}:${Math.max(0, context.range.start.column)}`,
+      `${endLine}:${Math.max(0, context.range.end.column)}`,
+      context.changedtick,
+    ].join(":"),
+    kind,
+    label: `${displayPath}:${startLine}${endLine === startLine ? "" : `-${endLine}`}`,
+    ...(path ? { path } : {}),
+    line: startLine,
+    endLine,
+    startColumn: Math.max(0, context.range.start.column),
+    endColumn: Math.max(0, context.range.end.column),
+    content: context.content,
+    dirty: context.dirty,
+    selectionMode: context.selectionMode,
+    changedtick: context.changedtick,
+    diagnostic: context.diagnostic
+      ? {
+          message: context.diagnostic.message,
+          ...(context.diagnostic.severity !== null
+            ? { severity: String(context.diagnostic.severity) }
+            : {}),
+          ...(context.diagnostic.source
+            ? { source: context.diagnostic.source }
+            : {}),
+          ...(context.diagnostic.code !== undefined
+            ? { code: String(context.diagnostic.code) }
+            : {}),
+        }
+      : undefined,
+  };
+  return {
+    type: "handoffToComposer",
+    attachment,
+    draftText: integrationDraft(intent),
+    openTranscriptRail: intent.kind !== "attach",
+  };
+}
+
+function integrationDraft(intent: BufferIntegrationIntent): string | undefined {
+  const explicit = intent.prompt?.trim();
+  if (explicit) return explicit;
+  switch (intent.kind) {
+    case "attach":
+      return undefined;
+    case "ask":
+      return undefined;
+    case "fix":
+      return "Fix the attached issue.";
+    case "explain":
+      return "Explain the attached code.";
+    case "review":
+      return "Review the attached editor context.";
+  }
 }
 
 function normalizeCommandPath(path: string): string {

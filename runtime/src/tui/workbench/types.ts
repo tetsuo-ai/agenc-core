@@ -2,6 +2,12 @@ export const WORKBENCH_ENV_VAR = "AGENC_TUI_WORKBENCH";
 
 export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer" | "rail";
 
+export type WorkbenchRail =
+  | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "transcript" }
+  | { readonly kind: "change-review"; readonly changeId: string }
+  | null;
+
 export type ActiveSurfaceMode =
   | "transcript"
   | "preview"
@@ -17,7 +23,9 @@ export type WorkbenchAttachmentKind =
   | "file-range"
   | "search-result"
   | "diff-hunk"
-  | "task-error";
+  | "task-error"
+  | "editor-selection"
+  | "editor-diagnostic";
 
 export type WorkbenchAttachment = {
   readonly id: string;
@@ -28,11 +36,60 @@ export type WorkbenchAttachment = {
   readonly endLine?: number;
   readonly query?: string;
   readonly taskId?: string;
+  /** Exact bounded snapshot captured from a live editor buffer. */
+  readonly content?: string;
+  readonly dirty?: boolean;
+  readonly startColumn?: number;
+  readonly endColumn?: number;
+  readonly selectionMode?: "character" | "line" | "block";
+  readonly changedtick?: number;
+  readonly diagnostic?: {
+    readonly message: string;
+    readonly severity?: string;
+    readonly source?: string;
+    readonly code?: string;
+  };
 };
+
+export type WorkbenchSurfaceLeaveCommand =
+  | { readonly type: "openSurface"; readonly mode: ActiveSurfaceMode }
+  | { readonly type: "openPreview"; readonly path: string; readonly line?: number; readonly focus?: boolean }
+  | { readonly type: "openSearch"; readonly query?: string; readonly selectedMatchId?: string | null }
+  | { readonly type: "openDiff"; readonly diffId?: string | null; readonly focus?: boolean }
+  | { readonly type: "openShell"; readonly taskId: string; readonly focus?: boolean }
+  | { readonly type: "openAgent"; readonly taskId: string; readonly focus?: boolean }
+  | { readonly type: "closeSurface" }
+  /**
+   * Atomic ctrl+r handoff: show `path` in the file rail, return the center to
+   * the transcript, and focus the composer. Keeping this as one surface-leave
+   * command lets the dirty-buffer guard defer or cancel the entire transition.
+   */
+  | { readonly type: "moveFileToRail"; readonly path: string }
+  | {
+      readonly type: "requestProjectPathRename";
+      readonly fromPath: string;
+      readonly toPath: string;
+    }
+  | { readonly type: "requestProjectPathDelete"; readonly path: string }
+  | { readonly type: "requestAppExit"; readonly resumeSessionId?: string }
+  | {
+      readonly type: "deletePathReferences";
+      readonly path: string;
+      readonly closeAffectedSurface?: boolean;
+    };
 
 export type WorkbenchBlockedOverlay =
   | null
-  | { readonly kind: "approval"; readonly requestId: string; readonly attemptedAction: string };
+  | {
+      readonly kind: "buffer-dirty";
+      readonly requestId: string;
+      readonly attemptedAction: string;
+      /**
+       * The exact navigation command that was stopped. It is replayed only
+       * after the user has saved or explicitly discarded every dirty buffer.
+       */
+      readonly deferredCommand: WorkbenchSurfaceLeaveCommand;
+    };
 
 export type WorkbenchState = {
   readonly focusedPane: WorkbenchPane;
@@ -50,45 +107,73 @@ export type WorkbenchState = {
   readonly composerAttachmentIds: readonly string[];
   readonly attachments: readonly WorkbenchAttachment[];
   readonly pendingBlockedOverlay: WorkbenchBlockedOverlay;
+  readonly composerDraftRequest: {
+    readonly id: number;
+    readonly text: string;
+  } | null;
+  /** Temporarily gives the center surface the whole workbench viewport. */
+  readonly surfaceMaximized: boolean;
+  /** Optional sidecar/drawer that remains independent from the center surface. */
+  readonly rail: WorkbenchRail;
   /**
-   * File shown in the right-hand review rail (ctrl+r): the chat stays in the
-   * center pane while the user scrolls/reviews the file beside it. Null when
-   * the rail is closed. Independent from the center surface, so toggling the
-   * rail never navigates away from the transcript.
+   * Monotonic handoff from the pure workbench reducer to the application
+   * shell. Exiting is a surface-leave operation so dirty buffers can defer it
+   * through the same Save All / Discard All / Cancel transaction.
    */
-  readonly fileRailPath: string | null;
+  readonly appExitRequestId: number;
+  readonly appExitResumeSessionId: string | null;
+  readonly projectPathMutationRequestId: number;
+  readonly projectPathMutationRequest:
+    | {
+        readonly id: number;
+        readonly kind: "rename";
+        readonly fromPath: string;
+        readonly toPath: string;
+      }
+    | {
+        readonly id: number;
+        readonly kind: "delete";
+        readonly path: string;
+      }
+    | null;
 };
 
 export type WorkbenchCommand =
   | { readonly type: "focus"; readonly pane: WorkbenchPane }
   | { readonly type: "focusNext"; readonly visiblePanes: readonly WorkbenchPane[] }
-  | { readonly type: "openSurface"; readonly mode: ActiveSurfaceMode }
-  | { readonly type: "openPreview"; readonly path: string; readonly line?: number; readonly focus?: boolean }
+  | WorkbenchSurfaceLeaveCommand
   | { readonly type: "openBuffer"; readonly path: string; readonly line?: number; readonly focus?: boolean }
-  | { readonly type: "openSearch"; readonly query?: string; readonly selectedMatchId?: string | null }
-  | { readonly type: "openDiff"; readonly diffId?: string | null; readonly focus?: boolean }
-  | { readonly type: "openShell"; readonly taskId: string; readonly focus?: boolean }
-  | { readonly type: "openAgent"; readonly taskId: string; readonly focus?: boolean }
+  | { readonly type: "syncBufferPath"; readonly path: string; readonly line?: number }
   | { readonly type: "selectAgent"; readonly taskId: string | null }
-  | { readonly type: "closeSurface" }
   | {
       readonly type: "renamePathReferences";
       readonly fromPath: string;
       readonly toPath: string;
       readonly openAffectedBuffer?: boolean;
     }
-  | {
-      readonly type: "deletePathReferences";
-      readonly path: string;
-      readonly closeAffectedSurface?: boolean;
-    }
   | { readonly type: "toggleExplorer"; readonly visible?: boolean }
   | { readonly type: "toggleAgents"; readonly visible?: boolean }
+  | { readonly type: "toggleSurfaceMaximized"; readonly maximized?: boolean }
   | { readonly type: "attach"; readonly attachment: WorkbenchAttachment }
   | { readonly type: "removeAttachment"; readonly id: string }
   | { readonly type: "clearAttachments" }
-  | { readonly type: "blockForApproval"; readonly requestId: string; readonly attemptedAction: string }
+  | {
+      readonly type: "handoffToComposer";
+      readonly attachment: WorkbenchAttachment;
+      readonly draftText?: string;
+      readonly openTranscriptRail?: boolean;
+    }
+  | { readonly type: "acknowledgeComposerDraft"; readonly id: number }
+  | {
+      readonly type: "blockForApproval";
+      readonly requestId: string;
+      readonly attemptedAction: string;
+      readonly deferredCommand: WorkbenchSurfaceLeaveCommand;
+    }
   | { readonly type: "clearBlockedOverlay" }
+  | { readonly type: "resolveBlockedOverlay"; readonly requestId: string }
+  | { readonly type: "completeProjectPathMutation"; readonly requestId: number }
+  | { readonly type: "setRail"; readonly rail: WorkbenchRail }
   /**
    * Toggle the right-hand review rail (ctrl+r). `path` opens the rail with
    * that file; omitted `path` closes it. Opening never moves focus away from

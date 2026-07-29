@@ -14,7 +14,10 @@ import {
   join,
 } from "node:path";
 
-import type { Personality } from "./schema.js";
+import type {
+  BufferConfig,
+  Personality,
+} from "./schema.js";
 import { readTextFile } from "./_deps/file-read.js";
 import {
   cloneRecord,
@@ -141,6 +144,36 @@ export class AgenCConfigEditsBuilder {
       } else {
         raw.personality = personality;
       }
+    });
+    return this;
+  }
+
+  setBufferEditorConfig(config: BufferConfig): this {
+    this.edits.push((raw) => {
+      const buffer: JsonRecord = {};
+      if (config.provider !== undefined) buffer.provider = config.provider;
+      if (config.show_tabs !== undefined) buffer.show_tabs = config.show_tabs;
+      if (config.neovim !== undefined) {
+        const neovim: JsonRecord = {};
+        if (config.neovim.executable !== undefined) {
+          neovim.executable = config.neovim.executable;
+        }
+        if (config.neovim.init !== undefined) neovim.init = config.neovim.init;
+        if (config.neovim.discovery_timeout_ms !== undefined) {
+          neovim.discovery_timeout_ms = config.neovim.discovery_timeout_ms;
+        }
+        if (config.neovim.startup_timeout_ms !== undefined) {
+          neovim.startup_timeout_ms = config.neovim.startup_timeout_ms;
+        }
+        if (config.neovim.operation_timeout_ms !== undefined) {
+          neovim.operation_timeout_ms = config.neovim.operation_timeout_ms;
+        }
+        if (config.neovim.cleanup_timeout_ms !== undefined) {
+          neovim.cleanup_timeout_ms = config.neovim.cleanup_timeout_ms;
+        }
+        if (Object.keys(neovim).length > 0) buffer.neovim = neovim;
+      }
+      raw.buffer = buffer;
     });
     return this;
   }

@@ -225,6 +225,57 @@ describe("KeybindingProviderSetup", () => {
     expect(event.stopped).toBe(true);
   });
 
+  test("runs Modal captures before keybindings and earlier ordinary captures", () => {
+    const save = vi.fn();
+    const bufferCapture = vi.fn(() => true);
+    const modalCapture = vi.fn(() => true);
+    const setPendingChord = vi.fn();
+    const handler = createChordInputHandler({
+      bindings: parseBindings(DEFAULT_BINDINGS),
+      pendingChordRef: {
+        current: [{
+          key: "x",
+          ctrl: true,
+          alt: false,
+          shift: false,
+          meta: false,
+          super: false,
+        }],
+      },
+      setPendingChord,
+      activeContexts: new Set(["Buffer", "Modal"]),
+      handlerRegistryRef: {
+        current: new Map([
+          [
+            "buffer:save",
+            new Set([
+              {
+                action: "buffer:save",
+                context: "Buffer",
+                handler: save,
+              },
+            ]),
+          ],
+        ]),
+      },
+      inputCaptureRegistryRef: {
+        current: new Set([
+          { context: "Buffer", handler: bufferCapture },
+          { context: "Modal", handler: modalCapture },
+        ]),
+      },
+    });
+    const event = inputEvent();
+
+    handler("s", key({ ctrl: true }), event);
+
+    expect(modalCapture).toHaveBeenCalledOnce();
+    expect(setPendingChord).toHaveBeenCalledWith(null);
+    expect(save).not.toHaveBeenCalled();
+    expect(bufferCapture).not.toHaveBeenCalled();
+    expect(event.stopped).toBe(true);
+  });
+
   test("runs registered input captures even when their context is not separately active", () => {
     const bindings = parseBindings(DEFAULT_BINDINGS);
     const pendingChordRef = { current: null as ParsedKeystroke[] | null };

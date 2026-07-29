@@ -50,7 +50,7 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(killCleanup).toContain("TUI-killed embedded Neovim");
     expect(runtimeExit).toContain("jklh");
     expect(runtimeExit).toContain("normal-mode movement keys modified the file");
-    expect(runtimeExit).toContain("Workbench transcript after embedded Neovim :q!");
+    expect(runtimeExit).toContain("Workbench composer after embedded Neovim :q!");
     expect(runtimeExit).toContain("Workbench stayed on BUFFER after embedded Neovim :q!");
     expect(visualRender).toContain("visible selection highlight");
     expect(visualRender).toContain("visualChunk");
@@ -73,7 +73,7 @@ describe("embedded Neovim BUFFER PTY gate files", () => {
     expect(helpers).toContain("ps");
     expect(wrapper).toContain("workbench-buffer-neovim");
     expect(visualSmoke).toContain("AGENC_OAUTH_TOKEN");
-    expect(visualSmoke).toContain("AgenC Workbench");
+    expect(visualSmoke).toContain('["WORKBENCH"]');
     expect(visualSmoke).toContain("WORKSPA");
   });
 });

@@ -47,43 +47,36 @@ export function BufferLine({
 export function NeovimGridView({
   terminal,
   focused,
-  width,
 }: {
   readonly terminal: NeovimRenderSnapshot;
   readonly focused: boolean;
-  readonly width: number;
 }): React.ReactElement {
-  const maxWidth = Math.max(1, width);
-  const terminalLines = terminalAnsiLines(terminal, focused, maxWidth);
-  return (
-    <>
-      <RawAnsi lines={terminalLines} width={maxWidth} />
-      {terminal.messages.map((message, index) => (
-        <Box key={`message-${index}`} height={1}>
-          <Text color="warning" wrap="truncate-end">{truncateByWidth(message, maxWidth)}</Text>
-        </Box>
-      ))}
-      {terminal.popupMenu ? (
-        <Box height={1}>
-          <Text color="suggestion" wrap="truncate-end">
-            {truncateByWidth(terminal.popupMenu.items.join("  "), maxWidth)}
-          </Text>
-        </Box>
-      ) : null}
-    </>
-  );
+  const gridWidth = Math.max(1, terminal.columns);
+  return <RawAnsi lines={terminalAnsiLines(terminal, focused)} width={gridWidth} />;
 }
 
 export function terminalAnsiLines(
   terminal: NeovimRenderSnapshot,
   focused: boolean,
-  width: number,
+  width = terminal.columns,
 ): string[] {
-  const maxWidth = Math.max(1, width);
+  const maxWidth = Math.max(1, Math.min(terminal.columns, Math.floor(width)));
   // Build the highlight lookup once per snapshot, not once per rendered row
   // (a Neovim redraw renders every row, so this was O(rows × highlights)).
   const highlightMap = new Map(terminal.highlights.map((highlight) => [highlight.id, highlight]));
-  return terminal.lines.map((_line, row) =>
+  if (terminal.defaultColors !== null) {
+    // Neovim reserves highlight ID 0 for its base foreground/background.
+    // default_colors_set is ordered as rgb_fg, rgb_bg, rgb_sp, cterm_fg,
+    // cterm_bg; only the RGB pair is needed by this truecolor renderer.
+    highlightMap.set(0, {
+      id: 0,
+      attributes: {
+        foreground: terminal.defaultColors[0] ?? null,
+        background: terminal.defaultColors[1] ?? null,
+      },
+    });
+  }
+  return Array.from({ length: terminal.rows }, (_unused, row) =>
     renderTerminalCellsToAnsi(
       terminalLineCells(terminal, row),
       highlightMap,
@@ -237,8 +230,15 @@ function terminalTextStyle(
 }
 
 function rgbNumberToHex(value: NeovimHighlight["attributes"][string]): Color | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const rgb = Math.max(0, Math.min(0xFFFFFF, Math.floor(value)));
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 0xFFFFFF
+  ) {
+    return undefined;
+  }
+  const rgb = Math.floor(value);
   const red = (rgb >> 16) & 0xFF;
   const green = (rgb >> 8) & 0xFF;
   const blue = rgb & 0xFF;
@@ -304,11 +304,15 @@ function cellsHaveVisibleText(cells: readonly NeovimCell[]): boolean {
 }
 
 function lineToCells(line: string): readonly NeovimCell[] {
-  return [...line].map((text) => ({
-    text,
-    width: Math.max(1, stringWidth(text)),
-    highlightId: 0,
-  }));
+  const cells: NeovimCell[] = [];
+  for (const { segment } of getGraphemeSegmenter().segment(line)) {
+    const width = Math.max(1, stringWidth(segment));
+    cells.push({ text: segment, width, highlightId: 0 });
+    for (let continuation = 1; continuation < width; continuation += 1) {
+      cells.push({ text: "", width: 0, highlightId: 0 });
+    }
+  }
+  return cells;
 }
 
 export function truncateByWidth(text: string, maxWidth: number): string {

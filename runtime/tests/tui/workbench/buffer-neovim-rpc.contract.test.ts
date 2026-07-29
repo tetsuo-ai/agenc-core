@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   NeovimRpcError,
+  NeovimRpcRequestAbortedError,
+  NeovimRpcRequestTimeoutError,
   NeovimRpcTransport,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimRpc.js";
 
@@ -125,6 +127,209 @@ describe("embedded Neovim msgpack RPC transport", () => {
     childStdout.end();
 
     await expect(request).rejects.toThrow("output ended");
+  });
+
+  it("times out one request, cleans its pending state, and ignores its late response", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+    const errors: string[] = [];
+    rpc.onError((error) => errors.push(error.message));
+
+    const timedOut = rpc.request(
+      "nvim_slow_request",
+      [],
+      { timeoutMs: 15 },
+    );
+    await expect(timedOut).rejects.toMatchObject({
+      name: "NeovimRpcRequestTimeoutError",
+      method: "nvim_slow_request",
+      requestId: 1,
+      timeoutMs: 15,
+    });
+    await expect(timedOut).rejects.toBeInstanceOf(NeovimRpcRequestTimeoutError);
+
+    childStdout.write(encode([1, 1, null, "too late"]));
+    const next = rpc.request("nvim_get_mode");
+    childStdout.write(encode([1, 2, null, { mode: "n" }]));
+    await expect(next).resolves.toEqual({ mode: "n" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writtenMessages()).toEqual([
+      [0, 1, "nvim_slow_request", []],
+      [0, 2, "nvim_get_mode", []],
+    ]);
+    expect(errors).not.toContain(
+      "Neovim RPC response arrived for inactive request id 1.",
+    );
+  });
+
+  it("aborts one request without writing when already aborted and cleans abort listeners", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+    const errors: string[] = [];
+    rpc.onError((error) => errors.push(error.message));
+    const controller = new AbortController();
+    const aborted = rpc.request(
+      "nvim_wait",
+      [],
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("x".repeat(10_000)));
+
+    await expect(aborted).rejects.toBeInstanceOf(NeovimRpcRequestAbortedError);
+    await expect(aborted).rejects.toMatchObject({
+      method: "nvim_wait",
+      requestId: 1,
+    });
+    childStdout.write(encode([1, 1, null, "too late"]));
+
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(
+      rpc.request("nvim_never_written", [], { signal: alreadyAborted.signal }),
+    ).rejects.toBeInstanceOf(NeovimRpcRequestAbortedError);
+
+    const completed = rpc.request(
+      "nvim_completed",
+      [],
+      { signal: controller.signal },
+    );
+    await expect(completed).rejects.toBeInstanceOf(NeovimRpcRequestAbortedError);
+
+    const freshController = new AbortController();
+    const successful = rpc.request(
+      "nvim_successful",
+      [],
+      { signal: freshController.signal, timeoutMs: 1_000 },
+    );
+    childStdout.write(encode([1, 4, null, true]));
+    await expect(successful).resolves.toBe(true);
+    freshController.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writtenMessages()).toEqual([
+      [0, 1, "nvim_wait", []],
+      [0, 4, "nvim_successful", []],
+    ]);
+    expect(errors).not.toContain(
+      "Neovim RPC response arrived for inactive request id 1.",
+    );
+  });
+
+  it("validates request deadlines before allocating or writing a request", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+
+    await expect(
+      rpc.request("invalid_zero", [], { timeoutMs: 0 }),
+    ).rejects.toThrow("finite and positive");
+    await expect(
+      rpc.request("invalid_infinity", [], { timeoutMs: Number.POSITIVE_INFINITY }),
+    ).rejects.toThrow("finite and positive");
+
+    const valid = rpc.request("valid", [], { timeoutMs: 1_000 });
+    childStdout.write(encode([1, 1, null, true]));
+    await expect(valid).resolves.toBe(true);
+    expect(writtenMessages()).toEqual([[0, 1, "valid", []]]);
+  });
+
+  it("answers registered inbound requests and enforces one handler owner", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+    const seen: unknown[] = [];
+    const handler = async (
+      params: readonly unknown[],
+      context: { readonly method: string; readonly requestId: number },
+    ) => {
+      seen.push({ params, context });
+      return { allowed: true, token: "reviewed" } as const;
+    };
+    const unregister = rpc.onRequest("agenc_before_write", handler as any);
+
+    expect(() => rpc.onRequest("agenc_before_write", () => null)).toThrow(
+      "already registered",
+    );
+    childStdout.write(
+      encode([0, 41, "agenc_before_write", ["/workspace/file.ts"]]),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen).toEqual([
+      {
+        params: ["/workspace/file.ts"],
+        context: expect.objectContaining({
+          method: "agenc_before_write",
+          requestId: 41,
+          signal: expect.any(AbortSignal),
+        }),
+      },
+    ]);
+    expect(writtenMessages()).toEqual([
+      [1, 41, null, { allowed: true, token: "reviewed" }],
+    ]);
+
+    unregister();
+    expect(() => rpc.onRequest("agenc_before_write", () => null)).not.toThrow();
+  });
+
+  it("returns bounded RPC errors for unknown and failed inbound requests", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+    const errors: string[] = [];
+    rpc.onError((error) => errors.push(error.message));
+    rpc.onRequest("agenc_guard_failure", () => {
+      throw new Error("sensitive".repeat(1_000));
+    });
+
+    childStdout.write(encode([0, 51, "not_registered", []]));
+    childStdout.write(encode([0, 52, "agenc_guard_failure", []]));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const messages = writtenMessages() as Array<
+      [number, number, { code: string; message: string } | null, unknown]
+    >;
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toEqual([
+      1,
+      51,
+      expect.objectContaining({ code: "method_not_registered" }),
+      null,
+    ]);
+    expect(messages[1]).toEqual([
+      1,
+      52,
+      expect.objectContaining({ code: "handler_failed" }),
+      null,
+    ]);
+    expect(messages[1]![2]!.message.length).toBeLessThanOrEqual(512);
+    expect(errors).toContain(
+      "Unexpected Neovim RPC request from child: not_registered",
+    );
+    expect(errors.some((message) => message.includes("agenc_guard_failure"))).toBe(true);
+    expect(errors.every((message) => message.length < 1_024)).toBe(true);
+  });
+
+  it("aborts active inbound handlers when the transport closes", async () => {
+    const { rpc, childStdout, writtenMessages } = createTransport();
+    let handlerSignal: AbortSignal | undefined;
+    let observeAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      observeAbort = resolve;
+    });
+    rpc.onRequest("agenc_hold", async (_params, context) => {
+      handlerSignal = context.signal;
+      await new Promise<void>((resolve) => {
+        context.signal.addEventListener("abort", () => {
+          observeAbort();
+          resolve();
+        }, { once: true });
+      });
+      return null;
+    });
+
+    childStdout.write(encode([0, 61, "agenc_hold", []]));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    rpc.close("test close");
+    await aborted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(writtenMessages()).toEqual([]);
   });
 
   it("sends notifications, unregisters handlers, and reports handler failures", async () => {

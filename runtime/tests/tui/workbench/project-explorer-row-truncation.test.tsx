@@ -20,6 +20,8 @@ const harness = vi.hoisted(() => {
     setAttachedPaths: () => {},
     setViewportRows: () => {},
     setInFlightPaths: () => {},
+    getFilePaths: () => [],
+    hasInFlightPathWithin: () => false,
     move: () => {},
     movePage: () => {},
     moveToStart: () => {},

@@ -11,9 +11,11 @@
  */
 import { realpathSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TuiSession, tuiE2eGateEnv } from "./harness.mjs";
+import { selectPlatformScenarios } from "./platform-scenarios.mjs";
 import {
   MOCK_MODEL,
   buildMockProviderEnv,
@@ -75,8 +77,26 @@ async function loadScenario(name) {
   };
 }
 
-function applyScenarioFilters(names, argv) {
-  let filtered = names;
+export function platformSelectionFromArgv(argv) {
+  const indexes = argv
+    .map((value, index) => value === "--platform" ? index : -1)
+    .filter((index) => index >= 0);
+  if (indexes.length > 1) {
+    throw new Error("--platform may be specified only once");
+  }
+  if (indexes.length === 0) return null;
+  const value = argv[indexes[0] + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error("--platform requires a target slug");
+  }
+  return value;
+}
+
+export function applyScenarioFilters(names, argv) {
+  const platform = platformSelectionFromArgv(argv);
+  let filtered = platform === null
+    ? names
+    : selectPlatformScenarios(names, platform);
   const filterIndex = argv.findIndex((a) => a === "--filter");
   if (filterIndex >= 0 && argv[filterIndex + 1] !== undefined) {
     const needle = argv[filterIndex + 1];
@@ -204,8 +224,10 @@ export async function runScenario(scenario, gateState, lifecycle = null) {
 }
 
 async function dumpFailureLog(scenario, result) {
-  const logPath =
-    `/tmp/tui-e2e-failure-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`;
+  const logPath = path.join(
+    tmpdir(),
+    `tui-e2e-failure-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`,
+  );
   const header = [
     `# TUI E2E failure: ${scenario.name}`,
     `# Description: ${scenario.meta.description ?? "(none)"}`,
@@ -229,13 +251,16 @@ async function startMockedGate() {
   };
 }
 
-function printGateHeader(names, mockServer) {
+function printGateHeader(names, mockServer, platform) {
   console.log(
     color("bold", `agenc TUI e2e gate (${names.length} scenarios)`),
   );
   console.log(
     color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`),
   );
+  if (platform !== null) {
+    console.log(color("dim", `  platform: ${platform} (required scenario set)`));
+  }
   console.log(color("dim", "  state: private HOME/AGENC_HOME + ephemeral daemon per scenario"));
   console.log("");
 }
@@ -250,8 +275,10 @@ async function recordScenarioResult(state, scenario, result) {
     state.passed += 1;
     console.log(`${color("green", "PASS")} ${color("dim", `(${result.durationMs}ms)`)}`);
     if (process.env.TUI_E2E_DEBUG === "1" && result.capturedOutput) {
-      const logPath =
-        `/tmp/tui-e2e-pass-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`;
+      const logPath = path.join(
+        tmpdir(),
+        `tui-e2e-pass-${process.pid}-${scenario.name.replace(/\.mjs$/, "")}.log`,
+      );
       await writeFile(logPath, result.capturedOutput, "utf8");
       console.log(`      ${color("dim", `debug log: ${logPath}`)}`);
     }
@@ -271,6 +298,7 @@ async function runScenarioEntry(
   gateBaseEnv,
   gateInjectedEnv,
   lifecycle,
+  requiredPlatform,
 ) {
   const originalEnv = { ...process.env };
   const gateStatePromise = createTuiGateState({
@@ -294,6 +322,13 @@ async function runScenarioEntry(
     scenario = await loadScenario(name);
     process.stdout.write(`  ${color("dim", "→")} ${name} … `);
     if (scenario.meta.skip) {
+      if (requiredPlatform !== null) {
+        throw new Error(
+          `required platform ${requiredPlatform} scenario ${name} declared a skip: ${
+            scenario.meta.skip
+          }`,
+        );
+      }
       console.log(`${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`);
       state.skipped.push({ name, reason: scenario.meta.skip });
     } else {
@@ -451,12 +486,14 @@ async function main() {
     }
   });
   try {
-    const names = applyScenarioFilters(await discoverScenarios(), process.argv.slice(2));
+    const argv = process.argv.slice(2);
+    const requiredPlatform = platformSelectionFromArgv(argv);
+    const names = applyScenarioFilters(await discoverScenarios(), argv);
     if (names.length === 0) {
       console.error(color("red", "no scenarios matched the requested selection"));
       return 1;
     }
-    printGateHeader(names, mockServer);
+    printGateHeader(names, mockServer, requiredPlatform);
     const state = { failed: [], skipped: [], passed: 0 };
     for (const name of names) {
       if (lifecycle.interrupted) return 1;
@@ -466,6 +503,7 @@ async function main() {
         gateBaseEnv,
         injectedEnv,
         lifecycle,
+        requiredPlatform,
       );
       if (lifecycle.interrupted) return 1;
     }

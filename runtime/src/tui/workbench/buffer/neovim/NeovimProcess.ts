@@ -1,4 +1,12 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+
+import {
+  captureProcessTreeDescendants,
+  isProcessTreeAlive,
+  signalProcessTree,
+  spawnContainedProcess,
+  terminateProcessTreeAndWait,
+} from "../../../../utils/supervisedProcess.js";
 
 export type NeovimProcessHandle = {
   readonly child: ChildProcessWithoutNullStreams;
@@ -14,16 +22,17 @@ export type SpawnNeovimProcessOptions = {
 };
 
 const trackedHandles = new Set<NeovimProcessHandle>();
+const trackedTeardowns = new WeakMap<
+  ChildProcessWithoutNullStreams,
+  Promise<void>
+>();
 let cleanupHookInstalled = false;
 
 export function spawnNeovimProcess(options: SpawnNeovimProcessOptions): NeovimProcessHandle {
   const detached = process.platform !== "win32";
-  const child = spawn(options.executable, [...options.args], {
+  const child = spawnContainedProcess(options.executable, options.args, {
     cwd: options.cwd,
     env: options.env ?? process.env,
-    detached,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
   });
   const pid = normalizeNeovimPid(child.pid);
   const handle: NeovimProcessHandle = {
@@ -49,14 +58,19 @@ export function killNeovimChild(
   if (!pid) {
     return exited || killDirectChild(child, signal);
   }
-  if (detached && process.platform !== "win32") {
-    try {
-      process.kill(-pid, signal);
-      return true;
-    } catch (error) {
-      if (!exited) return killDirectChild(child, signal);
-      return isMissingProcessError(error);
-    }
+  if (
+    exited &&
+    process.platform !== "win32" &&
+    !isProcessTreeAlive(child)
+  ) {
+    return true;
+  }
+  if (
+    (detached || process.platform === "win32") &&
+    (signal === "SIGTERM" || signal === "SIGKILL")
+  ) {
+    signalProcessTree(child, signal);
+    return true;
   }
   return exited || killDirectChild(child, signal);
 }
@@ -66,34 +80,63 @@ export function waitForNeovimExit(
   timeoutMs: number,
 ): Promise<void> {
   if (!child.pid) return Promise.resolve();
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let forceExitTimer: NodeJS.Timeout | undefined;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (forceExitTimer) clearTimeout(forceExitTimer);
-      child.off("exit", finish);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      killNeovimChild(child, process.platform !== "win32", "SIGKILL");
-      if (settled) return;
-      forceExitTimer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.off("exit", finish);
-        reject(
-          new Error(
-            `Neovim process ${normalizeNeovimPid(child.pid)} did not exit after SIGKILL`,
-          ),
-        );
-      }, Math.max(100, timeoutMs));
-    }, Math.max(1, timeoutMs));
-    child.once("exit", finish);
+  const trackedTeardown = trackedTeardowns.get(child);
+  if (trackedTeardown) return trackedTeardown;
+  const teardown = waitForNeovimExitOnce(child, timeoutMs);
+  trackedTeardowns.set(child, teardown);
+  // A failed teardown must stay retryable. In particular,
+  // NeovimStartupCleanupError.retryCleanup() can be called after the process
+  // finally becomes killable; retaining the rejected promise here would make
+  // every later attempt replay the original failure without rechecking the
+  // available platform boundary.
+  void teardown.catch(() => {
+    if (trackedTeardowns.get(child) === teardown) {
+      trackedTeardowns.delete(child);
+    }
   });
+  return teardown;
+}
+
+/**
+ * Extend the retained fallback boundary while the Neovim leader is alive.
+ * Linux cgroups and Windows Job Objects already provide a kernel-owned
+ * lifetime boundary. Darwin has no equivalent public API, so interactive RPC
+ * settlement records descendants which are still observable through the PPID
+ * tree; an immediate double-fork/setsid escape remains outside that guarantee.
+ */
+export function captureNeovimProcessDescendants(
+  child: ChildProcessWithoutNullStreams,
+): void {
+  if (process.platform === "darwin") {
+    captureProcessTreeDescendants(child);
+  }
+}
+
+async function waitForNeovimExitOnce(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<void> {
+  const graceMs = Number.isFinite(timeoutMs) ? Math.max(1, timeoutMs) : 1;
+  captureNeovimProcessDescendants(child);
+  await waitForLeaderExitOrGrace(child, graceMs);
+  try {
+    await terminateProcessTreeAndWait(child, {
+      terminateGraceMs: graceMs,
+      killGraceMs: Math.max(100, graceMs),
+      label: "Neovim process",
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Neovim process tree survived forced shutdown")
+    ) {
+      throw new Error(
+        `Neovim process ${normalizeNeovimPid(child.pid)} did not exit after SIGKILL`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 export function cleanupTrackedNeovimProcesses(signal: NodeJS.Signals = "SIGTERM"): void {
@@ -120,9 +163,30 @@ export function runTrackedNeovimProcessExitCleanupForTesting(): void {
 function trackNeovimProcess(handle: NeovimProcessHandle): void {
   trackedHandles.add(handle);
   handle.child.once("exit", () => {
-    // A detached leader can exit while plugins or jobs remain in its owned
-    // process group. Tear down that group before releasing global ownership.
-    if (handle.kill("SIGKILL")) trackedHandles.delete(handle);
+    // A detached leader can exit while plugins or jobs remain in a cgroup, Job
+    // Object, process group, or retained observed-identity set. Reap the
+    // available boundary asynchronously and keep its handle registered until
+    // that platform-specific cleanup attempt has settled.
+    const teardown = trackedTeardowns.get(handle.child) ??
+      terminateProcessTreeAndWait(handle.child, {
+        terminateGraceMs: 100,
+        killGraceMs: 1_000,
+        label: "Neovim process",
+      });
+    trackedTeardowns.set(handle.child, teardown);
+    void teardown.then(
+      () => {
+        trackedHandles.delete(handle);
+      },
+      () => {
+        // Keep the failed owner registered so the process-exit backstop still
+        // attempts cgroup/Job teardown, but release the failed attempt so an
+        // explicit cleanup retry performs a fresh ownership check.
+        if (trackedTeardowns.get(handle.child) === teardown) {
+          trackedTeardowns.delete(handle.child);
+        }
+      },
+    );
   });
   if (cleanupHookInstalled) return;
   cleanupHookInstalled = true;
@@ -140,6 +204,25 @@ function killDirectChild(
   }
 }
 
-function isMissingProcessError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+function waitForLeaderExitOrGrace(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    timer.unref?.();
+    child.once("exit", finish);
+    if (child.exitCode !== null || child.signalCode !== null) finish();
+  });
 }

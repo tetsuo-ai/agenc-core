@@ -99,6 +99,66 @@ describe("workbenchReducer", () => {
     });
   });
 
+  it("collapses only a transcript rail when BUFFER closes into the transcript", () => {
+    const buffer = workbenchReducer(undefined, {
+      type: "openBuffer",
+      path: "src/index.ts",
+    });
+    const handoff = workbenchReducer(buffer, {
+      type: "handoffToComposer",
+      attachment: {
+        id: "editor-selection:src/index.ts:1",
+        kind: "editor-selection",
+        label: "src/index.ts:1",
+      },
+    });
+    const closed = workbenchReducer(handoff, { type: "closeSurface" });
+
+    expect(handoff).toMatchObject({
+      activeSurfaceMode: "buffer",
+      rail: { kind: "transcript" },
+    });
+    expect(closed).toMatchObject({
+      activeSurfaceMode: "transcript",
+      rail: null,
+    });
+
+    for (const rail of [
+      { kind: "file" as const, path: "src/index.ts" },
+      { kind: "change-review" as const, changeId: "change-1" },
+    ]) {
+      expect(
+        workbenchReducer(
+          {
+            ...buffer,
+            rail,
+          },
+          { type: "closeSurface" },
+        ).rail,
+      ).toEqual(rail);
+    }
+  });
+
+  it("syncs provider-originated buffer navigation without scheduling another open", () => {
+    const opened = workbenchReducer(undefined, {
+      type: "openBuffer",
+      path: "src/first.ts",
+      line: 7,
+    });
+    const synced = workbenchReducer(opened, {
+      type: "syncBufferPath",
+      path: "src/second.ts",
+      line: 12,
+    });
+
+    expect(synced).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "src/second.ts",
+      activeFileLine: 12,
+      bufferOpenRequestId: opened.bufferOpenRequestId,
+    });
+  });
+
   it("cycles through visible panes", () => {
     const explorer = workbenchReducer(undefined, {
       type: "focus",
@@ -623,6 +683,7 @@ describe("workbenchReducer", () => {
       type: "blockForApproval",
       requestId: "approval-1",
       attemptedAction: "delete file",
+      deferredCommand: { type: "closeSurface" },
     });
     const removed = workbenchReducer(blocked, {
       type: "removeAttachment",
@@ -631,12 +692,91 @@ describe("workbenchReducer", () => {
     const cleared = workbenchReducer(removed, { type: "clearBlockedOverlay" });
 
     expect(blocked.pendingBlockedOverlay).toEqual({
-      kind: "approval",
+      kind: "buffer-dirty",
       requestId: "approval-1",
       attemptedAction: "delete file",
+      deferredCommand: { type: "closeSurface" },
     });
     expect(removed.attachments).toEqual([]);
     expect(cleared.pendingBlockedOverlay).toBeNull();
+  });
+
+  it("replays an exact deferred app-exit request after dirty-buffer resolution", () => {
+    const buffer = workbenchReducer(undefined, {
+      type: "openBuffer",
+      path: "src/index.ts",
+    });
+    const blocked = workbenchReducer(buffer, {
+      type: "blockForApproval",
+      requestId: "dirty-exit",
+      attemptedAction: "exit",
+      deferredCommand: {
+        type: "requestAppExit",
+        resumeSessionId: "session-next",
+      },
+    });
+    const resolved = workbenchReducer(blocked, {
+      type: "resolveBlockedOverlay",
+      requestId: "dirty-exit",
+    });
+
+    expect(blocked.appExitRequestId).toBe(0);
+    expect(resolved).toMatchObject({
+      activeSurfaceMode: "buffer",
+      pendingBlockedOverlay: null,
+      appExitRequestId: 1,
+      appExitResumeSessionId: "session-next",
+    });
+  });
+});
+
+describe("moveFileToRail (atomic ctrl+r handoff)", () => {
+  it("moves the whole layout at once and replays only after approval", () => {
+    const buffer = {
+      ...workbenchReducer(undefined, {
+        type: "openBuffer",
+        path: "src/index.ts",
+      }),
+      focusedPane: "surface" as const,
+      rail: { kind: "transcript" as const },
+      surfaceMaximized: true,
+    };
+    const moved = workbenchReducer(buffer, {
+      type: "moveFileToRail",
+      path: "src/index.ts",
+    });
+    const blocked = workbenchReducer(buffer, {
+      type: "blockForApproval",
+      requestId: "dirty-rail-handoff",
+      attemptedAction: "leaving dirty BUFFER",
+      deferredCommand: {
+        type: "moveFileToRail",
+        path: "src/index.ts",
+      },
+    });
+    const cancelled = workbenchReducer(blocked, {
+      type: "clearBlockedOverlay",
+    });
+    const resolved = workbenchReducer(blocked, {
+      type: "resolveBlockedOverlay",
+      requestId: "dirty-rail-handoff",
+    });
+
+    expect(moved).toMatchObject({
+      activeSurfaceMode: "transcript",
+      activeFilePath: "src/index.ts",
+      focusedPane: "composer",
+      rail: { kind: "file", path: "src/index.ts" },
+      surfaceMaximized: false,
+    });
+    expect(cancelled).toEqual(buffer);
+    expect(resolved).toMatchObject({
+      activeSurfaceMode: "transcript",
+      focusedPane: "composer",
+      pendingBlockedOverlay: null,
+      rail: { kind: "file", path: "src/index.ts" },
+      surfaceMaximized: false,
+    });
   });
 });
 
@@ -646,7 +786,7 @@ describe("toggleFileRail (ctrl+r review rail)", () => {
       type: "toggleFileRail",
       path: "src/index.ts",
     });
-    expect(state.fileRailPath).toBe("src/index.ts");
+    expect(state.rail).toEqual({ kind: "file", path: "src/index.ts" });
     expect(state.activeSurfaceMode).toBe("transcript");
     expect(state.focusedPane).toBe("composer");
   });
@@ -657,7 +797,7 @@ describe("toggleFileRail (ctrl+r review rail)", () => {
       path: "src/index.ts",
     });
     const closed = workbenchReducer(open, { type: "toggleFileRail" });
-    expect(closed.fileRailPath).toBeNull();
+    expect(closed.rail).toBeNull();
   });
 
   it("falls back to the surface pane when the focused rail closes", () => {

@@ -17,6 +17,7 @@ import type { SlashCommandContext } from "./types.js";
 import { createRoot } from "../tui/ink.js";
 import { AppStateProvider, getDefaultAppState } from "../tui/state/AppState.js";
 import {
+  clearPendingResumeSessionId,
   consumePendingResumeSessionId,
   resetPendingResumeSessionIdForTestingOnly,
   setPendingResumeSessionId,
@@ -82,6 +83,12 @@ describe("pending resume slot", () => {
     setPendingResumeSessionId("sess-1");
     expect(consumePendingResumeSessionId()).toBe("sess-1");
     // Consume-once: a second read does not re-resume.
+    expect(consumePendingResumeSessionId()).toBeNull();
+  });
+
+  it("explicitly clears a staged resume before a plain exit", () => {
+    setPendingResumeSessionId("sess-stale");
+    clearPendingResumeSessionId();
     expect(consumePendingResumeSessionId()).toBeNull();
   });
 });

@@ -18,7 +18,7 @@ import { logForDebugging } from '../../utils/debug.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { KeybindingProvider, type InputCaptureRegistration } from './KeybindingContext.js';
 import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
-import { resolveKeyWithChordState } from './resolver.js';
+import { keybindingContextPriority, resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
 import type { KeybindingWarning } from './validate.js';
 
@@ -275,8 +275,25 @@ export function createChordInputHandler({
   inputCaptureRegistryRef
 }: ChordInputHandlerOptions): (input: string, key: Key, event: InputEvent) => void {
   return (input, key, event) => {
+    if (runInputCaptures(
+      input,
+      key,
+      event,
+      inputCaptureRegistryRef,
+      "modal",
+    )) {
+      setPendingChord(null);
+      event.stopImmediatePropagation();
+      return;
+    }
     if ((key.wheelUp || key.wheelDown || key.escape) && pendingChordRef.current === null) {
-      if (runInputCaptures(input, key, event, inputCaptureRegistryRef)) {
+      if (runInputCaptures(
+        input,
+        key,
+        event,
+        inputCaptureRegistryRef,
+        "ordinary",
+      )) {
         event.stopImmediatePropagation();
         return;
       }
@@ -349,21 +366,37 @@ export function createChordInputHandler({
       case "none":
     }
     const stopped = typeof event.didStopImmediatePropagation === "function" && event.didStopImmediatePropagation();
-    if (!stopped && runInputCaptures(input, key, event, inputCaptureRegistryRef)) {
+    if (
+      !stopped &&
+      runInputCaptures(
+        input,
+        key,
+        event,
+        inputCaptureRegistryRef,
+        "ordinary",
+      )
+    ) {
       event.stopImmediatePropagation();
     }
   };
 }
+
+type InputCapturePhase = "modal" | "ordinary";
 
 function runInputCaptures(
   input: string,
   key: Key,
   event: InputEvent,
   inputCaptureRegistryRef: React.RefObject<Set<InputCaptureRegistration>>,
+  phase: InputCapturePhase,
 ): boolean {
   const registry = inputCaptureRegistryRef.current;
   if (!registry || registry.size === 0) return false;
+  const modalPriority = keybindingContextPriority("Modal");
   for (const registration of registry) {
+    const isModal =
+      keybindingContextPriority(registration.context) >= modalPriority;
+    if ((phase === "modal") !== isModal) continue;
     if (registration.handler(input, key, event)) {
       return true;
     }

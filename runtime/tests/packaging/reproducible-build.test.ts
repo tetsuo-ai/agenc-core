@@ -294,7 +294,7 @@ describe("reproducible install and release contract", () => {
       "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
     );
     expect(neovimJob).toContain("numTotalTestSuites: 2");
-    expect(neovimJob).toContain("numTotalTests: 4");
+    expect(neovimJob).toContain("numTotalTests: 8");
     expect(neovimJob).toContain("results.testResults.length !== 1");
     expect(neovimJob).toContain("pgrep -f --");
 
@@ -336,7 +336,7 @@ describe("reproducible install and release contract", () => {
     expect(workflow.match(
       /actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e/g,
     )).toHaveLength(4);
-    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(5);
+    expect(workflow.match(/--require-zero-skips/g)).toHaveLength(6);
     expect(workflow).not.toMatch(/uses:\s+actions\/[\w-]+@v\d/);
     expect(workflow).not.toContain("cache: npm");
     expect(workflow).not.toContain("--passWithNoTests");

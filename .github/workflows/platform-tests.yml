@@ -529,9 +529,27 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
   neovim:
-    name: neovim
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: neovim-${{ matrix.slug }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: linux-x64
+            runner: ubuntu-24.04
+          - slug: linux-arm64
+            runner: ubuntu-24.04-arm
+          - slug: darwin-x64
+            runner: macos-15-intel
+          - slug: darwin-arm64
+            runner: macos-15
+          - slug: win-x64
+            runner: windows-2025
+    # The baseline matrix cell remains runs-on: ubuntu-24.04.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      AGENC_NEOVIM_RUNNER: ${{ matrix.runner }}
+      AGENC_NEOVIM_SLUG: ${{ matrix.slug }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -541,7 +559,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Bind the checkout and provision pinned npm and Neovim
+      - name: Bind the checkout and hosted Neovim target
+        id: neovim_manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -549,55 +568,196 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           test "$(node --version)" = "v${NODE_VERSION}"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
 
+          const toolchain = JSON.parse(
+            readFileSync("release-toolchain.json", "utf8"),
+          );
+          const slug = process.env.AGENC_NEOVIM_SLUG;
+          const runner = process.env.AGENC_NEOVIM_RUNNER;
+          const expectedSlug = {
+            "linux:x64": "linux-x64",
+            "linux:arm64": "linux-arm64",
+            "darwin:x64": "darwin-x64",
+            "darwin:arm64": "darwin-arm64",
+            "win32:x64": "win-x64",
+          }[`${process.platform}:${process.arch}`];
+          if (slug !== expectedSlug) {
+            throw new Error(
+              `hosted runner resolved to ${expectedSlug ?? "unsupported"}, not ${slug}`,
+            );
+          }
+          const hosted = toolchain["neovimHostedTestRuntime"];
+          if (
+            hosted.schemaVersion !== 1 ||
+            hosted.version !== "0.12.1" ||
+            JSON.stringify(hosted.requiredTargets) !== JSON.stringify([
+              "linux-x64",
+              "linux-arm64",
+              "darwin-x64",
+              "darwin-arm64",
+              "win-x64",
+            ])
+          ) {
+            throw new Error("hosted Neovim target manifest is incomplete");
+          }
+          const target = hosted[slug];
+          if (
+            target?.runner !== runner ||
+            !/^[0-9a-f]{64}$/.test(target.sha256) ||
+            !Number.isSafeInteger(target.bytes) ||
+            target.bytes <= 0 ||
+            target.url !==
+              `https://github.com/neovim/neovim/releases/download/v${hosted.version}/${target.file}`
+          ) {
+            throw new Error(`invalid hosted Neovim target contract for ${slug}`);
+          }
+          const legacy = toolchain["neovimTestRuntime"]["linux-x64"];
+          if (
+            slug === "linux-x64" &&
+            JSON.stringify(legacy) !== JSON.stringify({
+              file: target.file,
+              url: target.url,
+              sha256: target.sha256,
+              bytes: target.bytes,
+            })
+          ) {
+            throw new Error("hosted Linux x64 Neovim pin drifted from its release contract");
+          }
+          for (const [name, value] of Object.entries({
+            file: target.file,
+            url: target.url,
+            sha256: target.sha256,
+            bytes: String(target.bytes),
+            executable: target.executable,
+            version: hosted.version,
+          })) {
+            appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              `${name}=${value}\n`,
+              "utf8",
+            );
+          }
+          NODE
+
+      - name: Install pinned npm
+        shell: bash
+        run: |
+          set -euo pipefail
           npm_archive="$RUNNER_TEMP/npm-${NPM_VERSION}.tgz"
           node scripts/fetch-pinned-npm.mjs "$npm_archive"
-          npm install --global "$npm_archive" \
+          npm_command=npm
+          if test "$RUNNER_OS" = "Windows"; then npm_command=npm.cmd; fi
+          "$npm_command" install --global "$npm_archive" \
             --ignore-scripts --no-audit --no-fund
-          test "$(npm --version)" = "$NPM_VERSION"
+          test "$("$npm_command" --version)" = "$NPM_VERSION"
 
-          neovim_version="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["version"])')"
-          neovim_file="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["file"])')"
-          neovim_url="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["url"])')"
-          neovim_sha="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["sha256"])')"
-          neovim_bytes="$(python3 -c 'import json; print(json.load(open("release-toolchain.json"))["neovimTestRuntime"]["linux-x64"]["bytes"])')"
-          test "$neovim_version" = "0.12.1"
-          test "$neovim_file" = "nvim-linux-x86_64.tar.gz"
-          test "$neovim_url" = \
-            "https://github.com/neovim/neovim/releases/download/v${neovim_version}/${neovim_file}"
-          [[ "$neovim_sha" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$neovim_bytes" =~ ^[1-9][0-9]*$ ]]
-
-          neovim_archive="$RUNNER_TEMP/$neovim_file"
+      - name: Provision checksum-pinned Neovim on Linux and Darwin
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          NVIM_BYTES: ${{ steps.neovim_manifest.outputs.bytes }}
+          NVIM_EXECUTABLE: ${{ steps.neovim_manifest.outputs.executable }}
+          NVIM_FILE: ${{ steps.neovim_manifest.outputs.file }}
+          NVIM_SHA256: ${{ steps.neovim_manifest.outputs.sha256 }}
+          NVIM_URL: ${{ steps.neovim_manifest.outputs.url }}
+          NVIM_VERSION: ${{ steps.neovim_manifest.outputs.version }}
+        run: |
+          set -euo pipefail
+          neovim_archive="$RUNNER_TEMP/$NVIM_FILE"
           curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --fail --location --silent --show-error \
-            "$neovim_url" --output "$neovim_archive"
-          test "$(sha256sum "$neovim_archive" | awk '{print $1}')" = "$neovim_sha"
-          test "$(stat --format='%s' "$neovim_archive")" = "$neovim_bytes"
+            "$NVIM_URL" --output "$neovim_archive"
+          if command -v sha256sum >/dev/null 2>&1; then
+            observed_sha="$(sha256sum "$neovim_archive" | awk '{print $1}')"
+          else
+            observed_sha="$(shasum -a 256 "$neovim_archive" | awk '{print $1}')"
+          fi
+          test "$observed_sha" = "$NVIM_SHA256"
+          test "$(wc -c < "$neovim_archive" | tr -d '[:space:]')" = "$NVIM_BYTES"
 
           neovim_root="$RUNNER_TEMP/neovim-distribution"
           mkdir -p "$neovim_root"
           tar -xzf "$neovim_archive" --strip-components=1 -C "$neovim_root"
           chmod -R a+rX,go-w "$neovim_root"
-          chmod 0555 "$neovim_root/bin/nvim"
-          test "$("$neovim_root/bin/nvim" --version | sed -n '1p')" = \
-            "NVIM v${neovim_version}"
-          echo "$neovim_root/bin" >> "$GITHUB_PATH"
-          echo "AGENC_PINNED_NVIM=$neovim_root/bin/nvim" >> "$GITHUB_ENV"
+          pinned_nvim="$neovim_root/$NVIM_EXECUTABLE"
+          chmod 0555 "$pinned_nvim"
+          test "$("$pinned_nvim" --version | sed -n '1p')" = \
+            "NVIM v${NVIM_VERSION}"
+          echo "$(dirname "$pinned_nvim")" >> "$GITHUB_PATH"
+          echo "AGENC_PINNED_NVIM=$pinned_nvim" >> "$GITHUB_ENV"
+          echo "AGENC_BUFFER_NVIM=$pinned_nvim" >> "$GITHUB_ENV"
 
-      - name: Install the reviewed dependency graph
+      - name: Provision checksum-pinned Neovim on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NVIM_BYTES: ${{ steps.neovim_manifest.outputs.bytes }}
+          NVIM_EXECUTABLE: ${{ steps.neovim_manifest.outputs.executable }}
+          NVIM_FILE: ${{ steps.neovim_manifest.outputs.file }}
+          NVIM_SHA256: ${{ steps.neovim_manifest.outputs.sha256 }}
+          NVIM_URL: ${{ steps.neovim_manifest.outputs.url }}
+          NVIM_VERSION: ${{ steps.neovim_manifest.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP $env:NVIM_FILE
+          Invoke-WebRequest -Uri $env:NVIM_URL -OutFile $archive
+          $observedSha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($observedSha -ne $env:NVIM_SHA256) {
+            throw "Neovim archive SHA-256 mismatch"
+          }
+          if ((Get-Item $archive).Length -ne [int64]$env:NVIM_BYTES) {
+            throw "Neovim archive byte length mismatch"
+          }
+          $root = Join-Path $env:RUNNER_TEMP "neovim-distribution"
+          New-Item -ItemType Directory -Path $root | Out-Null
+          & tar.exe -xf $archive --strip-components=1 -C $root
+          if ($LASTEXITCODE -ne 0) { throw "Neovim archive extraction failed" }
+          $relativeExecutable = $env:NVIM_EXECUTABLE.Replace(
+            "/",
+            [IO.Path]::DirectorySeparatorChar
+          )
+          $pinnedNvim = Join-Path $root $relativeExecutable
+          $versionLine = (& $pinnedNvim --version | Select-Object -First 1)
+          if ($versionLine -ne "NVIM v$env:NVIM_VERSION") {
+            throw "unexpected Neovim version: $versionLine"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $pinnedNvim)
+          Add-Content -Path $env:GITHUB_ENV -Value "AGENC_PINNED_NVIM=$pinnedNvim"
+          Add-Content -Path $env:GITHUB_ENV -Value "AGENC_BUFFER_NVIM=$pinnedNvim"
+
+      - name: Assert checksum-pinned Neovim resolution on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $resolved = (Get-Command nvim -CommandType Application).Source
+          if (
+            [IO.Path]::GetFullPath($resolved) -ne
+              [IO.Path]::GetFullPath($env:AGENC_PINNED_NVIM)
+          ) {
+            throw "bare nvim resolved to $resolved instead of $env:AGENC_PINNED_NVIM"
+          }
+
+      - name: Install, build, and verify the reviewed dependency graph
         shell: bash
         run: |
           set -euo pipefail
-          npm ci --ignore-scripts --no-audit --no-fund
+          npm_command=npm
+          if test "$RUNNER_OS" = "Windows"; then npm_command=npm.cmd; fi
+          "$npm_command" ci --ignore-scripts --no-audit --no-fund
           npm_config_build_from_source=true \
-            npm rebuild better-sqlite3 esbuild node-pty
+            "$npm_command" rebuild better-sqlite3 esbuild node-pty
+          "$npm_command" run build --workspace=@tetsuo-ai/runtime
           test "$(node --version)" = "v${NODE_VERSION}"
-          test "$(npm --version)" = "$NPM_VERSION"
-          test "$(command -v nvim)" = "$AGENC_PINNED_NVIM"
+          test "$("$npm_command" --version)" = "$NPM_VERSION"
+          if test "$RUNNER_OS" != "Windows"; then
+            test "$(command -v nvim)" = "$AGENC_PINNED_NVIM"
+          fi
           test "$(nvim --version | sed -n '1p')" = "NVIM v0.12.1"
 
-      - name: Run the exact real-Neovim capability lane
+      - name: Run the exact real-Neovim lifecycle suite
         shell: bash
         run: |
           set -euo pipefail
@@ -624,8 +784,8 @@ jobs:
             numPassedTestSuites: 2,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 4,
-            numPassedTests: 4,
+            numTotalTests: 8,
+            numPassedTests: 8,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -653,12 +813,113 @@ jobs:
               `Neovim-test file was ${JSON.stringify(file)}, expected ${expectedFile}`,
             );
           }
-          console.log("Neovim capability lane passed 4 tests in 1 file with zero skipped");
+          console.log("Neovim capability lane passed 8 tests in 1 file with zero skipped");
           NODE
-          if pgrep -f -- "$AGENC_PINNED_NVIM" >/dev/null; then
-            pgrep -af -- "$AGENC_PINNED_NVIM" >&2
-            echo "real-Neovim capability lane leaked a child process" >&2
-            exit 1
+
+      - name: Run provider and observed-descendant platform contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/neovim-platform-test-results.json"
+          node runtime/scripts/run-hermetic-vitest.mjs \
+            --require-zero-skips \
+            run \
+            --config vitest.neovim-platform.config.ts \
+            --allowOnly=false \
+            --reporter=verbose \
+            --reporter=json \
+            --outputFile.json "$results"
+          node --input-type=module - "$results" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { relative, resolve } from "node:path";
+
+          const [resultsPath] = process.argv.slice(2);
+          if (!resultsPath) throw new Error("missing Neovim platform results path");
+          const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+          const expectedFiles = [
+            "platform-tests/neovim-platform-gate.contract.test.ts",
+            "platform-tests/neovim-process-tree.real.test.ts",
+            "tests/tui/workbench/buffer-neovim-provider.contract.test.ts",
+          ];
+          const requiredZeroCounts = {
+            numFailedTestSuites: 0,
+            numPendingTestSuites: 0,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0,
+          };
+          for (const [field, value] of Object.entries(requiredZeroCounts)) {
+            if (results[field] !== value) {
+              throw new Error(
+                `Neovim platform result ${field} was ${results[field]}, expected ${value}`,
+              );
+            }
+          }
+          if (results.success !== true || !Array.isArray(results.testResults)) {
+            throw new Error("Neovim platform result did not report success");
+          }
+          const files = results.testResults
+            .map((result) =>
+              relative(resolve("runtime"), result.name).split("\\").join("/")
+            )
+            .sort();
+          if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+            throw new Error(
+              `Neovim platform files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
+            );
+          }
+          console.log(
+            `Neovim provider/observed-descendant platform lane passed ${results.numPassedTests} tests in 3 files with zero skipped`,
+          );
+          NODE
+
+      - name: Run the required hosted-platform PTY scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/neovim-platform-tui.log"
+          node runtime/scripts/check-tui-e2e/runner.mjs --platform \
+            "$AGENC_NEOVIM_SLUG" | tee "$log"
+          grep -F "2/2 passed" "$log"
+
+      - name: Assert hosted-platform cleanup and checkout integrity
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test "$RUNNER_OS" = "Windows"; then
+            AGENC_PINNED_NVIM="$AGENC_PINNED_NVIM" powershell.exe \
+              -NoLogo -NoProfile -NonInteractive -Command '
+                $expected = [IO.Path]::GetFullPath($env:AGENC_PINNED_NVIM)
+                $leaks = Get-CimInstance Win32_Process |
+                  Where-Object {
+                    ($_.ExecutablePath -and
+                      [IO.Path]::GetFullPath($_.ExecutablePath) -eq $expected) -or
+                    ($_.CommandLine -and
+                      ($_.CommandLine.Contains("agenc-neovim-platform-descendant") -or
+                        $_.CommandLine.Contains("agenc-process-owner-watchdog")))
+                  }
+                if ($leaks) {
+                  $leaks | Format-List ProcessId,ParentProcessId,ExecutablePath
+                  throw "hosted Neovim lane leaked a child process"
+                }
+              '
+          else
+            if pgrep -f -- "$AGENC_PINNED_NVIM" >/dev/null; then
+              pgrep -af -- "$AGENC_PINNED_NVIM" >&2
+              echo "real-Neovim capability lane leaked a child process" >&2
+              exit 1
+            fi
+            if pgrep -f -- "agenc-neovim-platform-descendant" >/dev/null; then
+              pgrep -af -- "agenc-neovim-platform-descendant" >&2
+              echo "real-Neovim capability lane leaked a detached job" >&2
+              exit 1
+            fi
+            if pgrep -f -- "agenc-process-owner-watchdog" >/dev/null; then
+              pgrep -af -- "agenc-process-owner-watchdog" >&2
+              echo "real-Neovim capability lane leaked an owner watchdog" >&2
+              exit 1
+            fi
           fi
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 

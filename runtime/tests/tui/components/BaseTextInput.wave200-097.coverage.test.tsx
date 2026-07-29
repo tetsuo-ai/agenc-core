@@ -83,7 +83,7 @@ function extractLastFrame(output: string): string {
   return lastFrame ?? output;
 }
 
-function createStreams(): {
+function createStreams(columns = 80): {
   stdout: PassThrough;
   stdin: PassThrough & {
     isTTY: boolean;
@@ -106,7 +106,7 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = 80;
+  (stdout as unknown as { columns: number }).columns = columns;
   stdout.on("data", chunk => {
     output += chunk.toString();
   });
@@ -141,6 +141,52 @@ async function sleep(ms = 25): Promise<void> {
 }
 
 describe("BaseTextInput wave200 coverage", () => {
+  test("preserves later viewport lines when the rendered input exceeds the container width", async () => {
+    const firstLine = "a".repeat(18);
+    const secondLine = "b".repeat(18);
+    const value = `${firstLine}${secondLine}`;
+    const inputState = createInputState({
+      offset: value.length,
+      renderedValue: `${firstLine}\n${secondLine}`,
+      value,
+      viewportCharEnd: value.length,
+    });
+    const { getOutput, stdin, stdout } = createStreams(12);
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <BaseTextInput
+          columns={19}
+          cursorOffset={value.length}
+          focus={false}
+          inputState={inputState}
+          onChange={vi.fn()}
+          onChangeCursorOffset={vi.fn()}
+          showCursor={false}
+          terminalFocus={true}
+          value={value}
+        />,
+      );
+      await sleep();
+
+      const frame = stripAnsi(extractLastFrame(getOutput()));
+      const inputLines = frame.split("\n").filter(line => /[ab]/.test(line));
+      expect(inputLines.filter(line => line.includes("a"))).toHaveLength(2);
+      expect(inputLines.filter(line => line.includes("b"))).toHaveLength(2);
+      expect(frame).not.toContain("…");
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    }
+  });
+
   test("renders the plain input path and suppresses return while paste is active", async () => {
     pasteHarness.isPasting = true;
     pasteHarness.onInput = undefined;

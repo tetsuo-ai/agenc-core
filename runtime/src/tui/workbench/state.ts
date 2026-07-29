@@ -3,8 +3,14 @@ import { useCallback } from "react";
 import type { AppState } from "../state/AppStateStore.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
 import { getWorkbenchBufferProviderController } from "./buffer/providers/BufferProviderController.js";
+import type { BufferProviderSnapshot } from "./buffer/providers/types.js";
 import { ensureWorkbenchState, getDefaultWorkbenchState, workbenchReducer } from "./reducer.js";
-import type { WorkbenchCommand, WorkbenchState } from "./types.js";
+import { containsWorkspacePathReference } from "./pathReferences.js";
+import type {
+  WorkbenchCommand,
+  WorkbenchState,
+  WorkbenchSurfaceLeaveCommand,
+} from "./types.js";
 import { WORKBENCH_ENV_VAR } from "./types.js";
 
 type WorkbenchEnv = {
@@ -28,13 +34,38 @@ export function applyWorkbenchCommand(
   command: WorkbenchCommand,
 ): AppState {
   const workbench = ensureWorkbenchState(appState.workbench);
-  if (dirtyBufferWouldBeAbandoned(workbench, command)) {
+  if (
+    workbench.pendingBlockedOverlay !== null &&
+    command.type !== "resolveBlockedOverlay" &&
+    command.type !== "clearBlockedOverlay"
+  ) {
+    return appState;
+  }
+  if (
+    command.type === "resolveBlockedOverlay" &&
+    workbench.pendingBlockedOverlay?.requestId === command.requestId &&
+    blockedSurfaceLeaveCommand(
+      workbench,
+      workbench.pendingBlockedOverlay.deferredCommand,
+    ) !== null
+  ) {
+    // Save/discard completion and deferred replay are separated by an async
+    // boundary. Re-read the live provider here so an edit arriving in that
+    // gap cannot make a previously approved filesystem or exit operation
+    // bypass the dirty-buffer transaction. Keep the same overlay open; its
+    // reactive buffer list will show the new blocker.
+    return appState;
+  }
+  if (blocksPendingRecoveryNavigation(workbench, command)) return appState;
+  const deferredCommand = blockedSurfaceLeaveCommand(workbench, command);
+  if (deferredCommand !== null) {
     return {
       ...appState,
       workbench: workbenchReducer(workbench, {
         type: "blockForApproval",
         requestId: "buffer-dirty-surface-switch",
-        attemptedAction: "leaving dirty BUFFER",
+        attemptedAction: blockedActionLabel(deferredCommand),
+        deferredCommand,
       }),
     };
   }
@@ -42,6 +73,19 @@ export function applyWorkbenchCommand(
     ...appState,
     workbench: workbenchReducer(workbench, command),
   };
+}
+
+function blocksPendingRecoveryNavigation(
+  state: WorkbenchState,
+  command: WorkbenchCommand,
+): boolean {
+  if (state.activeSurfaceMode !== "buffer" || command.type !== "openBuffer") {
+    return false;
+  }
+  const recovery = getWorkbenchBufferProviderController().getSnapshot().recovery;
+  const recoveryPending =
+    recovery?.status === "pending" || recovery?.status === "working";
+  return recoveryPending && command.path !== state.activeFilePath;
 }
 
 export function useWorkbenchState(): WorkbenchState {
@@ -58,13 +102,58 @@ export function useWorkbenchDispatch(): (command: WorkbenchCommand) => void {
   );
 }
 
-function dirtyBufferWouldBeAbandoned(
+function blockedSurfaceLeaveCommand(
   state: WorkbenchState,
   command: WorkbenchCommand,
+): WorkbenchSurfaceLeaveCommand | null {
+  const snapshot = getWorkbenchBufferProviderController().getSnapshot();
+  if (
+    command.type === "requestAppExit" &&
+    snapshot.dirty
+  ) {
+    return command;
+  }
+  if (
+    (command.type === "requestProjectPathRename" ||
+      command.type === "requestProjectPathDelete") &&
+    projectMutationTouchesDirtyBuffer(command, snapshot)
+  ) {
+    return command;
+  }
+  if (state.activeSurfaceMode !== "buffer") return null;
+  if (!isSurfaceLeaveCommand(command) || !commandLeavesBufferSurface(command)) return null;
+  return snapshot.dirty ? command : null;
+}
+
+export function projectMutationTouchesDirtyBuffer(
+  command:
+    | Extract<WorkbenchSurfaceLeaveCommand, { readonly type: "requestProjectPathRename" }>
+    | Extract<WorkbenchSurfaceLeaveCommand, { readonly type: "requestProjectPathDelete" }>,
+  snapshot: BufferProviderSnapshot,
 ): boolean {
-  if (state.activeSurfaceMode !== "buffer") return false;
-  if (!commandLeavesBufferSurface(command)) return false;
-  return getWorkbenchBufferProviderController().getSnapshot().dirty;
+  const target = command.type === "requestProjectPathRename"
+    ? command.fromPath
+    : command.path;
+  const dirtyPaths = snapshot.buffers
+    .filter((buffer) => buffer.modified)
+    .flatMap((buffer) => buffer.filePath ?? buffer.absolutePath ?? []);
+  if (dirtyPaths.length === 0 && snapshot.dirty && snapshot.filePath) {
+    dirtyPaths.push(snapshot.filePath);
+  }
+  return dirtyPaths.some((path) => containsWorkspacePathReference(path, target));
+}
+
+function blockedActionLabel(command: WorkbenchSurfaceLeaveCommand): string {
+  switch (command.type) {
+    case "requestProjectPathRename":
+      return `renaming ${command.fromPath}`;
+    case "requestProjectPathDelete":
+      return `deleting ${command.path}`;
+    case "requestAppExit":
+      return "exiting AgenC";
+    default:
+      return "leaving dirty BUFFER";
+  }
 }
 
 function commandLeavesBufferSurface(command: WorkbenchCommand): boolean {
@@ -77,9 +166,36 @@ function commandLeavesBufferSurface(command: WorkbenchCommand): boolean {
     case "openShell":
     case "openAgent":
     case "closeSurface":
+    case "moveFileToRail":
+    case "requestAppExit":
       return true;
+    case "requestProjectPathRename":
+    case "requestProjectPathDelete":
+      return false;
     case "deletePathReferences":
       return command.closeAffectedSurface === true;
+    default:
+      return false;
+  }
+}
+
+function isSurfaceLeaveCommand(
+  command: WorkbenchCommand,
+): command is WorkbenchSurfaceLeaveCommand {
+  switch (command.type) {
+    case "openSurface":
+    case "openPreview":
+    case "openSearch":
+    case "openDiff":
+    case "openShell":
+    case "openAgent":
+    case "closeSurface":
+    case "moveFileToRail":
+    case "requestAppExit":
+    case "requestProjectPathRename":
+    case "requestProjectPathDelete":
+    case "deletePathReferences":
+      return true;
     default:
       return false;
   }

@@ -13,8 +13,13 @@ import { getGraphemeSegmenter } from "../../../utils/intl.js";
 import { logError } from "../../../utils/log.js";
 import { inFlightPathsFromTasks } from "../agents/activity.js";
 import { attachFileCommand, deletePathReferencesCommand, openBufferCommand, renamePathReferencesCommand } from "../commands.js";
+import { getWorkbenchBufferProviderController } from "../buffer/providers/BufferProviderController.js";
 import { composerAttachmentsForState } from "../reducer.js";
-import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
+import {
+  projectMutationTouchesDirtyBuffer,
+  useWorkbenchDispatch,
+  useWorkbenchState,
+} from "../state.js";
 import { wheelInputIsInsideNode } from "../surfaces/wheelInput.js";
 import type { ProjectTreeRow } from "../types.js";
 import { getProjectTreeStore } from "./ProjectTreeStore.js";
@@ -52,11 +57,9 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   }, [store, maxTreeRows]);
 
   useEffect(() => {
-    const filePaths = snapshot.rows
-      .filter((row) => row.kind === "file")
-      .map((row) => row.path);
+    const filePaths = store.getFilePaths();
     store.setInFlightPaths(inFlightPathsFromTasks(Object.values(tasks), filePaths));
-  }, [store, tasks, snapshot.rows]);
+  }, [store, tasks, snapshot]);
 
   const closeFileAction = useCallback(() => setFileAction(null), []);
 
@@ -72,7 +75,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
 
   const beginRename = useCallback(() => {
     const row = store.getCursorRow();
-    if (!isMutableTreeRow(row)) return;
+    if (!isMutableTreeRow(row) || store.hasInFlightPathWithin(row.path)) return;
     setFileAction({
       kind: "rename",
       path: row.path,
@@ -84,7 +87,7 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
 
   const beginDelete = useCallback(() => {
     const row = store.getCursorRow();
-    if (!isMutableTreeRow(row)) return;
+    if (!isMutableTreeRow(row) || store.hasInFlightPathWithin(row.path)) return;
     setFileAction({
       kind: "delete",
       path: row.path,
@@ -98,12 +101,26 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
   const submitFileAction = useCallback(async (value) => {
     const action = fileAction;
     if (!action || action.kind === "delete" || action.busy) return;
+    if (action.kind === "rename") {
+      if (store.hasInFlightPathWithin(action.path)) {
+        setFileAction({
+          ...action,
+          value,
+          error: `Cannot rename ${action.path} while an agent may be writing inside it.`,
+        });
+        return;
+      }
+      dispatch({
+        type: "requestProjectPathRename",
+        fromPath: action.path,
+        toPath: value,
+      });
+      return;
+    }
     setFileAction({ ...action, value, busy: true, error: null });
     let result;
     try {
-      result = action.kind === "create"
-        ? await store.createFile(value)
-        : await store.renamePath(action.path, value);
+      result = await store.createFile(value);
     } catch (error) {
       logError(error);
       setFileAction({ ...action, value, busy: false, error: fileActionFailureMessage(action, value, error) });
@@ -114,32 +131,324 @@ export function ProjectExplorer({ focused, width }: Props): React.ReactElement {
       return;
     }
     setFileAction(null);
-    if (action.kind === "create") {
-      dispatch(openBufferCommand(result.path, undefined, true));
-      return;
-    }
-    dispatch(renamePathReferencesCommand(action.path, result.path, { openAffectedBuffer: true }));
+    dispatch(openBufferCommand(result.path, undefined, true));
   }, [dispatch, fileAction, store]);
 
-  const confirmDelete = useCallback(async () => {
+  const confirmDelete = useCallback(() => {
     const action = fileAction;
     if (!action || action.kind !== "delete" || action.busy) return;
-    setFileAction({ ...action, busy: true, error: null });
-    let result;
-    try {
-      result = await store.deletePath(action.path);
-    } catch (error) {
-      logError(error);
-      setFileAction({ ...action, busy: false, error: fileActionFailureMessage(action, action.path, error) });
+    if (store.hasInFlightPathWithin(action.path)) {
+      setFileAction({
+        ...action,
+        error: `Cannot delete ${action.path} while an agent may be writing inside it.`,
+      });
       return;
     }
-    if (!result.ok) {
-      setFileAction({ ...action, busy: false, error: result.error });
-      return;
-    }
-    setFileAction(null);
-    dispatch(deletePathReferencesCommand(action.path, { closeAffectedSurface: true }));
+    dispatch({ type: "requestProjectPathDelete", path: action.path });
   }, [dispatch, fileAction, store]);
+
+  const handledMutationRequestRef = useRef(0);
+  useEffect(() => {
+    const request = workbench.projectPathMutationRequest;
+    if (
+      request === null ||
+      handledMutationRequestRef.current === request.id
+    ) {
+      return;
+    }
+    handledMutationRequestRef.current = request.id;
+    setFileAction((current) =>
+      current === null ? current : { ...current, busy: true, error: null }
+    );
+    void (async () => {
+      let diskMutationCommitted = false;
+      let editorSynchronizationCompleted = false;
+      let pathMutationLease = false;
+      let retainPathMutationLease = false;
+      const controller = getWorkbenchBufferProviderController();
+      try {
+        const mutationPath = request.kind === "rename"
+          ? request.fromPath
+          : request.path;
+        if (store.hasInFlightPathWithin(mutationPath)) {
+          setFileAction((current) =>
+            current === null
+              ? current
+              : {
+                  ...current,
+                  busy: false,
+                  error:
+                    `Cannot ${request.kind} ${mutationPath} while an agent may be writing inside it.`,
+                }
+          );
+          return;
+        }
+        const mutationCommand = request.kind === "rename"
+          ? {
+              type: "requestProjectPathRename" as const,
+              fromPath: request.fromPath,
+              toPath: request.toPath,
+            }
+          : {
+              type: "requestProjectPathDelete" as const,
+              path: request.path,
+            };
+        if (
+          projectMutationTouchesDirtyBuffer(
+            mutationCommand,
+            getWorkbenchBufferProviderController().getSnapshot(),
+          )
+        ) {
+          // A native/plugin edit can race the render which scheduled this
+          // effect. Re-enter the same Save/Discard/Cancel transaction before
+          // touching disk instead of relying on the earlier preflight.
+          dispatch({
+            type: "completeProjectPathMutation",
+            requestId: request.id,
+          });
+          dispatch(mutationCommand);
+          return;
+        }
+        if (!controller.beginProjectPathMutation()) {
+          setFileAction((current) =>
+            current === null
+              ? current
+              : {
+                  ...current,
+                  busy: false,
+                  error: "Another BUFFER project-path mutation is already in progress.",
+                }
+          );
+          return;
+        }
+        pathMutationLease = true;
+        if (request.kind === "delete") {
+          // Unload affected clean buffers before deleting disk state. If the
+          // filesystem operation fails, reopening a still-existing file is
+          // harmless; the reverse ordering could leave a live buffer able to
+          // recreate a path which has already been deleted.
+          const synchronized = await controller.synchronizePathDelete(request.path);
+          if (!synchronized.ok) {
+            setFileAction((current) =>
+              current === null
+                ? current
+                : { ...current, busy: false, error: synchronized.reason }
+            );
+            return;
+          }
+          editorSynchronizationCompleted = true;
+          if (store.hasInFlightPathWithin(request.path)) {
+            setFileAction((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error:
+                      `Cannot delete ${request.path} while an agent may be writing inside it.`,
+                  }
+            );
+            return;
+          }
+          if (
+            projectMutationTouchesDirtyBuffer(
+              mutationCommand,
+              controller.getSnapshot(),
+            )
+          ) {
+            setFileAction((current) =>
+              current === null
+                ? current
+                : {
+                    ...current,
+                    busy: false,
+                    error:
+                      `Cannot delete ${request.path} because an affected buffer became modified.`,
+                  }
+            );
+            return;
+          }
+        }
+        const result = request.kind === "rename"
+          ? await store.renamePath(
+              request.fromPath,
+              request.toPath,
+              {
+                beforeCommit: () => {
+                  if (store.hasInFlightPathWithin(request.fromPath)) {
+                    return `Cannot rename ${request.fromPath} while an agent may be writing inside it.`;
+                  }
+                  return projectMutationTouchesDirtyBuffer(
+                    mutationCommand,
+                    getWorkbenchBufferProviderController().getSnapshot(),
+                  )
+                    ? `Cannot rename ${request.fromPath} while it contains unsaved editor changes.`
+                    : null;
+                },
+              },
+            )
+          : await store.deletePath(request.path);
+        if (!result.ok) {
+          if (
+            projectMutationTouchesDirtyBuffer(
+              mutationCommand,
+              getWorkbenchBufferProviderController().getSnapshot(),
+            )
+          ) {
+            dispatch({
+              type: "completeProjectPathMutation",
+              requestId: request.id,
+            });
+            dispatch(mutationCommand);
+            return;
+          }
+          setFileAction((current) =>
+            current === null
+              ? current
+              : { ...current, busy: false, error: result.error }
+          );
+          return;
+        }
+        diskMutationCommitted = true;
+        if (request.kind === "rename") {
+          const synchronized = await controller.synchronizePathRename(
+            request.fromPath,
+            result.path,
+          ).catch((error: unknown) => ({
+            ok: false as const,
+            reason:
+              `Embedded Neovim rename synchronization failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            diskRollbackSafe: false,
+          }));
+          if (!synchronized.ok) {
+            if (synchronized.diskRollbackSafe === false) {
+              const sourceQuarantine = await controller.synchronizePathDelete(
+                request.fromPath,
+              ).catch((error: unknown) => ({
+                ok: false as const,
+                reason:
+                  `Failed to unload source-path Neovim buffers: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+              }));
+              const destinationQuarantine = await controller.synchronizePathDelete(
+                result.path,
+              ).catch((error: unknown) => ({
+                ok: false as const,
+                reason:
+                  `Failed to unload destination-path Neovim buffers: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+              }));
+              retainPathMutationLease =
+                !sourceQuarantine.ok || !destinationQuarantine.ok;
+              setFileAction((current) =>
+                current === null
+                  ? current
+                  : {
+                      ...current,
+                      busy: false,
+                      error:
+                        `${synchronized.reason} The disk rename was not rolled back because Neovim's applied state is unknown. ` +
+                        (
+                          retainPathMutationLease
+                            ? "BUFFER writes remain locked; restart AgenC to reconcile safely."
+                            : "Affected buffers were unloaded; restart AgenC to reconcile project references safely."
+                        ),
+                    }
+              );
+              return;
+            }
+            // The Neovim rename script is transactional: a refused/failed
+            // synchronization leaves the original buffer names intact. Move
+            // disk state back before allowing the action to settle. The store
+            // keeps its no-clobber and in-flight checks for this inverse move.
+            const rollback = await store.renamePath(result.path, request.fromPath);
+            if (rollback.ok) {
+              diskMutationCommitted = false;
+              setFileAction((current) =>
+                current === null
+                  ? current
+                  : {
+                      ...current,
+                      busy: false,
+                      error:
+                        `${synchronized.reason} The disk rename was rolled back; no project references changed.`,
+                    }
+              );
+            } else {
+              const quarantine = await controller.synchronizePathDelete(
+                request.fromPath,
+              ).catch((error: unknown) => ({
+                ok: false as const,
+                reason:
+                  `Failed to unload stale Neovim buffers: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+              }));
+              retainPathMutationLease = !quarantine.ok;
+              setFileAction((current) =>
+                current === null
+                  ? current
+                  : {
+                      ...current,
+                      busy: false,
+                      error:
+                        `${synchronized.reason} Disk rollback also failed: ${rollback.error}. ` +
+                        (
+                          quarantine.ok
+                            ? "Affected stale buffers were unloaded; restart AgenC to reconcile project references safely."
+                            : `${quarantine.reason} Do not select or save the stale buffer; restart AgenC to reconcile safely.`
+                        ),
+                    }
+              );
+            }
+            return;
+          }
+          editorSynchronizationCompleted = true;
+        }
+        setFileAction(null);
+        if (request.kind === "rename") {
+          dispatch(renamePathReferencesCommand(
+            request.fromPath,
+            result.path,
+            { openAffectedBuffer: true },
+          ));
+        } else {
+          dispatch(deletePathReferencesCommand(
+            request.path,
+            { closeAffectedSurface: true },
+          ));
+        }
+      } catch (error) {
+        logError(error);
+        const failedValue = request.kind === "rename"
+          ? request.toPath
+          : request.path;
+        setFileAction((current) =>
+          current === null
+            ? current
+            : {
+                ...current,
+                busy: false,
+                error: fileActionFailureMessage(current, failedValue, error),
+              }
+        );
+      } finally {
+        if (pathMutationLease && !retainPathMutationLease) {
+          controller.endProjectPathMutation();
+        }
+        if (!diskMutationCommitted || editorSynchronizationCompleted) {
+          dispatch({
+            type: "completeProjectPathMutation",
+            requestId: request.id,
+          });
+        }
+      }
+    })();
+  }, [dispatch, store, workbench.projectPathMutationRequest]);
 
   useRegisterKeybindingContext("Explorer", focused);
   useKeybindings(

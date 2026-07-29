@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   TuiSession,
@@ -24,6 +24,16 @@ describe("TUI E2E harness state isolation", () => {
       hasRenderedAssistantReply([
         "                               │ AGENC",
         "                               │ OK",
+      ]),
+    ).toBe(true);
+  });
+
+  it("recognizes a compact workbench reply aligned below its user prompt", () => {
+    expect(
+      hasRenderedAssistantReply([
+        " │ ▾ project                         ❯ hi                                                        │",
+        " │     package.json                                                                                │",
+        " │     README.md                       OK                                                         │",
       ]),
     ).toBe(true);
   });
@@ -51,6 +61,14 @@ describe("TUI E2E harness state isolation", () => {
         "                                 legacy reply",
       ]),
     ).toBe(true);
+    expect(
+      hasRenderedAssistantReply([
+        " │ ▾ project                         ❯ hi                                                        │",
+        " │     package.json                                                              Delegate work │",
+        " │                                                                                              │",
+        " │ ┌ composer chrome                                                                           │",
+      ]),
+    ).toBe(false);
   });
 
   it("writes trust to AGENC_HOME when it differs from HOME", () => {
@@ -211,6 +229,33 @@ describe("TUI E2E harness state isolation", () => {
     await expect(session.prepare()).rejects.toThrow(
       /requires runner-owned gate state or useTempHome isolation/u,
     );
+  });
+
+  it("omits unsupported node-pty signals when terminating on Windows", () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    if (platformDescriptor === undefined) {
+      throw new Error("process.platform descriptor is unavailable");
+    }
+    const kill = vi.fn((signal?: string) => {
+      if (signal !== undefined) {
+        throw new Error("Signals not supported on windows.");
+      }
+    });
+    const session = new TuiSession();
+    session.term = { kill } as typeof session.term;
+
+    Object.defineProperty(process, "platform", {
+      ...platformDescriptor,
+      value: "win32",
+    });
+    try {
+      session.kill("SIGKILL");
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+
+    expect(kill).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith();
   });
 
   it("gives every scenario a private clean git fixture", () => {

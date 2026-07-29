@@ -858,7 +858,11 @@ async function waitForInputHandlerCount(count: number): Promise<void> {
   throw new Error(`Expected at least ${count} input handlers, got ${harness.inputHandlers.length}`)
 }
 
-function latestInputHandler(): (input: string, key: Record<string, boolean>) => unknown {
+function latestInputHandler(): (
+  input: string,
+  key: Record<string, boolean>,
+  event?: unknown,
+) => unknown {
   const latest = harness.inputHandlers.at(-1)
   if (!latest) throw new Error('No input handler registered')
   return latest.handler
@@ -983,6 +987,30 @@ describe('PromptInput render surface', () => {
       expect(baseProps.columns).toBe(95)
       expect(baseProps.multiline).toBe(true)
       expect(baseProps.disableCursorMovementForUpDownKeys).toBe(false)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('shows the armed Ctrl+D exit confirmation in the workbench composer', async () => {
+    const rendered = await renderPromptInput({ input: '' })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      expect(harness.promptInputFooterProps).toBeUndefined()
+
+      ;(baseProps.onExitMessage as (show: boolean, key?: string) => void)(
+        true,
+        'Ctrl-D',
+      )
+
+      await vi.waitFor(() => {
+        expect(harness.promptInputFooterProps).toEqual(
+          expect.objectContaining({
+            exitMessage: { show: true, key: 'Ctrl-D' },
+          }),
+        )
+      })
     } finally {
       await rendered.dispose()
     }
@@ -1292,6 +1320,49 @@ describe('PromptInput render surface', () => {
         undefined,
         expect.objectContaining({ mode: 'prompt' }),
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('backspace on an empty composer removes only the latest workbench attachment', async () => {
+    harness.appState.workbench = {
+      ...getDefaultWorkbenchState(),
+      attachments: [
+        {
+          id: 'file:src/first.ts',
+          kind: 'file',
+          label: 'src/first.ts',
+          path: 'src/first.ts',
+        },
+        {
+          id: 'file:src/latest.ts',
+          kind: 'file',
+          label: 'src/latest.ts',
+          path: 'src/latest.ts',
+        },
+      ],
+      composerAttachmentIds: [
+        'file:src/first.ts',
+        'file:src/latest.ts',
+      ],
+    }
+    const stopImmediatePropagation = vi.fn()
+    const rendered = await renderPromptInput({ input: '' })
+
+    try {
+      latestInputHandler()(
+        '',
+        { backspace: true },
+        { stopImmediatePropagation },
+      )
+
+      expect(
+        (harness.appState.workbench as {
+          composerAttachmentIds: readonly string[]
+        }).composerAttachmentIds,
+      ).toEqual(['file:src/first.ts'])
+      expect(stopImmediatePropagation).toHaveBeenCalledOnce()
     } finally {
       await rendered.dispose()
     }

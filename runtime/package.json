@@ -22,6 +22,9 @@
     "dist",
     "README.md"
   ],
+  "agencExecutableFiles": [
+    "dist/agenc-process-broker"
+  ],
   "scripts": {
     "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
     "daemon": "node bin/agenc daemon start --foreground",

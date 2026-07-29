@@ -10,6 +10,14 @@ const explorerHarness = vi.hoisted(() => {
     createCalls: string[];
     renameCalls: Array<readonly [string, string]>;
     deleteCalls: string[];
+    synchronizeRenameCalls: Array<readonly [string, string]>;
+    synchronizeDeleteCalls: string[];
+    synchronizeRenameResult: { readonly ok: false; readonly reason: string } | null;
+    synchronizeDeleteResult: { readonly ok: false; readonly reason: string } | null;
+    mutationSequence: string[];
+    pathMutationLeaseCount: number;
+    inFlightWithin: boolean;
+    synchronizeDeleteSideEffect: (() => void) | null;
     storeCalls: Array<readonly [string, readonly unknown[]]>;
     activePathCalls: Array<string | null>;
     attachedPathCalls: string[][];
@@ -22,9 +30,28 @@ const explorerHarness = vi.hoisted(() => {
     rejectDeleteError: unknown | null;
     createResult: { readonly ok: false; readonly error: string } | null;
     renameResult: { readonly ok: false; readonly error: string } | null;
+    rollbackRenameResult: { readonly ok: false; readonly error: string } | null;
     deleteResult: { readonly ok: false; readonly error: string } | null;
     pendingCreateResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
     pendingDeleteResolve: null | ((result: { readonly ok: true; readonly path: string }) => void);
+    bufferSnapshot: {
+      readonly dirty: boolean;
+      readonly filePath: string | null;
+      readonly buffers: Array<{
+        readonly handle: number;
+        readonly name: string;
+        readonly filePath: string | null;
+        readonly absolutePath: string | null;
+        readonly listed: boolean;
+        readonly loaded: boolean;
+        readonly modified: boolean;
+        readonly current: boolean;
+        readonly bufferType: string;
+        readonly modifiable: boolean;
+        readonly readOnly: boolean;
+        readonly saveable: boolean;
+      }>;
+    };
     logError: ReturnType<typeof vi.fn>;
     cursorRow: Record<string, unknown> | null;
     snapshot: Record<string, unknown>;
@@ -35,6 +62,14 @@ const explorerHarness = vi.hoisted(() => {
     createCalls: [],
     renameCalls: [],
     deleteCalls: [],
+    synchronizeRenameCalls: [],
+    synchronizeDeleteCalls: [],
+    synchronizeRenameResult: null,
+    synchronizeDeleteResult: null,
+    mutationSequence: [],
+    pathMutationLeaseCount: 0,
+    inFlightWithin: false,
+    synchronizeDeleteSideEffect: null,
     storeCalls: [],
     activePathCalls: [],
     attachedPathCalls: [],
@@ -47,9 +82,15 @@ const explorerHarness = vi.hoisted(() => {
     rejectDeleteError: null,
     createResult: null,
     renameResult: null,
+    rollbackRenameResult: null,
     deleteResult: null,
     pendingCreateResolve: null,
     pendingDeleteResolve: null,
+    bufferSnapshot: {
+      dirty: false,
+      filePath: null,
+      buffers: [],
+    },
     logError: vi.fn(),
     cursorRow: {
       id: "src",
@@ -119,6 +160,11 @@ const explorerHarness = vi.hoisted(() => {
     setInFlightPaths: (paths: Iterable<string>) => {
       harness.inFlightPathCalls.push([...paths]);
     },
+    getFilePaths: () =>
+      ((harness.snapshot.rows ?? []) as Array<Record<string, unknown>>)
+        .filter(row => row.kind === "file")
+        .map(row => String(row.path)),
+    hasInFlightPathWithin: () => harness.inFlightWithin,
     move: (delta: number) => {
       harness.storeCalls.push(["move", [delta]]);
     },
@@ -156,12 +202,17 @@ const explorerHarness = vi.hoisted(() => {
       return { ok: true, path: value };
     },
     renamePath: async (from: string, to: string) => {
+      harness.mutationSequence.push(`disk:rename:${from}:${to}`);
       harness.renameCalls.push([from, to]);
       if (harness.rejectRenameError) throw harness.rejectRenameError;
+      if (harness.rollbackRenameResult && from === "lib" && to === "src") {
+        return harness.rollbackRenameResult;
+      }
       if (harness.renameResult) return harness.renameResult;
       return { ok: true, path: to };
     },
     deletePath: async (value: string) => {
+      harness.mutationSequence.push(`disk:delete:${value}`);
       harness.deleteCalls.push(value);
       if (harness.rejectDeleteError) throw harness.rejectDeleteError;
       if (harness.deferDelete) {
@@ -210,9 +261,40 @@ vi.mock("../../../src/utils/log.js", () => ({
   logError: explorerHarness.logError,
 }));
 
+vi.mock("../../../src/tui/workbench/buffer/providers/BufferProviderController.js", () => ({
+  getWorkbenchBufferProviderController: () => ({
+    getSnapshot: () => explorerHarness.bufferSnapshot,
+    beginProjectPathMutation: () => {
+      if (explorerHarness.pathMutationLeaseCount !== 0) return false;
+      explorerHarness.pathMutationLeaseCount = 1;
+      explorerHarness.mutationSequence.push("nvim:lock");
+      return true;
+    },
+    endProjectPathMutation: () => {
+      explorerHarness.pathMutationLeaseCount = 0;
+      explorerHarness.mutationSequence.push("nvim:unlock");
+    },
+    synchronizePathRename: async (fromPath: string, toPath: string) => {
+      explorerHarness.mutationSequence.push(`nvim:rename:${fromPath}:${toPath}`);
+      explorerHarness.synchronizeRenameCalls.push([fromPath, toPath]);
+      return explorerHarness.synchronizeRenameResult ??
+        { ok: true as const, affectedBufferHandles: [] };
+    },
+    synchronizePathDelete: async (path: string) => {
+      explorerHarness.mutationSequence.push(`nvim:delete:${path}`);
+      explorerHarness.synchronizeDeleteCalls.push(path);
+      explorerHarness.synchronizeDeleteSideEffect?.();
+      return explorerHarness.synchronizeDeleteResult ??
+        { ok: true as const, affectedBufferHandles: [] };
+    },
+  }),
+}));
+
 import { createRoot } from "../../../src/tui/ink.js";
 import { AppStateProvider, getDefaultAppState, type AppState, useSetAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorer } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
+import { useWorkbenchDispatch } from "../../../src/tui/workbench/state.js";
+import type { WorkbenchCommand } from "../../../src/tui/workbench/types.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -294,9 +376,14 @@ async function renderExplorer(options: {
   readonly stdout: PassThrough;
   readonly root: Awaited<ReturnType<typeof createRoot>>;
   readonly output: () => string;
+  readonly dispatch: (command: WorkbenchCommand) => void;
 }> {
   const changes: AppState[] = [];
   const { stdin, stdout } = createStreams();
+  let workbenchDispatch: ((command: WorkbenchCommand) => void) | null = null;
+  const captureDispatch = (dispatch: (command: WorkbenchCommand) => void): void => {
+    workbenchDispatch = dispatch;
+  };
   let output = "";
   stdout.on("data", (chunk: Buffer) => {
     output += chunk.toString("utf8");
@@ -319,12 +406,25 @@ async function renderExplorer(options: {
       }}
       onChangeAppState={({ newState }) => changes.push(newState)}
     >
+      <WorkbenchDispatchProbe onReady={captureDispatch} />
       <ProjectExplorer focused={options.focused ?? true} width={options.width ?? 40} />
     </AppStateProvider>,
   );
   await sleep();
 
-  return { changes, stdin, stdout, root, output: () => output };
+  return {
+    changes,
+    stdin,
+    stdout,
+    root,
+    output: () => output,
+    dispatch: command => {
+      if (workbenchDispatch === null) {
+        throw new Error("Workbench dispatch probe was not ready");
+      }
+      workbenchDispatch(command);
+    },
+  };
 }
 
 function cleanupExplorer(root: Awaited<ReturnType<typeof createRoot>>, stdin: TestStdin, stdout: PassThrough): void {
@@ -340,6 +440,14 @@ describe("ProjectExplorer interactions", () => {
     explorerHarness.createCalls = [];
     explorerHarness.renameCalls = [];
     explorerHarness.deleteCalls = [];
+    explorerHarness.synchronizeRenameCalls = [];
+    explorerHarness.synchronizeDeleteCalls = [];
+    explorerHarness.synchronizeRenameResult = null;
+    explorerHarness.synchronizeDeleteResult = null;
+    explorerHarness.mutationSequence = [];
+    explorerHarness.pathMutationLeaseCount = 0;
+    explorerHarness.inFlightWithin = false;
+    explorerHarness.synchronizeDeleteSideEffect = null;
     explorerHarness.storeCalls = [];
     explorerHarness.activePathCalls = [];
     explorerHarness.attachedPathCalls = [];
@@ -352,9 +460,15 @@ describe("ProjectExplorer interactions", () => {
     explorerHarness.rejectDeleteError = null;
     explorerHarness.createResult = null;
     explorerHarness.renameResult = null;
+    explorerHarness.rollbackRenameResult = null;
     explorerHarness.deleteResult = null;
     explorerHarness.pendingCreateResolve = null;
     explorerHarness.pendingDeleteResolve = null;
+    explorerHarness.bufferSnapshot = {
+      dirty: false,
+      filePath: null,
+      buffers: [],
+    };
     explorerHarness.cursorRow = directoryRow("src");
     explorerHarness.snapshot = {
       cwd: "/repo",
@@ -735,6 +849,90 @@ describe("ProjectExplorer interactions", () => {
     }
   });
 
+  it.each([
+    { mutation: "rename", dirtyBuffer: "active" },
+    { mutation: "rename", dirtyBuffer: "hidden" },
+    { mutation: "delete", dirtyBuffer: "active" },
+    { mutation: "delete", dirtyBuffer: "hidden" },
+  ] as const)(
+    "does not $mutation a path containing a dirty $dirtyBuffer buffer before approval or after cancel",
+    async ({ dirtyBuffer, mutation }) => {
+      const targetPath = "src/nested/app.ts";
+      const activePath = dirtyBuffer === "active" ? targetPath : "other.ts";
+      explorerHarness.bufferSnapshot = {
+        dirty: true,
+        filePath: activePath,
+        buffers: [
+          providerBuffer(activePath, {
+            current: true,
+            modified: dirtyBuffer === "active",
+          }),
+          ...(dirtyBuffer === "hidden"
+            ? [providerBuffer(targetPath, { current: false, modified: true })]
+            : []),
+        ],
+      };
+      const { changes, dispatch, root, stdin, stdout } = await renderExplorer({
+        workbench: {
+          activeSurfaceMode: "buffer",
+          activeFilePath: activePath,
+          activeFileLine: 3,
+        },
+      });
+
+      try {
+        if (mutation === "rename") {
+          explorerHarness.handlers["explorer:rename"]?.();
+          await sleep();
+          const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+            | ((value: string) => void)
+            | undefined;
+          submitRename?.("lib");
+        } else {
+          explorerHarness.handlers["explorer:delete"]?.();
+          await sleep();
+          explorerHarness.handlers["confirm:yes"]?.();
+        }
+        await sleep();
+
+        expect(explorerHarness.renameCalls).toEqual([]);
+        expect(explorerHarness.deleteCalls).toEqual([]);
+        expect(changes.at(-1)?.workbench).toMatchObject({
+          projectPathMutationRequest: null,
+          pendingBlockedOverlay: {
+            kind: "buffer-dirty",
+            attemptedAction:
+              mutation === "rename" ? "renaming src" : "deleting src",
+            deferredCommand:
+              mutation === "rename"
+                ? {
+                    type: "requestProjectPathRename",
+                    fromPath: "src",
+                    toPath: "lib",
+                  }
+                : {
+                    type: "requestProjectPathDelete",
+                    path: "src",
+                  },
+          },
+        });
+
+        dispatch({ type: "clearBlockedOverlay" });
+        await sleep();
+
+        expect(explorerHarness.renameCalls).toEqual([]);
+        expect(explorerHarness.deleteCalls).toEqual([]);
+        expect(changes.at(-1)?.workbench).toMatchObject({
+          projectPathMutationRequest: null,
+          pendingBlockedOverlay: null,
+          activeFilePath: activePath,
+        });
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
+
   it("updates the active buffer when renaming a directory that contains it", async () => {
     const changes: AppState[] = [];
     const { stdin, stdout } = createStreams();
@@ -782,6 +980,13 @@ describe("ProjectExplorer interactions", () => {
       await sleep();
 
       expect(explorerHarness.renameCalls).toEqual([["src", "lib/"]]);
+      expect(explorerHarness.synchronizeRenameCalls).toEqual([["src", "lib/"]]);
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "disk:rename:src:lib/",
+        "nvim:rename:src:lib/",
+        "nvim:unlock",
+      ]);
       expect(changes.at(-1)?.workbench).toMatchObject({
         focusedPane: "explorer",
         activeSurfaceMode: "buffer",
@@ -803,6 +1008,162 @@ describe("ProjectExplorer interactions", () => {
       stdout.end();
     }
   });
+
+  it.each(["rename", "delete"] as const)(
+    "keeps disk and Redux references unchanged when %s buffer synchronization fails",
+    async (mutation) => {
+      const failure = `Neovim ${mutation} synchronization failed`;
+      if (mutation === "rename") {
+        explorerHarness.synchronizeRenameResult = { ok: false, reason: failure };
+      } else {
+        explorerHarness.synchronizeDeleteResult = { ok: false, reason: failure };
+      }
+      const { changes, root, stdin, stdout } = await renderExplorer({
+        workbench: {
+          activeSurfaceMode: "preview",
+          activeFilePath: "src/nested/app.ts",
+          activeFileLine: 12,
+        },
+      });
+
+      try {
+        if (mutation === "rename") {
+          explorerHarness.handlers["explorer:rename"]?.();
+          await sleep();
+          const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+            | ((value: string) => void)
+            | undefined;
+          submitRename?.("lib");
+        } else {
+          explorerHarness.handlers["explorer:delete"]?.();
+          await sleep();
+          explorerHarness.handlers["confirm:yes"]?.();
+        }
+        await sleep();
+
+        expect(explorerHarness.mutationSequence).toEqual(
+          mutation === "rename"
+            ? [
+                "nvim:lock",
+                "disk:rename:src:lib",
+                "nvim:rename:src:lib",
+                "disk:rename:lib:src",
+                "nvim:unlock",
+              ]
+            : ["nvim:lock", "nvim:delete:src", "nvim:unlock"],
+        );
+        expect(changes.at(-1)?.workbench).toMatchObject({
+          activeSurfaceMode: "preview",
+          activeFilePath: "src/nested/app.ts",
+          activeFileLine: 12,
+          projectPathMutationRequest: null,
+        });
+        expect(explorerHarness.deleteCalls).toEqual([]);
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
+
+  it("fails closed without clobbering a recreated source when rename rollback loses a race", async () => {
+    explorerHarness.synchronizeRenameResult = {
+      ok: false,
+      reason: "Neovim rename synchronization failed",
+    };
+    explorerHarness.rollbackRenameResult = {
+      ok: false,
+      error: "Cannot rename to src: path already exists.",
+    };
+    const { changes, root, stdin, stdout } = await renderExplorer({
+      workbench: {
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/nested/app.ts",
+        activeFileLine: 5,
+      },
+    });
+
+    try {
+      explorerHarness.handlers["explorer:rename"]?.();
+      await sleep();
+      const submitRename = explorerHarness.textInputProps.at(-1)?.onSubmit as
+        | ((value: string) => void)
+        | undefined;
+      submitRename?.("lib");
+      await sleep();
+
+      expect(explorerHarness.mutationSequence).toEqual([
+        "nvim:lock",
+        "disk:rename:src:lib",
+        "nvim:rename:src:lib",
+        "disk:rename:lib:src",
+        "nvim:delete:src",
+        "nvim:unlock",
+      ]);
+      expect(explorerHarness.renameCalls).toEqual([
+        ["src", "lib"],
+        ["lib", "src"],
+      ]);
+      expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src"]);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "src/nested/app.ts",
+        projectPathMutationRequest: {
+          kind: "rename",
+          fromPath: "src",
+          toPath: "lib",
+        },
+      });
+    } finally {
+      cleanupExplorer(root, stdin, stdout);
+    }
+  });
+
+  it.each(["dirty-buffer", "agent-write"] as const)(
+    "rechecks a late %s immediately after Neovim delete preparation and before disk removal",
+    async (race) => {
+      explorerHarness.synchronizeDeleteSideEffect = () => {
+        if (race === "agent-write") {
+          explorerHarness.inFlightWithin = true;
+          return;
+        }
+        explorerHarness.bufferSnapshot = {
+          dirty: true,
+          filePath: "src/nested/app.ts",
+          buffers: [providerBuffer("src/nested/app.ts", {
+            current: true,
+            modified: true,
+          })],
+        };
+      };
+      const { changes, root, stdin, stdout } = await renderExplorer({
+        workbench: {
+          activeSurfaceMode: "buffer",
+          activeFilePath: "src/nested/app.ts",
+        },
+      });
+
+      try {
+        explorerHarness.handlers["explorer:delete"]?.();
+        await sleep();
+        explorerHarness.handlers["confirm:yes"]?.();
+        await sleep();
+
+        expect(explorerHarness.synchronizeDeleteCalls).toEqual(["src"]);
+        expect(explorerHarness.deleteCalls).toEqual([]);
+        expect(explorerHarness.mutationSequence).toEqual([
+          "nvim:lock",
+          "nvim:delete:src",
+          "nvim:unlock",
+        ]);
+        expect(changes.at(-1)?.workbench).toMatchObject({
+          activeFilePath: "src/nested/app.ts",
+          projectPathMutationRequest: null,
+        });
+      } finally {
+        cleanupExplorer(root, stdin, stdout);
+      }
+    },
+  );
 
   it("does not reopen an unrelated active file when renaming another path", async () => {
     const changes: AppState[] = [];
@@ -1205,4 +1566,39 @@ function WorkbenchStateSetter({
     });
   }, [onReady, setAppState]);
   return null;
+}
+
+function WorkbenchDispatchProbe({
+  onReady,
+}: {
+  readonly onReady: (dispatch: (command: WorkbenchCommand) => void) => void;
+}): null {
+  const dispatch = useWorkbenchDispatch();
+  React.useEffect(() => {
+    onReady(dispatch);
+  }, [dispatch, onReady]);
+  return null;
+}
+
+function providerBuffer(
+  path: string,
+  options: {
+    readonly current: boolean;
+    readonly modified: boolean;
+  },
+) {
+  return {
+    handle: options.current ? 1 : 2,
+    name: path,
+    filePath: path,
+    absolutePath: `/repo/${path}`,
+    listed: true,
+    loaded: true,
+    modified: options.modified,
+    current: options.current,
+    bufferType: "",
+    modifiable: true,
+    readOnly: false,
+    saveable: true,
+  };
 }

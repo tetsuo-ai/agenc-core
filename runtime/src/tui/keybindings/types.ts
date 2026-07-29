@@ -1,4 +1,5 @@
 export const KEYBINDING_CONTEXT_NAMES = [
+  'Modal',
   'Global',
   'Chat',
   'Autocomplete',
@@ -23,6 +24,7 @@ export const KEYBINDING_CONTEXT_NAMES = [
   'Explorer',
   'Surface',
   'Buffer',
+  'BufferHost',
   'Agents',
   'Composer',
 ] as const
@@ -145,6 +147,7 @@ export const KEYBINDING_ACTION_NAMES = [
   'workbench:openDiff',
   'workbench:openSearch',
   'workbench:toggleFileRail',
+  'workbench:toggleSurfaceMaximized',
   'explorer:up',
   'explorer:down',
   'explorer:pageUp',
@@ -187,6 +190,7 @@ export const KEYBINDING_ACTION_NAMES = [
   'buffer:redo',
   'buffer:hover',
   'buffer:definition',
+  'buffer:passthrough',
   'buffer:up',
   'buffer:down',
   'buffer:left',

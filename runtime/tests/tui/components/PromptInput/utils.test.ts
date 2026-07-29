@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Key } from "../../ink.js";
 import {
   clampPromptTextInputColumns,
+  clampWorkbenchPromptTextInputColumns,
   formatVimModeIndicator,
   getNewlineInstructions,
   isNonSpacePrintable,
@@ -121,6 +122,24 @@ describe("PromptInput utils", () => {
     expect(clampPromptTextInputColumns(5)).toBe(0);
     expect(clampPromptTextInputColumns(10)).toBe(5);
     expect(clampPromptTextInputColumns(80)).toBe(75);
+  });
+
+  test("clamps workbench input columns to the framed composer chrome", () => {
+    // A 140-column terminal leaves 136 columns inside the workbench frame.
+    // Four padding cells, " YOLO ", the two-cell gap, and "▶ " leave 122
+    // editable cells; the helper returns one extra cell for TextCursor.
+    expect(
+      clampWorkbenchPromptTextInputColumns(136, "YOLO", "▶", false),
+    ).toBe(123);
+    expect(
+      clampWorkbenchPromptTextInputColumns(116, "DEFAULT", "›", false),
+    ).toBe(100);
+    expect(
+      clampWorkbenchPromptTextInputColumns(136, "YOLO", "▶", true),
+    ).toBe(114);
+    expect(
+      clampWorkbenchPromptTextInputColumns(10, "UNATTENDED", ">", true),
+    ).toBe(0);
   });
 
   test("limits paste reference rows to one or two lines", () => {

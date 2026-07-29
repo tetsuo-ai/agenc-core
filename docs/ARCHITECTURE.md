@@ -353,7 +353,15 @@ The TUI is a **custom `react-reconciler` Ink fork** under
 `runtime/src/tui/ink` (own renderer, double-buffered frame diffing, event
 dispatch, bidi/ANSI) — not the upstream `ink` package. On top: app shell,
 prompt input, transcript, and the **workbench** (project explorer, preview,
-editable `BUFFER` preferring embedded `nvim --embed`). See
+and editable `BUFFER`).
+
+BUFFER prefers a supervised `nvim --embed` workspace session. Neovim owns
+editing, modes, command-line UI, messages, popups, buffers, and plugins; AgenC
+attaches a line-grid UI, renders that native grid into the measured center
+pane, routes terminal input, and owns process and file-safety boundaries.
+Loaded and hidden Neovim buffers form one safety unit: navigation reuses the
+session, dirty state is aggregated across the buffer manifest, and a workbench
+transition cannot abandon edits in a non-active buffer. See
 [`embedded-neovim-buffer.md`](embedded-neovim-buffer.md).
 
 A throwing frame is contained; the next frame full-repaints rather than

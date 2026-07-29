@@ -1,4 +1,19 @@
-import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  readlink,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { globbyStream } from "globby";
 
@@ -11,6 +26,13 @@ type Listener = () => void;
 export type ProjectTreeMutationResult =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly error: string };
+export type ProjectTreeMutationOptions = {
+  /**
+   * Synchronous last-moment guard invoked after every preparatory await and
+   * immediately before the destructive filesystem syscall.
+   */
+  readonly beforeCommit?: () => string | null;
+};
 
 const EMPTY_SNAPSHOT: ProjectTreeSnapshot = Object.freeze({
   cwd: process.cwd(),
@@ -106,6 +128,20 @@ export class ProjectTreeStore {
   };
 
   getSnapshot = (): ProjectTreeSnapshot => this.#snapshot;
+
+  getFilePaths(): readonly string[] {
+    return this.#paths.filter((item) => item.length > 0 && !item.endsWith("/"));
+  }
+
+  hasInFlightPathWithin(pathValue: string): boolean {
+    const normalized = normalizeWorkspacePathForReferences(pathValue)
+      .replace(/\/+$/u, "");
+    return [...this.#inFlightPaths].some(
+      (candidate) =>
+        candidate === normalized ||
+        candidate.startsWith(`${normalized}/`),
+    );
+  }
 
   dispose(): void {
     this.#started = false;
@@ -291,13 +327,23 @@ export class ProjectTreeStore {
     }
   }
 
-  async renamePath(fromPath: string, toPath: string): Promise<ProjectTreeMutationResult> {
+  async renamePath(
+    fromPath: string,
+    toPath: string,
+    options: ProjectTreeMutationOptions = {},
+  ): Promise<ProjectTreeMutationResult> {
     const source = resolveWorkspaceRelativePath(this.#cwd, fromPath);
     if (!source.ok) return source;
     const target = resolveWorkspaceRelativePath(this.#cwd, toPath);
     if (!target.ok) return target;
 
     try {
+      if (this.hasInFlightPathWithin(source.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot rename ${source.relativePath} while an agent may be writing inside it.`,
+        };
+      }
       if (isDescendantPath(target.relativePath, source.relativePath)) {
         return {
           ok: false,
@@ -308,7 +354,21 @@ export class ProjectTreeStore {
         return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
       }
       await mkdir(path.dirname(target.absolutePath), { recursive: true });
-      await rename(source.absolutePath, target.absolutePath);
+      // The first existence check preceded mkdir and can no longer authorize
+      // the commit. Recheck both target no-clobber and live editor/agent state
+      // after all asynchronous preparation, directly before rename().
+      if (await pathExists(target.absolutePath)) {
+        return { ok: false, error: `Cannot rename to ${target.relativePath}: path already exists.` };
+      }
+      if (this.hasInFlightPathWithin(source.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot rename ${source.relativePath} while an agent may be writing inside it.`,
+        };
+      }
+      const refusal = options.beforeCommit?.();
+      if (refusal) return { ok: false, error: refusal };
+      await renamePathNoClobber(source.absolutePath, target.absolutePath);
       this.#renameExpandedPaths(source.relativePath, target.relativePath);
       await this.refresh();
       this.reveal(target.relativePath);
@@ -323,6 +383,12 @@ export class ProjectTreeStore {
     if (!target.ok) return target;
 
     try {
+      if (this.hasInFlightPathWithin(target.relativePath)) {
+        return {
+          ok: false,
+          error: `Cannot delete ${target.relativePath} while an agent may be writing inside it.`,
+        };
+      }
       await rm(target.absolutePath, { recursive: true });
       this.#deleteExpandedPaths(target.relativePath);
       await this.refresh();
@@ -430,6 +496,112 @@ export class ProjectTreeStore {
     };
     for (const listener of this.#listeners) listener();
   }
+}
+
+/**
+ * Move one workspace path without ever authorizing replacement from a prior
+ * existence check.
+ *
+ * Regular files prefer link(2)+unlink(2): destination creation is atomic and
+ * exclusive, preserves the inode/metadata, and fails with EEXIST if another
+ * process wins the target name. Filesystems without hard-link support and
+ * cross-device moves fall back to an exclusive copy before removing the
+ * source. POSIX directories reserve the target with an exclusive mkdir before
+ * rename; a writer adding anything to that reservation makes rename fail
+ * rather than lose its data. Windows directory moves already fail whenever the
+ * destination exists, so its single rename syscall is the no-clobber primitive
+ * there.
+ */
+export async function renamePathNoClobber(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  const source = await lstat(sourcePath);
+  if (source.isDirectory()) {
+    if (process.platform === "win32") {
+      await rename(sourcePath, targetPath);
+      return;
+    }
+    await mkdir(targetPath);
+    try {
+      await rename(sourcePath, targetPath);
+    } catch (renameError) {
+      try {
+        // Never recursively remove a reservation: if another process populated
+        // it, ENOTEMPTY intentionally leaves that data in place.
+        await rmdir(targetPath);
+      } catch (cleanupError) {
+        if (!isFsErrorCode(cleanupError, "ENOENT") &&
+          !isFsErrorCode(cleanupError, "ENOTEMPTY") &&
+          !isFsErrorCode(cleanupError, "EEXIST")) {
+          throw new AggregateError(
+            [renameError, cleanupError],
+            `Directory rename failed and its empty target reservation could not be released: ${targetPath}`,
+          );
+        }
+      }
+      throw renameError;
+    }
+    return;
+  }
+
+  if (source.isSymbolicLink()) {
+    const linkTarget = await readlink(sourcePath);
+    let type: "dir" | "file" | undefined;
+    if (process.platform === "win32") {
+      type = (await stat(sourcePath)).isDirectory() ? "dir" : "file";
+    }
+    await symlink(linkTarget, targetPath, type);
+  } else {
+    try {
+      await link(sourcePath, targetPath);
+    } catch (linkError) {
+      if (!source.isFile() || !isUnsupportedFileLinkError(linkError)) {
+        throw linkError;
+      }
+      // COPYFILE_EXCL is the fallback's no-clobber primitive. In particular,
+      // a destination created after link(2) failed remains untouched and the
+      // source name is retained.
+      await copyFile(sourcePath, targetPath, fsConstants.COPYFILE_EXCL);
+    }
+  }
+  const createdTarget = await lstat(targetPath);
+
+  try {
+    await unlink(sourcePath);
+  } catch (unlinkError) {
+    try {
+      const target = await lstat(targetPath);
+      if (target.dev === createdTarget.dev && target.ino === createdTarget.ino) {
+        await unlink(targetPath);
+      }
+    } catch (cleanupError) {
+      if (!isFsErrorCode(cleanupError, "ENOENT")) {
+        throw new AggregateError(
+          [unlinkError, cleanupError],
+          `Path rename created its exclusive target but could not remove either name: ${targetPath}`,
+        );
+      }
+    }
+    throw unlinkError;
+  }
+}
+
+function isFsErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === code;
+}
+
+function isUnsupportedFileLinkError(error: unknown): boolean {
+  return [
+    "EXDEV",
+    "ENOSYS",
+    "ENOTSUP",
+    "EOPNOTSUPP",
+    "EPERM",
+  ].some((code) => isFsErrorCode(error, code));
 }
 
 let singleton: ProjectTreeStore | null = null;

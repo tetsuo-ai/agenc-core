@@ -139,8 +139,8 @@ function assertFrameShape(session, dimension, label) {
     }
   }
   const frame = rows.join("\n");
-  if (!frame.includes("TRANSCRIPT")) {
-    fail("transcript title absent from frame", {
+  if (!frame.includes("WORKBENCH")) {
+    fail("workbench chrome absent from transcript frame", {
       label,
       frame: JSON.stringify(frame.slice(0, 1200)),
     });
@@ -152,7 +152,9 @@ function assertExplorerRailVisible(session, dimension, label) {
   const rows = frameRows(session, dimension);
   const frame = rows.join("\n");
   const hasTreeRow = rows.some((row) =>
-    /^\s+(?:\[[-+]\]|[v>])\s+\S/u.test(row.slice(0, 26))
+    /^\s*(?:[│|]\s*)?(?:\[[-+]\]|[v>▾▸])\s+\S/u.test(
+      row.slice(0, 26),
+    )
   );
   if (!frame.includes("WORKSPACE") || !hasTreeRow) {
     fail("workspace explorer rail disappeared during transcript scroll", {

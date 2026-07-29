@@ -17,12 +17,15 @@ function makeSession(): EmbeddedNeovimSession {
     close: () => {},
   };
   const child = {
-    pid: 1,
+    // No real process backs this transport-only fixture. PID 1 is a dangerous
+    // sentinel here because POSIX process-group cleanup interprets -1 as a
+    // broadcast, so model the missing child explicitly instead.
+    pid: 0,
     exitCode: 0, // already exited -> waitForNeovimExit resolves immediately
     signalCode: null,
     stdin: { end: () => {} },
   };
-  const handle = { pid: 1, child, kill: () => {} };
+  const handle = { pid: 0, child, kill: () => {} };
   const ui = { dispose: () => {} };
   return new EmbeddedNeovimSession(
     handle as never,

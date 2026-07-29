@@ -60,6 +60,14 @@ export class InlineBufferProvider implements BufferEditorProvider {
     await this.#store.revert();
   }
 
+  async prepareDiscardAll(): Promise<string | null> {
+    return this.#store.prepareDiscardAll();
+  }
+
+  async discardAll(confirmationToken?: string): Promise<boolean> {
+    return this.#store.discardAll(confirmationToken);
+  }
+
   async close(options: BufferProviderCloseOptions = {}): Promise<boolean> {
     return this.#store.close(options);
   }

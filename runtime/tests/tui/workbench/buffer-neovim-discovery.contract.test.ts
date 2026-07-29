@@ -41,7 +41,7 @@ describe("embedded Neovim discovery", () => {
   });
 
   it("builds clean embedded args for hermetic mode and plain embedded args with user init", () => {
-    expect(buildNeovimEmbedArgs(false)).toEqual(["--embed", "--clean", "-n"]);
+    expect(buildNeovimEmbedArgs(false)).toEqual(["--embed", "--clean"]);
     expect(buildNeovimEmbedArgs(true)).toEqual(["--embed"]);
   });
 
@@ -60,11 +60,12 @@ describe("embedded Neovim discovery", () => {
     }
   });
 
-  it("falls back to clean embedded mode when default user init cannot start", async () => {
+  it("returns one user-init startup with a clean fallback without running either during discovery", async () => {
     const executable = join(dir, "nvim-user-init-fails");
+    const startupMarker = join(dir, "startup-ran");
     await writeFile(
       executable,
-      "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nif [ \"$2\" = \"--clean\" ]; then exit 0; fi\necho 'init boom' >&2\nexit 5\n",
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nprintf started > '${startupMarker}'\nexit 5\n`,
       "utf8",
     );
     await chmod(executable, 0o755);
@@ -73,9 +74,14 @@ describe("embedded Neovim discovery", () => {
 
     expect(result).toMatchObject({
       usable: true,
-      args: ["--embed", "--clean", "-n"],
-      useUserInit: false,
+      args: ["--embed"],
+      useUserInit: true,
+      fallback: {
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
     });
+    await expect(readFile(startupMarker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("uses the default probe timeout when no timeout is configured", async () => {
@@ -183,7 +189,7 @@ describe("embedded Neovim discovery", () => {
 
     expect(result).toMatchObject({
       usable: true,
-      args: ["--embed", "--clean", "-n"],
+      args: ["--embed", "--clean"],
       useUserInit: false,
     });
   });
@@ -201,62 +207,31 @@ describe("embedded Neovim discovery", () => {
     }
   });
 
-  it("rejects a supported version that cannot start in embedded mode", async () => {
+  it("defers embedded startup to the real contained editor lifecycle", async () => {
     const executable = join(dir, "nvim-no-embed");
-    await writeFile(executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\necho 'embed disabled' >&2\nexit 3\n", "utf8");
+    const startupMarker = join(dir, "embedded-startup-ran");
+    await writeFile(
+      executable,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nprintf started > '${startupMarker}'\necho 'embed disabled' >&2\nexit 3\n`,
+      "utf8",
+    );
     await chmod(executable, 0o755);
 
     const result = await discoverNeovim({ executable, timeoutMs: 500 });
-
-    expect(result).toMatchObject({ usable: false, reasonCode: "probe-failed" });
-    if (!result.usable) expect(result.reason).toContain("embed disabled");
-  });
-
-  it("records embedded mode probe signals when stderr is empty", async () => {
-    const executable = join(dir, "nvim-embed-signal");
-    await writeFile(executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nkill -TERM $$\n", "utf8");
-    await chmod(executable, 0o755);
-
-    const result = await discoverNeovim({ executable, timeoutMs: 500 });
-
-    expect(result).toMatchObject({ usable: false, reasonCode: "probe-failed" });
-    if (!result.usable) expect(result.reason).toContain("SIGTERM");
-  });
-
-  it("records embedded mode probe exit codes when stderr and signal are empty", async () => {
-    const executable = join(dir, "nvim-embed-exit-code");
-    await writeFile(executable, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nexit 4\n", "utf8");
-    await chmod(executable, 0o755);
-
-    const result = await discoverNeovim({ executable, timeoutMs: 500 });
-
-    expect(result).toMatchObject({ usable: false, reasonCode: "probe-failed" });
-    if (!result.usable) expect(result.reason).toContain("exit 4");
-  });
-
-  it("accepts embedded mode probes that stay alive and kills the probe child", async () => {
-    const executable = join(dir, "nvim-embed-hangs");
-    const pidFile = join(dir, "nvim-embed-hangs.pid");
-    await writeFile(executable, `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'NVIM v0.12.0\\n'; exit 0; fi\nprintf $$ > '${pidFile}'\nsleep 5\n`, "utf8");
-    await chmod(executable, 0o755);
-
-    const result = await discoverNeovim({ executable, timeoutMs: 50 });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const pid = Number(await readFile(pidFile, "utf8"));
 
     expect(result).toMatchObject({ usable: true, executable });
-    expect(isProcessAlive(pid)).toBe(false);
+    await expect(readFile(startupMarker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("reports spawn errors from the embedded mode probe", async () => {
+  it("does not require a second disposable process after a successful version probe", async () => {
     const executable = join(dir, "nvim-embed-missing");
     await writeFile(executable, `#!/bin/sh\nif [ "$1" = "--version" ]; then rm "$0"; printf 'NVIM v0.12.0\\n'; exit 0; fi\nexit 0\n`, "utf8");
     await chmod(executable, 0o755);
 
     const result = await discoverNeovim({ executable, timeoutMs: 500 });
 
-    expect(result).toMatchObject({ usable: false, reasonCode: "probe-failed" });
-    if (!result.usable) expect(result.reason).toContain("failed the embedded mode probe");
+    expect(result).toMatchObject({ usable: true, executable });
+    await expect(readFile(executable)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("records exit code and signal when a failed probe has no stderr", async () => {
@@ -291,7 +266,7 @@ describe("embedded Neovim discovery", () => {
     await writeFile(executable, `#!/bin/sh\nprintf $$ > '${pidFile}'\nsleep 5\n`, "utf8");
     await chmod(executable, 0o755);
 
-    const result = await discoverNeovim({ executable, timeoutMs: 20 });
+    const result = await discoverNeovim({ executable, timeoutMs: 250 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     const pid = Number(await readFile(pidFile, "utf8"));
 
@@ -304,7 +279,7 @@ describe("embedded Neovim discovery", () => {
   });
 
   it.skipIf(process.platform === "win32")(
-    "kills a long-lived version-probe descendant that inherits the probe pipes",
+    "accepts a successful probe leader and kills its inherited-pipe descendant",
     async () => {
       const executable = join(dir, "nvim-version-descendant");
       const descendantPidFile = join(dir, "nvim-version-descendant.pid");
@@ -331,7 +306,7 @@ describe("embedded Neovim discovery", () => {
         descendantPid = Number(await readFile(descendantPidFile, "utf8"));
         await waitUntilDead(descendantPid);
 
-        expect(result).toMatchObject({ usable: false, reasonCode: "probe-timeout" });
+        expect(result).toMatchObject({ usable: true, executable });
         expect(isProcessAlive(descendantPid)).toBe(false);
       } finally {
         descendantPid ||= await readProcessIdIfPresent(descendantPidFile);
@@ -355,43 +330,6 @@ describe("embedded Neovim discovery", () => {
           "  printf 'NVIM v0.12.0\\n'",
           "  exit 0",
           "fi",
-          "exit 0",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      await chmod(executable, 0o755);
-
-      let descendantPid = 0;
-      try {
-        const result = await discoverNeovim({ executable, timeoutMs: 500 });
-        descendantPid = Number(await readFile(descendantPidFile, "utf8"));
-        await waitUntilDead(descendantPid);
-
-        expect(result).toMatchObject({ usable: true, executable });
-        expect(isProcessAlive(descendantPid)).toBe(false);
-      } finally {
-        descendantPid ||= await readProcessIdIfPresent(descendantPidFile);
-        killProcessIfAlive(descendantPid);
-      }
-    },
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "kills a long-lived embedded-probe descendant after its leader exits successfully",
-    async () => {
-      const executable = join(dir, "nvim-embed-descendant");
-      const descendantPidFile = join(dir, "nvim-embed-descendant.pid");
-      await writeFile(
-        executable,
-        [
-          "#!/bin/sh",
-          'if [ "$1" = "--version" ]; then',
-          "  printf 'NVIM v0.12.0\\n'",
-          "  exit 0",
-          "fi",
-          "sleep 60 &",
-          `printf '%s' "$!" > '${descendantPidFile}'`,
           "exit 0",
           "",
         ].join("\n"),

@@ -145,6 +145,13 @@ export class WorkbenchBufferStore {
   #vimPersistentState: PersistentState = createInitialPersistentState();
   #openExternalEditor: BufferExternalEditorLauncher = openFileInBufferExternalEditor;
   #snapshot: WorkbenchBufferSnapshot = this.#createSnapshot();
+  #discardConfirmationSequence = 0;
+  #discardConfirmation: {
+    readonly token: string;
+    readonly openGeneration: number;
+    readonly file: BufferFileSnapshot;
+    readonly document: BufferDocument;
+  } | null = null;
 
   constructor(options: WorkbenchBufferStoreOptions = {}) {
     this.#openExternalEditor = options.openExternalEditor ?? openFileInBufferExternalEditor;
@@ -212,6 +219,43 @@ export class WorkbenchBufferStore {
     await this.#load(file.absolutePath, this.#position().line, true, file.filePath, {
       basePath: this.#workspaceBasePath ?? getCwd(),
     });
+  }
+
+  prepareDiscardAll(): string | null {
+    const file = this.#file;
+    const document = this.#document;
+    if (!file || !document || !this.#isDirty()) return null;
+    const token = `inline-discard-${++this.#discardConfirmationSequence}`;
+    this.#discardConfirmation = {
+      token,
+      openGeneration: this.#openGeneration,
+      file,
+      document,
+    };
+    return token;
+  }
+
+  async discardAll(confirmationToken?: string): Promise<boolean> {
+    const confirmation = this.#discardConfirmation;
+    this.#discardConfirmation = null;
+    if (
+      confirmationToken === undefined ||
+      confirmation === null ||
+      confirmation.token !== confirmationToken ||
+      confirmation.openGeneration !== this.#openGeneration ||
+      confirmation.file !== this.#file ||
+      confirmation.document !== this.#document ||
+      !this.#isDirty()
+    ) {
+      this.#setProblem(
+        "conflict",
+        "The inline BUFFER changed before Discard All. Review it and confirm again.",
+        "disk",
+      );
+      return false;
+    }
+    await this.revert();
+    return !this.#isDirty();
   }
 
   async save(options: { readonly hasInFlightAgent?: boolean; readonly force?: boolean } = {}): Promise<boolean> {

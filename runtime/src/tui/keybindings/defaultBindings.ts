@@ -423,6 +423,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'ctrl+k h': 'buffer:hover',
       'ctrl+k d': 'buffer:definition',
       'ctrl+r': 'workbench:toggleFileRail',
+      'ctrl+x z': 'workbench:toggleSurfaceMaximized',
       up: 'buffer:up',
       down: 'buffer:down',
       left: 'buffer:left',
@@ -441,6 +442,34 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'shift+right': 'buffer:selectRight',
       'shift+home': 'buffer:selectLineStart',
       'shift+end': 'buffer:selectLineEnd',
+    },
+  },
+  {
+    // Embedded Neovim owns its native control-key vocabulary. Host actions
+    // use Alt bindings (plus the explicit Ctrl+S save contract) so Ctrl+X
+    // completion, Ctrl+K digraphs, Ctrl+G, Ctrl+R redo, Escape, and user
+    // mappings reach Neovim unchanged.
+    context: 'BufferHost',
+    bindings: {
+      'shift+tab': 'workbench:focusComposer',
+      'alt+h': 'workbench:focusExplorer',
+      'alt+j': 'workbench:focusComposer',
+      'alt+l': 'workbench:focusAgents',
+      // Ctrl+S is the documented host-save exception. It is emitted
+      // consistently by the supported terminal input paths and does not
+      // overlap Neovim's completion/digraph/redo prefixes.
+      'ctrl+s': 'buffer:save',
+      'alt+r': 'workbench:toggleFileRail',
+      'alt+q': 'buffer:close',
+      'alt+e': 'buffer:externalEditor',
+      'alt+z': 'workbench:toggleSurfaceMaximized',
+      // Explicit false-returning matches override lower-priority/global
+      // actions without consuming the stroke; the BUFFER input capture then
+      // forwards each native key to Neovim.
+      'ctrl+x': 'buffer:passthrough',
+      'ctrl+k': 'buffer:passthrough',
+      'ctrl+g': 'buffer:passthrough',
+      'ctrl+r': 'buffer:passthrough',
     },
   },
   {

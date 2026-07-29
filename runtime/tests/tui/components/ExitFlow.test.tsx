@@ -9,6 +9,7 @@ import { gracefulShutdown } from "../../utils/gracefulShutdown.js";
 const mocks = vi.hoisted(() => ({
   dialogProps: undefined as
     | {
+        beforeMutation?: () => boolean | Promise<boolean>;
         onCancel?: () => void;
         onDone: (message?: string) => Promise<void>;
       }
@@ -26,6 +27,7 @@ vi.mock("../../utils/gracefulShutdown.js", () => ({
 
 vi.mock("./WorktreeExitDialog", () => ({
   WorktreeExitDialog: (props: {
+    beforeMutation?: () => boolean | Promise<boolean>;
     onCancel?: () => void;
     onDone: (message?: string) => Promise<void>;
   }) => {
@@ -35,6 +37,7 @@ vi.mock("./WorktreeExitDialog", () => ({
 }));
 
 function RerenderExitFlow({
+  beforeWorktreeMutation,
   onCancel,
   onDone,
   showWorktree,
@@ -49,6 +52,7 @@ function RerenderExitFlow({
 
   return (
     <ExitFlow
+      beforeWorktreeMutation={beforeWorktreeMutation}
       onCancel={onCancel}
       onDone={onDone}
       showWorktree={showWorktree}
@@ -95,6 +99,21 @@ describe("ExitFlow", () => {
     expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit");
   });
 
+  test("forwards the exact pre-mutation safety callback to the worktree dialog", async () => {
+    const beforeWorktreeMutation = vi.fn(() => false);
+
+    await renderToString(
+      <ExitFlow
+        beforeWorktreeMutation={beforeWorktreeMutation}
+        onDone={vi.fn()}
+        showWorktree
+      />,
+      80,
+    );
+
+    expect(mocks.dialogProps?.beforeMutation).toBe(beforeWorktreeMutation);
+  });
+
   test("uses a sampled goodbye message when the dialog supplies no result", async () => {
     const onDone = vi.fn();
 
@@ -103,6 +122,16 @@ describe("ExitFlow", () => {
 
     expect(onDone).toHaveBeenCalledWith("See ya!");
     expect(gracefulShutdown).toHaveBeenCalledWith(0, "prompt_input_exit");
+  });
+
+  test("does not shut down when the pre-exit safety check refuses", async () => {
+    const onDone = vi.fn(async () => false);
+
+    await renderToString(<ExitFlow onDone={onDone} showWorktree />, 80);
+    await mocks.dialogProps?.onDone("Keep editing");
+
+    expect(onDone).toHaveBeenCalledWith("Keep editing");
+    expect(gracefulShutdown).not.toHaveBeenCalled();
   });
 
   test("falls back to the default goodbye when sampling returns nothing", async () => {

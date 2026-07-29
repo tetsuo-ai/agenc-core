@@ -1,15 +1,27 @@
 import React from "react";
 
 import type { AgenCConfig } from "../config/schema.js";
+import type {
+  BufferConfig,
+  BufferNeovimInitMode,
+  BufferProviderMode,
+  BufferTabsMode,
+} from "../config/schema.js";
+import { AgenCConfigEditsBuilder } from "../config/edit.js";
 import type { ConfigStore } from "../config/store.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
-import { configFilePathFromCommandContext } from "./config-context.js";
+import {
+  agencHomeFromCommandContext,
+  configFilePathFromCommandContext,
+} from "./config-context.js";
 import type { SlashCommandContext } from "./types.js";
 import { asRecord } from "../utils/record.js";
+import { discoverNeovim } from "../tui/workbench/buffer/neovim/NeovimDiscovery.js";
+import { bufferProviderConfigFromSources } from "../tui/workbench/buffer/providers/selectBufferEditorProvider.js";
 
 type ConfigRowKind =
   | "runtime"
@@ -20,6 +32,7 @@ type ConfigRowKind =
   | "profiles"
   | "tools"
   | "agent"
+  | "editor"
   | "tui";
 
 type ConfigRowStatus = "active" | "configured" | "default" | "empty";
@@ -190,6 +203,13 @@ function createConfigMenuSnapshot(
     row("tools", "tools", config.tools_config, toolsDetail(config)),
     row("agent", "agent", config.agent, agentDetail(config)),
     row(
+      "editor",
+      "buffer",
+      config.buffer?.provider ?? "auto",
+      `tabs ${scalar(config.buffer?.show_tabs, "auto")}; Neovim init ${scalar(config.buffer?.neovim?.init, "auto")}; executable ${scalar(config.buffer?.neovim?.executable, "auto-detect")}`,
+      "active",
+    ),
+    row(
       "tui",
       "layout",
       config.tuiLayout?.mode,
@@ -261,17 +281,41 @@ function statusGlyph(status: ConfigRowStatus): string {
   }
 }
 
-function ConfigMenuView({
+export function ConfigMenuView({
   snapshot,
+  store,
+  agencHome,
   onDone,
 }: {
   readonly snapshot: ConfigMenuSnapshot;
+  readonly store: ConfigStore;
+  readonly agencHome: string;
   readonly onDone: () => void;
 }): React.ReactNode {
-  const rows = snapshot.rows;
+  const subscribe = React.useCallback(
+    (onStoreChange: () => void) =>
+      store.subscribe(() => onStoreChange()),
+    [store],
+  );
+  const getSnapshot = React.useCallback(() => store.current(), [store]);
+  const config = React.useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot,
+  );
+  const liveSnapshot = React.useMemo(
+    () => createConfigMenuSnapshot(config, {
+      configPath: snapshot.configPath,
+      warnings: store.warnings(),
+    }),
+    [config, snapshot.configPath, store],
+  );
+  const rows = liveSnapshot.rows;
   const [activeIndex, setActiveIndex] = React.useState(snapshot.activeIndex);
+  const [editorOpen, setEditorOpen] = React.useState(false);
 
   useInput((input, key) => {
+    if (editorOpen) return;
     if (key.escape || input === "q") {
       onDone();
       return;
@@ -282,8 +326,24 @@ function ConfigMenuView({
     }
     if (key.downArrow || input === "j") {
       setActiveIndex(index => nextMenuIndex(index, rows.length));
+      return;
+    }
+    if (key.return && rows[activeIndex]?.kind === "editor") {
+      setEditorOpen(true);
     }
   });
+
+  if (editorOpen) {
+    return (
+      <EditorConfigView
+        config={config}
+        store={store}
+        agencHome={agencHome}
+        env={process.env}
+        onDone={() => setEditorOpen(false)}
+      />
+    );
+  }
 
   const selected = rows[Math.max(0, Math.min(activeIndex, rows.length - 1))] ?? rows[0];
 
@@ -291,8 +351,8 @@ function ConfigMenuView({
     <MenuModal
       title="config"
       count={`${rows.length}`}
-      summary={snapshot.warningCount > 0 ? `${snapshot.warningCount} warnings` : "effective settings"}
-      headerRight={snapshot.configPath}
+      summary={liveSnapshot.warningCount > 0 ? `${liveSnapshot.warningCount} warnings` : "effective settings"}
+      headerRight={liveSnapshot.configPath}
       columns={[3, 13, 18, 24, 54]}
       headers={["", "status", "section", "key", "value"]}
       items={rows}
@@ -333,6 +393,9 @@ function ConfigMenuView({
       }
       footer={[
         { keyName: "up/down", label: "navigate" },
+        ...(rows[activeIndex]?.kind === "editor"
+          ? [{ keyName: "enter", label: "open editor settings" }]
+          : []),
         { keyName: "q", label: "close" },
       ]}
       hint="/config show · get · reload · edit"
@@ -340,9 +403,324 @@ function ConfigMenuView({
   );
 }
 
+const BUFFER_PROVIDER_MODES: readonly BufferProviderMode[] = [
+  "auto",
+  "neovim",
+  "inline",
+  "external",
+];
+const BUFFER_INIT_MODES: readonly BufferNeovimInitMode[] = [
+  "auto",
+  "user",
+  "clean",
+];
+const BUFFER_TAB_MODES: readonly BufferTabsMode[] = [
+  "auto",
+  "always",
+  "never",
+];
+
+const BUFFER_EDITOR_ENV_KEYS = [
+  "AGENC_BUFFER_PROVIDER",
+  "AGENC_BUFFER_NVIM",
+  "AGENC_BUFFER_NVIM_USE_INIT",
+  "AGENC_BUFFER_NVIM_TIMEOUT_MS",
+  "AGENC_BUFFER_NVIM_STARTUP_TIMEOUT_MS",
+  "AGENC_BUFFER_NVIM_OPERATION_TIMEOUT_MS",
+  "AGENC_BUFFER_NVIM_CLEANUP_TIMEOUT_MS",
+  "AGENC_BUFFER_NVIM_SESSION",
+] as const;
+
+export type EffectiveBufferEditorConfig = {
+  readonly provider: BufferProviderMode;
+  readonly init: BufferNeovimInitMode;
+  readonly executable: string | undefined;
+  readonly discoveryTimeoutMs: number | undefined;
+  readonly environmentOverrides: readonly string[];
+};
+
+export function effectiveBufferEditorConfig(
+  config: BufferConfig | undefined,
+  env: NodeJS.ProcessEnv,
+): EffectiveBufferEditorConfig {
+  const effective = bufferProviderConfigFromSources(config, env);
+  return {
+    provider: effective.mode ?? "auto",
+    init: effective.useUserInit === true
+      ? "user"
+      : effective.useUserInit === false
+        ? "clean"
+        : "auto",
+    executable:
+      effective.executable?.trim().length
+        ? effective.executable
+        : undefined,
+    discoveryTimeoutMs: effective.timeoutMs,
+    environmentOverrides: BUFFER_EDITOR_ENV_KEYS.filter(
+      (key) => env[key] !== undefined,
+    ),
+  };
+}
+
+function EditorConfigView({
+  config,
+  store,
+  agencHome,
+  env,
+  onDone,
+}: {
+  readonly config: AgenCConfig;
+  readonly store: ConfigStore;
+  readonly agencHome: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly onDone: () => void;
+}): React.ReactNode {
+  const [provider, setProvider] = React.useState<BufferProviderMode>(
+    config.buffer?.provider ?? "auto",
+  );
+  const [init, setInit] = React.useState<BufferNeovimInitMode>(
+    config.buffer?.neovim?.init ?? "auto",
+  );
+  const [tabs, setTabs] = React.useState<BufferTabsMode>(
+    config.buffer?.show_tabs ?? "auto",
+  );
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const [healthGeneration, setHealthGeneration] = React.useState(0);
+  const [health, setHealth] = React.useState("checking Neovim…");
+  const [saveStatus, setSaveStatus] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
+  const [draftDirty, setDraftDirty] = React.useState(false);
+  const savingRef = React.useRef(false);
+  React.useEffect(() => {
+    if (draftDirty) return;
+    setProvider(config.buffer?.provider ?? "auto");
+    setInit(config.buffer?.neovim?.init ?? "auto");
+    setTabs(config.buffer?.show_tabs ?? "auto");
+  }, [config.buffer, draftDirty]);
+  const draftConfig = React.useMemo<BufferConfig>(() => ({
+    ...config.buffer,
+    provider,
+    show_tabs: tabs,
+    neovim: {
+      ...config.buffer?.neovim,
+      init,
+    },
+  }), [config.buffer, init, provider, tabs]);
+  const effective = React.useMemo(
+    () => effectiveBufferEditorConfig(draftConfig, env),
+    [draftConfig, env],
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setHealth("checking Neovim…");
+    void discoverNeovim({
+      executable: effective.executable,
+      useUserInit:
+        effective.init === "auto" ? undefined : effective.init === "user",
+      timeoutMs: effective.discoveryTimeoutMs,
+    }).then((result) => {
+      if (cancelled) return;
+      setHealth(
+        result.usable
+          ? `${result.version.raw} · ${result.executable} · ${
+            effective.init === "auto"
+              ? "auto init (user, then clean fallback)"
+              : `${effective.init} init`
+          }`
+          : result.reason,
+      );
+    }).catch((error) => {
+      if (!cancelled) {
+        setHealth(error instanceof Error ? error.message : String(error));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    effective.discoveryTimeoutMs,
+    effective.executable,
+    effective.init,
+    healthGeneration,
+  ]);
+
+  const cycle = React.useCallback((direction: -1 | 1) => {
+    if (activeIndex === 0) {
+      setProvider(current => cycleValue(BUFFER_PROVIDER_MODES, current, direction));
+    } else if (activeIndex === 1) {
+      setInit(current => cycleValue(BUFFER_INIT_MODES, current, direction));
+    } else {
+      setTabs(current => cycleValue(BUFFER_TAB_MODES, current, direction));
+    }
+    setDraftDirty(true);
+    setSaveStatus(null);
+  }, [activeIndex]);
+
+  const save = React.useCallback(async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setSaveStatus("saving…");
+    try {
+      await new AgenCConfigEditsBuilder(agencHome)
+        .setBufferEditorConfig({
+          provider,
+          show_tabs: tabs,
+          neovim: draftConfig.neovim,
+        })
+        .apply();
+      await store.reload();
+      setDraftDirty(false);
+      setSaveStatus(
+        effective.environmentOverrides.length > 0
+          ? `saved to config.toml · process env still overrides: ${
+            effective.environmentOverrides.join(", ")
+          }`
+          : "saved · applies to the next safe editor start",
+      );
+    } catch (error) {
+      setSaveStatus(`save failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }, [
+    agencHome,
+    draftConfig.neovim,
+    effective.environmentOverrides,
+    provider,
+    store,
+    tabs,
+  ]);
+
+  useInput((input, key) => {
+    if (key.escape || input === "q") {
+      onDone();
+      return;
+    }
+    if (key.upArrow || input === "k") {
+      setActiveIndex(index => previousMenuIndex(index, 3));
+      return;
+    }
+    if (key.downArrow || input === "j") {
+      setActiveIndex(index => nextMenuIndex(index, 3));
+      return;
+    }
+    if (key.leftArrow || input === "h") {
+      cycle(-1);
+      return;
+    }
+    if (key.rightArrow || input === "l" || key.return) {
+      cycle(1);
+      return;
+    }
+    if (input === "s") {
+      void save();
+      return;
+    }
+    if (input === "r") {
+      setHealthGeneration(value => value + 1);
+    }
+  });
+
+  const rows = [
+    {
+      key: "provider",
+      value: provider,
+      detail: "auto prefers embedded Neovim and falls back inline",
+    },
+    {
+      key: "init",
+      value: init,
+      detail: "auto tries user init, then one clean-start fallback",
+    },
+    {
+      key: "buffer tabs",
+      value: tabs,
+      detail: "host buffer strip visibility",
+    },
+  ] as const;
+
+  return (
+    <MenuModal
+      title="editor settings"
+      count="3"
+      summary={saveStatus ?? "effective BUFFER configuration"}
+      headerRight={effective.executable ?? "auto-detect"}
+      columns={[3, 22, 18, 64]}
+      headers={["", "setting", "value", "behavior"]}
+      items={rows}
+      activeIndex={activeIndex}
+      renderRow={(item, _index, active) => [
+        <ThemedText key="mark" color={active ? "success" : "inactive"}>
+          {active ? "◆" : "·"}
+        </ThemedText>,
+        <ThemedText key="key" color={active ? "agenc" : "text2"}>
+          {item.key}
+        </ThemedText>,
+        <ThemedText key="value" color="text2">
+          {item.value}
+        </ThemedText>,
+        <ThemedText key="detail" color="subtle" wrap="truncate-end">
+          {item.detail}
+        </ThemedText>,
+      ]}
+      preview={
+        <Box flexDirection="column" gap={1}>
+          <ThemedText color="agenc">Neovim health</ThemedText>
+          <ThemedText color="text2" wrap="wrap">{health}</ThemedText>
+          <ThemedText color="subtle" wrap="wrap">
+            Effective next start: provider {effective.provider}; init {effective.init};
+            executable {effective.executable ?? "auto-detect"}.
+          </ThemedText>
+          <ThemedText
+            color={effective.environmentOverrides.length > 0 ? "warning" : "subtle"}
+            wrap="wrap"
+          >
+            {effective.environmentOverrides.length > 0
+              ? `Process environment overrides config.toml: ${effective.environmentOverrides.join(", ")}`
+              : "No AGENC_BUFFER_* process overrides are active."}
+          </ThemedText>
+          <ThemedText color="subtle" wrap="wrap">
+            Recovery is private under AGENC_HOME.
+          </ThemedText>
+          {saveStatus ? <ThemedText color={saveStatus.startsWith("save failed") ? "error" : "success"} wrap="wrap">{saveStatus}</ThemedText> : null}
+        </Box>
+      }
+      footer={[
+        { keyName: "h/l", label: "change" },
+        { keyName: "s", label: saving ? "saving" : "save" },
+        { keyName: "r", label: "health check" },
+        { keyName: "q", label: "back" },
+      ]}
+      hint="[buffer] and [buffer.neovim] in config.toml"
+    />
+  );
+}
+
+function cycleValue<T>(
+  values: readonly T[],
+  current: T,
+  direction: -1 | 1,
+): T {
+  const index = Math.max(0, values.indexOf(current));
+  return values[(index + direction + values.length) % values.length] ?? current;
+}
+
 export function openConfigMenu(ctx: SlashCommandContext): boolean {
   return openLocalJsxCommand(ctx, close => {
+    const store = ctx.configStore ??
+      (ctx.session.services as { configStore?: ConfigStore | null }).configStore;
+    if (!store) return <ThemedText color="error">ConfigStore not initialised</ThemedText>;
     const snapshot = readConfigMenuSnapshot(ctx);
-    return <ConfigMenuView snapshot={snapshot} onDone={close} />;
+    return (
+      <ConfigMenuView
+        snapshot={snapshot}
+        store={store}
+        agencHome={agencHomeFromCommandContext(ctx)}
+        onDone={close}
+      />
+    );
   });
 }

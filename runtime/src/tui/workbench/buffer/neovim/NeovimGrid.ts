@@ -1,4 +1,5 @@
 import type { RpcParams, RpcValue } from "./NeovimRpc.js";
+import { stringWidth } from "../../../ink/stringWidth.js";
 
 export type NeovimCell = {
   readonly text: string;
@@ -40,6 +41,11 @@ export type NeovimRenderSnapshot = {
   readonly defaultColors: readonly RpcValue[] | null;
   readonly cursor: NeovimCursor;
   readonly mode: string;
+  /**
+   * Compatibility fields for provider snapshots created before native
+   * command-line/message/popup rendering. Embedded Neovim now draws all three
+   * into the line grid, so live snapshots leave these empty.
+   */
   readonly commandLine: string | null;
   readonly messages: readonly string[];
   readonly popupMenu: NeovimPopupMenu;
@@ -70,9 +76,6 @@ export class NeovimGrid {
   #grids = new Map<number, NeovimGridState>();
   #cursor: NeovimCursor = { grid: 1, row: 0, column: 0 };
   #mode = "normal";
-  #commandLine: string | null = null;
-  #messages: string[] = [];
-  #popupMenu: NeovimPopupMenu = null;
   #highlights = new Map<number, NeovimHighlight>();
   #defaultColors: readonly RpcValue[] | null = null;
   #rows: number;
@@ -115,9 +118,9 @@ export class NeovimGrid {
       defaultColors: this.#defaultColors,
       cursor: clampCursor(this.#cursor, this.#rows, this.#columns),
       mode: this.#mode,
-      commandLine: this.#commandLine,
-      messages: this.#messages.slice(-3),
-      popupMenu: this.#popupMenu,
+      commandLine: null,
+      messages: [],
+      popupMenu: null,
     };
   }
 
@@ -146,31 +149,6 @@ export class NeovimGrid {
         break;
       case "mode_change":
         this.#mode = String(args[0] ?? "normal");
-        break;
-      case "cmdline_show":
-        this.#commandLine = commandLineText(toArray(args[0]));
-        break;
-      case "cmdline_pos":
-        break;
-      case "cmdline_hide":
-        this.#commandLine = null;
-        break;
-      case "msg_show":
-        this.#messages = [...this.#messages, messageText(toArray(args[1]))].filter(Boolean);
-        break;
-      case "msg_clear":
-        this.#messages = [];
-        break;
-      case "popupmenu_show":
-        this.#popupMenu = popupMenuFromArgs(args);
-        break;
-      case "popupmenu_select":
-        if (this.#popupMenu) {
-          this.#popupMenu = { ...this.#popupMenu, selected: numberAt(args, 0, this.#popupMenu.selected) };
-        }
-        break;
-      case "popupmenu_hide":
-        this.#popupMenu = null;
         break;
       default:
         break;
@@ -207,16 +185,21 @@ export class NeovimGrid {
     let highlightId = currentColumn > 0 ? line[currentColumn - 1]!.highlightId : 0;
     for (const rawCell of cells) {
       const cell = toArray(rawCell);
-      const text = String(cell[0] ?? " ");
+      const text = typeof cell[0] === "string" ? cell[0] : " ";
       if (typeof cell[1] === "number") highlightId = cell[1];
       const repeat = Math.max(1, typeof cell[2] === "number" ? cell[2] : 1);
       for (let index = 0; index < repeat && currentColumn < grid.columns; index += 1) {
-        const width = text.length === 0 ? 1 : Math.max(1, stringCellWidth(text));
-        line[currentColumn] = { text: text.length === 0 ? " " : text, width, highlightId };
-        for (let pad = 1; pad < width && currentColumn + pad < grid.columns; pad += 1) {
-          line[currentColumn + pad] = { text: "", width: 0, highlightId };
-        }
-        currentColumn += width;
+        // linegrid is cell-oriented: the right half of a double-width
+        // grapheme arrives as its own empty-string cell. Advancing by the
+        // grapheme width here would skip that protocol cell and shift every
+        // later character one column to the right.
+        const measuredWidth = stringWidth(text);
+        // A linegrid entry is exactly one screen cell (or the leading half of
+        // one double-width grapheme). Treat malformed multi-cell text as one
+        // cell instead of letting it corrupt every later column.
+        const width = text.length === 0 ? 0 : measuredWidth === 2 ? 2 : 1;
+        line[currentColumn] = { text, width, highlightId };
+        currentColumn += 1;
       }
     }
     nextRows[row] = line;
@@ -229,7 +212,8 @@ export class NeovimGrid {
     const bottom = numberAt(args, 2, this.#rows);
     const left = numberAt(args, 3, 0);
     const right = numberAt(args, 4, this.#columns);
-    const rows = numberAt(args, 5, 0);
+    const rowDelta = numberAt(args, 5, 0);
+    const columnDelta = numberAt(args, 6, 0);
     const grid = this.#grid(id);
     const nextRows = grid.cells.map((line) => line.slice());
     const rowStart = Math.max(0, top);
@@ -237,11 +221,15 @@ export class NeovimGrid {
     const colStart = Math.max(0, left);
     const colEnd = Math.min(grid.columns, right);
     for (let row = rowStart; row < rowEnd; row += 1) {
-      const source = row + rows;
       for (let col = colStart; col < colEnd; col += 1) {
+        const sourceRow = row + rowDelta;
+        const sourceColumn = col + columnDelta;
         nextRows[row]![col] =
-          source >= rowStart && source < rowEnd
-              ? grid.cells[source]![col]!
+          sourceRow >= rowStart &&
+          sourceRow < rowEnd &&
+          sourceColumn >= colStart &&
+          sourceColumn < colEnd
+              ? grid.cells[sourceRow]![sourceColumn]!
             : BLANK_CELL;
       }
     }
@@ -301,10 +289,15 @@ function blankLine(columns: number): NeovimCell[] {
 
 function rowText(line: readonly NeovimCell[], columns: number): string {
   let text = "";
+  let renderedWidth = 0;
   for (let column = 0; column < columns; column += 1) {
-    text += line[column]!.text;
+    const cell = line[column] ?? BLANK_CELL;
+    if (cell.width === 0) continue;
+    if (renderedWidth + cell.width > columns) break;
+    text += cell.text;
+    renderedWidth += cell.width;
   }
-  return text.padEnd(columns, " ").slice(0, columns);
+  return `${text}${" ".repeat(Math.max(0, columns - renderedWidth))}`;
 }
 
 function clampCursor(cursor: NeovimCursor, rows: number, columns: number): NeovimCursor {
@@ -328,36 +321,4 @@ function objectValue(value: RpcValue | undefined): { readonly [key: string]: Rpc
   return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Uint8Array)
     ? value as { readonly [key: string]: RpcValue }
     : {};
-}
-
-function commandLineText(content: readonly RpcValue[]): string {
-  return content.map((entry) => {
-    const tuple = toArray(entry);
-    const value = tuple[1];
-    return value === undefined ? "" : String(value);
-  }).join("");
-}
-
-function messageText(content: readonly RpcValue[]): string {
-  return content.map((entry) => {
-    const tuple = toArray(entry);
-    return String(tuple[1] ?? "");
-  }).join("");
-}
-
-function popupMenuFromArgs(args: readonly RpcValue[]): NeovimPopupMenu {
-  const items = toArray(args[0]).map((entry) => {
-    const tuple = toArray(entry);
-    return String(tuple[0] ?? "");
-  });
-  return {
-    items,
-    selected: numberAt(args, 1, -1),
-    row: numberAt(args, 2, 0),
-    column: numberAt(args, 3, 0),
-  };
-}
-
-function stringCellWidth(text: string): number {
-  return text.length > 0 && /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3]/u.test(text) ? 2 : 1;
 }

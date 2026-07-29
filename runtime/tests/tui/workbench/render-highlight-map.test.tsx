@@ -48,4 +48,31 @@ describe("terminalAnsiLines highlight map", () => {
     // Perf invariant: the highlight map is built once for all 6 rows.
     expect(mapCalls).toBe(1);
   });
+
+  it("renders default_colors_set RGB colors for base highlight cells", () => {
+    const term: NeovimRenderSnapshot = {
+      ...snapshot(1, []),
+      cells: [[
+        { text: "b", width: 1, highlightId: 0 },
+        { text: "a", width: 1, highlightId: 0 },
+        { text: "s", width: 1, highlightId: 0 },
+        { text: "e", width: 1, highlightId: 0 },
+      ]],
+      defaultColors: [0x123456, 0xABCDEF, 0, 0, 0],
+    };
+
+    expect(terminalAnsiLines(term, false, 4)).toEqual([
+      "\x1b[38;2;18;52;86;48;2;171;205;239mbase\x1b[0m",
+    ]);
+  });
+
+  it("inherits terminal colors when Neovim reports unknown color sentinels", () => {
+    const term: NeovimRenderSnapshot = {
+      ...snapshot(1, []),
+      cells: [[{ text: "x", width: 1, highlightId: 0 }]],
+      defaultColors: [-1, -1, -1, 0, 0],
+    };
+
+    expect(terminalAnsiLines(term, false, 1)).toEqual(["x"]);
+  });
 });

@@ -121,6 +121,9 @@ pairing, Grok OAuth, SDK.
   [supported-host matrix](docs/install.md#supported-hosts).
 - **npm `11.17.0`** (exactly pinned by `packageManager` and `devEngines`).
 - **ripgrep (`rg`)** on `PATH` for file search (`agenc doctor` reports status).
+- Linux source builds require a C11 compiler available as **`cc`** to build
+  the bundled process-containment broker. Published standalone/runtime
+  artifacts already include that broker.
 - **A provider** before real model calls. Default: **xAI** via `XAI_API_KEY`
   (also accepts `GROK_API_KEY`); default model `grok-4.5` (`AGENC_MODEL`
   overrides). Inspect with `agenc providers`, `agenc login`, `agenc config`.

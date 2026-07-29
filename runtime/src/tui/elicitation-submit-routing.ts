@@ -16,13 +16,18 @@ function clearComposer(helpers: ComposerSubmitHelpers): void {
 
 export async function submitViaElicitationPrompt(
   elicitation: ElicitationSubmitTarget,
-  submit: (value: string) => Promise<void>,
+  submit: (value: string, options?: {
+    readonly pastedContentsOverride?: Record<number, unknown>;
+  }) => Promise<void>,
   value: string,
   helpers: ComposerSubmitHelpers,
+  options?: {
+    readonly pastedContentsOverride?: Record<number, unknown>;
+  },
 ): Promise<void> {
   const handledByElicitation = elicitation.submit(value);
   clearComposer(helpers);
   if (!handledByElicitation) {
-    await submit(value);
+    await submit(value, options);
   }
 }

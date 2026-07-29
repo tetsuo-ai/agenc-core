@@ -34,7 +34,7 @@ session-owned automation path must cross the broker at its final spawn point:
 | Turns and commands | interactive, print, foreground/background shell, Monitor, workflow, job, hook, cron | Transform the final program/argv or reject before spawn. Job and cron are durable origins; their eventual turn/tool process uses the same boundary. |
 | Extensions and daemon RPC | stdio MCP, daemon `commandExec` | Require an explicit authenticated policy. Missing policy is not inferred from request fields. |
 | Coding helpers | Git/repository inspection, code indexing, worktree lifecycle, prompt Git lookup, Grep/Glob/Orient, PDF extraction | PATH-resolved probes and the actual helper both use the boundary; a pure-JavaScript fallback is allowed only where it does not start a process. |
-| Language and provider services | LSP, Chromium, PowerShell native parsing, xAI ACP | Each child uses the owning session's broker. Long-lived services own detached process trees and do not report disposal complete until their descendants are gone. LSP manager/config state is keyed by broker identity, so a restricted session cannot reuse a later danger-mode session's server. |
+| Language and provider services | LSP, Chromium, PowerShell native parsing, xAI ACP | Each child uses the owning session's broker. Long-lived services do not report disposal complete until the platform-owned process scope is gone. Linux and Windows provide recursive kernel ownership; macOS covers the original process group plus descendants observed in process-table snapshots. LSP manager/config state is keyed by broker identity, so a restricted session cannot reuse a later danger-mode session's server. |
 | Collaboration | child-agent tools and worktrees, pane teammates | Child sessions fork independent provider, MCP, browser, and execution-lifecycle ownership rooted at the child cwd. A compatibility provider that cannot fork loses MCP-origin tools and receives an inert child MCP manager instead of sharing the parent's authority. Restricted `auto` teammate mode selects the in-process backend; an explicitly requested pane backend fails closed because it is outside the session sandbox. |
 
 Production daemon/background-agent bootstrap asserts required sandbox readiness
@@ -90,10 +90,13 @@ The sandbox profile is least-privilege per spawn, not merely per session:
   per-command configuration. Ordinary sandboxed commands still cannot write
   `.git`, `.agenc`, or `.agents` metadata.
 - Bounded helper collection sends `SIGTERM` and then escalates to `SIGKILL` for
-  the complete spawned process group. The same verified process-tree shutdown
-  primitive owns LSP, Chromium, stdio MCP, and ACP children. This prevents a
-  signal-trapping child or inherited stdio in a descendant from leaving the
-  tool promise pending or surviving a completed session teardown.
+  the platform-owned process scope. The same shutdown primitive owns LSP,
+  Chromium, stdio MCP, and ACP children. Linux cgroups/subreapers and Windows
+  Job Objects provide recursive kernel ownership. macOS terminates the original
+  process group and retained identities for descendants observed in periodic
+  process-table snapshots; a complete fork/`setsid`/reparent chain between
+  snapshots is outside that guarantee. Independent pipe deadlines still
+  prevent an escaped inherited writer from leaving the tool promise pending.
 - Stdio MCP resolves relative server working directories against the owning
   broker rather than daemon-global cwd, bounds newline-delimited JSON frames at
   16 MiB (matching the server-side envelope limit), and cancels stale
@@ -208,12 +211,12 @@ Primary and upstream sources reviewed 2026-07-16:
 - [Node.js child-process lifecycle](https://nodejs.org/api/child_process.html)
   documents detached POSIX process groups, trappable `SIGTERM`, and that
   killing a parent does not terminate its descendants on Linux; this is why
-  long-lived service teardown uses verified process-group termination and
-  forced escalation.
+  long-lived service teardown uses bounded platform process-scope termination
+  and forced escalation.
 - [Model Context Protocol transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
   specifies a spawned stdio server and newline-delimited JSON-RPC messages on
   stdout. The transport therefore enforces an explicit frame bound before
-  parsing and owns the complete server process tree.
+  parsing and owns the platform-supported server process scope.
 - [Agent Client Protocol session setup](https://agentclientprotocol.com/protocol/v1/session-setup)
   requires session-specific working-directory context and explicitly models
   stdio child environment, supporting a session-owned ACP spawn boundary rather

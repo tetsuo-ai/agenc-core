@@ -141,7 +141,7 @@ describe("basic inline BUFFER fallback provider", () => {
         usable: true,
         executable: "/usr/bin/nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     });
@@ -172,6 +172,46 @@ describe("basic inline BUFFER fallback provider", () => {
       await expect(provider.close()).resolves.toBe(false);
       expect(provider.getSnapshot().status).toBe("conflict");
       await expect(provider.close({ discard: true })).resolves.toBe(true);
+    });
+  });
+
+  it("rejects a stale Discard All confirmation after another inline edit", async () => {
+    await writeFile(join(dir, "target.txt"), "alpha\n", "utf8");
+    const provider = new InlineBufferProvider({
+      reason: "Neovim discovery failed",
+      store: new WorkbenchBufferStore(),
+    });
+
+    await runWithCwdOverride(dir, async () => {
+      await provider.open({ filePath: "target.txt" });
+      provider.handleInput({
+        input: "i",
+        key: baseKey(),
+        context: { rows: 10, columns: 40 },
+      });
+      provider.handleInput({
+        input: "first ",
+        key: baseKey(),
+        context: { rows: 10, columns: 40 },
+      });
+      const staleConfirmation = await provider.prepareDiscardAll();
+      expect(staleConfirmation).not.toBeNull();
+
+      provider.handleInput({
+        input: "second ",
+        key: baseKey(),
+        context: { rows: 10, columns: 40 },
+      });
+      await expect(
+        provider.discardAll(staleConfirmation ?? undefined),
+      ).resolves.toBe(false);
+      expect(provider.getSnapshot().dirty).toBe(true);
+
+      const currentConfirmation = await provider.prepareDiscardAll();
+      await expect(
+        provider.discardAll(currentConfirmation ?? undefined),
+      ).resolves.toBe(true);
+      expect(provider.getSnapshot().dirty).toBe(false);
     });
   });
 

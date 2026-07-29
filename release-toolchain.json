@@ -41,6 +41,57 @@
       "bytes": 11359184
     }
   },
+  "neovimHostedTestRuntime": {
+    "schemaVersion": 1,
+    "version": "0.12.1",
+    "requiredTargets": [
+      "linux-x64",
+      "linux-arm64",
+      "darwin-x64",
+      "darwin-arm64",
+      "win-x64"
+    ],
+    "linux-x64": {
+      "runner": "ubuntu-24.04",
+      "file": "nvim-linux-x86_64.tar.gz",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-x86_64.tar.gz",
+      "sha256": "ab757a1fd9ad307d53d2df4045698906a7ca3993d92260dd8fe49108712d57d0",
+      "bytes": 11359184,
+      "executable": "bin/nvim"
+    },
+    "linux-arm64": {
+      "runner": "ubuntu-24.04-arm",
+      "file": "nvim-linux-arm64.tar.gz",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-linux-arm64.tar.gz",
+      "sha256": "a3f8aa5590fd2ac930bcc5c9070b9ac1ec33461d262b6428874c5fc640f3f13c",
+      "bytes": 11315081,
+      "executable": "bin/nvim"
+    },
+    "darwin-x64": {
+      "runner": "macos-15-intel",
+      "file": "nvim-macos-x86_64.tar.gz",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-macos-x86_64.tar.gz",
+      "sha256": "e59a5eafcdf824e2bf6a738e75f8f62ba4ff1b7f1c7daaec2d134aa46737907c",
+      "bytes": 9857818,
+      "executable": "bin/nvim"
+    },
+    "darwin-arm64": {
+      "runner": "macos-15",
+      "file": "nvim-macos-arm64.tar.gz",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-macos-arm64.tar.gz",
+      "sha256": "b77e01c5421ac1bac593eed5c2ea1b950439306dd4c32371ac2473792da9a9d5",
+      "bytes": 9585853,
+      "executable": "bin/nvim"
+    },
+    "win-x64": {
+      "runner": "windows-2025",
+      "file": "nvim-win64.zip",
+      "url": "https://github.com/neovim/neovim/releases/download/v0.12.1/nvim-win64.zip",
+      "sha256": "75fedc530b3772ca9f177edc7db92560bb9d2d6700ac6d5b2c53eaf5a9317ae3",
+      "bytes": 12592331,
+      "executable": "bin/nvim.exe"
+    }
+  },
   "githubCli": {
     "version": "2.96.0",
     "linuxX64": {

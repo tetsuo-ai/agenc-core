@@ -247,7 +247,9 @@ export function hasRenderedAssistantReply(rows) {
       break;
     }
   }
-  if (headerIdx === -1) return false;
+  if (headerIdx === -1) {
+    return hasRenderedWorkbenchAssistantReply(rows);
+  }
 
   const headerMatch = headerRe.exec(rows[headerIdx]);
   if (headerMatch === null) return false;
@@ -270,6 +272,35 @@ export function hasRenderedAssistantReply(rows) {
     // header column is message text (word char or common markdown / quote /
     // list openers), not pane chrome glyphs (❯ ↳ ◐ ✳ ·).
     if (/^\s*["'`*#>\w([{$~-]/.test(body)) return true;
+  }
+  return false;
+}
+
+/**
+ * The workbench transcript deliberately omits a repeated AGENC speaker label.
+ * User rows reserve a seven-cell label slot (`❯ ` plus padding); assistant
+ * rows reserve the same slot and start their content at the identical column.
+ * Detect the first real body row at that column without accepting text from
+ * the explorer, agents rail, footer, or a slash-command overlay.
+ */
+function hasRenderedWorkbenchAssistantReply(rows) {
+  for (let promptIdx = rows.length - 1; promptIdx >= 0; promptIdx -= 1) {
+    const prompt = /❯\s+\S/u.exec(rows[promptIdx]);
+    if (prompt === null) continue;
+    const promptCol = prompt.index;
+    const contentCol = promptCol + /^❯\s+/u.exec(prompt[0])[0].length;
+    // The reply normally follows within one or two rows. A small bounded
+    // window tolerates wrapped prompts and an optional timestamp row while
+    // staying above composer/status chrome on short terminals.
+    const end = Math.min(rows.length, promptIdx + 12);
+    for (let rowIndex = promptIdx + 1; rowIndex < end; rowIndex += 1) {
+      const row = rows[rowIndex];
+      if (/^\s*│?[┌└─]/u.test(row.slice(promptCol))) break;
+      const body = row.slice(contentCol);
+      // Content may carry Markdown indentation, but timestamp/chrome text is
+      // placed much farther to the right and must not satisfy this check.
+      if (/^\s{0,3}["'`*#>\w([{$~-]/u.test(body)) return true;
+    }
   }
   return false;
 }
@@ -1012,11 +1043,11 @@ export class TuiSession {
   }
 
   /**
-   * Wait for the assistant's reply to render. Assistant turns use an AGENC
-   * identity header with the reply text beneath it. The current workbench
-   * renders a full-height `│` gutter on both rows; the earlier layout used a
-   * one-row `▮` marker. After `submit`, this fires once the header AND at
-   * least one line of real reply content under it render.
+   * Wait for the assistant's reply to render. Classic transcript turns use
+   * an AGENC identity header with reply text beneath it. The workbench's
+   * compact transcript omits that repeated label and aligns assistant content
+   * with the submitted user row's reserved label slot. After `submit`, this
+   * fires only once at least one line of real reply content renders.
    *
    * The content check is row/column aware on purpose: the header alone can
    * paint before the first model chunk arrives, and full-width repaints put
@@ -1082,7 +1113,11 @@ export class TuiSession {
   kill(signal = "SIGTERM") {
     if (this.exited || this.term === null) return;
     try {
-      this.term.kill(signal);
+      if (process.platform === "win32") {
+        this.term.kill();
+      } else {
+        this.term.kill(signal);
+      }
     } catch {
       // The exit observer remains authoritative.
     }

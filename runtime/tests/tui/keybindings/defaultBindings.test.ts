@@ -47,6 +47,14 @@ describe("default keybindings", () => {
     expect(bindingsFor("Buffer")).toMatchObject({
       escape: "workbench:focusComposer",
     });
+    expect(bindingsFor("BufferHost")).toMatchObject({
+      "ctrl+s": "buffer:save",
+      "ctrl+x": "buffer:passthrough",
+      "ctrl+k": "buffer:passthrough",
+      "ctrl+g": "buffer:passthrough",
+      "ctrl+r": "buffer:passthrough",
+    });
+    expect(bindingsFor("BufferHost")).not.toHaveProperty("escape");
   });
 
   test("enables user customization in AgenC without remote feature gates", () => {

@@ -1,5 +1,9 @@
 import { NeovimGrid, type NeovimRenderSnapshot } from "./NeovimGrid.js";
-import type { NeovimRpcTransport, RpcParams } from "./NeovimRpc.js";
+import type {
+  NeovimRpcRequestOptions,
+  NeovimRpcTransport,
+  RpcParams,
+} from "./NeovimRpc.js";
 
 export type NeovimUiSize = {
   readonly rows: number;
@@ -34,9 +38,6 @@ export class NeovimUi {
         this.#size.rows,
         {
           ext_linegrid: true,
-          ext_cmdline: true,
-          ext_popupmenu: true,
-          ext_messages: true,
           rgb: true,
         },
       ]);
@@ -47,11 +48,18 @@ export class NeovimUi {
     this.#onSnapshot(this.#grid.snapshot());
   }
 
-  async resize(size: NeovimUiSize): Promise<void> {
+  async resize(
+    size: NeovimUiSize,
+    requestOptions: NeovimRpcRequestOptions = {},
+  ): Promise<void> {
     this.#size = normalizeSize(size);
     this.#grid.resize(this.#size.rows, this.#size.columns);
     this.#onSnapshot(this.#grid.snapshot());
-    await this.#rpc.request("nvim_ui_try_resize", [this.#size.columns, this.#size.rows]);
+    await this.#rpc.request(
+      "nvim_ui_try_resize",
+      [this.#size.columns, this.#size.rows],
+      requestOptions,
+    );
   }
 
   snapshot(): NeovimRenderSnapshot {

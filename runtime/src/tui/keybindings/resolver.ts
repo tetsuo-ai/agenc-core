@@ -10,12 +10,14 @@ import type {
 const DEFAULT_CONTEXT_PRIORITY = 50
 
 const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
+  Modal: 1000,
   Global: 0,
   Scroll: 5,
   Workbench: 10,
   Explorer: 20,
   Surface: 20,
   Buffer: 30,
+  BufferHost: 30,
   Agents: 20,
   Composer: 30,
   Chat: 40,
@@ -38,7 +40,7 @@ const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
   Plugin: 100,
 }
 
-function contextPriority(context: KeybindingContextName): number {
+export function keybindingContextPriority(context: KeybindingContextName): number {
   return CONTEXT_PRIORITY[context] ?? DEFAULT_CONTEXT_PRIORITY
 }
 
@@ -47,8 +49,8 @@ function shouldReplaceBinding(
   current: ParsedBinding | undefined,
 ): boolean {
   if (!current) return true
-  const candidatePriority = contextPriority(candidate.context)
-  const currentPriority = contextPriority(current.context)
+  const candidatePriority = keybindingContextPriority(candidate.context)
+  const currentPriority = keybindingContextPriority(current.context)
   return candidatePriority >= currentPriority
 }
 
@@ -240,6 +242,25 @@ export function resolveKeyWithChordState(
   const ctxSet = new Set(activeContexts)
   const contextBindings = bindings.filter(b => ctxSet.has(b.context))
 
+  // Resolve an exact winner up front. A more-specific context can reserve a
+  // native single stroke (for example BufferHost Ctrl+X passthrough) even
+  // when a lower-priority context has a longer chord with that prefix.
+  // Same-priority longer chords still win below, preserving ordinary
+  // same-context chord behavior.
+  let exactMatch: ParsedBinding | undefined
+  for (const binding of contextBindings) {
+    if (
+      chordExactlyMatches(testChord, binding) &&
+      shouldReplaceBinding(binding, exactMatch)
+    ) {
+      exactMatch = binding
+    }
+  }
+  const exactPriority =
+    exactMatch === undefined
+      ? Number.NEGATIVE_INFINITY
+      : keybindingContextPriority(exactMatch.context)
+
   // Check if this could be a prefix for longer chords. Group by chord string
   // so a same-priority null-override shadows the default it unbinds; higher
   // priority contexts still win across contexts.
@@ -258,7 +279,10 @@ export function resolveKeyWithChordState(
   }
   let hasLongerChords = false
   for (const binding of chordWinners.values()) {
-    if (binding.action !== null) {
+    if (
+      binding.action !== null &&
+      keybindingContextPriority(binding.context) >= exactPriority
+    ) {
       hasLongerChords = true
       break
     }
@@ -268,18 +292,6 @@ export function resolveKeyWithChordState(
   // (even if there's an exact single-key match)
   if (hasLongerChords) {
     return { type: 'chord_started', pending: testChord }
-  }
-
-  // Check for exact matches. Higher-priority contexts win across contexts;
-  // later parsed bindings win within the same priority.
-  let exactMatch: ParsedBinding | undefined
-  for (const binding of contextBindings) {
-    if (
-      chordExactlyMatches(testChord, binding) &&
-      shouldReplaceBinding(binding, exactMatch)
-    ) {
-      exactMatch = binding
-    }
   }
 
   if (exactMatch) {

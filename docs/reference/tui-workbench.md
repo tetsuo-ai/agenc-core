@@ -26,17 +26,20 @@ Workbench panes (not mounted inside the transcript `ScrollBox`):
 
 - Explorer (interactive): file-type icons/colors; click to open, mouse wheel
   or arrows to scroll, file preview inside the TUI
-- Center work-surface (switches by active surface)
+- Center work-surface (switches among transcript, preview, BUFFER, diff, test,
+  shell, search, and agent views)
 - Agents rail (visible at wide widths): live swarm panel with per-agent
   progress, tokens, and duration while background agents run
+- Optional right-hand rail for file review, transcript, or change review
 - Approvals / tasks
 - BUFFER editor surface (embedded Neovim preferred — see
   [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md))
 
 ## Operator surfaces added in 0.7.2
 
-- **`ctrl+r` review rail** — moves the open file to a shiki-highlighted
-  right-hand rail; chat keeps the center so you can review while prompting.
+- **Review rail** (`Alt+R` in embedded Neovim, `Ctrl+R` in the inline
+  fallback) — moves the open file to a shiki-highlighted right-hand rail; chat
+  keeps the center so you can review while prompting.
 - **Todo board** — pins itself below the composer while the agent has open
   tasks and hides after completion. Backed by per-task JSON files shared with
   the daemon under the conversation id; the TUI learns of daemon writes via
@@ -80,8 +83,44 @@ Interactive menus (via `MenuModal`) include:
 
 ## BUFFER (editor)
 
-Providers: `auto` | `neovim` | `inline` | `external` via
-`AGENC_BUFFER_PROVIDER`. Full contract:
+BUFFER is a workspace surface, not a modal editor subprocess that disappears
+when its pane is hidden. By default, one embedded Neovim process keeps all
+loaded buffers alive across project-tree navigation and editor/chat handoffs.
+
+| Shortcut | BUFFER action |
+| --- | --- |
+| `Shift+Tab` or `Alt+J` | Focus the composer without closing BUFFER |
+| `Alt+Q` | Hide BUFFER; the Neovim workspace remains alive |
+| `Alt+Z` | Maximize or restore the center editor |
+| `Ctrl+S` | Save the active buffer with AgenC's disk/agent conflict checks |
+| `Ctrl+R` | Redo the last Neovim change natively |
+| `Alt+R` | Move the current file to the review rail and return to chat |
+| `Alt+H` | Focus the project explorer |
+| `Alt+L` | Focus the agents rail |
+| `Alt+E` | Open the configured external editor, only when every Neovim buffer is confirmed clean |
+
+Neovim's command line, messages, completion popups, user init, and plugins
+render in its native grid. The grid tracks the measured center pane, including
+when rails are toggled or BUFFER is maximized. A clickable host tab strip shows
+eligible loaded buffers according to `buffer.show_tabs = "auto" | "always" |
+"never"`; modified tabs carry a `●`.
+
+`Ctrl+X`, `Ctrl+K`, `Ctrl+G`, and `Ctrl+R` pass through to embedded Neovim
+instead of starting workbench chords. The basic inline fallback keeps its
+existing `Ctrl+X H/J/L/Q/Z`, `Ctrl+X Y`, `Ctrl+R`, and
+`Ctrl+X Ctrl+E`/`Ctrl+G` host bindings. User keybinding overrides therefore
+target the `BufferHost` context for embedded Neovim and `Buffer` for inline.
+
+If a transition would abandon one or more modified loaded buffers—including a
+hidden Neovim buffer—the workbench stops it and offers **Save All**, **Discard
+All**, or **Cancel**. Discard All requires a second confirmation; Save All
+preflights the complete buffer set before it writes. The same gate covers
+`/exit`, `/quit`, `Ctrl+D`, and `/resume`.
+
+Providers are `auto`, `neovim`, `inline`, and `external`. Configure them from
+`/config`, `[buffer]` in `config.toml`, or temporary `AGENC_BUFFER_*`
+environment overrides. Full lifecycle, recovery, editor/chat integration, and
+troubleshooting contract:
 [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
 ## Permission modes in the header

@@ -9,6 +9,7 @@ import { BufferProviderController } from "../../../src/tui/workbench/buffer/prov
 import { InlineBufferProvider } from "../../../src/tui/workbench/buffer/providers/inline/InlineBufferProvider.js";
 import { NeovimBufferProvider } from "../../../src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.js";
 import { bufferProviderConfigFromEnv, selectBufferEditorProvider } from "../../../src/tui/workbench/buffer/providers/selectBufferEditorProvider.js";
+import { NeovimStartupCleanupError } from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
 import {
   emptyProviderSnapshot,
   type BufferEditorProvider,
@@ -20,7 +21,7 @@ const usableDiscovery = {
   usable: true,
   executable: "/usr/bin/nvim",
   version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-  args: ["--embed", "--clean", "-n"],
+  args: ["--embed", "--clean"],
   useUserInit: false,
 } as const;
 
@@ -111,6 +112,10 @@ describe("embedded Neovim BUFFER provider boundary", () => {
     });
     expect(usableSelection.kind).toBe("neovim");
     expect(usableSelection.provider.identity.capabilities.vimExact).toBe(true);
+    if (usableSelection.kind !== "neovim") {
+      throw new Error("expected auto mode to select embedded Neovim");
+    }
+    expect(usableSelection.startupFailureFallback).toBeDefined();
 
     const forcedFailure = await selectBufferEditorProvider({
       mode: "neovim",
@@ -138,7 +143,8 @@ describe("embedded Neovim BUFFER provider boundary", () => {
       inlineStore: new WorkbenchBufferStore(),
     });
     expect(delayedFailure.kind).toBe("inline");
-    expect(delayedFailure.reason).toContain("delayed bad probe");
+    expect(delayedFailure.reason).toContain("exit 2");
+    expect(delayedFailure.reason).not.toContain("delayed bad probe");
 
     const failedEmbed = await selectBufferEditorProvider({
       mode: "neovim",
@@ -147,8 +153,16 @@ describe("embedded Neovim BUFFER provider boundary", () => {
       useUserInit: false,
       inlineStore: new WorkbenchBufferStore(),
     });
-    expect(failedEmbed.kind).toBe("inline");
-    expect(failedEmbed.reason).toContain("failed the embedded mode probe");
+    expect(failedEmbed.kind).toBe("neovim");
+    expect(failedEmbed.discovery).toMatchObject({
+      usable: true,
+      args: ["--embed", "--clean"],
+      useUserInit: false,
+    });
+    if (failedEmbed.kind !== "neovim") {
+      throw new Error("expected explicit Neovim selection");
+    }
+    expect(failedEmbed.startupFailureFallback).toBeUndefined();
   });
 
   it("returns concrete inline fallback reasons for missing and unsupported Neovim", async () => {
@@ -235,6 +249,197 @@ describe("embedded Neovim BUFFER provider boundary", () => {
       lspPassthrough: false,
       multiBuffer: true,
     });
+  });
+
+  it("falls back inline after both auto-init startup attempts fail safely and latches that provider", async () => {
+    const discovery = {
+      ...usableDiscovery,
+      args: ["--embed"],
+      useUserInit: true,
+      fallback: {
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+    } as const;
+    const startSession = vi.fn()
+      .mockRejectedValueOnce(new Error("user init failed"))
+      .mockRejectedValueOnce(new Error("clean init failed"));
+    const neovim = new NeovimBufferProvider({
+      discovery,
+      startSession,
+      readFileSnapshot: async (filePath) => ({
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        content: "alpha\n",
+        mtimeMs: 1,
+        size: 6,
+        encoding: "utf8",
+        lineEndings: "LF",
+      }),
+    });
+    const inline = createFakeProvider("inline");
+    const createProvider = vi.fn(() => inline);
+    const selectionFactory = vi.fn(async () => ({
+      kind: "neovim" as const,
+      provider: neovim,
+      discovery,
+      startupFailureFallback: {
+        failureReason: () => neovim.safeStartupFailureReason(),
+        createProvider,
+      },
+    }));
+    const controller = new BufferProviderController(selectionFactory);
+
+    await controller.open("first.txt", 4);
+
+    expect(startSession).toHaveBeenCalledTimes(2);
+    expect(startSession.mock.calls[0]?.[0].args).toEqual(["--embed"]);
+    expect(startSession.mock.calls[1]?.[0].args).toEqual([
+      "--embed",
+      "--clean",
+    ]);
+    expect(createProvider).toHaveBeenCalledWith(
+      expect.stringContaining("clean-init fallback failed: clean init failed"),
+    );
+    expect(inline.open).toHaveBeenCalledWith({ filePath: "first.txt", line: 4 });
+    expect(controller.getSnapshot().provider.kind).toBe("inline");
+
+    await controller.open("second.txt", 7);
+
+    expect(selectionFactory).toHaveBeenCalledTimes(1);
+    expect(startSession).toHaveBeenCalledTimes(2);
+    expect(inline.open).toHaveBeenLastCalledWith({
+      filePath: "second.txt",
+      line: 7,
+    });
+    await controller.cleanup();
+  });
+
+  it("prefers a verified safe-startup marker when provider open also rejects", async () => {
+    const neovim = createFakeProvider("neovim");
+    const inline = createFakeProvider("inline");
+    neovim.open.mockRejectedValueOnce(new Error("open reported startup failure"));
+    const createProvider = vi.fn(() => inline);
+    const controller = new BufferProviderController(async () => ({
+      kind: "neovim",
+      provider: neovim,
+      discovery: usableDiscovery,
+      startupFailureFallback: {
+        failureReason: () => "contained startup failed with cleanup confirmed",
+        createProvider,
+      },
+    }));
+
+    await controller.open("target.txt", 3);
+
+    expect(createProvider).toHaveBeenCalledWith(
+      "contained startup failed with cleanup confirmed",
+    );
+    expect(neovim.cleanup).toHaveBeenCalledTimes(1);
+    expect(inline.open).toHaveBeenCalledWith({ filePath: "target.txt", line: 3 });
+    expect(controller.getSnapshot().provider.kind).toBe("inline");
+    await controller.cleanup();
+  });
+
+  it("keeps explicit Neovim mode in error after both startup attempts fail", async () => {
+    const discovery = {
+      ...usableDiscovery,
+      args: ["--embed"],
+      useUserInit: true,
+      fallback: {
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+    } as const;
+    const startSession = vi.fn()
+      .mockRejectedValueOnce(new Error("user init failed"))
+      .mockRejectedValueOnce(new Error("clean init failed"));
+    const neovim = new NeovimBufferProvider({
+      discovery,
+      startSession,
+      readFileSnapshot: async (filePath) => ({
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        content: "alpha\n",
+        mtimeMs: 1,
+        size: 6,
+        encoding: "utf8",
+        lineEndings: "LF",
+      }),
+    });
+    const controller = new BufferProviderController(async () => ({
+      kind: "neovim",
+      provider: neovim,
+      discovery,
+    }));
+
+    await controller.open("target.txt", 1);
+
+    expect(startSession).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot()).toMatchObject({
+      provider: { kind: "neovim" },
+      providerStatus: "error",
+      error: expect.stringContaining("clean-init fallback failed"),
+    });
+    await controller.cleanup();
+  });
+
+  it("never falls back inline while clean-init startup cleanup remains uncertain", async () => {
+    const discovery = {
+      ...usableDiscovery,
+      args: ["--embed"],
+      useUserInit: true,
+      fallback: {
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+    } as const;
+    const retryCleanup = vi.fn(async () => {});
+    const startSession = vi.fn()
+      .mockRejectedValueOnce(new Error("user init failed"))
+      .mockRejectedValueOnce(new NeovimStartupCleanupError(
+        new Error("clean init failed"),
+        new Error("clean child still alive"),
+        retryCleanup,
+      ));
+    const neovim = new NeovimBufferProvider({
+      discovery,
+      startSession,
+      readFileSnapshot: async (filePath) => ({
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        content: "alpha\n",
+        mtimeMs: 1,
+        size: 6,
+        encoding: "utf8",
+        lineEndings: "LF",
+      }),
+    });
+    const inline = createFakeProvider("inline");
+    const createProvider = vi.fn(() => inline);
+    const controller = new BufferProviderController(async () => ({
+      kind: "neovim",
+      provider: neovim,
+      discovery,
+      startupFailureFallback: {
+        failureReason: () => neovim.safeStartupFailureReason(),
+        createProvider,
+      },
+    }));
+
+    await controller.open("target.txt", 1);
+
+    expect(startSession).toHaveBeenCalledTimes(2);
+    expect(createProvider).not.toHaveBeenCalled();
+    expect(inline.open).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      provider: { kind: "neovim" },
+      providerStatus: "error",
+      error: expect.stringContaining("Neovim startup cleanup failed"),
+    });
+
+    await controller.cleanup();
+    expect(retryCleanup).toHaveBeenCalledTimes(1);
   });
 
   it("cleans the active provider once when the controller is cleaned concurrently", async () => {
@@ -565,6 +770,144 @@ describe("embedded Neovim BUFFER provider boundary", () => {
 
     expect(provider.cleanup).toHaveBeenCalledTimes(1);
     expect(replacement.open).toHaveBeenCalledWith({ filePath: "second.txt", line: 2 });
+  });
+
+  it("restarts the provider at the buffer selected natively before a crash", async () => {
+    const provider = createFakeProvider("neovim");
+    provider.open.mockImplementation(async ({ filePath, line = 1 }) => {
+      provider.setSnapshot({
+        status: "ready",
+        providerStatus: "ready",
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        position: { line, column: 0, offset: 0 },
+      });
+      provider.emit();
+    });
+    const controller = new BufferProviderController(async () => ({
+      kind: "neovim",
+      provider,
+      discovery: usableDiscovery,
+    }));
+    await controller.open("first.txt", 1);
+    provider.setSnapshot({
+      status: "ready",
+      providerStatus: "ready",
+      filePath: "first.txt",
+      absolutePath: "/workspace/first.txt",
+      position: { line: 2, column: 0, offset: 0 },
+    });
+    provider.emit();
+    provider.setSnapshot({
+      filePath: "second.txt",
+      absolutePath: "/workspace/second.txt",
+      position: { line: 9, column: 0, offset: 0 },
+    });
+    provider.emit();
+    provider.setSnapshot({
+      status: "idle",
+      providerStatus: "closed",
+      providerExit: {
+        kind: "crash",
+        code: 1,
+        signal: null,
+        stderrTail: "plugin failed",
+      },
+    });
+    provider.emit();
+    provider.open.mockClear();
+
+    await expect(controller.restartAfterCrash("configured")).resolves.toBe(true);
+
+    expect(provider.open).toHaveBeenCalledWith({
+      filePath: "second.txt",
+      line: 9,
+    });
+  });
+
+  it("keeps changed config off a live workspace and applies it on configured restart", async () => {
+    const active = Object.assign(createFakeProvider("neovim"), {
+      inspectDirtyBuffers: vi.fn(async () => []),
+      saveAll: vi.fn(async () => ({ saved: true as const, buffers: [] })),
+    });
+    const replacement = Object.assign(createFakeProvider("neovim"), {
+      inspectDirtyBuffers: vi.fn(async () => []),
+      saveAll: vi.fn(async () => ({ saved: true as const, buffers: [] })),
+    });
+    active.open.mockImplementation(async ({ filePath, line = 1 }) => {
+      active.setSnapshot({
+        status: "ready",
+        providerStatus: "ready",
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        position: { line, column: 0, offset: 0 },
+      });
+      active.emit();
+    });
+    replacement.open.mockImplementation(async ({ filePath, line = 1 }) => {
+      replacement.setSnapshot({
+        status: "ready",
+        providerStatus: "ready",
+        filePath,
+        absolutePath: `/workspace/${filePath}`,
+        position: { line, column: 0, offset: 0 },
+      });
+      replacement.emit();
+    });
+    const selectionFactory = vi.fn()
+      .mockResolvedValueOnce({
+        kind: "neovim" as const,
+        provider: active,
+        discovery: usableDiscovery,
+      })
+      .mockResolvedValue({
+        kind: "neovim" as const,
+        provider: replacement,
+        discovery: usableDiscovery,
+      });
+    const controller = new BufferProviderController(selectionFactory);
+    const env = {} as NodeJS.ProcessEnv;
+    const initialContext = { workspaceRoot: "/workspace" };
+    controller.configure(
+      { provider: "neovim", neovim: { init: "user" } },
+      env,
+      initialContext,
+    );
+    await controller.open("first.txt", 1);
+
+    controller.configure(
+      { provider: "neovim", neovim: { init: "clean" } },
+      env,
+      { workspaceRoot: "/workspace" },
+    );
+    await controller.open("second.txt", 7);
+
+    expect(selectionFactory).toHaveBeenCalledTimes(1);
+    expect(active.open).toHaveBeenLastCalledWith({
+      filePath: "second.txt",
+      line: 7,
+    });
+
+    active.setSnapshot({
+      status: "idle",
+      providerStatus: "closed",
+      providerExit: {
+        kind: "crash",
+        code: 1,
+        signal: null,
+        stderrTail: "old init crashed",
+      },
+    });
+    active.emit();
+
+    await expect(controller.restartAfterCrash("configured")).resolves.toBe(true);
+
+    expect(active.cleanup).toHaveBeenCalledTimes(1);
+    expect(selectionFactory).toHaveBeenCalledTimes(2);
+    expect(replacement.open).toHaveBeenCalledWith({
+      filePath: "second.txt",
+      line: 7,
+    });
   });
 
   it("uses a live close handshake for same-path provider switches", async () => {
@@ -967,7 +1310,40 @@ describe("embedded Neovim BUFFER provider boundary", () => {
     expect(active.open).toHaveBeenNthCalledWith(1, { filePath: "package.json", line: 1 });
     expect(active.open).toHaveBeenNthCalledWith(2, { filePath: "README.md", line: 4 });
     expect(discarded.open).not.toHaveBeenCalled();
-    expect(discarded.cleanup).not.toHaveBeenCalled();
+    expect(discarded.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when an unopened same-kind selection cannot be cleaned", async () => {
+    const active = createFakeProvider("inline");
+    const discarded = createFakeProvider("inline");
+    discarded.cleanup.mockRejectedValueOnce(new Error("candidate resource survived"));
+    const controller = new BufferProviderController(
+      vi.fn()
+        .mockResolvedValueOnce({
+          kind: "inline",
+          provider: active,
+          discovery: null,
+          reason: "first",
+        })
+        .mockResolvedValueOnce({
+          kind: "inline",
+          provider: discarded,
+          discovery: null,
+          reason: "second",
+        }),
+    );
+
+    await controller.open("package.json", 1);
+    await controller.open("README.md", 4);
+
+    expect(active.open).toHaveBeenCalledTimes(1);
+    expect(discarded.open).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      provider: { kind: "inline" },
+      providerStatus: "error",
+      error:
+        "Unused BUFFER provider cleanup failed: candidate resource survived",
+    });
   });
 
   it("applies the latest pane size to a provider selected after resize", async () => {
@@ -983,6 +1359,44 @@ describe("embedded Neovim BUFFER provider boundary", () => {
 
     expect(provider.resize).toHaveBeenCalledWith({ rows: 7, columns: 33 });
     expect(provider.open).toHaveBeenCalledWith({ filePath: "package.json", line: 1 });
+  });
+
+  it("delegates project path synchronization and republishes the verified provider snapshot", async () => {
+    const provider = createFakeProvider("neovim");
+    provider.synchronizePathRename.mockImplementationOnce(async () => {
+      provider.setSnapshot({ filePath: "lib/app.ts", absolutePath: "/workspace/lib/app.ts" });
+      return { ok: true as const, affectedBufferHandles: [7, 9] };
+    });
+    provider.synchronizePathDelete.mockResolvedValueOnce({
+      ok: true as const,
+      affectedBufferHandles: [9],
+    });
+    const controller = new BufferProviderController(async () => ({
+      kind: "neovim",
+      provider,
+      discovery: usableDiscovery,
+    }));
+    await controller.open("src/app.ts", 1);
+
+    expect(controller.beginProjectPathMutation()).toBe(true);
+    expect(provider.beginProjectPathMutation).toHaveBeenCalledOnce();
+    await expect(controller.synchronizePathRename("src", "lib")).resolves.toEqual({
+      ok: true,
+      affectedBufferHandles: [7, 9],
+    });
+    expect(provider.synchronizePathRename).toHaveBeenCalledWith("src", "lib");
+    expect(controller.getSnapshot()).toMatchObject({
+      filePath: "lib/app.ts",
+      absolutePath: "/workspace/lib/app.ts",
+    });
+
+    await expect(controller.synchronizePathDelete("lib/hidden.ts")).resolves.toEqual({
+      ok: true,
+      affectedBufferHandles: [9],
+    });
+    expect(provider.synchronizePathDelete).toHaveBeenCalledWith("lib/hidden.ts");
+    controller.endProjectPathMutation();
+    expect(provider.endProjectPathMutation).toHaveBeenCalledOnce();
   });
 
   it("drops stale selections when a newer open request wins the race", async () => {
@@ -1022,6 +1436,10 @@ function createFakeProvider(kind: BufferProviderIdentity["kind"]): BufferEditorP
   readonly setSnapshot: (snapshot: Partial<BufferProviderSnapshot>) => void;
   readonly open: ReturnType<typeof vi.fn>;
   readonly save: ReturnType<typeof vi.fn>;
+  readonly synchronizePathRename: ReturnType<typeof vi.fn>;
+  readonly synchronizePathDelete: ReturnType<typeof vi.fn>;
+  readonly beginProjectPathMutation: ReturnType<typeof vi.fn>;
+  readonly endProjectPathMutation: ReturnType<typeof vi.fn>;
   readonly revert: ReturnType<typeof vi.fn>;
   readonly close: ReturnType<typeof vi.fn>;
   readonly openExternalEditor: ReturnType<typeof vi.fn>;
@@ -1054,6 +1472,16 @@ function createFakeProvider(kind: BufferProviderIdentity["kind"]): BufferEditorP
     getVisibleLines: vi.fn(() => [{ number: 1, text: "line", selected: false, cursorColumn: 0 }]),
     open: vi.fn(async () => {}),
     save: vi.fn(async () => true),
+    synchronizePathRename: vi.fn(async () => ({
+      ok: true as const,
+      affectedBufferHandles: [],
+    })),
+    synchronizePathDelete: vi.fn(async () => ({
+      ok: true as const,
+      affectedBufferHandles: [],
+    })),
+    beginProjectPathMutation: vi.fn(() => true),
+    endProjectPathMutation: vi.fn(),
     revert: vi.fn(async () => {}),
     close: vi.fn(async () => true),
     openExternalEditor: vi.fn(async () => true),

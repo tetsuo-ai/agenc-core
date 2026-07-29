@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +34,14 @@ const yoloClassifierPromptSourceDir = resolve(
 const yoloClassifierPromptDistDir = resolve(
   runtimeRoot,
   'dist/yolo-classifier-prompts',
+);
+const processBrokerSource = resolve(
+  runtimeRoot,
+  'native/agenc-process-broker.c',
+);
+const processBrokerDist = resolve(
+  runtimeRoot,
+  'dist/agenc-process-broker',
 );
 const agencRoot = resolve(runtimeRoot, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
@@ -99,6 +115,44 @@ function copyYoloClassifierPrompts(): void {
   cpSync(yoloClassifierPromptSourceDir, yoloClassifierPromptDistDir, {
     recursive: true,
   });
+}
+
+function compileLinuxProcessBroker(): void {
+  if (process.platform !== 'linux') return;
+  const compiler = process.env.CC?.trim() || 'cc';
+  const result = spawnSync(
+    compiler,
+    [
+      '-O2',
+      '-std=c11',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-D_FORTIFY_SOURCE=2',
+      '-fstack-protector-strong',
+      '-Wl,-z,relro,-z,now',
+      '-o',
+      processBrokerDist,
+      processBrokerSource,
+    ],
+    {
+      cwd: runtimeRoot,
+      env: {
+        ...process.env,
+        LANG: 'C',
+        LC_ALL: 'C',
+      },
+      encoding: 'utf8',
+    },
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(
+      'Linux process-broker build failed' +
+        (result.error === undefined ? '' : `: ${result.error.message}`) +
+        (result.stderr ? `\n${result.stderr.trim()}` : ''),
+    );
+  }
+  chmodSync(processBrokerDist, 0o755);
 }
 
 function aliasedSourceBases(base: string): string[] {
@@ -271,6 +325,7 @@ const agencRuntimeAssets = {
   }) {
     build.onEnd(() => {
       copyYoloClassifierPrompts();
+      compileLinuxProcessBroker();
     });
   },
 };

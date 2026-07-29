@@ -31,6 +31,7 @@ import { emptyProviderSnapshot, NEOVIM_BUFFER_CAPABILITIES } from "../../../src/
 import { applyWorkbenchCommand, useWorkbenchDispatch } from "../../../src/tui/workbench/state.js";
 import {
   BufferSurface,
+  bufferSurfaceActiveIdentity,
   bufferStatusLabel,
   createBufferSurfaceKeyHandlers,
   diagnosticCoversLine,
@@ -103,6 +104,24 @@ function findClickableBoxes(node: DOMElement, found: DOMElement[] = []): DOMElem
   return found;
 }
 
+function nodeText(node: DOMElement): string {
+  return node.childNodes
+    .map(child =>
+      child.nodeName === "#text" ? child.nodeValue : nodeText(child)
+    )
+    .join("");
+}
+
+function findTextElement(node: DOMElement): DOMElement | null {
+  if (node.nodeName === "ink-text") return node;
+  for (const child of node.childNodes) {
+    if (child.nodeName === "#text") continue;
+    const found = findTextElement(child);
+    if (found) return found;
+  }
+  return null;
+}
+
 type ActionStoreOverrides = { [Key in keyof ReturnType<typeof createActionStoreShape>]?: ReturnType<typeof createActionStoreShape>[Key] };
 
 function createActionStore(overrides: ActionStoreOverrides = {}) {
@@ -138,6 +157,15 @@ function OpenBufferRequest({ path }: { readonly path: string | null }): null {
   React.useEffect(() => {
     if (path) dispatch({ type: "openBuffer", path, line: 1, focus: true });
   }, [dispatch, path]);
+  return null;
+}
+
+function WorkbenchDispatchProbe({
+  capture,
+}: {
+  readonly capture: (dispatch: ReturnType<typeof useWorkbenchDispatch>) => void;
+}): null {
+  capture(useWorkbenchDispatch());
   return null;
 }
 
@@ -177,6 +205,39 @@ afterEach(async () => {
 });
 
 describe("BufferSurface", () => {
+  it("does not label an authoritative unnamed Neovim buffer with the stale host path", () => {
+    const identity = {
+      kind: "neovim" as const,
+      label: "embedded Neovim test",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    };
+    const snapshot = {
+      ...emptyProviderSnapshot(identity),
+      filePath: null,
+      activeBufferHandle: 9,
+      buffers: [{
+        handle: 9,
+        name: "",
+        filePath: null,
+        absolutePath: null,
+        listed: true,
+        loaded: true,
+        modified: true,
+        current: true,
+        bufferType: "",
+        modifiable: true,
+        readOnly: false,
+        saveable: false,
+      }],
+    };
+
+    expect(bufferSurfaceActiveIdentity(snapshot, "stale-named-file.ts")).toEqual({
+      displayPath: "[No Name]",
+      referencePath: null,
+    });
+  });
+
   it("exposes fully testable key handlers for inline and terminal providers", async () => {
     const store = createActionStore();
     const dispatch = vi.fn();
@@ -196,6 +257,7 @@ describe("BufferSurface", () => {
         },
       }),
       viewportRows: 1,
+      filePath: "target.ts",
     };
     const handlers = createBufferSurfaceKeyHandlers({
       store,
@@ -208,6 +270,7 @@ describe("BufferSurface", () => {
     handlers["workbench:focusExplorer"]?.();
     handlers["workbench:focusAgents"]?.();
     handlers["workbench:focusComposer"]?.();
+    handlers["workbench:toggleFileRail"]?.();
     await handlers["buffer:revert"]?.();
     await handlers["buffer:close"]?.();
     await handlers["buffer:closeDiscard"]?.();
@@ -238,9 +301,14 @@ describe("BufferSurface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "explorer" });
     expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "agents" });
     expect(dispatch).toHaveBeenCalledWith({ type: "focus", pane: "composer" });
-    expect(store.close).toHaveBeenCalledWith();
-    expect(store.close).toHaveBeenCalledWith({ discard: true });
-    expect(dispatch).toHaveBeenCalledWith({ type: "closeSurface" });
+    expect(store.close).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(6);
+    expect(dispatch).toHaveBeenNthCalledWith(4, {
+      type: "moveFileToRail",
+      path: "target.ts",
+    });
+    expect(dispatch).toHaveBeenNthCalledWith(5, { type: "closeSurface" });
+    expect(dispatch).toHaveBeenNthCalledWith(6, { type: "closeSurface" });
     expect(store.move).toHaveBeenCalledWith("up");
     expect(store.move).toHaveBeenCalledWith("down");
     expect(store.move).toHaveBeenCalledWith("left");
@@ -276,7 +344,8 @@ describe("BufferSurface", () => {
 
     expect(terminalHandlers["buffer:revert"]?.()).toBe(false);
     expect(terminalHandlers["buffer:undo"]?.()).toBe(false);
-    expect(terminalHandlers["buffer:redo"]?.()).toBe(false);
+    expect(terminalHandlers["buffer:redo"]?.()).toBe(true);
+    expect(store.redo).toHaveBeenCalledTimes(2);
     expect(terminalHandlers["buffer:hover"]?.()).toBe(false);
     expect(terminalHandlers["buffer:definition"]?.()).toBe(false);
     terminalHandlers["buffer:pageUp"]?.();
@@ -284,9 +353,7 @@ describe("BufferSurface", () => {
     expect(store.move).toHaveBeenCalledWith("up", { pageSize: 5 });
     expect(store.move).toHaveBeenCalledWith("down", { pageSize: 5 });
 
-    const blockedCloseStore = createActionStore({
-      close: vi.fn(async () => false),
-    });
+    const blockedCloseStore = createActionStore();
     const blockedDispatch = vi.fn();
     const blockedHandlers = createBufferSurfaceKeyHandlers({
       store: blockedCloseStore,
@@ -296,7 +363,9 @@ describe("BufferSurface", () => {
     });
     await blockedHandlers["buffer:close"]?.();
     await blockedHandlers["buffer:closeDiscard"]?.();
-    expect(blockedDispatch).not.toHaveBeenCalled();
+    expect(blockedCloseStore.close).not.toHaveBeenCalled();
+    expect(blockedDispatch).toHaveBeenCalledTimes(2);
+    expect(blockedDispatch).toHaveBeenCalledWith({ type: "closeSurface" });
   });
 
   it("executes inline command dispatch and helper edge cases", async () => {
@@ -309,13 +378,11 @@ describe("BufferSurface", () => {
     await flush();
 
     expect(store.save).toHaveBeenCalledWith({ hasInFlightAgent: true, force: true });
-    expect(store.close).toHaveBeenCalledWith({ discard: true });
-    expect(store.close).toHaveBeenCalledWith();
+    expect(store.close).not.toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledWith({ type: "closeSurface" });
 
     const blockedStore = createActionStore({
       save: vi.fn(async () => false),
-      close: vi.fn(async () => false),
     });
     const blockedDispatch = vi.fn();
     executeBufferVimCommand({ type: "quit", discard: false, all: false }, {
@@ -329,7 +396,8 @@ describe("BufferSurface", () => {
       hasInFlightAgent: false,
     });
     await flush();
-    expect(blockedDispatch).not.toHaveBeenCalled();
+    expect(blockedDispatch).toHaveBeenCalledTimes(1);
+    expect(blockedDispatch).toHaveBeenCalledWith({ type: "closeSurface" });
 
     const statusSnapshot = {
       ...emptyProviderSnapshot({
@@ -1050,7 +1118,7 @@ describe("BufferSurface", () => {
     }
   });
 
-  it("executes inline vim quit and save-quit commands through the provider boundary", async () => {
+  it("saves inline :wq without destroying the workspace-scoped provider", async () => {
     const file = join(dir, "target.ts");
     await writeFile(file, "const value = 1;\n", "utf8");
     const { stdin, stdout } = createStreams();
@@ -1096,7 +1164,10 @@ describe("BufferSurface", () => {
       await sleep();
 
       expect(await readFile(file, "utf8")).toBe("draft const value = 1;\n");
-      expect(getWorkbenchBufferStore().getSnapshot().status).toBe("idle");
+      expect(getWorkbenchBufferStore().getSnapshot()).toMatchObject({
+        status: "ready",
+        dirty: false,
+      });
     } finally {
       root.unmount();
       stdin.end();
@@ -1107,7 +1178,7 @@ describe("BufferSurface", () => {
 
   it("renders terminal Neovim snapshots and terminal-specific footer status", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
-    let terminalCommandLine: string | null = null;
+    let nativeCommandLine: string | null = null;
     let providerListener: (() => void) | null = null;
     const identity = {
       kind: "neovim" as const,
@@ -1129,9 +1200,8 @@ describe("BufferSurface", () => {
         absolutePath: join(dir, "target.ts"),
         terminal: {
           ...createNeovimRenderSnapshot(4, 24),
-          lines: ["alpha", "beta", "", ""],
+          lines: ["alpha", "beta", "", nativeCommandLine === null ? "" : `:${nativeCommandLine}`],
           mode: "insert",
-          commandLine: terminalCommandLine,
           cursor: { grid: 1, row: 1, column: 2 },
         },
         vimMode: "INSERT",
@@ -1161,7 +1231,7 @@ describe("BufferSurface", () => {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
@@ -1197,15 +1267,139 @@ describe("BufferSurface", () => {
       const frame = output();
       expect(frame).toContain("embedded Neovim test");
       expect(frame).toContain("alpha");
+      expect(frame).toContain("ctrl+ssave");
       expect(frame).toContain("shift+tabcomposer");
-      expect(frame).toContain("ctrl+xhexplorer");
+      expect(frame).toContain("alt+rrail");
 
-      terminalCommandLine = "set number relativenumber wrapscan";
+      provider.save.mockClear();
+      stdin.write("\x1b[27;5;115~");
+      await sleep();
+      expect(provider.save).toHaveBeenCalledWith({ hasInFlightAgent: false });
+      expect(provider.handleInput).not.toHaveBeenCalledWith(
+        "s",
+        expect.objectContaining({ ctrl: true }),
+        expect.anything(),
+      );
+
+      nativeCommandLine = "set number relativenumber wrapscan";
       providerListener?.();
       await sleep();
 
-      expect(output()).toContain("set num");
-      expect(provider.resize).toHaveBeenCalledWith({ rows: 15, columns: 76 });
+      expect(output()).toContain(":setnumber");
+      expect(provider.resize).toHaveBeenCalledWith({ rows: 4, columns: 80 });
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+    }
+  });
+
+  it("keeps native Neovim buffer navigation instead of reopening the prior host path", async () => {
+    await Promise.all([
+      writeFile(join(dir, "first.ts"), "first\n", "utf8"),
+      writeFile(join(dir, "second.ts"), "second\n", "utf8"),
+    ]);
+    let activeProviderPath = "first.ts";
+    let providerListener: (() => void) | null = null;
+    const identity = {
+      kind: "neovim" as const,
+      label: "embedded Neovim test",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    };
+    const provider = {
+      identity,
+      subscribe: vi.fn((listener: () => void) => {
+        providerListener = listener;
+        return () => {};
+      }),
+      getSnapshot: vi.fn(() => ({
+        ...emptyProviderSnapshot(identity),
+        status: "ready" as const,
+        providerStatus: "ready" as const,
+        filePath: activeProviderPath,
+        absolutePath: join(dir, activeProviderPath),
+        terminal: {
+          ...createNeovimRenderSnapshot(4, 24),
+          lines: [activeProviderPath, "", "", ""],
+          mode: "normal",
+          commandLine: null,
+          cursor: { grid: 1, row: 0, column: 0 },
+        },
+        position: { line: 1, column: 0, offset: 0 },
+      })),
+      getVisibleLines: vi.fn(() => []),
+      open: vi.fn(async () => {}),
+      inspectDirtyBuffers: vi.fn(async () => []),
+      saveAll: vi.fn(async () => ({ saved: true as const, buffers: [] })),
+      save: vi.fn(async () => true),
+      revert: vi.fn(async () => {}),
+      close: vi.fn(async () => true),
+      openExternalEditor: vi.fn(async () => false),
+      undo: vi.fn(() => false),
+      redo: vi.fn(() => false),
+      move: vi.fn(() => false),
+      requestHover: vi.fn(async () => null),
+      goToDefinition: vi.fn(async () => false),
+      handleInput: vi.fn(() => true),
+      click: vi.fn(() => true),
+      resize: vi.fn(),
+      focus: vi.fn(),
+      cleanup: vi.fn(async () => {}),
+    };
+    getWorkbenchBufferProviderController().setSelectionFactoryForTesting(async () => ({
+      kind: "neovim",
+      provider,
+      discovery: {
+        usable: true,
+        executable: "nvim",
+        version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+    }));
+    const changes: ReturnType<typeof getDefaultAppState>[] = [];
+    const { stdin, stdout } = createStreams();
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as any as NodeJS.ReadStream,
+      stdout: stdout as any as NodeJS.WriteStream,
+    });
+
+    try {
+      root.render(
+        <AppStateProvider
+          initialState={{
+            ...getDefaultAppState(),
+            workbench: {
+              ...getDefaultAppState().workbench,
+              activeSurfaceMode: "buffer",
+              activeFilePath: "first.ts",
+              activeFileLine: 1,
+            },
+          }}
+          onChangeAppState={({ newState }) => {
+            changes.push(newState);
+          }}
+        >
+          <KeybindingSetup>
+            <BufferSurface focused={true} />
+          </KeybindingSetup>
+        </AppStateProvider>,
+      );
+      await sleep();
+      expect(provider.open).toHaveBeenCalledTimes(1);
+
+      activeProviderPath = "second.ts";
+      providerListener?.();
+      await sleep();
+
+      expect(provider.open).toHaveBeenCalledTimes(1);
+      expect(changes.at(-1)?.workbench).toMatchObject({
+        activeSurfaceMode: "buffer",
+        activeFilePath: "second.ts",
+        activeFileLine: 1,
+      });
     } finally {
       root.unmount();
       stdin.end();
@@ -1276,7 +1470,7 @@ describe("BufferSurface", () => {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
@@ -1334,7 +1528,7 @@ describe("BufferSurface", () => {
     }
   });
 
-  it("routes mouse clicks only from inside the BUFFER content pane", async () => {
+  it("renders actionable buffer tabs and routes content clicks only inside the BUFFER pane", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const identity = {
       kind: "neovim" as const,
@@ -1342,15 +1536,35 @@ describe("BufferSurface", () => {
       fallbackReason: null,
       capabilities: NEOVIM_BUFFER_CAPABILITIES,
     };
+    let providerView: "ready" | "recovery" | "crashed" = "ready";
+    let providerListener: (() => void) | null = null;
     const provider = {
       identity,
-      subscribe: vi.fn(() => () => {}),
+      subscribe: vi.fn((listener: () => void) => {
+        providerListener = listener;
+        return () => {};
+      }),
       getSnapshot: vi.fn(() => ({
         ...emptyProviderSnapshot(identity),
-        status: "ready",
-        providerStatus: "ready",
+        status: providerView === "crashed" ? "idle" as const : "ready" as const,
+        providerStatus:
+          providerView === "crashed" ? "closed" as const : "ready" as const,
         filePath: "target.ts",
         absolutePath: join(dir, "target.ts"),
+        recovery: providerView === "recovery"
+          ? {
+              status: "pending" as const,
+              swapFiles: [join(dir, "target.ts.swp")],
+            }
+          : null,
+        providerExit: providerView === "crashed"
+          ? {
+              kind: "crash" as const,
+              code: 1,
+              signal: null,
+              stderrTail: "crash details",
+            }
+          : null,
         terminal: {
           ...createNeovimRenderSnapshot(4, 24),
           lines: ["alpha", "beta", "", ""],
@@ -1360,6 +1574,67 @@ describe("BufferSurface", () => {
         },
         vimMode: "NORMAL",
         position: { line: 1, column: 0, offset: 0 },
+        dirty: true,
+        activeBufferHandle: 1,
+        dirtyBufferCount: 1,
+        buffers: [
+          {
+            handle: 1,
+            name: "/workspace/target.ts",
+            filePath: "target.ts",
+            absolutePath: "/workspace/target.ts",
+            listed: true,
+            loaded: true,
+            modified: true,
+            current: true,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: true,
+          },
+          {
+            handle: 2,
+            name: "/workspace/src/index.ts",
+            filePath: "src/index.ts",
+            absolutePath: "/workspace/src/index.ts",
+            listed: true,
+            loaded: true,
+            modified: false,
+            current: false,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: true,
+          },
+          {
+            handle: 3,
+            name: "/workspace/tests/index.ts",
+            filePath: "tests/index.ts",
+            absolutePath: "/workspace/tests/index.ts",
+            listed: true,
+            loaded: true,
+            modified: false,
+            current: false,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: true,
+          },
+          {
+            handle: 4,
+            name: "",
+            filePath: null,
+            absolutePath: null,
+            listed: true,
+            loaded: true,
+            modified: false,
+            current: false,
+            bufferType: "",
+            modifiable: true,
+            readOnly: false,
+            saveable: false,
+          },
+        ],
       })),
       getVisibleLines: vi.fn(() => []),
       open: vi.fn(async () => {}),
@@ -1374,24 +1649,33 @@ describe("BufferSurface", () => {
       goToDefinition: vi.fn(async () => false),
       handleInput: vi.fn(() => true),
       click: vi.fn(() => true),
+      selectBuffer: vi.fn(async (handle: number) => handle === 3),
+      resolveRecovery: vi.fn(async () => true),
       resize: vi.fn(),
       focus: vi.fn(),
       cleanup: vi.fn(async () => {}),
     };
-    getWorkbenchBufferProviderController().setSelectionFactoryForTesting(async () => ({
+    const selectionFactory = vi.fn(async () => ({
       kind: "neovim",
       provider,
       discovery: {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
+    getWorkbenchBufferProviderController().setSelectionFactoryForTesting(
+      selectionFactory,
+    );
+    const changes: ReturnType<typeof getDefaultAppState>[] = [];
+    let dispatchWorkbench: ReturnType<typeof useWorkbenchDispatch> | null = null;
     const { stdin, stdout } = createStreams();
     (stdout as any as { columns: number; rows: number }).columns = 160;
-    const outsideClick = vi.fn();
+    const outsideClick = vi.fn(() => {
+      dispatchWorkbench?.({ type: "focus", pane: "composer" });
+    });
     const root = await createRoot({
       patchConsole: false,
       stdin: stdin as any as NodeJS.ReadStream,
@@ -1409,10 +1693,14 @@ describe("BufferSurface", () => {
                 activeSurfaceMode: "buffer",
                 activeFilePath: "target.ts",
                 activeFileLine: 1,
-                focusedPane: "surface",
+                focusedPane: "composer",
               },
             }}
+            onChangeAppState={({ newState }) => changes.push(newState)}
           >
+            <WorkbenchDispatchProbe capture={(dispatch) => {
+              dispatchWorkbench = dispatch;
+            }} />
             <KeybindingSetup>
               <WorkbenchLayout
                 transcript={<Text>transcript</Text>}
@@ -1427,6 +1715,44 @@ describe("BufferSurface", () => {
       const instance = instances.get(stdout as any as NodeJS.WriteStream) as any;
       if (!instance?.rootNode) throw new Error("Ink instance not found");
       instance.setAltScreenActive(true);
+      const clickableBoxes = findClickableBoxes(instance.rootNode);
+      const currentTab = clickableBoxes.find(
+        box => nodeText(box) === "● target.ts",
+      );
+      const sourceIndexTab = clickableBoxes.find(
+        box => nodeText(box) === "src/index.ts",
+      );
+      const testIndexTab = clickableBoxes.find(
+        box => nodeText(box) === "tests/index.ts",
+      );
+      const unnamedTab = clickableBoxes.find(
+        box => nodeText(box) === "[No Name]",
+      );
+      if (!currentTab || !sourceIndexTab || !testIndexTab || !unnamedTab) {
+        throw new Error("Expected BUFFER tabs were not rendered");
+      }
+      expect(findTextElement(currentTab)?.textStyles).toMatchObject({
+        bold: true,
+      });
+      expect(currentTab.style.backgroundColor).toBe("#262626");
+      expect(nodeText(sourceIndexTab)).not.toBe("index.ts");
+      expect(nodeText(testIndexTab)).not.toBe("index.ts");
+
+      const stopImmediatePropagation = vi.fn();
+      const selectTab = testIndexTab._eventHandlers?.onClick;
+      if (typeof selectTab !== "function") {
+        throw new Error("BUFFER tab click handler was not registered");
+      }
+      selectTab({ stopImmediatePropagation });
+      await flush();
+
+      expect(stopImmediatePropagation).toHaveBeenCalledOnce();
+      expect(provider.selectBuffer).toHaveBeenCalledWith(3);
+      expect(changes.at(-1)?.workbench.focusedPane).toBe("surface");
+      expect(selectionFactory).toHaveBeenCalledOnce();
+      expect(provider.open).toHaveBeenCalledOnce();
+      expect(provider.cleanup).not.toHaveBeenCalled();
+
       // The BUFFER content box is the largest clickable box that is not the
       // composer: project-tree rows are clickable too now (explorer mouse
       // support), so document order no longer identifies the buffer pane.
@@ -1452,9 +1778,11 @@ describe("BufferSurface", () => {
       expect(instance.dispatchClick(outsideRect.x, outsideRect.y)).toBe(true);
       expect(provider.click).not.toHaveBeenCalled();
       expect(outsideClick).toHaveBeenCalledTimes(1);
+      expect(changes.at(-1)?.workbench.focusedPane).toBe("composer");
 
       expect(instance.dispatchClick(rect.x + 1, rect.y + 1)).toBe(true);
       expect(provider.click).toHaveBeenCalledWith(1, 1);
+      expect(changes.at(-1)?.workbench.focusedPane).toBe("surface");
 
       provider.click.mockClear();
       root.render(
@@ -1481,7 +1809,51 @@ describe("BufferSurface", () => {
       const unfocusedRect = nodeCache.get(unfocusedClickBox);
       if (!unfocusedRect) throw new Error("unfocused BUFFER click box has no layout");
       expect(instance.dispatchClick(unfocusedRect.x + 1, unfocusedRect.y + 1)).toBe(true);
-      expect(provider.click).not.toHaveBeenCalled();
+      expect(provider.click).toHaveBeenCalledWith(0, 1);
+
+      for (const view of ["recovery", "crashed"] as const) {
+        providerView = view;
+        providerListener?.();
+        provider.click.mockClear();
+        root.render(
+          <AppStateProvider
+            initialState={{
+              ...getDefaultAppState(),
+              workbench: {
+                ...getDefaultAppState().workbench,
+                activeSurfaceMode: "buffer",
+                activeFilePath: "target.ts",
+                activeFileLine: 1,
+                focusedPane: "surface",
+              },
+            }}
+          >
+            <KeybindingSetup>
+              <BufferSurface focused={true} />
+            </KeybindingSetup>
+          </AppStateProvider>,
+        );
+        await sleep();
+        const actionLabel = view === "recovery" ? "R Recover" : "R Restart";
+        const actionBox = findClickableBoxes(instance.rootNode).find(
+          (box) => nodeText(box) === actionLabel,
+        );
+        if (!actionBox) {
+          throw new Error(`${actionLabel} click box not found`);
+        }
+        const actionRect = nodeCache.get(actionBox);
+        if (!actionRect) {
+          throw new Error(`${actionLabel} click box has no layout`);
+        }
+
+        expect(
+          instance.dispatchClick(actionRect.x + 1, actionRect.y + 1),
+        ).toBe(true);
+        await sleep();
+        expect(provider.click).not.toHaveBeenCalled();
+      }
+      expect(provider.resolveRecovery).toHaveBeenCalledWith("recover");
+      expect(selectionFactory.mock.calls.length).toBeGreaterThan(1);
     } finally {
       root.unmount();
       stdin.end();
@@ -1489,7 +1861,7 @@ describe("BufferSurface", () => {
     }
   });
 
-  it("keeps focused BUFFER workbench focus chords inside the provider", async () => {
+  it("keeps native Neovim control keys in the provider while BufferHost actions stay host-owned", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const identity = {
       kind: "neovim" as const,
@@ -1540,7 +1912,7 @@ describe("BufferSurface", () => {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
@@ -1582,14 +1954,39 @@ describe("BufferSurface", () => {
       await sleep();
       stdin.write("h");
       await sleep();
+      stdin.write("\x18");
+      await sleep();
+      stdin.write("\x0b");
+      await sleep();
+      stdin.write("\x07");
+      await sleep();
+      stdin.write("\x12");
+      await sleep();
 
       expect(provider.handleInput).toHaveBeenCalledWith(expect.objectContaining({
         input: "w",
         key: expect.objectContaining({ ctrl: true }),
       }));
       expect(provider.handleInput).toHaveBeenCalledWith(expect.objectContaining({ input: "h" }));
+      for (const input of ["x", "k", "g", "r"]) {
+        expect(provider.handleInput).toHaveBeenCalledWith(expect.objectContaining({
+          input,
+          key: expect.objectContaining({ ctrl: true }),
+        }));
+      }
       expect(changes.every((state) => state.workbench.focusedPane !== "explorer")).toBe(true);
       expect(changes.every((state) => state.workbench.activeSurfaceMode === "buffer")).toBe(true);
+
+      provider.handleInput.mockClear();
+      stdin.write("\x13");
+      await sleep();
+      expect(provider.save).toHaveBeenCalledTimes(1);
+      expect(provider.handleInput).not.toHaveBeenCalled();
+
+      stdin.write("\x1bh");
+      await sleep();
+      expect(changes.some((state) => state.workbench.focusedPane === "explorer")).toBe(true);
+      expect(provider.handleInput).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();
@@ -1604,16 +2001,21 @@ describe("BufferSurface", () => {
       fallbackReason: null,
       capabilities: NEOVIM_BUFFER_CAPABILITIES,
     };
+    let providerDirty = true;
+    let notifyProviderChange = (): void => {};
     const provider = {
       identity,
-      subscribe: vi.fn(() => () => {}),
+      subscribe: vi.fn((listener: () => void) => {
+        notifyProviderChange = listener;
+        return () => {};
+      }),
       getSnapshot: vi.fn(() => ({
         ...emptyProviderSnapshot(identity),
         status: "ready",
         providerStatus: "ready",
         filePath: "target.ts",
         absolutePath: join(dir, "target.ts"),
-        dirty: true,
+        dirty: providerDirty,
       })),
       getVisibleLines: vi.fn(() => []),
       open: vi.fn(async () => {}),
@@ -1640,7 +2042,7 @@ describe("BufferSurface", () => {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
@@ -1653,6 +2055,9 @@ describe("BufferSurface", () => {
         activeSurfaceMode: "buffer" as const,
         activeFilePath: "target.ts",
         activeFileLine: 1,
+        focusedPane: "surface" as const,
+        rail: { kind: "transcript" as const },
+        surfaceMaximized: true,
       },
     };
     const next = applyWorkbenchCommand(state, {
@@ -1664,19 +2069,161 @@ describe("BufferSurface", () => {
     expect(next.workbench.activeSurfaceMode).toBe("buffer");
     expect(next.workbench.activeFilePath).toBe("target.ts");
     expect(next.workbench.pendingBlockedOverlay).toEqual({
-      kind: "approval",
+      kind: "buffer-dirty",
       requestId: "buffer-dirty-surface-switch",
       attemptedAction: "leaving dirty BUFFER",
+      deferredCommand: {
+        type: "openPreview",
+        path: "other.ts",
+        line: 4,
+      },
+    });
+    const ignoredReplacement = applyWorkbenchCommand(next, {
+      type: "openDiff",
+      diffId: "newer-request",
+    });
+    expect(ignoredReplacement).toBe(next);
+    expect(ignoredReplacement.workbench.pendingBlockedOverlay?.deferredCommand)
+      .toEqual({
+        type: "openPreview",
+        path: "other.ts",
+        line: 4,
+      });
+
+    const blockedRailHandoff = applyWorkbenchCommand(state, {
+      type: "moveFileToRail",
+      path: "target.ts",
+    });
+    expect(blockedRailHandoff.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      focusedPane: "surface",
+      rail: { kind: "transcript" },
+      surfaceMaximized: true,
+      pendingBlockedOverlay: {
+        kind: "buffer-dirty",
+        deferredCommand: {
+          type: "moveFileToRail",
+          path: "target.ts",
+        },
+      },
+    });
+
+    const cancelledRailHandoff = applyWorkbenchCommand(blockedRailHandoff, {
+      type: "clearBlockedOverlay",
+    });
+    expect(cancelledRailHandoff.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      focusedPane: "surface",
+      rail: { kind: "transcript" },
+      surfaceMaximized: true,
+      pendingBlockedOverlay: null,
+    });
+
+    const racedRailHandoff = applyWorkbenchCommand(blockedRailHandoff, {
+      type: "resolveBlockedOverlay",
+      requestId: "buffer-dirty-surface-switch",
+    });
+    expect(racedRailHandoff).toBe(blockedRailHandoff);
+    expect(racedRailHandoff.workbench.pendingBlockedOverlay).not.toBeNull();
+
+    providerDirty = false;
+    notifyProviderChange();
+    const resolvedRailHandoff = applyWorkbenchCommand(racedRailHandoff, {
+      type: "resolveBlockedOverlay",
+      requestId: "buffer-dirty-surface-switch",
+    });
+    expect(resolvedRailHandoff.workbench).toMatchObject({
+      activeSurfaceMode: "transcript",
+      focusedPane: "composer",
+      rail: { kind: "file", path: "target.ts" },
+      surfaceMaximized: false,
+      pendingBlockedOverlay: null,
     });
     expect(provider.cleanup).not.toHaveBeenCalled();
   });
 
-  it("cleans up the active provider when the BUFFER surface unmounts", async () => {
-    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
-    let cleanupStarted!: () => void;
-    const cleanupSignal = new Promise<void>((resolve) => {
-      cleanupStarted = resolve;
+  it("keeps recovery bound to its file while another BUFFER navigation is attempted", async () => {
+    const identity = {
+      kind: "neovim" as const,
+      label: "embedded Neovim test",
+      fallbackReason: null,
+      capabilities: NEOVIM_BUFFER_CAPABILITIES,
+    };
+    const provider = {
+      identity,
+      subscribe: vi.fn(() => () => {}),
+      getSnapshot: vi.fn(() => ({
+        ...emptyProviderSnapshot(identity),
+        status: "ready" as const,
+        providerStatus: "ready" as const,
+        filePath: "first.ts",
+        absolutePath: join(dir, "first.ts"),
+        recovery: {
+          status: "pending" as const,
+          swapFiles: [join(dir, "first.ts.swp")],
+        },
+      })),
+      getVisibleLines: vi.fn(() => []),
+      open: vi.fn(async () => {}),
+      save: vi.fn(async () => true),
+      revert: vi.fn(async () => {}),
+      close: vi.fn(async () => true),
+      openExternalEditor: vi.fn(async () => false),
+      undo: vi.fn(() => false),
+      redo: vi.fn(() => false),
+      move: vi.fn(() => false),
+      requestHover: vi.fn(async () => null),
+      goToDefinition: vi.fn(async () => false),
+      handleInput: vi.fn(() => true),
+      click: vi.fn(() => true),
+      resize: vi.fn(),
+      focus: vi.fn(),
+      cleanup: vi.fn(async () => {}),
+    };
+    const controller = getWorkbenchBufferProviderController();
+    controller.setSelectionFactoryForTesting(async () => ({
+      kind: "neovim",
+      provider,
+      discovery: {
+        usable: true,
+        executable: "nvim",
+        version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
+        args: ["--embed", "--clean"],
+        useUserInit: false,
+      },
+    }));
+    await controller.open("first.ts", 1);
+
+    const state = {
+      ...getDefaultAppState(),
+      workbench: {
+        ...getDefaultAppState().workbench,
+        activeSurfaceMode: "buffer" as const,
+        activeFilePath: "first.ts",
+        activeFileLine: 1,
+      },
+    };
+    const blocked = applyWorkbenchCommand(state, {
+      type: "openBuffer",
+      path: "second.ts",
+      line: 7,
     });
+    const reopened = applyWorkbenchCommand(state, {
+      type: "openBuffer",
+      path: "first.ts",
+      line: 3,
+    });
+
+    expect(blocked).toBe(state);
+    expect(reopened.workbench).toMatchObject({
+      activeSurfaceMode: "buffer",
+      activeFilePath: "first.ts",
+      activeFileLine: 3,
+    });
+  });
+
+  it("keeps the workspace provider alive when the BUFFER surface unmounts", async () => {
+    await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const identity = {
       kind: "neovim" as const,
       label: "embedded Neovim test",
@@ -1715,9 +2262,7 @@ describe("BufferSurface", () => {
       click: vi.fn(() => true),
       resize: vi.fn(),
       focus: vi.fn(),
-      cleanup: vi.fn(async () => {
-        cleanupStarted();
-      }),
+      cleanup: vi.fn(async () => {}),
     };
     getWorkbenchBufferProviderController().setSelectionFactoryForTesting(async () => ({
       kind: "neovim",
@@ -1726,7 +2271,7 @@ describe("BufferSurface", () => {
         usable: true,
         executable: "nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
     }));
@@ -1775,8 +2320,9 @@ describe("BufferSurface", () => {
           </KeybindingSetup>
         </AppStateProvider>,
       );
-      await cleanupSignal;
-      expect(provider.cleanup).toHaveBeenCalledTimes(1);
+      await sleep();
+      expect(provider.cleanup).not.toHaveBeenCalled();
+      expect(provider.focus).toHaveBeenLastCalledWith(false);
     } finally {
       root.unmount();
       stdin.end();

@@ -1,11 +1,26 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
-import { NeovimBufferProvider, refreshableFileSnapshotPaths, reloadPathAfterExternalEditor } from "../../../src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.js";
+import { bufferIntegrationIntentCommand } from "../../../src/tui/workbench/commands.js";
+import { BufferProviderController } from "../../../src/tui/workbench/buffer/providers/BufferProviderController.js";
+import {
+  neovimFileSnapshotKey,
+  NeovimBufferProvider,
+  normalizeNeovimBufferPath,
+  refreshableFileSnapshotPaths,
+  reloadPathAfterExternalEditor,
+} from "../../../src/tui/workbench/buffer/providers/neovim/NeovimBufferProvider.js";
 import type { BufferFileSnapshot } from "../../../src/tui/workbench/buffer/fileSnapshot.js";
+import type { BufferIntegrationIntent } from "../../../src/tui/workbench/buffer/providers/types.js";
 import {
   NeovimStartupCleanupError,
   type EmbeddedNeovimSession,
+  type EmbeddedNeovimRecoveryInfo,
+  type NeovimExitInfo,
   type StartEmbeddedNeovimOptions,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimLifecycle.js";
 
@@ -13,7 +28,7 @@ const usableDiscovery = {
   usable: true,
   executable: "/usr/bin/nvim",
   version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-  args: ["--embed", "--clean", "-n"],
+  args: ["--embed", "--clean"],
   useUserInit: false,
 } as const;
 
@@ -28,7 +43,7 @@ describe("embedded Neovim BUFFER provider", () => {
 
     expect(harness.startSession).toHaveBeenCalledWith(expect.objectContaining({
       executable: "/usr/bin/nvim",
-      args: ["--embed", "--clean", "-n"],
+      args: ["--embed", "--clean"],
       filePath: "/workspace/target.txt",
       line: 3,
       column: 2,
@@ -62,6 +77,325 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.startSession).toHaveBeenCalledWith(expect.objectContaining({
       size: { rows: 9, columns: 44 },
     }));
+  });
+
+  it("runs user init once and retries the real startup clean when auto mode fails safely", async () => {
+    const harness = createHarness();
+    harness.startSession.mockRejectedValueOnce(new Error("user init boom"));
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      discovery: {
+        ...usableDiscovery,
+        args: ["--embed"],
+        useUserInit: true,
+        fallback: {
+          args: ["--embed", "--clean"],
+          useUserInit: false,
+        },
+      },
+    });
+
+    await provider.open({ filePath: "target.txt" });
+
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession.mock.calls[0]?.[0].args).toEqual(["--embed"]);
+    expect(harness.startSession.mock.calls[1]?.[0].args).toEqual([
+      "--embed",
+      "--clean",
+    ]);
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "ready",
+      providerMessage:
+        "User Neovim init failed; BUFFER restarted with a clean init.",
+    });
+  });
+
+  it("normalizes integration intent paths through the controller into attachment commands", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: "/workspace",
+    });
+    const selectionFactory = vi.fn(async () => ({
+      kind: "neovim" as const,
+      provider,
+      discovery: usableDiscovery,
+    }));
+    const controller = new BufferProviderController(selectionFactory);
+    const commands: ReturnType<typeof bufferIntegrationIntentCommand>[] = [];
+    const unsubscribe = controller.subscribeIntegrationIntents(intent => {
+      commands.push(bufferIntegrationIntentCommand(intent));
+    });
+
+    try {
+      await controller.open("target.txt", 1);
+
+      harness.emitIntegrationIntent(integrationIntent(
+        "/workspace/src/nested/app.ts",
+      ));
+      harness.emitIntegrationIntent(integrationIntent(
+        "/outside/shared/app.ts",
+      ));
+      harness.emitIntegrationIntent(integrationIntent("", 29));
+
+      expect(commands).toHaveLength(3);
+      expect(commands[0]).toMatchObject({
+        type: "handoffToComposer",
+        attachment: {
+          id: "editor-selection:src/nested/app.ts:4:2:6:8:17",
+          kind: "editor-selection",
+          path: "src/nested/app.ts",
+          label: "src/nested/app.ts:4-6",
+          content: "selected source",
+          dirty: true,
+        },
+      });
+      expect(commands[1]).toMatchObject({
+        type: "handoffToComposer",
+        attachment: {
+          id: "editor-selection:/outside/shared/app.ts:4:2:6:8:17",
+          path: "/outside/shared/app.ts",
+          label: "/outside/shared/app.ts:4-6",
+        },
+      });
+      expect(commands[2]).toMatchObject({
+        type: "handoffToComposer",
+        attachment: {
+          id: "editor-selection:buffer-29:4:2:6:8:17",
+          label: "[No Name]:4-6",
+          content: "selected source",
+          dirty: true,
+        },
+      });
+      expect(commands[2]).not.toHaveProperty("attachment.path");
+      expect(selectionFactory).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+      await controller.cleanup();
+    }
+  });
+
+  it("never promotes a named nofile scratch buffer to a host file target", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+
+    harness.session.inspectBuffers.mockResolvedValueOnce({
+      activeBufferHandle: 1,
+      buffers: [
+        {
+          handle: 1,
+          name: "/workspace/target.txt",
+          listed: true,
+          loaded: true,
+          modified: true,
+          current: true,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: true,
+        },
+        {
+          handle: 91,
+          name: "/workspace/[disk] target.txt",
+          listed: false,
+          loaded: true,
+          modified: false,
+          current: false,
+          bufferType: "nofile",
+          modifiable: false,
+          readOnly: true,
+          saveable: false,
+        },
+      ],
+    });
+    await provider.open({ filePath: "target.txt" });
+
+    expect(provider.getSnapshot()).toMatchObject({
+      filePath: "target.txt",
+      absolutePath: "/workspace/target.txt",
+      activeBufferHandle: 1,
+    });
+    expect(provider.getSnapshot().buffers.find((buffer) => buffer.handle === 91))
+      .toMatchObject({
+        filePath: null,
+        absolutePath: null,
+        listed: false,
+        bufferType: "nofile",
+        saveable: false,
+      });
+  });
+
+  it("maps recovery to the active file and never deletes sibling swap files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-provider-recovery-"));
+    const swap = join(root, "swap");
+    const undo = join(root, "undo");
+    const copies = join(root, "copies");
+    await Promise.all([
+      mkdir(swap),
+      mkdir(undo),
+      mkdir(copies),
+    ]);
+    const firstSwap = join(swap, "%workspace%first.txt.swp");
+    const secondSwap = join(swap, "%workspace%second.txt.swp");
+    await Promise.all([
+      writeFile(firstSwap, "first recovery"),
+      writeFile(secondSwap, "second recovery"),
+    ]);
+    const recovery: EmbeddedNeovimRecoveryInfo = {
+      root,
+      swap,
+      undo,
+      copies,
+      shada: join(root, "main.shada"),
+      manifest: join(root, "recovery.json"),
+      workspaceRoot: "/workspace",
+      workspaceHash: "test",
+      swapFiles: [firstSwap, secondSwap],
+    };
+    const harness = createHarness({ recovery });
+    const provider = new NeovimBufferProvider(harness.options);
+
+    try {
+      await provider.open({ filePath: "first.txt" });
+      harness.emitRecovery({
+        swapFile: firstSwap,
+        filePath: "/workspace/first.txt",
+      });
+      expect(provider.getSnapshot().recovery).toMatchObject({
+        status: "pending",
+        swapFiles: [firstSwap],
+      });
+
+      harness.session.finishRecovery.mockRejectedValueOnce(
+        new Error("replacement preserve failed"),
+      );
+      await expect(provider.resolveRecovery("recover")).resolves.toEqual({
+        ok: false,
+        reason: "replacement preserve failed",
+      });
+      await expect(readFile(firstSwap, "utf8")).resolves.toBe("first recovery");
+      await expect(readFile(secondSwap, "utf8")).resolves.toBe("second recovery");
+
+      harness.session.finishRecovery.mockResolvedValueOnce(null);
+      await expect(provider.resolveRecovery("recover")).resolves.toEqual({
+        ok: false,
+        reason: "Neovim did not confirm its post-recovery swap state.",
+      });
+      await expect(readFile(firstSwap, "utf8")).resolves.toBe("first recovery");
+      await expect(readFile(secondSwap, "utf8")).resolves.toBe("second recovery");
+      harness.session.applyRecovery.mockClear();
+
+      harness.session.finishRecovery.mockResolvedValueOnce(null);
+      await expect(provider.resolveRecovery("save-copy")).resolves.toEqual({
+        ok: false,
+        reason: "Neovim did not confirm its post-recovery swap state.",
+      });
+      await expect(readFile(firstSwap, "utf8")).resolves.toBe("first recovery");
+      await expect(readFile(secondSwap, "utf8")).resolves.toBe("second recovery");
+      harness.session.applyRecovery.mockClear();
+
+      harness.session.openFile.mockClear();
+      await provider.open({ filePath: "second.txt" });
+      expect(provider.getSnapshot().recovery).toMatchObject({
+        status: "pending",
+        swapFiles: [firstSwap],
+      });
+      expect(harness.session.openFile).not.toHaveBeenCalledWith(
+        "/workspace/second.txt",
+        expect.anything(),
+        expect.anything(),
+      );
+
+      harness.emitRecovery({
+        swapFile: secondSwap,
+        filePath: "/workspace/second.txt",
+      });
+      expect(provider.getSnapshot().recovery).toMatchObject({
+        status: "pending",
+        swapFiles: [firstSwap],
+      });
+
+      let releaseRecoveryOpen = (): void => {};
+      const recoveryOpenGate = new Promise<void>((resolve) => {
+        releaseRecoveryOpen = resolve;
+      });
+      harness.session.openFile.mockImplementationOnce(async () => {
+        await recoveryOpenGate;
+        return true;
+      });
+      const discard = provider.resolveRecovery("discard");
+      await flush();
+      await expect(provider.resolveRecovery("recover")).resolves.toEqual({
+        ok: false,
+        reason: "An embedded Neovim recovery action is already in progress.",
+      });
+      await provider.open({ filePath: "second.txt" });
+      await expect(provider.close()).resolves.toBe(false);
+      releaseRecoveryOpen();
+      await expect(discard).resolves.toEqual({ ok: true });
+      expect(harness.session.openFile).toHaveBeenCalledWith(
+        "/workspace/first.txt",
+        1,
+        0,
+      );
+      await expect(readFile(firstSwap, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(secondSwap, "utf8")).resolves.toBe("second recovery");
+      expect(provider.getSnapshot().recovery).toMatchObject({
+        status: "pending",
+        swapFiles: [secondSwap],
+      });
+      expect(harness.session.applyRecovery).not.toHaveBeenCalled();
+    } finally {
+      await provider.cleanup();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an unchanged disk baseline after recovery so the recovered buffer can save", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-provider-recovery-save-"));
+    const swap = join(root, "swap");
+    const undo = join(root, "undo");
+    const copies = join(root, "copies");
+    await Promise.all([mkdir(swap), mkdir(undo), mkdir(copies)]);
+    const swapFile = join(swap, "%workspace%target.txt.swp");
+    await writeFile(swapFile, "recovery bytes");
+    const recovery: EmbeddedNeovimRecoveryInfo = {
+      root,
+      swap,
+      undo,
+      copies,
+      shada: join(root, "main.shada"),
+      manifest: join(root, "recovery.json"),
+      workspaceRoot: "/workspace",
+      workspaceHash: "test",
+      swapFiles: [swapFile],
+    };
+    const harness = createHarness({ recovery });
+    const provider = new NeovimBufferProvider(harness.options);
+
+    try {
+      await provider.open({ filePath: "target.txt" });
+      harness.emitRecovery({
+        swapFile,
+        filePath: "/workspace/target.txt",
+      });
+      harness.setDirty(true);
+      harness.setBufferTextReader(async () => "recovered alpha\n");
+
+      await expect(provider.resolveRecovery("recover")).resolves.toEqual({
+        ok: true,
+      });
+      await expect(provider.save()).resolves.toBe(true);
+      expect(harness.session.saveBuffer).toHaveBeenCalledWith(1, false);
+      expect(provider.getSnapshot()).toMatchObject({
+        providerStatus: "ready",
+        conflictKind: null,
+      });
+    } finally {
+      await provider.cleanup();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("routes printable input, paste, resize, focus, undo, redo, and inert inline movements to Neovim", async () => {
@@ -283,7 +617,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(provider.getSnapshot().providerStatus).toBe("idle");
   });
 
-  it("retains dirty Neovim edits when another file is requested and retries after save", async () => {
+  it("keeps one workspace session and retains dirty hidden buffers across navigation", async () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider(harness.options);
     await provider.open({ filePath: "target.txt" });
@@ -292,20 +626,22 @@ describe("embedded Neovim BUFFER provider", () => {
 
     await expect(provider.open({ filePath: "next.txt" })).resolves.toBeUndefined();
 
-    expect(harness.session.quit).toHaveBeenCalledWith(false);
+    expect(harness.session.quit).not.toHaveBeenCalled();
     expect(harness.session.cleanup).not.toHaveBeenCalled();
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(provider.getSnapshot()).toMatchObject({
-      providerStatus: "conflict",
-      filePath: "target.txt",
+      providerStatus: "ready",
+      filePath: "next.txt",
       dirty: true,
-      error: "Unsaved edits. Save, revert, or close-discard before opening another file.",
+      dirtyBufferCount: 1,
     });
+    expect(provider.getSnapshot().buffers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/workspace/target.txt", modified: true }),
+      expect.objectContaining({ name: "/workspace/next.txt", current: true }),
+    ]));
 
-    await expect(provider.save({ force: true })).resolves.toBe(true);
-    await expect(provider.open({ filePath: "next.txt" })).resolves.toBeUndefined();
-
-    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    await expect(provider.saveAll({ force: true })).resolves.toMatchObject({ saved: true });
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "ready",
       filePath: "next.txt",
@@ -313,48 +649,382 @@ describe("embedded Neovim BUFFER provider", () => {
     });
   });
 
-  it("does not let an older open erase a newer dirty replacement conflict", async () => {
-    const initialDirtyRead = controlled<boolean>();
+  it.each(["changedtick", "new-dirty-buffer"] as const)(
+    "fails Save All before writing when the preflighted %s set changes",
+    async (race) => {
+      let mutateDuringPreflight: (() => void) | null = null;
+      const readFileSnapshot = vi.fn(async (filePath: string) => {
+        const mutate = mutateDuringPreflight;
+        mutateDuringPreflight = null;
+        mutate?.();
+        return {
+          filePath,
+          absolutePath: filePath,
+          content: "alpha\n",
+          mtimeMs: 1,
+          size: 6,
+          encoding: "utf8" as const,
+          lineEndings: "LF" as const,
+        };
+      });
+      const harness = createHarness({ readFileSnapshot });
+      const provider = new NeovimBufferProvider(harness.options);
+      await provider.open({ filePath: "target.txt" });
+      harness.setDirty(true);
+      mutateDuringPreflight = () => {
+        harness.mutateBuffer(
+          race === "changedtick"
+            ? undefined
+            : "/workspace/unreviewed.txt",
+        );
+      };
+
+      await expect(provider.saveAll()).resolves.toMatchObject({
+        saved: false,
+        reason: expect.stringMatching(
+          race === "changedtick"
+            ? /changed during Save All before it could be written/u
+            : /dirty-buffer set changed during Save All/u,
+        ),
+      });
+
+      expect(harness.session.saveBuffer).not.toHaveBeenCalled();
+      expect(harness.session.saveAll).not.toHaveBeenCalled();
+      expect(provider.getSnapshot()).toMatchObject({
+        providerStatus: "conflict",
+        dirty: true,
+      });
+    },
+  );
+
+  it("binds Discard All confirmation to the exact dirty manifest", async () => {
     const harness = createHarness();
-    harness.session.isDirty.mockImplementationOnce(() => initialDirtyRead.promise);
     const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+    harness.setDirty(true);
 
-    const openingInitialFile = provider.open({ filePath: "target.txt" });
-    await flush();
-    expect(harness.session.isDirty).toHaveBeenCalledTimes(1);
+    const confirmation = await provider.prepareDiscardAll();
+    expect(confirmation).not.toBeNull();
+    harness.mutateBuffer("/workspace/unreviewed.txt");
 
-    harness.session.quit.mockResolvedValueOnce({ closed: false, reason: "dirty buffer" });
-    await expect(provider.open({ filePath: "next.txt" })).resolves.toBeUndefined();
+    await expect(
+      provider.discardAll(confirmation ?? undefined),
+    ).resolves.toBe(false);
+    expect(harness.session.discardAll).not.toHaveBeenCalled();
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "conflict",
-      filePath: "target.txt",
-      dirty: true,
+    });
+    await expect(provider.inspectDirtyBuffers()).resolves.toHaveLength(2);
+  });
+
+  it("fails Discard All when a buffer becomes dirty before post-discard confirmation", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+    harness.setDirty(true);
+    const confirmation = await provider.prepareDiscardAll();
+    expect(confirmation).not.toBeNull();
+    harness.session.discardAll.mockImplementationOnce(async () => {
+      harness.setDirty(false);
+      harness.mutateBuffer("/workspace/late-edit.txt");
+      return true;
     });
 
-    initialDirtyRead.resolve(false);
-    await openingInitialFile;
+    await expect(
+      provider.discardAll(confirmation ?? undefined),
+    ).resolves.toBe(false);
+    expect(provider.getSnapshot().dirty).toBe(true);
+    expect(provider.getSnapshot().providerStatus).toBe("conflict");
+  });
 
+  it("blocks editor input and writes while a project path mutation owns the workspace", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+
+    expect(provider.beginProjectPathMutation()).toBe(true);
+    expect(provider.beginProjectPathMutation()).toBe(false);
+    expect(provider.handleInput({
+      input: "x",
+      key: baseKey(),
+      context: { rows: 8, columns: 40 },
+    })).toBe(false);
+    expect(provider.click(1, 1)).toBe(false);
+    await expect(provider.save()).resolves.toBe(false);
+    await expect(provider.saveBuffer(1)).resolves.toBe(false);
+    await expect(provider.selectBuffer(1)).resolves.toBe(false);
+    expect(harness.session.input).not.toHaveBeenCalled();
+    expect(harness.session.click).not.toHaveBeenCalled();
+    expect(harness.session.saveBuffer).not.toHaveBeenCalled();
+
+    provider.endProjectPathMutation();
+    expect(provider.handleInput({
+      input: "x",
+      key: baseKey(),
+      context: { rows: 8, columns: 40 },
+    })).toBe(true);
+    await flush();
+    expect(harness.session.input).toHaveBeenCalledWith("x");
+  });
+
+  it("rebases active and hidden file buffers by stable handle after a directory rename", async () => {
+    const readFileSnapshot = vi.fn(async (filePath: string) => {
+      const absolutePath = filePath.startsWith("/")
+        ? filePath
+        : `/workspace/${filePath}`;
+      return {
+        ...snapshotFor(absolutePath.slice("/workspace/".length), 1),
+        absolutePath,
+      };
+    });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: "/workspace",
+    });
+    await provider.open({ filePath: "src/active.ts" });
+    await provider.open({ filePath: "src/hidden.ts" });
+    const before = provider.getSnapshot().buffers
+      .filter((buffer) => buffer.filePath?.startsWith("src/"))
+      .map((buffer) => ({ handle: buffer.handle, filePath: buffer.filePath }));
+
+    await expect(provider.synchronizePathRename("src", "lib")).resolves.toEqual({
+      ok: true,
+      affectedBufferHandles: before.map((buffer) => buffer.handle),
+    });
+
+    expect(harness.session.rebaseFileBuffers).toHaveBeenCalledWith(
+      before.map((buffer) => ({
+        handle: buffer.handle,
+        fromPath: `/workspace/${buffer.filePath}`,
+        toPath: `/workspace/lib/${buffer.filePath?.slice("src/".length)}`,
+      })),
+    );
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "ready",
+      filePath: "lib/hidden.ts",
+    });
+    expect(provider.getSnapshot().buffers).toEqual(expect.arrayContaining(
+      before.map((buffer) => expect.objectContaining({
+        handle: buffer.handle,
+        filePath: `lib/${buffer.filePath?.slice("src/".length)}`,
+      })),
+    ));
+    expect(provider.getSnapshot().buffers.some(
+      (buffer) => buffer.filePath?.startsWith("src/"),
+    )).toBe(false);
+  });
+
+  it("unloads every active or hidden clean buffer after a directory delete", async () => {
+    const readFileSnapshot = vi.fn(async (filePath: string) => {
+      const absolutePath = filePath.startsWith("/")
+        ? filePath
+        : `/workspace/${filePath}`;
+      return {
+        ...snapshotFor(absolutePath.slice("/workspace/".length), 1),
+        absolutePath,
+      };
+    });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: "/workspace",
+    });
+    await provider.open({ filePath: "src/active.ts" });
+    await provider.open({ filePath: "src/hidden.ts" });
+    const affected = provider.getSnapshot().buffers
+      .filter((buffer) => buffer.filePath?.startsWith("src/"));
+
+    await expect(provider.synchronizePathDelete("src")).resolves.toEqual({
+      ok: true,
+      affectedBufferHandles: affected.map((buffer) => buffer.handle),
+    });
+
+    expect(harness.session.deleteFileBuffers).toHaveBeenCalledWith(
+      affected.map((buffer) => ({
+        handle: buffer.handle,
+        path: buffer.absolutePath,
+      })),
+    );
+    expect(provider.getSnapshot().buffers.some(
+      (buffer) => buffer.filePath?.startsWith("src/"),
+    )).toBe(false);
+    for (const buffer of affected) {
+      await expect(provider.selectBuffer(buffer.handle)).resolves.toBe(false);
+      await expect(provider.saveBuffer(buffer.handle)).resolves.toBe(false);
+    }
+  });
+
+  it("does not reset a hidden buffer disk baseline when navigating back to it", async () => {
+    let aMtime = 1;
+    const readFileSnapshot = vi.fn(async (path: string) => {
+      if (path === "a.txt" || path === "/workspace/a.txt") {
+        return snapshotFor("a.txt", aMtime);
+      }
+      if (path === "b.txt" || path === "/workspace/b.txt") {
+        return snapshotFor("b.txt", 1);
+      }
+      throw new Error(`unexpected read ${path}`);
+    });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "a.txt" });
+    await provider.open({ filePath: "b.txt" });
+
+    aMtime = 2;
+    await provider.open({ filePath: "a.txt" });
+    harness.setDirty(true);
+    harness.emitDirty(true);
+
+    await expect(provider.save()).resolves.toBe(false);
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "conflict",
+      error: expect.stringContaining("changed on disk"),
+    });
+    expect(harness.session.saveBuffer).not.toHaveBeenCalled();
+  });
+
+  it("retains the one-release per-file rollback without weakening dirty safety", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      sessionMode: "file",
+    });
+    await provider.open({ filePath: "target.txt" });
+    harness.setDirty(true);
+    harness.emitDirty(true);
+
+    await provider.open({ filePath: "next.txt" });
+
+    expect(harness.session.quit).toHaveBeenCalledWith(false);
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "conflict",
-      providerMessage: "Unsaved edits. Save, revert, or close-discard before opening another file.",
       filePath: "target.txt",
       dirty: true,
     });
 
-    harness.emitGrid("session remains live");
+    harness.setDirty(false);
+    await provider.open({ filePath: "next.txt" });
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
     expect(provider.getSnapshot()).toMatchObject({
-      providerStatus: "conflict",
-      terminal: { lines: ["session remains live"] },
-      dirty: true,
+      providerStatus: "ready",
+      filePath: "next.txt",
     });
   });
 
-  it("contains session cleanup failures and retains actionable BUFFER diagnostics", async () => {
+  it("serializes concurrent file navigation and leaves the newest file active", async () => {
+    const harness = createHarness();
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+
+    const slowNavigation = controlled<boolean>();
+    harness.session.openFile.mockImplementationOnce(() => slowNavigation.promise);
+    const openingSlow = provider.open({ filePath: "slow.txt" });
+    await flush();
+    const openingNewest = provider.open({ filePath: "newest.txt" });
+    await flush();
+    expect(harness.session.openFile).toHaveBeenCalledTimes(1);
+    slowNavigation.resolve(true);
+    await Promise.all([openingSlow, openingNewest]);
+
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.session.openFile).toHaveBeenNthCalledWith(
+      2,
+      "/workspace/newest.txt",
+      1,
+      0,
+    );
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "ready",
+      filePath: "newest.txt",
+    });
+  });
+
+  it("queues editor input until the requested file owns the workspace", async () => {
+    const nextFileRead = controlled<BufferFileSnapshot>();
+    const readFileSnapshot = vi.fn(async (filePath: string) => {
+      if (filePath === "next.txt") return nextFileRead.promise;
+      return snapshotFor(filePath, 1);
+    });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+
+    let activePath = "/workspace/target.txt";
+    let inputPath: string | null = null;
+    harness.session.openFile.mockImplementationOnce(async (filePath: string) => {
+      activePath = filePath;
+      harness.activatePath(filePath);
+      return true;
+    });
+    harness.session.input.mockImplementationOnce(async () => {
+      inputPath = activePath;
+      return true;
+    });
+
+    const openingNext = provider.open({ filePath: "next.txt" });
+    await flush();
+    expect(provider.handleInput({
+      input: "x",
+      key: baseKey(),
+      context: { rows: 8, columns: 40 },
+    })).toBe(true);
+    await flush();
+    expect(harness.session.input).not.toHaveBeenCalled();
+
+    nextFileRead.resolve(snapshotFor("next.txt", 2));
+    await openingNext;
+    await flush();
+
+    expect(harness.session.openFile).toHaveBeenCalledWith(
+      "/workspace/next.txt",
+      1,
+      0,
+    );
+    expect(harness.session.input).toHaveBeenCalledWith("x");
+    expect(inputPath).toBe("/workspace/next.txt");
+  });
+
+  it("drops queued editor input when a newer file navigation supersedes it", async () => {
+    const slowFileRead = controlled<BufferFileSnapshot>();
+    const readFileSnapshot = vi.fn(async (filePath: string) => {
+      if (filePath === "slow.txt") return slowFileRead.promise;
+      return snapshotFor(filePath, 1);
+    });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider(harness.options);
+    await provider.open({ filePath: "target.txt" });
+    harness.session.input.mockClear();
+
+    const openingSlow = provider.open({ filePath: "slow.txt" });
+    await flush();
+    expect(provider.handleInput({
+      input: "x",
+      key: baseKey(),
+      context: { rows: 8, columns: 40 },
+    })).toBe(true);
+
+    await provider.open({ filePath: "newest.txt" });
+    await flush();
+    expect(harness.session.input).not.toHaveBeenCalled();
+
+    slowFileRead.resolve(snapshotFor("slow.txt", 2));
+    await openingSlow;
+    await flush();
+
+    expect(harness.session.input).not.toHaveBeenCalled();
+    expect(provider.getSnapshot()).toMatchObject({
+      providerStatus: "ready",
+      filePath: "newest.txt",
+    });
+  });
+
+  it("contains navigation and cleanup failures and retains actionable BUFFER diagnostics", async () => {
     const reopenHarness = createHarness();
     const reopenProvider = new NeovimBufferProvider(reopenHarness.options);
     await reopenProvider.open({ filePath: "target.txt" });
-    reopenHarness.session.quit.mockRejectedValueOnce(new Error("process tree survived"));
+    reopenHarness.session.openFile.mockRejectedValueOnce(new Error("navigation failed"));
 
     await expect(reopenProvider.open({ filePath: "next.txt" })).resolves.toBeUndefined();
 
@@ -362,10 +1032,10 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(reopenProvider.getSnapshot()).toMatchObject({
       providerStatus: "error",
       filePath: "target.txt",
-      error: "Embedded Neovim cleanup failed before opening another file: process tree survived",
+      error: "navigation failed",
     });
     await expect(reopenProvider.open({ filePath: "next.txt" })).resolves.toBeUndefined();
-    expect(reopenHarness.startSession).toHaveBeenCalledTimes(2);
+    expect(reopenHarness.startSession).toHaveBeenCalledTimes(1);
     expect(reopenProvider.getSnapshot()).toMatchObject({
       providerStatus: "ready",
       filePath: "next.txt",
@@ -484,7 +1154,7 @@ describe("embedded Neovim BUFFER provider", () => {
     await expect(provider.save()).resolves.toBe(true);
     await expect(provider.openExternalEditor()).resolves.toBe(true);
     expect(launch).toHaveBeenCalledWith("/workspace/target.txt", 2);
-    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
 
     launch.mockReturnValueOnce(false);
     const startCountBeforeCancel = harness.startSession.mock.calls.length;
@@ -569,8 +1239,8 @@ describe("embedded Neovim BUFFER provider", () => {
     await flush();
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "loading",
-      filePath: null,
-      absolutePath: null,
+      filePath: "target.txt",
+      absolutePath: "/workspace/target.txt",
     });
 
     await expect(provider.openExternalEditor()).resolves.toBe(false);
@@ -584,21 +1254,25 @@ describe("embedded Neovim BUFFER provider", () => {
     });
   });
 
-  it("does not hand off the previous file while a newer open is closing it", async () => {
+  it("does not hand off the previous file while a newer navigation is pending", async () => {
     const launch = vi.fn(() => true);
     const harness = createHarness({ launch });
     const provider = new NeovimBufferProvider(harness.options);
     await provider.open({ filePath: "target.txt" });
-    const closeResult = controlled<{ readonly closed: true }>();
-    harness.session.quit.mockImplementationOnce(() => closeResult.promise);
+    const navigationResult = controlled<boolean>();
+    harness.session.openFile.mockImplementationOnce(async (filePath: string) => {
+      const result = await navigationResult.promise;
+      if (result) harness.activatePath(filePath);
+      return result;
+    });
 
     const openingNext = provider.open({ filePath: "next.txt" });
     await flush();
-    expect(harness.session.quit).toHaveBeenCalledWith(false);
+    expect(harness.session.openFile).toHaveBeenCalledWith("/workspace/next.txt", 1, 0);
 
     await expect(provider.openExternalEditor()).resolves.toBe(false);
     expect(launch).not.toHaveBeenCalled();
-    closeResult.resolve({ closed: true });
+    navigationResult.resolve(true);
     await openingNext;
 
     expect(provider.getSnapshot()).toMatchObject({
@@ -713,9 +1387,9 @@ describe("embedded Neovim BUFFER provider", () => {
   it("does not resurrect ready state when the session exits during dirty refresh", async () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider(harness.options);
-    harness.session.isDirty.mockImplementationOnce(async () => {
+    harness.session.inspectBuffers.mockImplementationOnce(async () => {
       harness.emitExit();
-      return false;
+      return { activeBufferHandle: null, buffers: [] };
     });
 
     await provider.open({ filePath: "target.txt" });
@@ -764,7 +1438,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(saveReads).toContain("/workspace/b.txt");
   });
 
-  it("does not redirect a stale save into the newly opened session", async () => {
+  it("does not redirect a stale save into the newly active buffer", async () => {
     const conflictRead = controlled<BufferFileSnapshot>();
     const aSnapshot = snapshotFor("a.txt", 1);
     const bSnapshot = snapshotFor("b.txt", 2);
@@ -778,23 +1452,8 @@ describe("embedded Neovim BUFFER provider", () => {
       if (path === "b.txt" || path === "/workspace/b.txt") return bSnapshot;
       throw new Error(`unexpected read ${path}`);
     });
-    const base = createHarness({ readFileSnapshot });
-    const firstSession = {
-      ...base.session,
-      save: vi.fn(async () => true),
-      cleanup: vi.fn(async () => {}),
-      isDirty: vi.fn(async () => false),
-    } as any as EmbeddedNeovimSession;
-    const secondSession = {
-      ...base.session,
-      save: vi.fn(async () => true),
-      cleanup: vi.fn(async () => {}),
-      isDirty: vi.fn(async () => false),
-    } as any as EmbeddedNeovimSession;
-    const startSession = vi.fn()
-      .mockResolvedValueOnce(firstSession)
-      .mockResolvedValueOnce(secondSession);
-    const provider = new NeovimBufferProvider({ ...base.options, startSession });
+    const harness = createHarness({ readFileSnapshot });
+    const provider = new NeovimBufferProvider(harness.options);
 
     await provider.open({ filePath: "a.txt" });
     const staleSave = provider.save();
@@ -803,8 +1462,8 @@ describe("embedded Neovim BUFFER provider", () => {
     conflictRead.resolve(aSnapshot);
 
     await expect(staleSave).resolves.toBe(false);
-    expect((firstSession.save as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-    expect((secondSession.save as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect(harness.session.saveBuffer).not.toHaveBeenCalled();
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "ready",
       filePath: "b.txt",
@@ -834,6 +1493,21 @@ describe("embedded Neovim BUFFER provider", () => {
       ...harness.session,
       cleanup: vi.fn(async () => {}),
       isDirty: vi.fn(async () => false),
+      inspectBuffers: vi.fn(async () => ({
+        activeBufferHandle: 9,
+        buffers: [{
+          handle: 9,
+          name: "/workspace/active.txt",
+          listed: true,
+          loaded: true,
+          modified: false,
+          current: true,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: true,
+        }],
+      })),
     } as any as EmbeddedNeovimSession;
 
     const staleOpen = provider.open({ filePath: "stale.txt" });
@@ -1030,6 +1704,21 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.session.cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("normalizes Neovim buffer names before using them as disk-baseline keys", () => {
+    const workspaceRoot = process.platform === "win32"
+      ? "C:\\workspace"
+      : "/workspace";
+    const neovimName = process.platform === "win32"
+      ? "C:/workspace/src/../target.txt"
+      : "/workspace/src/../target.txt";
+    const normalized = normalizeNeovimBufferPath(neovimName, workspaceRoot);
+
+    expect(normalized).toBe(join(workspaceRoot, "target.txt"));
+    expect(neovimFileSnapshotKey(neovimName)).toBe(
+      neovimFileSnapshotKey(normalized),
+    );
+  });
+
   it("handles empty provider state, Neovim callbacks, and dirty refresh failures", async () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider(harness.options);
@@ -1108,30 +1797,194 @@ function createHarness(overrides: {
   readonly launch?: (filePath: string, line: number) => boolean;
   readonly readFileSnapshot?: (filePath: string) => Promise<BufferFileSnapshot>;
   readonly startSession?: (options: StartEmbeddedNeovimOptions) => Promise<EmbeddedNeovimSession>;
+  readonly recovery?: EmbeddedNeovimRecoveryInfo | null;
 } = {}) {
-  let dirty = false;
+  let currentPath = "/workspace/target.txt";
+  let nextHandle = 2;
+  const buffers = new Map<
+    string,
+    { handle: number; dirty: boolean; changedtick: number }
+  >([
+    [currentPath, { handle: 1, dirty: false, changedtick: 1 }],
+  ]);
+  const currentBuffer = () => {
+    const existing = buffers.get(currentPath);
+    if (existing) return existing;
+    const created = { handle: nextHandle, dirty: false, changedtick: 1 };
+    nextHandle += 1;
+    buffers.set(currentPath, created);
+    return created;
+  };
   let onSnapshot: ((snapshot: ReturnType<typeof createNeovimRenderSnapshot>) => void) | null = null;
   let onDirtyChange: ((dirty: boolean) => void) | null = null;
   let onError: ((error: Error) => void) | null = null;
-  let onExit: (() => void) | null = null;
+  let onExit: ((exit: NeovimExitInfo) => void) | null = null;
+  let onIntegrationIntent:
+    ((intent: BufferIntegrationIntent) => void) | null = null;
+  let onRecoveryDetected:
+    ((recovery: { readonly swapFile: string; readonly filePath: string }) => void) | null = null;
+  const save = vi.fn(async () => {
+    currentBuffer().dirty = false;
+    return true;
+  });
   const session = {
     pid: 12345,
+    recovery: overrides.recovery ?? null,
     input: vi.fn(async (keys: string) => {
-      if (keys.length > 0) dirty = true;
+      if (keys.includes(":edit!")) currentBuffer().dirty = false;
+      else if (keys.length > 0) {
+        currentBuffer().dirty = true;
+        currentBuffer().changedtick += 1;
+      }
+      return true;
     }),
     paste: vi.fn(async (text: string) => {
-      if (text.length > 0) dirty = true;
+      if (text.length > 0) {
+        currentBuffer().dirty = true;
+        currentBuffer().changedtick += 1;
+      }
     }),
     resize: vi.fn(async () => {}),
     focus: vi.fn(async () => {}),
     click: vi.fn(async () => {}),
-    save: vi.fn(async () => {
-      dirty = false;
+    openFile: vi.fn(async (filePath: string) => {
+      currentPath = filePath;
+      currentBuffer();
       return true;
     }),
-    isDirty: vi.fn(async () => dirty),
-    hasUnsavedBuffers: vi.fn(async () => dirty),
-    quit: vi.fn(async (discard = false) => dirty && !discard
+    inspectBuffers: vi.fn(async () => ({
+      activeBufferHandle: currentBuffer().handle,
+      buffers: [...buffers.entries()].map(([name, buffer]) => ({
+        handle: buffer.handle,
+        changedtick: buffer.changedtick,
+        name,
+        listed: true,
+        loaded: true,
+        modified: buffer.dirty,
+        current: name === currentPath,
+        bufferType: "",
+        modifiable: true,
+        readOnly: false,
+        saveable: true,
+      })),
+    })),
+    inspectDirtyBuffers: vi.fn(async () =>
+      [...buffers.entries()]
+        .filter(([, buffer]) => buffer.dirty)
+        .map(([name, buffer]) => ({
+          handle: buffer.handle,
+          changedtick: buffer.changedtick,
+          name,
+          listed: true,
+          loaded: true,
+          modified: true,
+          current: name === currentPath,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: true,
+        }))),
+    save,
+    saveBuffer: vi.fn(async (
+      handle: number,
+      force: boolean,
+      expectedChangedtick?: number,
+    ) => {
+      const target = [...buffers.values()].find((buffer) => buffer.handle === handle);
+      if (!target) return false;
+      if (
+        expectedChangedtick !== undefined &&
+        target.changedtick !== expectedChangedtick
+      ) {
+        throw new Error(`buffer changed before write: ${handle}`);
+      }
+      const result = await save(force);
+      if (result) target.dirty = false;
+      return result;
+    }),
+    rebaseFileBuffers: vi.fn(async (
+      changes: readonly { readonly handle: number; readonly fromPath: string; readonly toPath: string }[],
+    ) => {
+      for (const change of changes) {
+        const buffer = buffers.get(change.fromPath);
+        if (!buffer || buffer.handle !== change.handle || buffer.dirty) {
+          throw new Error(`cannot rebase buffer ${change.handle}`);
+        }
+        buffers.delete(change.fromPath);
+        buffers.set(change.toPath, buffer);
+        if (currentPath === change.fromPath) currentPath = change.toPath;
+      }
+    }),
+    deleteFileBuffers: vi.fn(async (
+      deletions: readonly { readonly handle: number; readonly path: string }[],
+    ) => {
+      for (const deletion of deletions) {
+        const buffer = buffers.get(deletion.path);
+        if (!buffer || buffer.handle !== deletion.handle || buffer.dirty) {
+          throw new Error(`cannot delete buffer ${deletion.handle}`);
+        }
+      }
+      for (const deletion of deletions) buffers.delete(deletion.path);
+      if (deletions.some((deletion) => deletion.path === currentPath)) {
+        currentPath = buffers.keys().next().value ?? "";
+      }
+    }),
+    saveAll: vi.fn(async (force: boolean) => {
+      const dirtyBuffers = [...buffers.entries()].filter(([, buffer]) => buffer.dirty);
+      for (const [, buffer] of dirtyBuffers) buffer.dirty = false;
+      return {
+        saved: true as const,
+        buffers: dirtyBuffers.map(([name, buffer]) => ({
+          handle: buffer.handle,
+          changedtick: buffer.changedtick,
+          name,
+          listed: true,
+          loaded: true,
+          modified: true,
+          current: name === currentPath,
+          bufferType: "",
+          modifiable: true,
+          readOnly: false,
+          saveable: true,
+        })),
+      };
+    }),
+    discardAll: vi.fn(async (
+      expectedBuffers: readonly {
+        readonly handle: number;
+        readonly name: string;
+        readonly changedtick: number | null;
+      }[] = [],
+    ) => {
+      const dirtyBuffers = [...buffers.entries()]
+        .filter(([, buffer]) => buffer.dirty);
+      if (
+        dirtyBuffers.length !== expectedBuffers.length ||
+        expectedBuffers.some((expected) => {
+          const actual = dirtyBuffers.find(
+            ([, buffer]) => buffer.handle === expected.handle,
+          );
+          return !actual ||
+            actual[0] !== expected.name ||
+            actual[1].changedtick !== expected.changedtick;
+        })
+      ) {
+        return false;
+      }
+      for (const expected of expectedBuffers) {
+        const target = [...buffers.values()].find(
+          (buffer) => buffer.handle === expected.handle,
+        );
+        if (target) target.dirty = false;
+      }
+      return ![...buffers.values()].some((buffer) => buffer.dirty);
+    }),
+    applyRecovery: vi.fn(async () => currentBuffer().handle),
+    finishRecovery: vi.fn(async () => "/workspace/.first.txt.swp"),
+    isDirty: vi.fn(async () => currentBuffer().dirty),
+    hasUnsavedBuffers: vi.fn(async () => [...buffers.values()].some((buffer) => buffer.dirty)),
+    quit: vi.fn(async (discard = false) =>
+      [...buffers.values()].some((buffer) => buffer.dirty) && !discard
       ? {
           closed: false as const,
           reason: "Unsaved Neovim edits. Save or use force quit before closing BUFFER.",
@@ -1149,10 +2002,14 @@ function createHarness(overrides: {
     lineEndings: "LF",
   }));
   const startSession = overrides.startSession ?? vi.fn(async (options: StartEmbeddedNeovimOptions) => {
+    currentPath = options.filePath;
+    currentBuffer();
     onSnapshot = options.onSnapshot;
     onDirtyChange = options.onDirtyChange ?? null;
     onError = options.onError;
     onExit = options.onExit;
+    onIntegrationIntent = options.onIntegrationIntent ?? null;
+    onRecoveryDetected = options.onRecoveryDetected ?? null;
     const snapshot = createNeovimRenderSnapshot(options.size.rows, options.size.columns);
     onSnapshot({
       ...snapshot,
@@ -1169,7 +2026,17 @@ function createHarness(overrides: {
       resize: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
       click: ReturnType<typeof vi.fn>;
+      openFile: ReturnType<typeof vi.fn>;
+      inspectBuffers: ReturnType<typeof vi.fn>;
+      inspectDirtyBuffers: ReturnType<typeof vi.fn>;
       save: ReturnType<typeof vi.fn>;
+      saveBuffer: ReturnType<typeof vi.fn>;
+      rebaseFileBuffers: ReturnType<typeof vi.fn>;
+      deleteFileBuffers: ReturnType<typeof vi.fn>;
+      saveAll: ReturnType<typeof vi.fn>;
+      discardAll: ReturnType<typeof vi.fn>;
+      applyRecovery: ReturnType<typeof vi.fn>;
+      finishRecovery: ReturnType<typeof vi.fn>;
       isDirty: ReturnType<typeof vi.fn>;
       hasUnsavedBuffers: ReturnType<typeof vi.fn>;
       quit: ReturnType<typeof vi.fn>;
@@ -1177,7 +2044,33 @@ function createHarness(overrides: {
     },
     startSession,
     setDirty(value: boolean) {
-      dirty = value;
+      currentBuffer().dirty = value;
+      if (value) currentBuffer().changedtick += 1;
+    },
+    setBufferTextReader(
+      reader: (handle: number) => Promise<string>,
+    ) {
+      (session as unknown as {
+        readBufferText?: (handle: number) => Promise<string>;
+      }).readBufferText = reader;
+    },
+    mutateBuffer(filePath = currentPath) {
+      const existing = buffers.get(filePath);
+      if (existing) {
+        existing.dirty = true;
+        existing.changedtick += 1;
+        return;
+      }
+      buffers.set(filePath, {
+        handle: nextHandle,
+        dirty: true,
+        changedtick: 1,
+      });
+      nextHandle += 1;
+    },
+    activatePath(filePath: string) {
+      currentPath = filePath;
+      currentBuffer();
     },
     emitGrid(text: string, mode = "normal") {
       const snapshot = createNeovimRenderSnapshot(3, 20);
@@ -1189,14 +2082,21 @@ function createHarness(overrides: {
       });
     },
     emitDirty(value: boolean) {
-      dirty = value;
+      currentBuffer().dirty = value;
+      if (value) currentBuffer().changedtick += 1;
       onDirtyChange?.(value);
     },
     emitError(error: Error) {
       onError?.(error);
     },
-    emitExit() {
-      onExit?.();
+    emitExit(exit = { code: 0, signal: null, stderrTail: "" }) {
+      onExit?.(exit);
+    },
+    emitIntegrationIntent(intent: BufferIntegrationIntent) {
+      onIntegrationIntent?.(intent);
+    },
+    emitRecovery(recovery: { readonly swapFile: string; readonly filePath: string }) {
+      onRecoveryDetected?.(recovery);
     },
     options: {
       discovery: usableDiscovery,
@@ -1217,6 +2117,28 @@ function snapshotFor(filePath: string, mtimeMs: number): BufferFileSnapshot {
     size: 6,
     encoding: "utf8",
     lineEndings: "LF",
+  };
+}
+
+function integrationIntent(
+  path: string,
+  bufferHandle = 7,
+): BufferIntegrationIntent {
+  return {
+    kind: "fix",
+    context: {
+      kind: "selection",
+      bufferHandle,
+      path,
+      range: {
+        start: { line: 4, column: 2 },
+        end: { line: 6, column: 8 },
+      },
+      content: "selected source",
+      dirty: true,
+      selectionMode: "character",
+      changedtick: 17,
+    },
   };
 }
 

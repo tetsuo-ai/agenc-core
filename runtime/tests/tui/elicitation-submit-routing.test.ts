@@ -26,7 +26,7 @@ describe("submitViaElicitationPrompt", () => {
       clear,
     );
 
-    expect(submit).toHaveBeenCalledWith("/mcp tools");
+    expect(submit).toHaveBeenCalledWith("/mcp tools", undefined);
     expect(clear.clearBuffer).toHaveBeenCalledTimes(1);
   });
 

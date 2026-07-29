@@ -38,7 +38,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [evaluation-pilot-v1.md](evaluation-pilot-v1.md) | Frozen 30-task public pilot candidates, qualification boundary, and powered-holdout design |
 | [ci-required-gates.md](ci-required-gates.md) | Local exact-SHA gates and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Tool JSON-schema root-type requirements for strict providers |
-| [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | BUFFER providers, nvim trust boundary, env knobs |
+| [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, configuration, and troubleshooting |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
@@ -60,7 +60,7 @@ explanation. Prefer linked pages over archive notes when they disagree.
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills load paths, plugin CLI, registration surfaces |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, OS sandbox |
-| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench, BUFFER summary |
+| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, and safety prompts |
 
 ## Explanation
 

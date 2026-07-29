@@ -36,11 +36,49 @@ export type BufferProviderIdentity = {
   readonly capabilities: BufferProviderCapabilities;
 };
 
+/**
+ * A stable, provider-owned buffer identity. Neovim buffer handles remain valid
+ * while a workspace session is alive, including when the buffer is hidden.
+ */
+export type BufferProviderBuffer = {
+  readonly handle: number;
+  readonly name: string;
+  readonly filePath: string | null;
+  readonly absolutePath: string | null;
+  readonly listed: boolean;
+  readonly loaded: boolean;
+  readonly modified: boolean;
+  readonly current: boolean;
+  readonly bufferType: string;
+  readonly modifiable: boolean;
+  readonly readOnly: boolean;
+  readonly saveable: boolean;
+};
+
 export type BufferProviderSnapshot = WorkbenchBufferSnapshot & {
   readonly provider: BufferProviderIdentity;
   readonly providerStatus: BufferProviderStatus;
   readonly providerMessage: string | null;
   readonly terminal: NeovimRenderSnapshot | null;
+  /**
+   * Authoritative provider manifest. `dirty` is the aggregate of every loaded
+   * buffer, not merely the active buffer.
+   */
+  readonly buffers: readonly BufferProviderBuffer[];
+  readonly activeBufferHandle: number | null;
+  readonly dirtyBufferCount: number;
+  readonly recovery: {
+    readonly status: "pending" | "working" | "recovered" | "comparing" | "copy-saved";
+    readonly swapFiles: readonly string[];
+    readonly copyPath?: string;
+    readonly error?: string;
+  } | null;
+  readonly providerExit?: {
+    readonly kind: "intentional" | "crash";
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+    readonly stderrTail: string;
+  } | null;
 };
 
 export type BufferProviderOpenOptions = {
@@ -57,6 +95,90 @@ export type BufferProviderSaveOptions = {
 export type BufferProviderCloseOptions = {
   readonly discard?: boolean;
 };
+
+export type BufferProviderShutdownOptions = {
+  readonly mode?: "safe" | "discard";
+};
+
+export type BufferRecoveryAction = "recover" | "compare" | "save-copy" | "discard";
+
+export type BufferRecoveryResult =
+  | { readonly ok: true; readonly copyPath?: string }
+  | { readonly ok: false; readonly reason: string };
+
+export type BufferProviderSaveAllResult =
+  | {
+      readonly saved: true;
+      readonly buffers: readonly BufferProviderBuffer[];
+    }
+  | {
+      readonly saved: false;
+      readonly reason: string;
+      readonly blockedBuffers: readonly BufferProviderBuffer[];
+    };
+
+export type BufferProviderPathMutationResult =
+  | {
+      readonly ok: true;
+      readonly affectedBufferHandles: readonly number[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      /**
+       * True only when the provider can prove that no loaded buffer adopted
+       * the destination path. Callers may inverse the disk rename in that
+       * state; unknown/false must be quarantined instead.
+       */
+      readonly diskRollbackSafe?: boolean;
+    };
+
+export type BufferCapturedContextKind = "selection" | "buffer" | "diagnostic";
+
+export type BufferCapturedContextPosition = {
+  readonly line: number;
+  readonly column: number;
+};
+
+export type BufferCapturedDiagnostic = {
+  readonly message: string;
+  readonly severity: number | null;
+  readonly source?: string;
+  readonly code?: string | number;
+};
+
+export type BufferCapturedContext = {
+  readonly kind: BufferCapturedContextKind;
+  /**
+   * Stable provider identity for the source buffer. This is load-session
+   * scoped, but unlike a path it also identifies regular unnamed buffers.
+   */
+  readonly bufferHandle: number;
+  readonly path: string;
+  readonly range: {
+    readonly start: BufferCapturedContextPosition;
+    readonly end: BufferCapturedContextPosition;
+  };
+  readonly content?: string;
+  readonly dirty: boolean;
+  readonly selectionMode?: "character" | "line" | "block";
+  readonly diagnostic?: BufferCapturedDiagnostic;
+  readonly changedtick: number;
+};
+
+export type BufferCaptureRequest = {
+  readonly kind: BufferCapturedContextKind;
+  readonly maxBytes?: number;
+  readonly maxLines?: number;
+};
+
+export type BufferIntegrationIntent = {
+  readonly kind: "attach" | "ask" | "fix" | "explain" | "review";
+  readonly prompt?: string;
+  readonly context: BufferCapturedContext;
+};
+
+export type BufferIntegrationIntentListener = (intent: BufferIntegrationIntent) => void;
 
 export type BufferProviderInputContext = {
   readonly rows: number;
@@ -85,6 +207,27 @@ export interface BufferEditorProvider {
   getVisibleLines(): readonly BufferVisibleLine[];
   open(options: BufferProviderOpenOptions): Promise<void>;
   save(options?: BufferProviderSaveOptions): Promise<boolean>;
+  inspectDirtyBuffers?(): Promise<readonly BufferProviderBuffer[]>;
+  selectBuffer?(handle: number): Promise<boolean>;
+  saveBuffer?(handle: number, options?: BufferProviderSaveOptions): Promise<boolean>;
+  saveAll?(options?: BufferProviderSaveOptions): Promise<BufferProviderSaveAllResult>;
+  /**
+   * Freezes the exact provider-owned dirty manifest that a subsequent
+   * destructive discard is allowed to affect.
+   */
+  prepareDiscardAll?(): Promise<string | null>;
+  discardAll?(confirmationToken?: string): Promise<boolean>;
+  beginProjectPathMutation?(): boolean;
+  endProjectPathMutation?(): void;
+  synchronizePathRename?(
+    fromPath: string,
+    toPath: string,
+  ): Promise<BufferProviderPathMutationResult>;
+  synchronizePathDelete?(path: string): Promise<BufferProviderPathMutationResult>;
+  shutdown?(options?: BufferProviderShutdownOptions): Promise<boolean>;
+  captureContext?(request: BufferCaptureRequest): Promise<BufferCapturedContext | null>;
+  resolveRecovery?(action: BufferRecoveryAction): Promise<BufferRecoveryResult>;
+  subscribeIntegrationIntents?(listener: BufferIntegrationIntentListener): () => void;
   revert(): Promise<void>;
   close(options?: BufferProviderCloseOptions): Promise<boolean>;
   openExternalEditor(): Promise<boolean>;
@@ -129,12 +272,20 @@ export function withProviderSnapshot(
     readonly terminal?: NeovimRenderSnapshot | null;
   } = {},
 ): BufferProviderSnapshot {
+  const buffers = snapshot.absolutePath
+    ? [singleBufferManifest(snapshot)]
+    : [];
   return {
     ...snapshot,
     provider,
     providerStatus: extras.providerStatus ?? snapshot.status,
     providerMessage: extras.providerMessage ?? null,
     terminal: extras.terminal ?? null,
+    buffers,
+    activeBufferHandle: buffers[0]?.handle ?? null,
+    dirtyBufferCount: snapshot.dirty ? 1 : 0,
+    providerExit: null,
+    recovery: null,
   };
 }
 
@@ -162,6 +313,11 @@ export function emptyProviderSnapshot(provider: BufferProviderIdentity): BufferP
     providerStatus: "idle",
     providerMessage: null,
     terminal: null,
+    buffers: [],
+    activeBufferHandle: null,
+    dirtyBufferCount: 0,
+    providerExit: null,
+    recovery: null,
   };
 }
 
@@ -170,5 +326,22 @@ export function positionFromNeovimCursor(line: number, column: number): BufferPo
     line: Math.max(1, line),
     column: Math.max(0, column),
     offset: 0,
+  };
+}
+
+function singleBufferManifest(snapshot: WorkbenchBufferSnapshot): BufferProviderBuffer {
+  return {
+    handle: 0,
+    name: snapshot.absolutePath ?? snapshot.filePath ?? "",
+    filePath: snapshot.filePath,
+    absolutePath: snapshot.absolutePath,
+    listed: true,
+    loaded: true,
+    modified: snapshot.dirty,
+    current: true,
+    bufferType: "",
+    modifiable: true,
+    readOnly: false,
+    saveable: snapshot.absolutePath !== null,
   };
 }

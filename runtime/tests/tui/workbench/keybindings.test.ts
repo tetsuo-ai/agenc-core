@@ -14,6 +14,7 @@ const WORKBENCH_CONTEXTS = [
   "Explorer",
   "Surface",
   "Buffer",
+  "BufferHost",
   "Agents",
   "Composer",
 ] as const satisfies readonly KeybindingContextName[];
@@ -140,6 +141,23 @@ describe("workbench keybinding contract", () => {
     });
     expect(byContext.get("Buffer")).not.toHaveProperty("q");
     expect(byContext.get("Buffer")).not.toHaveProperty("ctrl+z");
+    expect(byContext.get("BufferHost")).toMatchObject({
+      "shift+tab": "workbench:focusComposer",
+      "ctrl+s": "buffer:save",
+      "ctrl+r": "buffer:passthrough",
+      "ctrl+x": "buffer:passthrough",
+      "ctrl+k": "buffer:passthrough",
+      "ctrl+g": "buffer:passthrough",
+      "alt+h": "workbench:focusExplorer",
+      "alt+j": "workbench:focusComposer",
+      "alt+l": "workbench:focusAgents",
+      "alt+r": "workbench:toggleFileRail",
+      "alt+q": "buffer:close",
+      "alt+e": "buffer:externalEditor",
+      "alt+z": "workbench:toggleSurfaceMaximized",
+    });
+    expect(byContext.get("BufferHost")).not.toHaveProperty("alt+u");
+    expect(byContext.get("BufferHost")).not.toHaveProperty("alt+d");
     expect(byContext.get("Agents")).toMatchObject({
       enter: "agents:open",
       x: "agents:stop",

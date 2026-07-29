@@ -25,6 +25,21 @@ for (const path of Object.values(bins)) {
   if (typeof path !== "string") throw new Error(`${pkg.name} has an invalid bin mapping`);
   executablePaths.add(path.replace(/^\.\//, "").split("/").join(sep));
 }
+const executableFiles = pkg.agencExecutableFiles ?? [];
+if (
+  !Array.isArray(executableFiles) ||
+  executableFiles.some(
+    (path) =>
+      typeof path !== "string" ||
+      path.length === 0 ||
+      /[*?![\]{}]/.test(path),
+  )
+) {
+  throw new Error(`${pkg.name} has an invalid agencExecutableFiles list`);
+}
+for (const path of executableFiles) {
+  executablePaths.add(path.replace(/^\.\//, "").split("/").join(sep));
+}
 
 const payloadRoots = new Set(["package.json", ...pkg.files]);
 for (const name of readdirSync(packageRoot)) {

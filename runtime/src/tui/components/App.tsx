@@ -18,6 +18,8 @@ import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { WorkbenchLayout } from "../workbench/WorkbenchLayout.js";
 import { ApprovalSurfaceBridge } from "../workbench/approvals/ApprovalSurfaceBridge.js";
+import { getWorkbenchBufferProviderController } from "../workbench/buffer/providers/BufferProviderController.js";
+import { installPrivateNeovimRecovery } from "../workbench/buffer/neovim/NeovimRecovery.js";
 import { applyWorkbenchCommand, getWorkbenchStateFromAppState, isWorkbenchEnabled } from "../workbench/state.js";
 import { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcriptScroll.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
@@ -42,7 +44,7 @@ import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAppStateStore, useSetAppState } from "../state/AppState.js";
 import { Box, Text, useApp, useTerminalFocus, useTerminalTitle } from "../ink.js";
-import { setPendingResumeSessionId } from "../pending-resume.js";
+import { clearPendingResumeSessionId, setPendingResumeSessionId } from "../pending-resume.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
 import { getSdkBetas } from "../../bootstrap/state.js";
 import { calculateContextPercentages, getContextWindowForModel } from "../../utils/context.js";
@@ -52,7 +54,7 @@ import type { LLMMessage } from "../../llm/types.js";
 import type { McpElicitationRequestEvent, McpElicitationResponse, McpPrimitiveSchemaDefinition, McpRequestId, RequestUserInputEvent, RequestUserInputResponse } from "../../elicitation/types.js";
 import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import { defaultConfig } from "../../config/schema.js";
+import { defaultConfig, type AgenCConfig } from "../../config/schema.js";
 import { configReadsEnabled } from "../../config/init.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
@@ -87,6 +89,7 @@ import { getTotalCost } from "../../cost/tracker.js";
 import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import { registerCleanup } from "../../utils/cleanupRegistry.js";
 import { AgenCConfigEditsBuilder } from "../../config/edit.js";
 import { logError } from "../../utils/log.js";
 import { markInternalWrite } from "../../utils/settings/internalWrites.js";
@@ -1650,6 +1653,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const fullscreen = isFullscreenEnvEnabled();
   const workbenchEnabled = fullscreen && isWorkbenchEnabled();
   const workbenchState = useAppState(getWorkbenchStateFromAppState);
+  // Submission handlers are intentionally stable and are created before the
+  // exit flow UI. Route their /exit and /resume requests through a live ref so
+  // every path participates in the dirty-buffer transaction.
+  const requestAppExitRef = useRef<(resumeSessionId?: string) => void>(
+    (resumeSessionId) => {
+      if (resumeSessionId) setPendingResumeSessionId(resumeSessionId);
+      else clearPendingResumeSessionId();
+      exit();
+    },
+  );
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
   // 1s tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow owns that
   // tick and reads these refs directly.
@@ -1749,8 +1762,57 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     });
   }, [props.session, setAppState]);
   const [toolPermissionContext, setToolPermissionContext] = useSyncedPermissionContext(props.session);
-  const config = useMemo(() => props.configStore.current?.() ?? defaultConfig(), [props.configStore]);
+  const [config, setConfig] = useState<AgenCConfig>(
+    () => props.configStore.current?.() ?? defaultConfig(),
+  );
+  useEffect(() => {
+    setConfig(props.configStore.current?.() ?? defaultConfig());
+    const unsubscribe = props.configStore.subscribe?.((next) => {
+      setConfig(next as AgenCConfig);
+    });
+    return typeof unsubscribe === "function" ? unsubscribe : undefined;
+  }, [props.configStore]);
   const agencHome = props.configStore.agencHome ?? config.agenc_home ?? props.session.home;
+  const bufferWorkspaceRoot =
+    props.session.cwd ??
+    props.session.sessionConfiguration?.cwd ??
+    props.roleWorkspaceCwd;
+  const bufferRuntimeContext = useMemo(() => ({
+    workspaceRoot: bufferWorkspaceRoot,
+    ...(agencHome ? { agencHome } : {}),
+    beforeOpenFile: async (context: Parameters<typeof installPrivateNeovimRecovery>[0]) => {
+      const prepared = await installPrivateNeovimRecovery(context);
+      if (!prepared) return;
+      return {
+        recovery: {
+          ...prepared.paths,
+          swapFiles: prepared.swapFiles,
+        },
+      };
+    },
+  }), [agencHome, bufferWorkspaceRoot]);
+  // Configuration must be cached before child BUFFER effects can acquire a
+  // provider. Keeping this synchronous is safe (configure only updates the
+  // controller's next-acquisition inputs) and avoids a first-render race that
+  // could start Neovim without the selected init/recovery policy.
+  getWorkbenchBufferProviderController().configure(
+    config.buffer,
+    process.env,
+    bufferRuntimeContext,
+  );
+  useEffect(() => {
+    const controller = getWorkbenchBufferProviderController();
+    const unregister = registerCleanup(async () => {
+      await controller.cleanup();
+    });
+    return () => {
+      unregister();
+      // Ink's ordinary `exit()` path unmounts without running the global
+      // graceful-shutdown registry. Start the same bounded provider cleanup
+      // here so an embedded Neovim child never outlives the TUI.
+      void controller.cleanup();
+    };
+  }, []);
   const onboardingContext = useMemo(() => ({
     agencHome,
     config,
@@ -2129,7 +2191,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // normal approval overlay instead of being silently abandoned. The
     // right-hand review rail (ctrl+r) intentionally stays open — reviewing
     // while chatting is its whole point.
-    if (workbenchEnabled && workbenchState.activeSurfaceMode !== "transcript") {
+    const keepEditorBesideTranscript =
+      workbenchState.activeSurfaceMode === "buffer" &&
+      workbenchState.rail?.kind === "transcript";
+    if (
+      workbenchEnabled &&
+      workbenchState.activeSurfaceMode !== "transcript" &&
+      !keepEditorBesideTranscript
+    ) {
       setAppState(prev => applyWorkbenchCommand(prev, { type: "closeSurface" }));
     }
     const parsedSlashCommand =
@@ -2366,7 +2435,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             // the user had to Ctrl-C twice to escape. `exit` here is
             // destructured from `useApp()` at the AgenCTuiShell top
             // level.
-            exit();
+            requestAppExitRef.current();
             return { forwardedToModel: false };
           }
           if (result.kind === "prompt") {
@@ -2426,8 +2495,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             // never touch props.session here — commands must not swap it in
             // place — so the prior session is cleanly detached on exit first.
             requestResumeSession: (sessionId: string) => {
-              setPendingResumeSessionId(sessionId);
-              exit();
+              requestAppExitRef.current(sessionId);
             },
             // /rewind: open the message selector (the rewind dialog).
             // Inlined on stable state setters (not handleShowMessageSelector)
@@ -2567,7 +2635,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       }
       if (options?.rethrowSubmitError) throw err_1;
     }
-  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession, workbenchEnabled, workbenchState.activeSurfaceMode, setAppState]);
+  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry, submitToSession, workbenchEnabled, workbenchState.activeSurfaceMode, workbenchState.rail?.kind, setAppState]);
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
   // (turn_started) because the daemon sometimes skips that event and
@@ -2974,17 +3042,152 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     }
     setSelectorNotice(result_2.displayText ?? "Conversation summarized");
   }, [props.session, transcript.isStreaming, transcript.messages]);
-  const handleExit = useCallback(() => {
+  type AppExitIntent = {
+    readonly version: number;
+    readonly resumeSessionId: string | null;
+  };
+  const appExitIntentRef = useRef<AppExitIntent>({
+    version: 0,
+    resumeSessionId: null,
+  });
+  const recordAppExitIntent = useCallback(
+    (resumeSessionId?: string): AppExitIntent => {
+      const intent = {
+        version: appExitIntentRef.current.version + 1,
+        resumeSessionId: resumeSessionId ?? null,
+      };
+      appExitIntentRef.current = intent;
+      return intent;
+    },
+    [],
+  );
+  const stagePendingResumeForExit = useCallback((intent: AppExitIntent): void => {
+    if (intent.resumeSessionId !== null) {
+      setPendingResumeSessionId(intent.resumeSessionId);
+    } else {
+      clearPendingResumeSessionId();
+    }
+  }, []);
+  const appExitPreparationRef = useRef<Promise<boolean> | null>(null);
+  const prepareBufferForAppExit = useCallback((): Promise<boolean> => {
+    if (appExitPreparationRef.current) return appExitPreparationRef.current;
+    const preparation = (async () => {
+      if (workbenchEnabled) {
+        const controller = getWorkbenchBufferProviderController();
+        let safelyClosed = false;
+        try {
+          safelyClosed = await controller.shutdown({ mode: "safe" });
+        } catch (error) {
+          addNotification({
+            key: "buffer-safe-exit-failed",
+            text: `Exit cancelled: BUFFER could not confirm a safe shutdown (${error instanceof Error ? error.message : String(error)}).`,
+            color: "error",
+            priority: "high",
+          });
+          return false;
+        }
+        if (!safelyClosed) {
+          const snapshot = controller.getSnapshot();
+          if (snapshot.dirty) {
+            const intent = appExitIntentRef.current;
+            setAppState((state) => applyWorkbenchCommand(state, {
+              type: "requestAppExit",
+              ...(intent.resumeSessionId !== null
+                ? { resumeSessionId: intent.resumeSessionId }
+                : {}),
+            }));
+          } else {
+            addNotification({
+              key: "buffer-safe-exit-refused",
+              text:
+                `Exit cancelled: ${snapshot.error ?? snapshot.providerMessage ?? "BUFFER could not verify that every editor buffer is safe to close."}`,
+              color: "error",
+              priority: "high",
+            });
+          }
+          return false;
+        }
+      }
+      return true;
+    })();
+    appExitPreparationRef.current = preparation;
+    void preparation.finally(() => {
+      if (appExitPreparationRef.current === preparation) {
+        appExitPreparationRef.current = null;
+      }
+    });
+    return preparation;
+  }, [addNotification, setAppState, workbenchEnabled]);
+  const performAppExit = useCallback((intent: AppExitIntent) => {
     if (getCurrentWorktreeSession() !== null) {
-      setExitFlow(<ExitFlow showWorktree={true} onDone={() => {
-        setExitFlow(null);
-      }} onCancel={() => {
-        setExitFlow(null);
-      }} />);
+      setExitFlow(<ExitFlow
+        showWorktree={true}
+        beforeWorktreeMutation={async () => {
+          if (appExitIntentRef.current.version !== intent.version) return false;
+          const safelyClosed = await prepareBufferForAppExit();
+          return safelyClosed &&
+            appExitIntentRef.current.version === intent.version;
+        }}
+        onDone={() => {
+          if (appExitIntentRef.current.version !== intent.version) return false;
+          stagePendingResumeForExit(intent);
+          setExitFlow(null);
+          return true;
+        }}
+        onCancel={() => {
+          if (appExitIntentRef.current.version !== intent.version) return;
+          setExitFlow(null);
+        }}
+      />);
       return;
     }
-    exit();
-  }, [exit]);
+    void prepareBufferForAppExit().then((safelyClosed) => {
+      if (!safelyClosed) return;
+      if (appExitIntentRef.current.version !== intent.version) return;
+      stagePendingResumeForExit(intent);
+      exit();
+    });
+  }, [exit, prepareBufferForAppExit, stagePendingResumeForExit]);
+  const handledAppExitRequestRef = useRef(workbenchState.appExitRequestId);
+  useEffect(() => {
+    if (!workbenchEnabled) {
+      handledAppExitRequestRef.current = workbenchState.appExitRequestId;
+      return;
+    }
+    if (handledAppExitRequestRef.current === workbenchState.appExitRequestId) return;
+    handledAppExitRequestRef.current = workbenchState.appExitRequestId;
+    performAppExit(appExitIntentRef.current);
+  }, [
+    performAppExit,
+    workbenchEnabled,
+    workbenchState.appExitRequestId,
+    workbenchState.appExitResumeSessionId,
+  ]);
+  const requestSafeAppExit = useCallback((resumeSessionId?: string) => {
+    // A visible dirty-buffer transaction owns the exact deferred action. New
+    // shortcuts are ignored by applyWorkbenchCommand, so they must not mutate
+    // the intent ref behind that transaction either.
+    if (workbenchEnabled && workbenchState.pendingBlockedOverlay !== null) return;
+    const intent = recordAppExitIntent(resumeSessionId);
+    if (!workbenchEnabled) {
+      performAppExit(intent);
+      return;
+    }
+    setAppState((state) => applyWorkbenchCommand(state, {
+      type: "requestAppExit",
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+    }));
+  }, [
+    performAppExit,
+    recordAppExitIntent,
+    setAppState,
+    workbenchEnabled,
+    workbenchState.pendingBlockedOverlay,
+  ]);
+  requestAppExitRef.current = requestSafeAppExit;
+  const handleExit = useCallback(() => {
+    requestSafeAppExit();
+  }, [requestSafeAppExit]);
   const handleCostThresholdDone = useCallback(() => {
     setShowCostDialog(false);
     setHaveShownCostDialog(true);
@@ -3127,7 +3330,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     completionPipelineOwnsPrompt: completionPipelineActive,
     toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true
   });
-  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
+  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={apiKeyStatus} agencHome={agencHome} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} getMessages={getTranscriptMessages} hasMessages={hasTranscriptMessages} isMidConversation={hasTranscriptMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0, _speculation, submitOptions) => {
     if (isLocalJSXCommandActive) {
       return;
     }
@@ -3137,7 +3340,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       helpers_0.setCursorOffset(0);
       return;
     }
-    await submitViaElicitationPrompt(elicitation, submit, value_1, helpers_0);
+    await submitViaElicitationPrompt(
+      elicitation,
+      submit,
+      value_1,
+      helpers_0,
+      submitOptions?.pastedContentsOverride
+        ? { pastedContentsOverride: submitOptions.pastedContentsOverride }
+        : undefined,
+    );
   }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} /> : null;
   const bottomContent = <Box flexDirection="column" flexGrow={1}>
       {backpressureWarning !== null ? <Text color="warning" wrap="truncate">{backpressureWarning}</Text> : null}

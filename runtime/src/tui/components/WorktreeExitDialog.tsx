@@ -24,6 +24,7 @@ type Props = {
     display?: CommandResultDisplay;
   }) => void;
   onCancel?: () => void;
+  beforeMutation?: () => boolean | Promise<boolean>;
 };
 
 type GitInspectionResult = {
@@ -49,7 +50,8 @@ export function WorktreeExitLoadingState(): React.ReactNode {
 }
 export function WorktreeExitDialog({
   onDone,
-  onCancel
+  onCancel,
+  beforeMutation,
 }: Props): React.ReactNode {
   const [status, setStatus] = useState<'loading' | 'asking' | 'keeping' | 'removing' | 'done'>('loading');
   const [changes, setChanges] = useState<string[]>([]);
@@ -68,7 +70,18 @@ export function WorktreeExitDialog({
       setStatus('asking');
     }
     async function loadChanges() {
-      if (!worktreeSession) return;
+      if (!worktreeSession) {
+        const allowed = beforeMutation ? await beforeMutation() : true;
+        if (cancelled) return;
+        if (!allowed) {
+          onCancel?.();
+          return;
+        }
+        onDone('No active worktree session found', {
+          display: 'system'
+        });
+        return;
+      }
       setInspectionFailed(false);
       setChanges([]);
       setCommitCount(0);
@@ -107,6 +120,12 @@ export function WorktreeExitDialog({
 
         // If no changes and no commits, clean up silently
         if (changeLines.length === 0 && count === 0) {
+          const allowed = beforeMutation ? await beforeMutation() : true;
+          if (cancelled) return;
+          if (!allowed) {
+            onCancel?.();
+            return;
+          }
           setStatus('removing');
           void cleanupWorktree().then(async () => {
             process.chdir(worktreeSession.originalCwd);
@@ -145,9 +164,6 @@ export function WorktreeExitDialog({
     }
   }, [status, onDone, resultMessage]);
   if (!worktreeSession) {
-    onDone('No active worktree session found', {
-      display: 'system'
-    });
     return null;
   }
   if (status === 'loading') {
@@ -158,6 +174,10 @@ export function WorktreeExitDialog({
   }
   async function handleSelect(value: string) {
     if (!worktreeSession) return;
+    if (beforeMutation && !await beforeMutation()) {
+      onCancel?.();
+      return;
+    }
     const hasTmux = Boolean(worktreeSession.tmuxSessionName);
     try {
       if (value === 'keep' || value === 'keep-with-tmux') {

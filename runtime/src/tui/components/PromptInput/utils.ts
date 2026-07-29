@@ -1,5 +1,6 @@
 import type { VimMode } from '../../../types/textInputTypes.js'
 import type { Key } from '../../ink.js'
+import { stringWidth } from '../../ink/stringWidth.js'
 import { type GlobalConfig, getGlobalConfig } from '../../../utils/config.js'
 import { env } from '../../../utils/env.js'
 /**
@@ -40,6 +41,37 @@ export function clampPromptTextInputColumns(columns: number): number {
   // more display column internally for the cursor, so return the editable
   // area plus that cursor column.
   return Math.max(0, columns - 5)
+}
+
+export function clampWorkbenchPromptTextInputColumns(
+  frameColumns: number,
+  permissionLabel: string,
+  promptGlyph: string,
+  swarmMode: boolean,
+): number {
+  // WorkbenchLayout has already removed the terminal breathing room and outer
+  // frame, so frameColumns is the exact width inside that frame. The composer
+  // then spends four cells on padding, renders a padded permission pill, a
+  // two-cell gap, and the prompt glyph plus its trailing non-breaking space.
+  // Swarm mode inserts its own two-cell gap and "◆ SWARM" badge.
+  const horizontalPadding = 4
+  const permissionPill = stringWidth(` ${permissionLabel} `)
+  const permissionToPromptGap = 2
+  const promptIndicator = stringWidth(`${promptGlyph}\u00a0`)
+  const swarmBadge = swarmMode ? 2 + stringWidth('◆ SWARM') : 0
+
+  // TextCursor.fromText subtracts one display column for the caret, so return
+  // the editable width plus that reserve just like clampPromptTextInputColumns.
+  return Math.max(
+    0,
+    frameColumns -
+      horizontalPadding -
+      permissionPill -
+      swarmBadge -
+      permissionToPromptGap -
+      promptIndicator +
+      1,
+  )
 }
 
 export function pasteReferenceLineThreshold(rows: number): number {

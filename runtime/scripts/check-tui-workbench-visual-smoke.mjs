@@ -202,7 +202,7 @@ async function runOne(dimension, lifecycle) {
   try {
     await session.start({ firstPaintMs: 1_000, postReplyMs: 1_000 });
     await session.waitForPrompt({ timeout: 20_000 });
-    assertFrame(session, dimension, `${label} cold start`, ["AgenC Workbench", "TRANSCRIPT", "WORKSPA"]);
+    assertFrame(session, dimension, `${label} cold start`, ["WORKBENCH"]);
 
     session.send("\x17h");
     await session.waitForIdle({ idleWindow: 500, timeout: 10_000 });
@@ -218,8 +218,14 @@ async function runOne(dimension, lifecycle) {
     assertFrame(
       session,
       dimension,
+      `${label} diff workbench chrome`,
+      ["WORKBENCH"],
+    );
+    assertFrame(
+      session,
+      dimension,
       `${label} diff surface`,
-      ["AgenC Workbench | DIFF"],
+      ["DIFF"],
     );
     assertFrame(
       session,

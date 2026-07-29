@@ -260,7 +260,7 @@ describe("embedded Neovim input translation", () => {
         usable: true,
         executable: "/usr/bin/nvim",
         version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-        args: ["--embed", "--clean", "-n"],
+        args: ["--embed", "--clean"],
         useUserInit: false,
       },
       readFileSnapshot: vi.fn(async (filePath: string) => ({

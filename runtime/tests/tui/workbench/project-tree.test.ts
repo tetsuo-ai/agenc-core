@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +22,7 @@ import {
 import { collectGitStatus, listGitFiles, parseGitStatusPorcelain } from "../../../src/tui/workbench/project-tree/gitStatus.js";
 import {
   ProjectTreeStore,
+  renamePathNoClobber,
   scanWorkspacePaths,
 } from "../../../src/tui/workbench/project-tree/ProjectTreeStore.js";
 
@@ -872,6 +882,64 @@ describe("project tree helpers", () => {
     }
   });
 
+  it("refuses rename and delete while an agent may be writing inside the target subtree", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-in-flight-mutation-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await writeFile(join(repo, "src", "app.ts"), "app\n", "utf8");
+      await store.refresh();
+      store.setInFlightPaths(["src/app.ts"]);
+
+      expect(store.hasInFlightPathWithin("src")).toBe(true);
+      await expect(store.renamePath("src", "lib")).resolves.toEqual({
+        ok: false,
+        error: "Cannot rename src while an agent may be writing inside it.",
+      });
+      await expect(store.deletePath("src")).resolves.toEqual({
+        ok: false,
+        error: "Cannot delete src while an agent may be writing inside it.",
+      });
+
+      await expect(readFile(join(repo, "src", "app.ts"), "utf8"))
+        .resolves.toBe("app\n");
+      await expect(readFile(join(repo, "lib", "app.ts"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rechecks in-flight writes after preparing a rename target directory", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-in-flight-race-"));
+    const store = new ProjectTreeStore(repo, 0);
+
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await writeFile(join(repo, "src", "app.ts"), "app\n", "utf8");
+      await store.refresh();
+
+      // renamePath passes its synchronous preflight and then yields while
+      // checking the target. Mark the source in-flight during that await. The
+      // second guard, after recursive mkdir, must still stop the rename.
+      const renameResult = store.renamePath("src", "staging/deep/src");
+      store.setInFlightPaths(["src/app.ts"]);
+
+      await expect(renameResult).resolves.toEqual({
+        ok: false,
+        error: "Cannot rename src while an agent may be writing inside it.",
+      });
+      await expect(readFile(join(repo, "src", "app.ts"), "utf8"))
+        .resolves.toBe("app\n");
+      expect(await readdir(join(repo, "staging", "deep"))).toEqual([]);
+    } finally {
+      store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("renames the selected workspace path without overwriting targets", async () => {
     const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-"));
     const store = new ProjectTreeStore(repo, 0);
@@ -892,6 +960,86 @@ describe("project tree helpers", () => {
       expect(store.getCursorPath()).toBe("lib/new.ts");
     } finally {
       store.dispose();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an exclusive filesystem primitive when renaming a file", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-file-"));
+    const source = join(repo, "source.ts");
+    const target = join(repo, "target.ts");
+
+    try {
+      await writeFile(source, "source\n", "utf8");
+      await writeFile(target, "target\n", "utf8");
+
+      await expect(renamePathNoClobber(source, target))
+        .rejects.toMatchObject({ code: "EEXIST" });
+      expect(await readFile(source, "utf8")).toBe("source\n");
+      expect(await readFile(target, "utf8")).toBe("target\n");
+
+      await rm(target);
+      const sourceIdentity = await lstat(source);
+      await renamePathNoClobber(source, target);
+
+      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(target, "utf8")).toBe("source\n");
+      expect((await lstat(target)).ino).toBe(sourceIdentity.ino);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reserves a directory destination without overwriting a competing tree", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-directory-"));
+    const source = join(repo, "source");
+    const target = join(repo, "target");
+
+    try {
+      await mkdir(source);
+      await writeFile(join(source, "source.txt"), "source\n", "utf8");
+      await mkdir(target);
+      await writeFile(join(target, "competitor.txt"), "competitor\n", "utf8");
+
+      await expect(renamePathNoClobber(source, target))
+        .rejects.toMatchObject({ code: "EEXIST" });
+      expect(await readFile(join(source, "source.txt"), "utf8")).toBe("source\n");
+      expect(await readFile(join(target, "competitor.txt"), "utf8")).toBe("competitor\n");
+
+      await rm(target, { recursive: true });
+      await renamePathNoClobber(source, target);
+
+      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(target, "source.txt"), "utf8")).toBe("source\n");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("recreates symlink names exclusively instead of touching their targets", async () => {
+    if (process.platform === "win32") return;
+    const repo = await mkdtemp(join(tmpdir(), "agenc-tree-rename-exclusive-symlink-"));
+    const payload = join(repo, "payload.txt");
+    const source = join(repo, "source-link");
+    const target = join(repo, "target-link");
+
+    try {
+      await writeFile(payload, "payload\n", "utf8");
+      await symlink("payload.txt", source);
+      await writeFile(target, "competitor\n", "utf8");
+
+      await expect(renamePathNoClobber(source, target))
+        .rejects.toMatchObject({ code: "EEXIST" });
+      expect((await lstat(source)).isSymbolicLink()).toBe(true);
+      expect(await readFile(target, "utf8")).toBe("competitor\n");
+
+      await rm(target);
+      await renamePathNoClobber(source, target);
+
+      await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await lstat(target)).isSymbolicLink()).toBe(true);
+      expect(await readFile(target, "utf8")).toBe("payload\n");
+    } finally {
       await rm(repo, { recursive: true, force: true });
     }
   });

@@ -72,6 +72,7 @@ const NON_MENU_CONTEXTS = new Set<KeybindingContextName>([
   "Explorer",
   "Surface",
   "Buffer",
+  "BufferHost",
   "Agents",
   "Composer",
 ]);
@@ -81,6 +82,7 @@ const WORKBENCH_CONTEXTS: readonly KeybindingContextName[] = [
   "Explorer",
   "Surface",
   "Buffer",
+  "BufferHost",
   "Agents",
   "Composer",
 ];
@@ -173,6 +175,83 @@ describe("useKeybinding exports and resolver contract", () => {
         started.pending,
       ),
     ).toEqual({ type: "match", action: "chat:killAgents" });
+  });
+
+  test("lets an exact BufferHost passthrough outrank lower-priority chord prefixes", () => {
+    const bindings = parseBindings([
+      {
+        context: "Global",
+        bindings: {
+          "ctrl+x ctrl+k": "app:interrupt",
+        },
+      },
+      {
+        context: "BufferHost",
+        bindings: {
+          "ctrl+x": "buffer:passthrough",
+        },
+      },
+    ]);
+
+    expect(
+      resolveKeyWithChordState(
+        "x",
+        key({ ctrl: true }),
+        ["BufferHost", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "buffer:passthrough" });
+  });
+
+  test("keeps same-context BufferHost chords and later user overrides working", () => {
+    const bindings = parseBindings([
+      {
+        context: "BufferHost",
+        bindings: {
+          "ctrl+x": "buffer:passthrough",
+          "ctrl+x q": "buffer:close",
+          "alt+q": "buffer:close",
+        },
+      },
+      {
+        context: "BufferHost",
+        bindings: {
+          "alt+q": "workbench:focusComposer",
+        },
+      },
+    ]);
+
+    expect(
+      resolveKeyWithChordState(
+        "x",
+        key({ ctrl: true }),
+        ["BufferHost", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({
+      type: "chord_started",
+      pending: [
+        {
+          key: "x",
+          ctrl: true,
+          alt: false,
+          shift: false,
+          meta: false,
+          super: false,
+        },
+      ],
+    });
+    expect(
+      resolveKeyWithChordState(
+        "q",
+        key({ meta: true }),
+        ["BufferHost", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "workbench:focusComposer" });
   });
 
   test("maps footer PTY keys for coordinator row navigation and dismissal", () => {

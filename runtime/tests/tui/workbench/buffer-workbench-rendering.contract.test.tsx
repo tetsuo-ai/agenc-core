@@ -1,4 +1,5 @@
 import React from "react";
+import stripAnsi from "strip-ansi";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Key } from "../../../src/tui/ink.js";
 
@@ -38,6 +39,7 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
 import { renderToAnsiString, renderToString } from "../../../src/utils/staticRender.js";
 import { Box, Text } from "../../../src/tui/ink.js";
 import { nodeCache } from "../../../src/tui/ink/node-cache.js";
+import { stringWidth } from "../../../src/tui/ink/stringWidth.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
 import { BufferLine, NeovimGridView, terminalAnsiLines, truncateByWidth } from "../../../src/tui/workbench/buffer/render.js";
@@ -59,26 +61,31 @@ afterEach(async () => {
 });
 
 describe("BUFFER workbench rendering", () => {
-  it("renders an embedded Neovim grid inside the provided width", async () => {
+  it("renders only Neovim's native grid at the attached grid width", async () => {
     const terminal = {
       ...createNeovimRenderSnapshot(2, 16),
       lines: ["abcdefghijklmnopqrstuvwxyz", "123456789"],
       cursor: { grid: 1, row: 0, column: 2 },
       messages: ["long warning message"],
-      popupMenu: { selected: 0, items: ["first-choice", "second-choice"] },
+      popupMenu: {
+        selected: 0,
+        items: ["first-choice", "second-choice"],
+        row: 0,
+        column: 0,
+      },
     };
 
     const output = await renderToString(
       <Box flexDirection="column" width={16}>
-        <NeovimGridView terminal={terminal} focused={true} width={16} />
+        <NeovimGridView terminal={terminal} focused={true} />
       </Box>,
     );
 
     expect(output).toContain("abc");
     expect(output).not.toContain("qrstuvwxyz");
     expect(output).toContain("123");
-    expect(output).toContain("long");
-    expect(output).toContain("first");
+    expect(output).not.toContain("long warning");
+    expect(output).not.toContain("first-choice");
     for (const line of output.split(/\r?\n/u)) {
       expect(line.length).toBeLessThanOrEqual(16);
     }
@@ -93,7 +100,7 @@ describe("BUFFER workbench rendering", () => {
 
     const output = await renderToAnsiString(
       <Box flexDirection="column" width={16}>
-        <NeovimGridView terminal={terminal} focused={true} width={16} />
+        <NeovimGridView terminal={terminal} focused={true} />
       </Box>,
       { columns: 16, color: true },
     );
@@ -125,7 +132,7 @@ describe("BUFFER workbench rendering", () => {
 
     const output = await renderToAnsiString(
       <Box flexDirection="column" width={16}>
-        <NeovimGridView terminal={terminal} focused={false} width={16} />
+        <NeovimGridView terminal={terminal} focused={false} />
       </Box>,
       { columns: 16, color: true },
     );
@@ -157,6 +164,31 @@ describe("BUFFER workbench rendering", () => {
     expect(renderedLine).toContain("alpha beta");
     expect(renderedLine.indexOf("\x1B[7m")).toBeLessThan(renderedLine.indexOf("alpha"));
     expect(renderedLine).toContain("\x1B[0m gamma");
+  });
+
+  it("renders CJK, combining graphemes, and emoji without splitting display cells", () => {
+    const terminal = {
+      ...createNeovimRenderSnapshot(1, 10),
+      lines: ["A界e\u0301👩‍💻Z   "],
+      cells: [[
+        { text: "A", width: 1, highlightId: 0 },
+        { text: "界", width: 2, highlightId: 0 },
+        { text: "", width: 0, highlightId: 0 },
+        { text: "e\u0301", width: 1, highlightId: 0 },
+        { text: "👩‍💻", width: 2, highlightId: 0 },
+        { text: "", width: 0, highlightId: 0 },
+        { text: "Z", width: 1, highlightId: 0 },
+        { text: " ", width: 1, highlightId: 0 },
+        { text: " ", width: 1, highlightId: 0 },
+        { text: " ", width: 1, highlightId: 0 },
+      ]],
+    };
+
+    const rendered = stripAnsi(terminalAnsiLines(terminal, false)[0] ?? "");
+
+    expect(rendered).toContain("A界e\u0301👩‍💻Z");
+    expect(rendered).not.toContain("\uFFFD");
+    expect(stringWidth(rendered)).toBe(10);
   });
 
   it("renders inline buffer cursor and selection boundary cases", async () => {
@@ -221,7 +253,7 @@ describe("BUFFER workbench rendering", () => {
 
     const output = await renderToString(
       <Box flexDirection="column" width={1}>
-        <NeovimGridView terminal={terminal} focused={true} width={0} />
+        <NeovimGridView terminal={terminal} focused={true} />
       </Box>,
     );
 
@@ -235,7 +267,7 @@ describe("BUFFER workbench rendering", () => {
   });
 
   it("keeps BUFFER isolated inside the full workbench layout", async () => {
-    await installRenderedProvider({
+    const provider = await installRenderedProvider({
       line: `buffer-visible ${"x".repeat(180)} BUFFER_LINE_TAIL_SHOULD_NOT_RENDER`,
       commandLine: `set number ${"z".repeat(240)} COMMAND_TAIL_SHOULD_NOT_RENDER`,
     });
@@ -252,6 +284,7 @@ describe("BUFFER workbench rendering", () => {
     expect(output).not.toContain("BUFFER_LINE_TAIL_SHOULD_NOT_RENDER");
     expect(output).not.toContain("COMMAND_TAIL_SHOULD_NOT_RENDER");
     expect(allRenderedLinesFit(output, 148)).toBe(true);
+    expect(provider.resize).toHaveBeenLastCalledWith({ rows: 16, columns: 89 });
   });
 
   it("handles narrow and short workbench terminals without overlapping panes", async () => {
@@ -370,11 +403,16 @@ describe("BUFFER workbench rendering", () => {
     const descriptor = WORKBENCH_SURFACES.find((surface) => surface.mode === "buffer");
 
     expect(descriptor?.footerHints).toContain("embedded nvim");
+    expect(descriptor?.footerHints).toContain("ctrl+s save");
+    expect(descriptor?.footerHints).toContain("ctrl+r redo");
     expect(descriptor?.footerHints).toContain("shift+tab composer");
-    expect(descriptor?.footerHints).toContain("ctrl+x h explorer");
-    expect(descriptor?.footerHints).toContain("ctrl+x ctrl+e external");
-    expect(descriptor?.footerHints).toContain("ctrl+r rail");
-    expect(descriptor?.footerHints).toContain("ctrl+x q close");
+    expect(descriptor?.footerHints).toContain("alt+h explorer");
+    expect(descriptor?.footerHints).toContain("alt+e external");
+    expect(descriptor?.footerHints).toContain("alt+r rail");
+    // The workspace-scoped provider remains alive when the center BUFFER
+    // surface is hidden, so the hint must describe the actual non-destructive
+    // action instead of implying that Neovim is closed.
+    expect(descriptor?.footerHints).toContain("alt+q hide");
   });
 });
 
@@ -449,7 +487,7 @@ async function installRenderedProvider({
       usable: true,
       executable: "nvim",
       version: { major: 0, minor: 12, patch: 0, raw: "NVIM v0.12.0" },
-      args: ["--embed", "--clean", "-n"],
+      args: ["--embed", "--clean"],
       useUserInit: false,
     },
   }));
@@ -481,9 +519,14 @@ function createRenderedProvider({
   };
   const terminal = {
     ...createNeovimRenderSnapshot(12, 82),
-    lines: [line, "second line"],
-    commandLine,
-    mode: commandLine === null ? "normal" : "normal",
+    lines: [
+      line,
+      "second line",
+      ...Array.from({ length: 9 }, () => ""),
+      commandLine === null ? "" : `:${commandLine}`,
+    ],
+    commandLine: null,
+    mode: "normal",
   };
   const providerSnapshot: BufferProviderSnapshot = {
     ...emptyProviderSnapshot(identity),
@@ -500,7 +543,7 @@ function createRenderedProvider({
     lineEndings: "LF",
     terminal,
     vimMode: "NORMAL",
-    vimCommandLine: commandLine,
+    vimCommandLine: null,
   };
   return {
     identity,

@@ -1,6 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
 
+import {
+  spawnContainedProcess,
+  terminateProcessTreeAndWait,
+} from "../../../../utils/supervisedProcess.js";
 import { which } from "../../../../utils/which.js";
 
 export type NeovimDiscoveryConfig = {
@@ -24,6 +28,10 @@ export type NeovimDiscoveryResult =
       readonly version: NeovimVersion;
       readonly args: readonly string[];
       readonly useUserInit: boolean;
+      readonly fallback?: {
+        readonly args: readonly string[];
+        readonly useUserInit: boolean;
+      };
     }
   | {
       readonly usable: false;
@@ -39,6 +47,7 @@ export type NeovimDiscoveryResult =
 
 const DEFAULT_TIMEOUT_MS = 1200;
 const DEFAULT_MIN_VERSION = [0, 9, 0] as const;
+const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
 
 export async function discoverNeovim(
   config: NeovimDiscoveryConfig = {},
@@ -82,27 +91,21 @@ export async function discoverNeovim(
     };
   }
 
-  let failedEmbedMessage: string | null = null;
-  for (const candidate of embedArgCandidates(config.useUserInit)) {
-    const embedProbe = await probeNeovimEmbed(executable, candidate.args, config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    if (embedProbe.type === "ok") {
-      return {
-        usable: true,
-        executable,
-        version: probe.version,
-        useUserInit: candidate.useUserInit,
-        args: candidate.args,
-      };
-    }
-    failedEmbedMessage = embedProbe.message;
+  // Do not launch a disposable `nvim --embed` here. In user-init mode that
+  // would execute plugins and autocommands twice before the editor appears.
+  // The provider performs exactly one real startup and, for auto mode only,
+  // retries that same contained lifecycle with a clean init if it fails.
+  const [primary, fallback] = embedArgCandidates(config.useUserInit);
+  if (!primary) {
+    throw new Error("Neovim discovery produced no startup candidate");
   }
-
   return {
-    usable: false,
-    reasonCode: "probe-failed",
-    reason: `Embedded Neovim is unavailable because ${executable} failed the embedded mode probe: ${failedEmbedMessage ?? "embedded mode did not start"}`,
+    usable: true,
     executable,
     version: probe.version,
+    useUserInit: primary.useUserInit,
+    args: primary.args,
+    ...(fallback ? { fallback } : {}),
   };
 }
 
@@ -121,7 +124,7 @@ export async function resolveNeovimExecutable(configuredExecutable?: string): Pr
 export function buildNeovimEmbedArgs(useUserInit: boolean): readonly string[] {
   return useUserInit
     ? ["--embed"]
-    : ["--embed", "--clean", "-n"];
+    : ["--embed", "--clean"];
 }
 
 function embedArgCandidates(useUserInit: boolean | undefined): readonly {
@@ -169,34 +172,105 @@ type ProbeResult =
   | { readonly type: "failed"; readonly message: string };
 
 function probeNeovimVersion(executable: string, timeoutMs: number): Promise<ProbeResult> {
-  return new Promise((resolve) => {
-    const detached = process.platform !== "win32";
-    const child = spawn(executable, ["--version"], {
-      detached,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawnContainedProcess(executable, ["--version"], {
+      cwd: process.cwd(),
+      env: process.env,
     });
+    child.stdin.end();
+  } catch (error) {
+    return Promise.resolve({
+      type: "failed",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
+    let outputBytes = 0;
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    let cleanupPromise: Promise<void> | null = null;
+    const cleanup = (): Promise<void> => {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = terminateProcessTreeAndWait(child, {
+        terminateGraceMs: 50,
+        killGraceMs: Math.max(250, timeoutMs),
+        label: "Neovim version probe",
+      });
+      // An early leader exit begins cleanup before `close` drains the pipes.
+      // Mark the promise handled now; `finish` still observes and reports the
+      // same rejection once it has a probe result to settle.
+      void cleanupPromise.catch(() => {});
+      return cleanupPromise;
+    };
+    const retireProbeStreams = (): void => {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     const finish = (result: ProbeResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      killProbeProcess(child, detached);
-      resolve(result);
+      if (timer) clearTimeout(timer);
+      // A Darwin descendant can outlive the leader after leaving the observed
+      // PPID tree. Retire our pipe ends independently of tree discovery so an
+      // inherited writer can neither keep this probe pending nor keep AgenC's
+      // event loop alive after the configured deadline.
+      retireProbeStreams();
+      void cleanup().then(
+        () => resolve(result),
+        (error: unknown) => resolve({
+          type: "failed",
+          message:
+            `version probe cleanup failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        }),
+      );
     };
-    const timer = setTimeout(() => {
+    const appendOutput = (
+      current: string,
+      chunk: Buffer,
+    ): string | null => {
+      outputBytes += chunk.byteLength;
+      if (outputBytes > MAX_PROBE_OUTPUT_BYTES) {
+        finish({
+          type: "failed",
+          message: `probe output exceeded ${MAX_PROBE_OUTPUT_BYTES} bytes`,
+        });
+        return null;
+      }
+      return current + chunk.toString("utf8");
+    };
+    timer = setTimeout(() => {
       finish({ type: "timeout" });
     }, Math.max(1, timeoutMs));
+    timer.unref();
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      const next = appendOutput(stdout, chunk);
+      if (next !== null) stdout = next;
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      const next = appendOutput(stderr, chunk);
+      if (next !== null) stderr = next;
     });
     child.on("error", (error) => {
       finish({ type: "failed", message: error.message });
+    });
+    child.on("exit", () => {
+      // `close` waits for every inherited pipe handle, including handles held
+      // by descendants. Start contained-tree teardown as soon as the probe
+      // leader exits, but retain the deadline until those pipes actually
+      // settle. Darwin can only track descendants observed before they leave
+      // the PPID tree, so leader exit alone is not proof that `close` will fire.
+      void cleanup().catch(() => {
+        // If teardown itself fails before the inherited pipes close, do not
+        // leave discovery waiting forever for a `close` event that may never
+        // arrive. `finish` reports the concrete cleanup failure.
+        finish({ type: "failed", message: "version probe cleanup failed" });
+      });
     });
     child.on("close", (code, signal) => {
       if (code !== 0) {
@@ -211,93 +285,6 @@ function probeNeovimVersion(executable: string, timeoutMs: number): Promise<Prob
       );
     });
   });
-}
-
-type EmbedProbeResult =
-  | { readonly type: "ok" }
-  | { readonly type: "failed"; readonly message: string };
-
-function probeNeovimEmbed(
-  executable: string,
-  args: readonly string[],
-  timeoutMs: number,
-): Promise<EmbedProbeResult> {
-  return new Promise((resolve) => {
-    const detached = process.platform !== "win32";
-    const child = spawn(executable, [...args], {
-      detached,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let stderr = "";
-    let failedExit: {
-      readonly code: number | null;
-      readonly signal: NodeJS.Signals | null;
-    } | null = null;
-    let settled = false;
-    const finish = (result: EmbedProbeResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      killProbeProcess(child, detached);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      if (failedExit !== null) {
-        finish({
-          type: "failed",
-          message: stderr.trim() || failedExit.signal || `exit ${failedExit.code}`,
-        });
-        return;
-      }
-      finish({ type: "ok" });
-    }, Math.max(1, Math.min(timeoutMs, 200)));
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.stdout.resume();
-    child.on("error", (error) => {
-      finish({ type: "failed", message: error.message });
-    });
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        finish({ type: "ok" });
-        return;
-      }
-      failedExit = { code, signal };
-    });
-    child.on("close", (code, signal) => {
-      if (code === 0) {
-        finish({ type: "ok" });
-        return;
-      }
-      finish({ type: "failed", message: stderr.trim() || signal || `exit ${code}` });
-    });
-  });
-}
-
-function killProbeProcess(child: ChildProcess, detached: boolean): void {
-  const pid = child.pid;
-  // The leader may already be gone while jobs it started still occupy the
-  // owned group, so group cleanup must not depend on the leader's exit state.
-  if (detached && process.platform !== "win32" && pid !== undefined && pid > 0) {
-    try {
-      process.kill(-pid, "SIGKILL");
-      return;
-    } catch (error) {
-      if (isMissingProcessError(error)) return;
-    }
-  }
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    child.kill("SIGKILL");
-  } catch {
-    // Spawn failures and concurrent exits can make the direct fallback unavailable.
-  }
-}
-
-function isMissingProcessError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
 function isSafeExecutableName(value: string): boolean {

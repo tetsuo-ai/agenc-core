@@ -175,9 +175,11 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 async function renderDialog({
+  beforeMutation,
   onCancel,
   onDone = vi.fn(),
 }: {
+  beforeMutation?: () => boolean | Promise<boolean>;
   onCancel?: () => void;
   onDone?: (result?: string, options?: { display?: string }) => void;
 } = {}) {
@@ -189,7 +191,13 @@ async function renderDialog({
     patchConsole: false,
   });
 
-  root.render(<WorktreeExitDialog onDone={onDone} onCancel={onCancel} />);
+  root.render(
+    <WorktreeExitDialog
+      beforeMutation={beforeMutation}
+      onDone={onDone}
+      onCancel={onCancel}
+    />,
+  );
 
   return {
     onDone,
@@ -233,6 +241,7 @@ describe("WorktreeExitDialog", () => {
     const rendered = await renderDialog({ onDone });
 
     try {
+      await waitFor(() => onDone.mock.calls.length > 0);
       expect(onDone).toHaveBeenCalledWith("No active worktree session found", {
         display: "system",
       });
@@ -241,6 +250,88 @@ describe("WorktreeExitDialog", () => {
       rendered.unmount();
     }
   });
+
+  test("cancels instead of exiting when the no-session safety check refuses", async () => {
+    worktreeMock.session = null;
+    const beforeMutation = vi.fn(() => false);
+    const onCancel = vi.fn();
+    const onDone = vi.fn();
+    const rendered = await renderDialog({
+      beforeMutation,
+      onCancel,
+      onDone,
+    });
+
+    try {
+      await waitFor(() => onCancel.mock.calls.length > 0);
+
+      expect(beforeMutation).toHaveBeenCalledOnce();
+      expect(onCancel).toHaveBeenCalledOnce();
+      expect(onDone).not.toHaveBeenCalled();
+      expect(worktreeMock.cleanupWorktree).not.toHaveBeenCalled();
+      expect(worktreeMock.keepWorktree).not.toHaveBeenCalled();
+      expect(worktreeMock.killTmuxSession).not.toHaveBeenCalled();
+    } finally {
+      rendered.unmount();
+    }
+  });
+
+  test("cancels instead of auto-removing a clean worktree when the safety check refuses", async () => {
+    const beforeMutation = vi.fn(async () => false);
+    const onCancel = vi.fn();
+    const onDone = vi.fn();
+    const rendered = await renderDialog({
+      beforeMutation,
+      onCancel,
+      onDone,
+    });
+
+    try {
+      await waitFor(() => onCancel.mock.calls.length > 0);
+
+      expect(beforeMutation).toHaveBeenCalledOnce();
+      expect(onCancel).toHaveBeenCalledOnce();
+      expect(onDone).not.toHaveBeenCalled();
+      expect(worktreeMock.cleanupWorktree).not.toHaveBeenCalled();
+      expect(worktreeMock.keepWorktree).not.toHaveBeenCalled();
+      expect(worktreeMock.killTmuxSession).not.toHaveBeenCalled();
+      expect(sessionStorageMock.saveWorktreeState).not.toHaveBeenCalled();
+      expect(plansMock.clear).not.toHaveBeenCalled();
+    } finally {
+      rendered.unmount();
+    }
+  });
+
+  test.each(["keep", "remove"] as const)(
+    "cancels instead of running the explicit %s mutation when the safety check refuses",
+    async action => {
+      execMock.statusStdout = " M src/a.ts\n";
+      const beforeMutation = vi.fn(() => false);
+      const onCancel = vi.fn();
+      const onDone = vi.fn();
+      const rendered = await renderDialog({
+        beforeMutation,
+        onCancel,
+        onDone,
+      });
+
+      try {
+        await waitFor(() => selectMock.props !== undefined);
+        await selectMock.props?.onChange(action);
+
+        expect(beforeMutation).toHaveBeenCalledOnce();
+        expect(onCancel).toHaveBeenCalledOnce();
+        expect(onDone).not.toHaveBeenCalled();
+        expect(worktreeMock.cleanupWorktree).not.toHaveBeenCalled();
+        expect(worktreeMock.keepWorktree).not.toHaveBeenCalled();
+        expect(worktreeMock.killTmuxSession).not.toHaveBeenCalled();
+        expect(sessionStorageMock.saveWorktreeState).not.toHaveBeenCalled();
+        expect(plansMock.clear).not.toHaveBeenCalled();
+      } finally {
+        rendered.unmount();
+      }
+    },
+  );
 
   test("asks with change and commit summaries and respects explicit cancel", async () => {
     execMock.statusStdout = " M src/a.ts\n?? src/b.ts\n";

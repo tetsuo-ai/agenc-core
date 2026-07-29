@@ -72,6 +72,10 @@ const providerProbe = {
     initialState: unknown;
     onChangeAppState: unknown;
   }>,
+  currentAppState: null as Record<string, unknown> | null,
+  setAppState: null as
+    | ((next: SetStateAction<Record<string, unknown>>) => void)
+    | null,
   globalKeybindingProps: [] as Array<Record<string, unknown>>,
   exitFlowProps: [] as Array<Record<string, unknown>>,
   costThresholdDialogProps: [] as Array<Record<string, unknown>>,
@@ -316,6 +320,11 @@ vi.mock("../state/AppState.js", async () => {
     setState: (next: SetStateAction<Record<string, unknown>>) => void;
   } | null>(null);
   return {
+    // overlayContext imports the store context directly. Keep this mock's
+    // provider and direct-context consumers on the same test value so an
+    // asynchronously rendered PromptInput cannot escape through Ink's
+    // uncaught-error boundary.
+    AppStoreContext: StateContext,
     getDefaultAppState: () => ({
       mainLoopModel: null,
       mainLoopModelForSession: null,
@@ -350,6 +359,8 @@ vi.mock("../state/AppState.js", async () => {
           ...(initialState ?? {}),
         },
       );
+      providerProbe.currentAppState = state;
+      providerProbe.setAppState = setState;
       return React.createElement(
         StateContext.Provider,
         { value: { state, setState } },
@@ -697,6 +708,8 @@ function resetShellSurfaceProbe(): void {
   providerProbe.spinnerProps.length = 0;
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
+  providerProbe.currentAppState = null;
+  providerProbe.setAppState = null;
   providerProbe.inkExit.mockClear?.();
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
@@ -874,6 +887,163 @@ function createRealtimeControls(): AgenCRealtimeTuiControls {
     subscribe: vi.fn(),
     handleTranscriptEvent: vi.fn(),
   } as unknown as AgenCRealtimeTuiControls;
+}
+
+type ConcurrentExitIntentScenario = {
+  readonly order: readonly ["plain" | "resume", "plain" | "resume"];
+  readonly expectedResumeSessionId: string | null;
+  readonly lateDirty: boolean;
+};
+
+async function requestConcurrentAppExit(
+  kind: "plain" | "resume",
+): Promise<void> {
+  if (kind === "plain") {
+    const onExit = providerProbe.promptProps.at(-1)?.onExit as
+      | (() => void)
+      | undefined;
+    expect(onExit).toBeDefined();
+    onExit!();
+    return;
+  }
+
+  const dispatcher = await import("../../commands/dispatcher.js");
+  const dispatchSpy = vi
+    .spyOn(dispatcher, "dispatchSlashCommand")
+    .mockImplementationOnce(async (_parsed, context) => {
+      (
+        context as {
+          readonly appState: {
+            readonly requestResumeSession: (sessionId: string) => void;
+          };
+        }
+      ).appState.requestResumeSession("session-next");
+      return {
+        result: { kind: "text", text: "Switching sessions" },
+        command: { name: "resume" },
+      } as never;
+    });
+  try {
+    const onSubmit = providerProbe.promptSubmits.at(-1);
+    expect(onSubmit).toBeDefined();
+    await onSubmit!("/resume", {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    });
+  } finally {
+    dispatchSpy.mockRestore();
+  }
+}
+
+async function runConcurrentExitIntentScenario({
+  order,
+  expectedResumeSessionId,
+  lateDirty,
+}: ConcurrentExitIntentScenario): Promise<void> {
+  const {
+    consumePendingResumeSessionId,
+    resetPendingResumeSessionIdForTestingOnly,
+    setPendingResumeSessionId,
+  } = await import("../pending-resume.js");
+  const { applyWorkbenchCommand } = await import("../workbench/state.js");
+  const { getWorkbenchBufferProviderController } = await import(
+    "../workbench/buffer/providers/BufferProviderController.js"
+  );
+  const { AgenCTuiApp } = await import("./App.js");
+  const controller = getWorkbenchBufferProviderController();
+  const cleanSnapshot = controller.getSnapshot();
+  let dirty = false;
+  let resolveShutdown: (closed: boolean) => void = () => {};
+  const firstShutdown = new Promise<boolean>((resolve) => {
+    resolveShutdown = resolve;
+  });
+  const shutdownSpy = vi
+    .spyOn(controller, "shutdown")
+    .mockReturnValue(firstShutdown);
+  const snapshotSpy = lateDirty
+    ? vi.spyOn(controller, "getSnapshot").mockImplementation(() => ({
+        ...cleanSnapshot,
+        dirty,
+        dirtyBufferCount: dirty ? 1 : 0,
+      }))
+    : null;
+
+  resetShellSurfaceProbe();
+  resetPendingResumeSessionIdForTestingOnly();
+  setPendingResumeSessionId("stale-before-exit");
+  fullscreenProbe.fullscreen = true;
+
+  try {
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession()}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        await requestConcurrentAppExit(order[0]);
+        await vi.waitFor(() => {
+          expect(shutdownSpy).toHaveBeenCalledTimes(1);
+        });
+        await requestConcurrentAppExit(order[1]);
+        await vi.waitFor(() => {
+          const workbench = providerProbe.currentAppState?.workbench as
+            | { readonly appExitRequestId?: number }
+            | undefined;
+          expect(workbench?.appExitRequestId).toBe(2);
+        });
+
+        if (lateDirty) {
+          dirty = true;
+          resolveShutdown(false);
+          await vi.waitFor(() => {
+            const workbench = providerProbe.currentAppState?.workbench as
+              | { readonly pendingBlockedOverlay?: unknown }
+              | undefined;
+            expect(workbench?.pendingBlockedOverlay).not.toBeNull();
+          });
+          const blockedWorkbench =
+            providerProbe.currentAppState?.workbench as {
+              readonly pendingBlockedOverlay: {
+                readonly requestId: string;
+                readonly deferredCommand: {
+                  readonly resumeSessionId?: string;
+                };
+              };
+            };
+          expect(
+            blockedWorkbench.pendingBlockedOverlay.deferredCommand
+              .resumeSessionId ?? null,
+          ).toBe(expectedResumeSessionId);
+
+          dirty = false;
+          shutdownSpy.mockResolvedValue(true);
+          providerProbe.setAppState!((state) =>
+            applyWorkbenchCommand(state as never, {
+              type: "resolveBlockedOverlay",
+              requestId:
+                blockedWorkbench.pendingBlockedOverlay.requestId,
+            }) as never
+          );
+        } else {
+          resolveShutdown(true);
+        }
+
+        await vi.waitFor(() => {
+          expect(providerProbe.inkExit).toHaveBeenCalledTimes(1);
+        });
+        expect(consumePendingResumeSessionId()).toBe(
+          expectedResumeSessionId,
+        );
+      },
+    );
+  } finally {
+    snapshotSpy?.mockRestore();
+    shutdownSpy.mockRestore();
+    resetPendingResumeSessionIdForTestingOnly();
+    fullscreenProbe.fullscreen = false;
+  }
 }
 
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
@@ -2676,6 +2846,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(providerProbe.exitFlowProps.at(-1)).toEqual(
           expect.objectContaining({
             showWorktree: true,
+            beforeWorktreeMutation: expect.any(Function),
             onDone: expect.any(Function),
             onCancel: expect.any(Function),
           }),
@@ -2696,11 +2867,44 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       async () => {
         const promptProps = providerProbe.promptProps.at(-1)!;
         (promptProps.onExit as () => void)();
+        expect(providerProbe.inkExit).not.toHaveBeenCalled();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
         expect(providerProbe.inkExit).toHaveBeenCalledTimes(1);
         expect(providerProbe.exitFlowProps).toHaveLength(0);
       },
     );
   });
+
+  test.each([
+    {
+      label: "clean: plain exit followed by resume",
+      order: ["plain", "resume"] as const,
+      expectedResumeSessionId: "session-next",
+      lateDirty: false,
+    },
+    {
+      label: "clean: resume followed by plain exit",
+      order: ["resume", "plain"] as const,
+      expectedResumeSessionId: null,
+      lateDirty: false,
+    },
+    {
+      label: "late dirty: plain exit followed by resume",
+      order: ["plain", "resume"] as const,
+      expectedResumeSessionId: "session-next",
+      lateDirty: true,
+    },
+    {
+      label: "late dirty: resume followed by plain exit",
+      order: ["resume", "plain"] as const,
+      expectedResumeSessionId: null,
+      lateDirty: true,
+    },
+  ])(
+    "uses the latest concurrent exit intent after coalesced safe close — $label",
+    runConcurrentExitIntentScenario,
+  );
 
   test("renders and acknowledges the cost threshold dialog when billing access is available", async () => {
     const { AgenCTuiApp } = await import("./App.js");

@@ -459,7 +459,7 @@ export class BrowserManager {
     }
   }
 
-  /** Graceful, bounded shutdown that proves the whole process tree exited. */
+  /** Graceful, bounded shutdown of the platform-owned process scope. */
   closeAll(): Promise<void> {
     if (this.#closing !== undefined) return this.#closing;
     this.#shutdownGeneration += 1;

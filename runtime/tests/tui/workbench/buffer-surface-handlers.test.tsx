@@ -7,6 +7,7 @@ import {
 } from "../../../src/services/lsp/LSPDiagnosticRegistry.js";
 import { AppStateProvider, getDefaultAppState, type AppState } from "../../../src/tui/state/AppState.js";
 import {
+  type BufferProviderBuffer,
   INLINE_BUFFER_CAPABILITIES,
   type BufferProviderSnapshot,
 } from "../../../src/tui/workbench/buffer/providers/types.js";
@@ -83,7 +84,7 @@ beforeEach(() => {
 });
 
 describe("BufferSurface handlers", () => {
-  it("routes buffer keybindings to the buffer store and closes the surface only after a successful close", async () => {
+  it("routes buffer keybindings and defers every leave through workbench safety", async () => {
     const changes: AppState[] = [];
 
     await renderBufferSurface({ changes, includeInFlightAgent: true });
@@ -91,7 +92,7 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.keybindingOptions).toEqual({ context: "Buffer", isActive: true });
     expect(bufferHarness.inputCaptureOptions).toEqual({ context: "Buffer", isActive: true });
     expect(bufferHarness.store?.open).toHaveBeenCalledWith("target.ts", 1);
-    expect(bufferHarness.store?.resize).toHaveBeenCalledWith({ rows: 3, columns: 40 });
+    expect(bufferHarness.store?.resize).toHaveBeenCalledWith({ rows: 1, columns: 44 });
 
     bufferHarness.handlers["buffer:save"]?.();
     expect(bufferHarness.store?.save).toHaveBeenCalledWith({ hasInFlightAgent: true });
@@ -110,17 +111,11 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.store?.requestHover).toHaveBeenCalledTimes(1);
     expect(bufferHarness.store?.goToDefinition).toHaveBeenCalledTimes(1);
 
-    bufferHarness.store?.close.mockReturnValueOnce(false);
-    await bufferHarness.handlers["buffer:close"]?.();
-    expect(changes).toHaveLength(0);
-
-    bufferHarness.store?.close.mockReturnValueOnce(true);
     await bufferHarness.handlers["buffer:close"]?.();
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
 
-    bufferHarness.store?.close.mockReturnValueOnce(true);
     await bufferHarness.handlers["buffer:closeDiscard"]?.();
-    expect(bufferHarness.store?.close).toHaveBeenLastCalledWith({ discard: true });
+    expect(bufferHarness.store?.close).not.toHaveBeenCalled();
 
     bufferHarness.handlers["buffer:up"]?.();
     bufferHarness.handlers["buffer:down"]?.();
@@ -159,6 +154,15 @@ describe("BufferSurface handlers", () => {
     ]);
   });
 
+  it("routes the BUFFER maximize action through the workbench reducer", async () => {
+    const changes: AppState[] = [];
+
+    await renderBufferSurface({ changes });
+    bufferHarness.handlers["workbench:toggleSurfaceMaximized"]?.();
+
+    expect(changes.at(-1)?.workbench.surfaceMaximized).toBe(true);
+  });
+
   it("executes Vim command callbacks through the focused input capture", async () => {
     const changes: AppState[] = [];
 
@@ -168,7 +172,7 @@ describe("BufferSurface handlers", () => {
     expect(bufferHarness.store?.handleInput).toHaveBeenCalledWith(
       ":",
       {},
-      { columns: 20, rows: 3 },
+      { columns: 24, rows: 1 },
       expect.any(Function),
       false,
     );
@@ -182,41 +186,34 @@ describe("BufferSurface handlers", () => {
       hasInFlightAgent: false,
     });
 
-    bufferHarness.store?.close.mockReturnValueOnce(false);
     execute?.({ type: "quit", discard: false, all: false });
-    expect(changes).toHaveLength(0);
-
-    bufferHarness.store?.close.mockReturnValueOnce(true);
-    execute?.({ type: "quit", discard: true, all: false });
     await flushPromises();
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
-    expect(bufferHarness.store?.close).toHaveBeenLastCalledWith({ discard: true });
 
-    const closeCallsAfterQuit = bufferHarness.store?.close.mock.calls.length ?? 0;
+    const changesAfterQuit = changes.length;
     bufferHarness.store?.save.mockResolvedValueOnce(false);
     execute?.({ type: "saveQuit", force: false, all: false });
     await flushPromises();
-    expect(bufferHarness.store?.close).toHaveBeenCalledTimes(closeCallsAfterQuit);
+    expect(changes).toHaveLength(changesAfterQuit);
 
     bufferHarness.store?.save.mockResolvedValueOnce(true);
-    bufferHarness.store?.close.mockReturnValueOnce(false);
     execute?.({ type: "saveQuit", force: false, all: false });
     await flushPromises();
-    expect(bufferHarness.store?.close).toHaveBeenCalledTimes(closeCallsAfterQuit + 1);
+    expect(changes).toHaveLength(changesAfterQuit + 1);
 
     bufferHarness.store?.save.mockResolvedValueOnce(true);
-    bufferHarness.store?.close.mockReturnValueOnce(true);
     execute?.({ type: "saveQuit", force: true, all: false });
     await flushPromises();
     expect(bufferHarness.store?.save).toHaveBeenLastCalledWith({
       force: true,
       hasInFlightAgent: false,
     });
-    expect(bufferHarness.store?.close).toHaveBeenCalledTimes(closeCallsAfterQuit + 2);
+    expect(bufferHarness.store?.close).not.toHaveBeenCalled();
+    expect(changes).toHaveLength(changesAfterQuit + 2);
     expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
   });
 
-  it("contains rejected BUFFER open, close, command, and unmount actions", async () => {
+  it("contains rejected BUFFER open and command actions without tearing down the workspace provider", async () => {
     const changes: AppState[] = [];
     bufferHarness.store?.open.mockRejectedValueOnce(new Error("open cleanup failed"));
 
@@ -227,12 +224,8 @@ describe("BufferSurface handlers", () => {
       expect.objectContaining({ message: "open cleanup failed" }),
     );
 
-    bufferHarness.store?.close.mockRejectedValueOnce(new Error("close cleanup failed"));
-    await expect(bufferHarness.handlers["buffer:closeDiscard"]?.()).resolves.toBeUndefined();
-    expect(changes).toHaveLength(0);
-    expect(bufferHarness.logError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "close cleanup failed" }),
-    );
+    bufferHarness.handlers["buffer:closeDiscard"]?.();
+    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
 
     for (const [action, method, message] of [
       ["buffer:save", "save", "save failed"],
@@ -252,13 +245,9 @@ describe("BufferSurface handlers", () => {
     bufferHarness.inputCapture?.(":", {}, inputEvent());
     const execute = bufferHarness.vimCommandExecutor;
     expect(execute).toBeTruthy();
-    bufferHarness.store?.close.mockRejectedValueOnce(new Error("command cleanup failed"));
     execute?.({ type: "quit", discard: true, all: false });
     await flushPromises();
-    expect(changes).toHaveLength(0);
-    expect(bufferHarness.logError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "command cleanup failed" }),
-    );
+    expect(changes.at(-1)?.workbench.activeSurfaceMode).toBe("transcript");
 
     bufferHarness.store?.save.mockRejectedValueOnce(new Error("command save failed"));
     execute?.({ type: "save", force: true, all: false });
@@ -267,28 +256,18 @@ describe("BufferSurface handlers", () => {
       expect.objectContaining({ message: "command save failed" }),
     );
 
+    const changesBeforeRejectedSaveQuit = changes.length;
     bufferHarness.store?.save.mockRejectedValueOnce(new Error("save-quit save failed"));
     execute?.({ type: "saveQuit", force: false, all: false });
     await flushPromises();
-    expect(changes).toHaveLength(0);
+    expect(changes).toHaveLength(changesBeforeRejectedSaveQuit);
     expect(bufferHarness.logError).toHaveBeenCalledWith(
       expect.objectContaining({ message: "save-quit save failed" }),
     );
 
-    bufferHarness.store?.close.mockRejectedValueOnce(new Error("save-quit cleanup failed"));
-    execute?.({ type: "saveQuit", force: false, all: false });
-    await flushPromises();
-    expect(changes).toHaveLength(0);
-    expect(bufferHarness.logError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "save-quit cleanup failed" }),
-    );
-
-    bufferHarness.store?.cleanup.mockRejectedValueOnce(new Error("unmount cleanup failed"));
     await renderBufferSurface({ activeFilePath: null });
     await flushPromises();
-    expect(bufferHarness.logError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "unmount cleanup failed" }),
-    );
+    expect(bufferHarness.store?.cleanup).not.toHaveBeenCalled();
   });
 
   it("renders the empty surface without opening a buffer when no file is selected", async () => {
@@ -395,6 +374,89 @@ describe("BufferSurface handlers", () => {
     expect(insertOutput).toContain("INSERT  esc normal");
   });
 
+  it.each([
+    {
+      mode: "auto",
+      buffers: [tabBuffer(1, "tab-one.ts", true)],
+      visible: false,
+    },
+    {
+      mode: "auto",
+      buffers: [
+        tabBuffer(1, "tab-one.ts", true),
+        tabBuffer(2, "tab-two.ts", false),
+      ],
+      visible: true,
+    },
+    {
+      mode: "always",
+      buffers: [tabBuffer(1, "tab-one.ts", true)],
+      visible: true,
+    },
+    {
+      mode: "never",
+      buffers: [
+        tabBuffer(1, "tab-one.ts", true),
+        tabBuffer(2, "tab-two.ts", false),
+      ],
+      visible: false,
+    },
+  ] as const)(
+    "honors show_tabs=$mode with the current buffer count",
+    async ({ buffers, mode, visible }) => {
+      bufferHarness.snapshot = baseSnapshot({
+        activeBufferHandle: 1,
+        buffers,
+        dirtyBufferCount: 0,
+      });
+      bufferHarness.store?.getShowTabsMode.mockReturnValue(mode);
+
+      const output = await renderBufferSurface({ columns: 100 });
+      const activeLabelOccurrences =
+        output.match(/tab-one\.ts/gu)?.length ?? 0;
+
+      // The active buffer also appears in the surface header. A visible tab
+      // row contributes the second occurrence.
+      expect(activeLabelOccurrences > 1).toBe(visible);
+      expect(output.includes("tab-two.ts")).toBe(
+        visible && buffers.length > 1,
+      );
+    },
+  );
+
+  it("keeps the active Unicode tab visible when CJK and combining labels overflow the measured pane", async () => {
+    const combiningLabel = "e\u0301e\u0301.ts";
+    const cjkLabel = "漢字漢字漢字漢字.ts";
+    const activeLabel = "current-buffer.ts";
+    bufferHarness.snapshot = baseSnapshot({
+      activeBufferHandle: 3,
+      buffers: [
+        tabBuffer(1, combiningLabel, false),
+        tabBuffer(2, cjkLabel, false),
+        tabBuffer(3, activeLabel, true),
+      ],
+      dirtyBufferCount: 0,
+    });
+
+    // Code-unit length fits exactly in 41 columns, but terminal cell width is
+    // 47 because CJK graphemes occupy two cells and combining marks occupy
+    // none. A length-based overflow check leaves the active tab truncated at
+    // the end; stringWidth detects the real overflow and rotates it first.
+    const output = await renderBufferSurface({ columns: 41 });
+    const tabLine = output.split("\n").find(
+      line =>
+        line.includes("current-") &&
+        line.includes("e\u0301e\u0301"),
+    );
+
+    expect(tabLine).toBeDefined();
+    expect(tabLine).toContain("current-");
+    expect(tabLine).toContain("e\u0301e\u0301");
+    expect(tabLine?.indexOf("current-")).toBeLessThan(
+      tabLine?.indexOf("e\u0301e\u0301") ?? -1,
+    );
+  });
+
   it("ignores late syntax highlights after unmounting", async () => {
     let resolveHighlights: ((value: ReadonlyMap<number, string>) => void) | null = null;
     bufferHarness.highlightBufferVisibleLines.mockImplementationOnce(() =>
@@ -483,11 +545,14 @@ function resetHarness(): void {
 function baseSnapshot(overrides: Partial<BufferProviderSnapshot> = {}): BufferProviderSnapshot {
   const status = overrides.status ?? "ready";
   return {
+    activeBufferHandle: null,
     absolutePath: null,
+    buffers: [],
     canRedo: false,
     canUndo: false,
     conflictKind: null,
     dirty: false,
+    dirtyBufferCount: 0,
     encoding: null,
     error: null,
     filePath: "target.ts",
@@ -508,7 +573,9 @@ function baseSnapshot(overrides: Partial<BufferProviderSnapshot> = {}): BufferPr
       capabilities: INLINE_BUFFER_CAPABILITIES,
     },
     providerMessage: null,
+    providerExit: null,
     providerStatus: status,
+    recovery: null,
     terminal: null,
     ...overrides,
   };
@@ -520,6 +587,7 @@ function createStoreHarness() {
     cleanup: vi.fn(async () => {}),
     click: vi.fn(() => false),
     focus: vi.fn(),
+    getShowTabsMode: vi.fn<() => "auto" | "always" | "never">(() => "auto"),
     getSnapshot: vi.fn(() => bufferHarness.snapshot),
     getVisibleLines: vi.fn(() => bufferHarness.visibleLines),
     goToDefinition: vi.fn(async () => false),
@@ -541,7 +609,30 @@ function createStoreHarness() {
     revert: vi.fn(async () => {}),
     resize: vi.fn(),
     save: vi.fn(async () => true),
+    selectBuffer: vi.fn(async () => true),
+    subscribeIntegrationIntents: vi.fn(() => () => {}),
     undo: vi.fn(),
+  };
+}
+
+function tabBuffer(
+  handle: number,
+  path: string,
+  current: boolean,
+): BufferProviderBuffer {
+  return {
+    handle,
+    name: `/workspace/${path}`,
+    filePath: path,
+    absolutePath: `/workspace/${path}`,
+    listed: true,
+    loaded: true,
+    modified: false,
+    current,
+    bufferType: "",
+    modifiable: true,
+    readOnly: false,
+    saveable: true,
   };
 }
 

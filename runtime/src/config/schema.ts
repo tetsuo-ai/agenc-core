@@ -409,6 +409,26 @@ export interface TuiConfig {
   readonly vimMode?: boolean;
 }
 
+export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
+export type BufferTabsMode = "auto" | "always" | "never";
+export type BufferNeovimInitMode = "auto" | "user" | "clean";
+
+export interface BufferNeovimConfig {
+  readonly executable?: string;
+  readonly init?: BufferNeovimInitMode;
+  readonly discovery_timeout_ms?: number;
+  readonly startup_timeout_ms?: number;
+  readonly operation_timeout_ms?: number;
+  readonly cleanup_timeout_ms?: number;
+}
+
+/** Embedded editor configuration for the TUI BUFFER workspace. */
+export interface BufferConfig {
+  readonly provider?: BufferProviderMode;
+  readonly show_tabs?: BufferTabsMode;
+  readonly neovim?: BufferNeovimConfig;
+}
+
 /**
  * Permissions block as it appears in `~/.agenc/config.toml` (or any
  * settings.json the loader folds in). Mirrors the subset of
@@ -718,6 +738,7 @@ export interface AgenCConfig {
   readonly outputStyle?: PartialOutputStyleConfig;
   readonly attachments?: AttachmentsConfig;
   readonly editorMode?: EditorMode;
+  readonly buffer?: BufferConfig;
   readonly tui?: TuiConfig;
   readonly tuiLayout?: TuiLayoutConfig;
   readonly autoFix?: unknown;
@@ -888,6 +909,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "outputStyle",
   "attachments",
   "editorMode",
+  "buffer",
   "tui",
   "tuiLayout",
   "autoFix",
@@ -986,6 +1008,17 @@ export function defaultConfig(): AgenCConfig {
     // `config get autoUpdates` report "not set: autoUpdates" when the user has
     // not explicitly configured it, consistent with the effective state.
     editorMode: "default" as EditorMode,
+    buffer: Object.freeze({
+      provider: "auto",
+      show_tabs: "auto",
+      neovim: Object.freeze({
+        init: "auto",
+        discovery_timeout_ms: 1_200,
+        startup_timeout_ms: 10_000,
+        operation_timeout_ms: 10_000,
+        cleanup_timeout_ms: 1_000,
+      }) as BufferNeovimConfig,
+    }) as BufferConfig,
     tuiLayout: Object.freeze({
       mode: "single",
       sidePane: "status",
@@ -1232,6 +1265,12 @@ export class InvalidMcpConfigError extends InvalidNamedConfigError {
 export class InvalidProtocolConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("protocol", "InvalidProtocolConfigError", field, detail);
+  }
+}
+
+export class InvalidBufferConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("buffer", "InvalidBufferConfigError", field, detail);
   }
 }
 
@@ -2265,6 +2304,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.tui = validateTuiConfig(config.tui);
     changed = true;
   }
+  if (config.buffer !== undefined) {
+    out.buffer = validateBufferConfig(config.buffer);
+    changed = true;
+  }
   if (config.browser !== undefined) {
     out.browser = validateBrowserConfig(config.browser);
     changed = true;
@@ -2321,6 +2364,104 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
     out.vimMode = raw.vimMode;
   }
   return Object.freeze(out as TuiConfig);
+}
+
+export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
+  if (raw === undefined) return undefined;
+  const makeError: InvalidConfigFactory = (field, detail) =>
+    new InvalidBufferConfigError(field, detail);
+  const record = requirePlainObject(raw, "", makeError);
+  rejectUnknownFields(
+    record,
+    new Set(["provider", "show_tabs", "neovim"]),
+    makeError,
+  );
+  const out: { -readonly [K in keyof BufferConfig]: BufferConfig[K] } = {};
+  if (record.provider !== undefined) {
+    if (
+      record.provider !== "auto" &&
+      record.provider !== "neovim" &&
+      record.provider !== "inline" &&
+      record.provider !== "external"
+    ) {
+      throw makeError(
+        "provider",
+        'expected "auto", "neovim", "inline", or "external"',
+      );
+    }
+    out.provider = record.provider;
+  }
+  if (record.show_tabs !== undefined) {
+    if (
+      record.show_tabs !== "auto" &&
+      record.show_tabs !== "always" &&
+      record.show_tabs !== "never"
+    ) {
+      throw makeError(
+        "show_tabs",
+        'expected "auto", "always", or "never"',
+      );
+    }
+    out.show_tabs = record.show_tabs;
+  }
+  if (record.neovim !== undefined) {
+    const neovim = requirePlainObject(record.neovim, "neovim", makeError);
+    rejectUnknownFields(
+      neovim,
+      new Set([
+        "executable",
+        "init",
+        "discovery_timeout_ms",
+        "startup_timeout_ms",
+        "operation_timeout_ms",
+        "cleanup_timeout_ms",
+      ]),
+      makeError,
+      "neovim",
+    );
+    const validated: {
+      -readonly [K in keyof BufferNeovimConfig]: BufferNeovimConfig[K];
+    } = {};
+    const executable = optionalString(
+      neovim.executable,
+      "neovim.executable",
+      makeError,
+    );
+    if (executable !== undefined) {
+      if (executable.trim().length === 0) {
+        throw makeError("neovim.executable", "expected non-empty string");
+      }
+      validated.executable = executable;
+    }
+    if (neovim.init !== undefined) {
+      if (
+        neovim.init !== "auto" &&
+        neovim.init !== "user" &&
+        neovim.init !== "clean"
+      ) {
+        throw makeError(
+          "neovim.init",
+          'expected "auto", "user", or "clean"',
+        );
+      }
+      validated.init = neovim.init;
+    }
+    for (const key of [
+      "discovery_timeout_ms",
+      "startup_timeout_ms",
+      "operation_timeout_ms",
+      "cleanup_timeout_ms",
+    ] as const) {
+      const value = optionalPositiveInteger(
+        neovim[key],
+        `neovim.${key}`,
+        makeError,
+      );
+      if (value !== undefined) validated[key] = value;
+    }
+    out.neovim = Object.freeze(validated as BufferNeovimConfig);
+  }
+  return Object.freeze(out as BufferConfig);
 }
 
 export class InvalidBrowserConfigError extends Error {

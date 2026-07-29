@@ -32,6 +32,7 @@ vi.mock("../../../src/tui/components/TextInput.js", async () => {
 });
 
 import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
+import { useContentWidth } from "../../../src/tui/context/contentWidthContext.js";
 import { Box, Text } from "../../../src/tui/ink.js";
 import type { ScrollBoxHandle } from "../../../src/tui/ink/components/ScrollBox.js";
 import { AGENC_LOGO_MARK_COMPACT_LINES, WelcomeColdPanel } from "../../../src/tui/components/v2/primitives.js";
@@ -43,6 +44,7 @@ import { TranscriptSurface } from "../../../src/tui/workbench/surfaces/Transcrip
 import { WorkbenchFooter } from "../../../src/tui/workbench/WorkbenchFooter.js";
 import { WorkbenchStatusBar } from "../../../src/tui/workbench/WorkbenchStatusBar.js";
 import { layoutSizeForColumns, WorkbenchLayout } from "../../../src/tui/workbench/WorkbenchLayout.js";
+import { workbenchReducer } from "../../../src/tui/workbench/reducer.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
 
 function SuggestionsWriter(): React.ReactNode {
@@ -90,6 +92,11 @@ function DialogWriter(): React.ReactNode {
 function ComposerFocusProbe(): React.ReactNode {
   const active = useWorkbenchComposerFocus();
   return <Text>{active ? "composer-active" : "composer-inactive"}</Text>;
+}
+
+function ComposerWidthProbe(): React.ReactNode {
+  const width = useContentWidth();
+  return <Text>{`composer-width:${width ?? "none"}`}</Text>;
 }
 
 describe("workbench render contract", () => {
@@ -604,10 +611,9 @@ describe("workbench render contract", () => {
   });
 
   it("keeps the monochrome footer stable while a file surface is open", async () => {
-    // Surface-local chords (ctrl+r rail) moved out of the global footer so the
-    // composer strip stays a short, always-valid discoverability bar. With a
-    // buffer open the footer must still advertise / and @ without regressing
-    // to the old Composer:/Preview: strings.
+    // Buffer-context shortcuts are inactive while the composer owns focus.
+    // Keep the global composer strip visible even though the file surface
+    // remains open behind it.
     const state = {
       ...getDefaultAppState(),
       workbench: {
@@ -631,6 +637,35 @@ describe("workbench render contract", () => {
     expect(hintLine).toContain("/ commands");
     expect(hintLine).toContain("@ attach");
     expect(hintLine).not.toContain("Composer: write prompt");
+  });
+
+  it("shows BUFFER actions only while the file surface owns the keys", async () => {
+    const state = {
+      ...getDefaultAppState(),
+      workbench: {
+        ...getDefaultAppState().workbench,
+        focusedPane: "surface" as const,
+        activeSurfaceMode: "buffer" as const,
+      },
+    };
+    const output = await renderToString(
+      <AppStateProvider initialState={state}>
+        <WorkbenchFooter />
+      </AppStateProvider>,
+      120,
+    );
+
+    const hintLine = output
+      .split(/\r?\n/u)
+      .map((line) => line.trimEnd())
+      .find((line) => line.includes("BUFFER:"));
+    expect(hintLine).toBeDefined();
+    expect(hintLine).toContain("ctrl+s save");
+    expect(hintLine).toContain("ctrl+x y redo");
+    expect(hintLine).toContain("shift+tab composer");
+    expect(hintLine).toContain("ctrl+x z maximize");
+    expect(hintLine).toContain("ctrl+x q hide");
+    expect(hintLine).not.toContain("/ commands");
   });
 
   it("indents the monochrome footer line to match the composer chrome", async () => {
@@ -777,6 +812,76 @@ describe("workbench render contract", () => {
     expect(changes.at(-1)?.workbench).toMatchObject(expected);
   });
 
+  it("moves a file surface into the review rail in one ctrl+r transition", async () => {
+    projectExplorerHarness.keybindingCalls = [];
+    const changes: Array<ReturnType<typeof getDefaultAppState>> = [];
+
+    await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: {
+            ...getDefaultAppState().workbench,
+            activeSurfaceMode: "preview",
+            activeFilePath: "src/index.ts",
+            focusedPane: "surface",
+            surfaceMaximized: true,
+          },
+        }}
+        onChangeAppState={({ newState }) => changes.push(newState)}
+      >
+        <WorkbenchLayout transcript={<Text>scroll body</Text>} composer={<ComposerFocusProbe />} />
+      </AppStateProvider>,
+      { columns: 148, rows: 30 },
+    );
+
+    const workbenchHandlers = projectExplorerHarness.keybindingCalls.find(
+      (call) => call.options?.context === "Workbench",
+    )?.handlers;
+    const changesBeforeHandoff = changes.length;
+    workbenchHandlers?.["workbench:toggleFileRail"]?.();
+
+    expect(changes).toHaveLength(changesBeforeHandoff + 1);
+    expect(changes.at(-1)?.workbench).toMatchObject({
+      activeSurfaceMode: "transcript",
+      focusedPane: "composer",
+      rail: { kind: "file", path: "src/index.ts" },
+      surfaceMaximized: false,
+    });
+  });
+
+  it("renders the transcript once after closing BUFFER with a transcript rail", async () => {
+    const buffer = workbenchReducer(undefined, {
+      type: "openBuffer",
+      path: "src/index.ts",
+    });
+    const handoff = workbenchReducer(buffer, {
+      type: "handoffToComposer",
+      attachment: {
+        id: "editor-selection:src/index.ts:1",
+        kind: "editor-selection",
+        label: "src/index.ts:1",
+      },
+    });
+    const closed = workbenchReducer(handoff, { type: "closeSurface" });
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...getDefaultAppState(),
+          workbench: closed,
+        }}
+      >
+        <WorkbenchLayout
+          transcript={<Text>unique transcript marker</Text>}
+          composer={<ComposerFocusProbe />}
+        />
+      </AppStateProvider>,
+      { columns: 148, rows: 30 },
+    );
+
+    expect(output.match(/unique transcript marker/gu)).toHaveLength(1);
+  });
+
   it("keeps transcript content inside the active work surface", async () => {
     const output = await renderToString(
       <TranscriptSurface>
@@ -897,6 +1002,20 @@ describe("workbench render contract", () => {
 
     expect(inactiveOutput).toContain("composer-inactive");
     expect(activeOutput).toContain("composer-active");
+  });
+
+  it("publishes the inner frame width to the workbench composer", async () => {
+    const output = await renderToString(
+      <AppStateProvider initialState={getDefaultAppState()}>
+        <WorkbenchLayout
+          transcript={<Text>scroll body</Text>}
+          composer={<ComposerWidthProbe />}
+        />
+      </AppStateProvider>,
+      { columns: 140, rows: 30 },
+    );
+
+    expect(output).toContain("composer-width:136");
   });
 
   it("does not render compact pane overlays when their panes are hidden", async () => {
