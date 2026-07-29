@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -18,6 +18,7 @@ import {
   cleanupTrackedNeovimProcesses,
   getTrackedNeovimProcessCountForTesting,
 } from "../../../src/tui/workbench/buffer/neovim/NeovimProcess.js";
+import { canonicalNeovimPath } from "../../../src/tui/workbench/buffer/neovim/NeovimPath.js";
 import {
   discardRecoverySwapFiles,
   installPrivateNeovimRecovery,
@@ -97,19 +98,32 @@ describe("real embedded Neovim lifecycle", () => {
     try {
       await session.openFile(hiddenPath);
       const before = await session.inspectBuffers();
-      const sourcePaths = new Set([resolve(activePath), resolve(hiddenPath)]);
+      const canonicalSourceDirectory = canonicalNeovimPath(sourceDirectory);
+      const sourcePaths = new Set(
+        [activePath, hiddenPath].map((pathValue) =>
+          canonicalNeovimPath(pathValue)
+        ),
+      );
       const affected = before.buffers.filter((buffer) =>
-        sourcePaths.has(resolve(buffer.name))
+        sourcePaths.has(canonicalNeovimPath(buffer.name))
       );
       expect(affected).toHaveLength(2);
       expect(affected.some((buffer) => buffer.current)).toBe(true);
       expect(affected.some((buffer) => !buffer.current)).toBe(true);
 
       await rename(sourceDirectory, destinationDirectory);
+      const canonicalDestinationDirectory =
+        canonicalNeovimPath(destinationDirectory);
       const changes = affected.map((buffer) => ({
         handle: buffer.handle,
         fromPath: buffer.name,
-        toPath: join(destinationDirectory, buffer.name.slice(sourceDirectory.length + 1)),
+        toPath: resolve(
+          canonicalDestinationDirectory,
+          relative(
+            canonicalSourceDirectory,
+            canonicalNeovimPath(buffer.name),
+          ),
+        ),
       }));
       await session.rebaseFileBuffers(changes);
 
@@ -349,6 +363,7 @@ describe("real embedded Neovim lifecycle", () => {
       workspaceRoot: dir,
       agencHome,
       beforeOpenFile,
+      linuxContainment: "subreaper",
       size: { rows: 8, columns: 48 },
       onSnapshot: (snapshot) => sourceSnapshots.push(snapshot),
       onError: (error) => sourceErrors.push(error),
@@ -421,7 +436,7 @@ describe("real embedded Neovim lifecycle", () => {
     );
     const oldSwap = await waitForRecoverySwap(paths);
 
-    process.kill(sourcePid, "SIGKILL");
+    source.kill("SIGKILL");
     await waitUntilDead(sourcePid);
     await source.cleanup();
     expect(isProcessAlive(sourcePid)).toBe(false);
@@ -442,6 +457,7 @@ describe("real embedded Neovim lifecycle", () => {
       workspaceRoot: dir,
       agencHome,
       beforeOpenFile,
+      linuxContainment: "subreaper",
       size: { rows: 8, columns: 48 },
       onSnapshot: () => {},
       onRecoveryDetected: (event) => recoveryEvents.push(event),
@@ -506,7 +522,8 @@ describe("real embedded Neovim lifecycle", () => {
         readOnly: true,
         saveable: false,
       });
-      expect(resolve(recoveredBuffer!.name)).toBe(resolve(filePath));
+      expect(canonicalNeovimPath(recoveredBuffer!.name))
+        .toBe(canonicalNeovimPath(filePath));
       expect(diskBuffer!.name).toContain("recovery-compare.txt");
       expect(await recovered.readBufferText(recoveredHandle)).toBe(recoveredContent);
       expect(await recovered.readBufferText(diskBuffer!.handle)).toBe(diskContent);
@@ -596,11 +613,12 @@ describe("real embedded Neovim lifecycle", () => {
       expect(visualPlugIntent).toMatchObject({
         kind: "attach",
         context: {
-          path: filePath,
           content: "a界🙂",
           selectionMode: "character",
         },
       });
+      expect(canonicalNeovimPath(visualPlugIntent!.context.path))
+        .toBe(canonicalNeovimPath(filePath));
 
       await session.input("<Esc>:AgenCAsk explain unicode<CR>");
       await waitForValue(intents, (intent) => intent.kind === "ask");

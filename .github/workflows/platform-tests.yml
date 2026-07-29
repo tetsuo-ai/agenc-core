@@ -747,8 +747,16 @@ jobs:
           npm_command=npm
           if test "$RUNNER_OS" = "Windows"; then npm_command=npm.cmd; fi
           "$npm_command" ci --ignore-scripts --no-audit --no-fund
-          npm_config_build_from_source=true \
-            "$npm_command" rebuild better-sqlite3 esbuild node-pty
+          if test "$RUNNER_OS" = "Windows"; then
+            # Exercise the install-time ABI-147 SQLite prebuild on Windows.
+            # node-pty's locked package already carries its win32-x64 prebuild;
+            # rebuilding it from source would replace the user install path
+            # this hosted PTY lane is intended to cover.
+            "$npm_command" rebuild better-sqlite3 esbuild
+          else
+            npm_config_build_from_source=true \
+              "$npm_command" rebuild better-sqlite3 esbuild node-pty
+          fi
           "$npm_command" run build --workspace=@tetsuo-ai/runtime
           test "$(node --version)" = "v${NODE_VERSION}"
           test "$("$npm_command" --version)" = "$NPM_VERSION"
@@ -893,11 +901,14 @@ jobs:
                 $expected = [IO.Path]::GetFullPath($env:AGENC_PINNED_NVIM)
                 $leaks = Get-CimInstance Win32_Process |
                   Where-Object {
-                    ($_.ExecutablePath -and
-                      [IO.Path]::GetFullPath($_.ExecutablePath) -eq $expected) -or
-                    ($_.CommandLine -and
-                      ($_.CommandLine.Contains("agenc-neovim-platform-descendant") -or
-                        $_.CommandLine.Contains("agenc-process-owner-watchdog")))
+                    $_.ProcessId -ne $PID -and
+                      (
+                        ($_.ExecutablePath -and
+                          [IO.Path]::GetFullPath($_.ExecutablePath) -eq $expected) -or
+                        ($_.CommandLine -and
+                          ($_.CommandLine.Contains("agenc-neovim-platform-descendant") -or
+                            $_.CommandLine.Contains("agenc-process-owner-watchdog")))
+                      )
                   }
                 if ($leaks) {
                   $leaks | Format-List ProcessId,ParentProcessId,ExecutablePath

@@ -19,6 +19,8 @@ export type SpawnNeovimProcessOptions = {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** Force the deterministic broker boundary in Linux containment tests. */
+  readonly linuxContainment?: "auto" | "subreaper";
 };
 
 const trackedHandles = new Set<NeovimProcessHandle>();
@@ -33,6 +35,9 @@ export function spawnNeovimProcess(options: SpawnNeovimProcessOptions): NeovimPr
   const child = spawnContainedProcess(options.executable, options.args, {
     cwd: options.cwd,
     env: options.env ?? process.env,
+    ...(options.linuxContainment !== undefined
+      ? { linuxContainment: options.linuxContainment }
+      : {}),
   });
   const pid = normalizeNeovimPid(child.pid);
   const handle: NeovimProcessHandle = {

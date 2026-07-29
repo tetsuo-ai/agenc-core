@@ -298,6 +298,24 @@ describe("embedded Neovim lifecycle", () => {
     await expect(unkillableSession.quit(true)).resolves.toEqual({ closed: true });
   });
 
+  it("routes explicit process signals through the supervised Neovim boundary", () => {
+    const child = fakeChild({ pid: 778 });
+    const handle = {
+      child,
+      pid: 778,
+      kill: vi.fn(() => true),
+    };
+    const session = new EmbeddedNeovimSession(
+      handle as any,
+      { request: vi.fn(), close: vi.fn() } as any,
+      { dispose: vi.fn() } as any,
+      5,
+    );
+
+    expect(session.kill("SIGKILL")).toBe(true);
+    expect(handle.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  });
+
   it("applies the configured deadline and an abort signal to every interactive RPC", async () => {
     const child = fakeChild({ exitCode: 0, pid: 791 });
     const handle = { child, pid: 791, kill: vi.fn() };

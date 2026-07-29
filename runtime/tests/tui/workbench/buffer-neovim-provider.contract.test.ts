@@ -1,10 +1,19 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { createNeovimRenderSnapshot } from "../../../src/tui/workbench/buffer/neovim/NeovimGrid.js";
+import { canonicalNeovimPath } from "../../../src/tui/workbench/buffer/neovim/NeovimPath.js";
 import { bufferIntegrationIntentCommand } from "../../../src/tui/workbench/commands.js";
 import { BufferProviderController } from "../../../src/tui/workbench/buffer/providers/BufferProviderController.js";
 import {
@@ -32,6 +41,21 @@ const usableDiscovery = {
   useUserInit: false,
 } as const;
 
+const TEST_WORKSPACE_ROOT = process.platform === "win32"
+  ? "C:\\workspace"
+  : "/workspace";
+const TEST_OUTSIDE_ROOT = process.platform === "win32"
+  ? "C:\\outside"
+  : "/outside";
+
+function workspacePath(...segments: readonly string[]): string {
+  return join(TEST_WORKSPACE_ROOT, ...segments);
+}
+
+function outsidePath(...segments: readonly string[]): string {
+  return join(TEST_OUTSIDE_ROOT, ...segments);
+}
+
 describe("embedded Neovim BUFFER provider", () => {
   it("opens through the injected embedded session and publishes bounded terminal snapshots", async () => {
     const harness = createHarness();
@@ -44,7 +68,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.startSession).toHaveBeenCalledWith(expect.objectContaining({
       executable: "/usr/bin/nvim",
       args: ["--embed", "--clean"],
-      filePath: "/workspace/target.txt",
+      filePath: workspacePath("target.txt"),
       line: 3,
       column: 2,
       size: { rows: 20, columns: 80 },
@@ -53,7 +77,7 @@ describe("embedded Neovim BUFFER provider", () => {
       status: "ready",
       providerStatus: "ready",
       filePath: "target.txt",
-      absolutePath: "/workspace/target.txt",
+      absolutePath: workspacePath("target.txt"),
       dirty: false,
       provider: { kind: "neovim" },
       position: { line: 2, column: 4 },
@@ -114,7 +138,7 @@ describe("embedded Neovim BUFFER provider", () => {
     const harness = createHarness();
     const provider = new NeovimBufferProvider({
       ...harness.options,
-      workspaceRoot: "/workspace",
+      workspaceRoot: TEST_WORKSPACE_ROOT,
     });
     const selectionFactory = vi.fn(async () => ({
       kind: "neovim" as const,
@@ -131,10 +155,10 @@ describe("embedded Neovim BUFFER provider", () => {
       await controller.open("target.txt", 1);
 
       harness.emitIntegrationIntent(integrationIntent(
-        "/workspace/src/nested/app.ts",
+        workspacePath("src", "nested", "app.ts"),
       ));
       harness.emitIntegrationIntent(integrationIntent(
-        "/outside/shared/app.ts",
+        outsidePath("shared", "app.ts"),
       ));
       harness.emitIntegrationIntent(integrationIntent("", 29));
 
@@ -153,9 +177,9 @@ describe("embedded Neovim BUFFER provider", () => {
       expect(commands[1]).toMatchObject({
         type: "handoffToComposer",
         attachment: {
-          id: "editor-selection:/outside/shared/app.ts:4:2:6:8:17",
-          path: "/outside/shared/app.ts",
-          label: "/outside/shared/app.ts:4-6",
+          id: `editor-selection:${outsidePath("shared", "app.ts")}:4:2:6:8:17`,
+          path: outsidePath("shared", "app.ts"),
+          label: `${outsidePath("shared", "app.ts")}:4-6`,
         },
       });
       expect(commands[2]).toMatchObject({
@@ -185,7 +209,7 @@ describe("embedded Neovim BUFFER provider", () => {
       buffers: [
         {
           handle: 1,
-          name: "/workspace/target.txt",
+          name: workspacePath("target.txt"),
           listed: true,
           loaded: true,
           modified: true,
@@ -197,7 +221,7 @@ describe("embedded Neovim BUFFER provider", () => {
         },
         {
           handle: 91,
-          name: "/workspace/[disk] target.txt",
+          name: workspacePath("[disk] target.txt"),
           listed: false,
           loaded: true,
           modified: false,
@@ -213,7 +237,7 @@ describe("embedded Neovim BUFFER provider", () => {
 
     expect(provider.getSnapshot()).toMatchObject({
       filePath: "target.txt",
-      absolutePath: "/workspace/target.txt",
+      absolutePath: workspacePath("target.txt"),
       activeBufferHandle: 1,
     });
     expect(provider.getSnapshot().buffers.find((buffer) => buffer.handle === 91))
@@ -249,7 +273,7 @@ describe("embedded Neovim BUFFER provider", () => {
       copies,
       shada: join(root, "main.shada"),
       manifest: join(root, "recovery.json"),
-      workspaceRoot: "/workspace",
+      workspaceRoot: TEST_WORKSPACE_ROOT,
       workspaceHash: "test",
       swapFiles: [firstSwap, secondSwap],
     };
@@ -260,7 +284,7 @@ describe("embedded Neovim BUFFER provider", () => {
       await provider.open({ filePath: "first.txt" });
       harness.emitRecovery({
         swapFile: firstSwap,
-        filePath: "/workspace/first.txt",
+        filePath: workspacePath("first.txt"),
       });
       expect(provider.getSnapshot().recovery).toMatchObject({
         status: "pending",
@@ -302,14 +326,14 @@ describe("embedded Neovim BUFFER provider", () => {
         swapFiles: [firstSwap],
       });
       expect(harness.session.openFile).not.toHaveBeenCalledWith(
-        "/workspace/second.txt",
+        workspacePath("second.txt"),
         expect.anything(),
         expect.anything(),
       );
 
       harness.emitRecovery({
         swapFile: secondSwap,
-        filePath: "/workspace/second.txt",
+        filePath: workspacePath("second.txt"),
       });
       expect(provider.getSnapshot().recovery).toMatchObject({
         status: "pending",
@@ -335,7 +359,7 @@ describe("embedded Neovim BUFFER provider", () => {
       releaseRecoveryOpen();
       await expect(discard).resolves.toEqual({ ok: true });
       expect(harness.session.openFile).toHaveBeenCalledWith(
-        "/workspace/first.txt",
+        workspacePath("first.txt"),
         1,
         0,
       );
@@ -367,7 +391,7 @@ describe("embedded Neovim BUFFER provider", () => {
       copies,
       shada: join(root, "main.shada"),
       manifest: join(root, "recovery.json"),
-      workspaceRoot: "/workspace",
+      workspaceRoot: TEST_WORKSPACE_ROOT,
       workspaceHash: "test",
       swapFiles: [swapFile],
     };
@@ -378,7 +402,7 @@ describe("embedded Neovim BUFFER provider", () => {
       await provider.open({ filePath: "target.txt" });
       harness.emitRecovery({
         swapFile,
-        filePath: "/workspace/target.txt",
+        filePath: workspacePath("target.txt"),
       });
       harness.setDirty(true);
       harness.setBufferTextReader(async () => "recovered alpha\n");
@@ -636,8 +660,14 @@ describe("embedded Neovim BUFFER provider", () => {
       dirtyBufferCount: 1,
     });
     expect(provider.getSnapshot().buffers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: "/workspace/target.txt", modified: true }),
-      expect.objectContaining({ name: "/workspace/next.txt", current: true }),
+      expect.objectContaining({
+        name: workspacePath("target.txt"),
+        modified: true,
+      }),
+      expect.objectContaining({
+        name: workspacePath("next.txt"),
+        current: true,
+      }),
     ]));
 
     await expect(provider.saveAll({ force: true })).resolves.toMatchObject({ saved: true });
@@ -675,7 +705,7 @@ describe("embedded Neovim BUFFER provider", () => {
         harness.mutateBuffer(
           race === "changedtick"
             ? undefined
-            : "/workspace/unreviewed.txt",
+            : workspacePath("unreviewed.txt"),
         );
       };
 
@@ -705,7 +735,7 @@ describe("embedded Neovim BUFFER provider", () => {
 
     const confirmation = await provider.prepareDiscardAll();
     expect(confirmation).not.toBeNull();
-    harness.mutateBuffer("/workspace/unreviewed.txt");
+    harness.mutateBuffer(workspacePath("unreviewed.txt"));
 
     await expect(
       provider.discardAll(confirmation ?? undefined),
@@ -726,7 +756,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(confirmation).not.toBeNull();
     harness.session.discardAll.mockImplementationOnce(async () => {
       harness.setDirty(false);
-      harness.mutateBuffer("/workspace/late-edit.txt");
+      harness.mutateBuffer(workspacePath("late-edit.txt"));
       return true;
     });
 
@@ -769,18 +799,18 @@ describe("embedded Neovim BUFFER provider", () => {
 
   it("rebases active and hidden file buffers by stable handle after a directory rename", async () => {
     const readFileSnapshot = vi.fn(async (filePath: string) => {
-      const absolutePath = filePath.startsWith("/")
+      const absolutePath = isAbsolute(filePath)
         ? filePath
-        : `/workspace/${filePath}`;
+        : workspacePath(filePath);
       return {
-        ...snapshotFor(absolutePath.slice("/workspace/".length), 1),
+        ...snapshotFor(relative(TEST_WORKSPACE_ROOT, absolutePath), 1),
         absolutePath,
       };
     });
     const harness = createHarness({ readFileSnapshot });
     const provider = new NeovimBufferProvider({
       ...harness.options,
-      workspaceRoot: "/workspace",
+      workspaceRoot: TEST_WORKSPACE_ROOT,
     });
     await provider.open({ filePath: "src/active.ts" });
     await provider.open({ filePath: "src/hidden.ts" });
@@ -796,8 +826,11 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.session.rebaseFileBuffers).toHaveBeenCalledWith(
       before.map((buffer) => ({
         handle: buffer.handle,
-        fromPath: `/workspace/${buffer.filePath}`,
-        toPath: `/workspace/lib/${buffer.filePath?.slice("src/".length)}`,
+        fromPath: workspacePath(buffer.filePath!),
+        toPath: workspacePath(
+          "lib",
+          buffer.filePath!.slice("src/".length),
+        ),
       })),
     );
     expect(provider.getSnapshot()).toMatchObject({
@@ -815,20 +848,105 @@ describe("embedded Neovim BUFFER provider", () => {
     )).toBe(false);
   });
 
+  it("rebases physical Neovim buffer names opened through a workspace alias", async () => {
+    if (process.platform === "win32") return;
+    const sandbox = await mkdtemp(join(tmpdir(), "agenc-nvim-path-alias-"));
+    const physicalRoot = join(sandbox, "physical");
+    const workspaceAlias = join(sandbox, "workspace");
+    const sourceDirectory = join(physicalRoot, "src");
+    const destinationDirectory = join(physicalRoot, "lib");
+    await mkdir(sourceDirectory, { recursive: true });
+    await symlink(physicalRoot, workspaceAlias, "dir");
+    await Promise.all([
+      writeFile(join(sourceDirectory, "active.ts"), "active\n", "utf8"),
+      writeFile(join(sourceDirectory, "hidden.ts"), "hidden\n", "utf8"),
+    ]);
+
+    const readFileSnapshot = vi.fn(async (filePath: string) => ({
+      filePath,
+      absolutePath: isAbsolute(filePath)
+        ? filePath
+        : join(workspaceAlias, filePath),
+      content: "alpha\n",
+      mtimeMs: 1,
+      size: 6,
+      encoding: "utf8" as const,
+      lineEndings: "LF" as const,
+    }));
+    const harness = createHarness({ readFileSnapshot });
+    const originalInspect = harness.session.inspectBuffers.getMockImplementation();
+    if (!originalInspect) throw new Error("missing Neovim manifest fixture");
+    const rebasedNames = new Map<number, string>();
+    harness.session.inspectBuffers.mockImplementation(async () => {
+      const manifest = await originalInspect();
+      return {
+        ...manifest,
+        buffers: manifest.buffers.map((buffer) => ({
+          ...buffer,
+          // Match Neovim on Darwin: the editor reports the physical
+          // `/private/tmp`-style name, not the alias used to open the file.
+          name:
+            rebasedNames.get(buffer.handle) ??
+            canonicalNeovimPath(buffer.name),
+        })),
+      };
+    });
+    harness.session.rebaseFileBuffers.mockImplementation(async (changes) => {
+      for (const change of changes) {
+        rebasedNames.set(change.handle, change.toPath);
+      }
+    });
+    const provider = new NeovimBufferProvider({
+      ...harness.options,
+      workspaceRoot: workspaceAlias,
+    });
+
+    try {
+      await provider.open({ filePath: "src/active.ts" });
+      await provider.open({ filePath: "src/hidden.ts" });
+      await rename(sourceDirectory, destinationDirectory);
+
+      const result = await provider.synchronizePathRename("src", "lib");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.reason);
+      expect(result.affectedBufferHandles).toHaveLength(2);
+      expect(harness.session.rebaseFileBuffers).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fromPath: join(physicalRoot, "src", "active.ts"),
+            toPath: join(physicalRoot, "lib", "active.ts"),
+          }),
+          expect.objectContaining({
+            fromPath: join(physicalRoot, "src", "hidden.ts"),
+            toPath: join(physicalRoot, "lib", "hidden.ts"),
+          }),
+        ]),
+      );
+      expect(provider.getSnapshot().buffers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ filePath: "lib/active.ts" }),
+        expect.objectContaining({ filePath: "lib/hidden.ts" }),
+      ]));
+    } finally {
+      await provider.cleanup();
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("unloads every active or hidden clean buffer after a directory delete", async () => {
     const readFileSnapshot = vi.fn(async (filePath: string) => {
-      const absolutePath = filePath.startsWith("/")
+      const absolutePath = isAbsolute(filePath)
         ? filePath
-        : `/workspace/${filePath}`;
+        : workspacePath(filePath);
       return {
-        ...snapshotFor(absolutePath.slice("/workspace/".length), 1),
+        ...snapshotFor(relative(TEST_WORKSPACE_ROOT, absolutePath), 1),
         absolutePath,
       };
     });
     const harness = createHarness({ readFileSnapshot });
     const provider = new NeovimBufferProvider({
       ...harness.options,
-      workspaceRoot: "/workspace",
+      workspaceRoot: TEST_WORKSPACE_ROOT,
     });
     await provider.open({ filePath: "src/active.ts" });
     await provider.open({ filePath: "src/hidden.ts" });
@@ -858,10 +976,10 @@ describe("embedded Neovim BUFFER provider", () => {
   it("does not reset a hidden buffer disk baseline when navigating back to it", async () => {
     let aMtime = 1;
     const readFileSnapshot = vi.fn(async (path: string) => {
-      if (path === "a.txt" || path === "/workspace/a.txt") {
+      if (path === "a.txt" || path === workspacePath("a.txt")) {
         return snapshotFor("a.txt", aMtime);
       }
-      if (path === "b.txt" || path === "/workspace/b.txt") {
+      if (path === "b.txt" || path === workspacePath("b.txt")) {
         return snapshotFor("b.txt", 1);
       }
       throw new Error(`unexpected read ${path}`);
@@ -931,7 +1049,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.session.openFile).toHaveBeenNthCalledWith(
       2,
-      "/workspace/newest.txt",
+      workspacePath("newest.txt"),
       1,
       0,
     );
@@ -951,7 +1069,7 @@ describe("embedded Neovim BUFFER provider", () => {
     const provider = new NeovimBufferProvider(harness.options);
     await provider.open({ filePath: "target.txt" });
 
-    let activePath = "/workspace/target.txt";
+    let activePath = workspacePath("target.txt");
     let inputPath: string | null = null;
     harness.session.openFile.mockImplementationOnce(async (filePath: string) => {
       activePath = filePath;
@@ -978,12 +1096,12 @@ describe("embedded Neovim BUFFER provider", () => {
     await flush();
 
     expect(harness.session.openFile).toHaveBeenCalledWith(
-      "/workspace/next.txt",
+      workspacePath("next.txt"),
       1,
       0,
     );
     expect(harness.session.input).toHaveBeenCalledWith("x");
-    expect(inputPath).toBe("/workspace/next.txt");
+    expect(inputPath).toBe(workspacePath("next.txt"));
   });
 
   it("drops queued editor input when a newer file navigation supersedes it", async () => {
@@ -1153,7 +1271,7 @@ describe("embedded Neovim BUFFER provider", () => {
     harness.setDirty(false);
     await expect(provider.save()).resolves.toBe(true);
     await expect(provider.openExternalEditor()).resolves.toBe(true);
-    expect(launch).toHaveBeenCalledWith("/workspace/target.txt", 2);
+    expect(launch).toHaveBeenCalledWith(workspacePath("target.txt"), 2);
     expect(harness.startSession).toHaveBeenCalledTimes(1);
 
     launch.mockReturnValueOnce(false);
@@ -1198,7 +1316,7 @@ describe("embedded Neovim BUFFER provider", () => {
     harness.emitExit();
     await expect(provider.openExternalEditor()).resolves.toBe(true);
 
-    expect(launch).toHaveBeenCalledWith("/workspace/target.txt", 2);
+    expect(launch).toHaveBeenCalledWith(workspacePath("target.txt"), 2);
     expect(harness.startSession).toHaveBeenCalledTimes(2);
   });
 
@@ -1224,11 +1342,11 @@ describe("embedded Neovim BUFFER provider", () => {
     const pendingRead = controlled<BufferFileSnapshot>();
     const launch = vi.fn(() => true);
     const readFileSnapshot = vi.fn(async (path: string) => {
-      if (path === "target.txt" || path === "/workspace/target.txt") {
+      if (path === "target.txt" || path === workspacePath("target.txt")) {
         return snapshotFor("target.txt", 1);
       }
       if (path === "next.txt") return pendingRead.promise;
-      if (path === "/workspace/next.txt") return snapshotFor("next.txt", 2);
+      if (path === workspacePath("next.txt")) return snapshotFor("next.txt", 2);
       throw new Error(`unexpected read ${path}`);
     });
     const harness = createHarness({ launch, readFileSnapshot });
@@ -1240,7 +1358,7 @@ describe("embedded Neovim BUFFER provider", () => {
     expect(provider.getSnapshot()).toMatchObject({
       providerStatus: "loading",
       filePath: "target.txt",
-      absolutePath: "/workspace/target.txt",
+      absolutePath: workspacePath("target.txt"),
     });
 
     await expect(provider.openExternalEditor()).resolves.toBe(false);
@@ -1268,7 +1386,11 @@ describe("embedded Neovim BUFFER provider", () => {
 
     const openingNext = provider.open({ filePath: "next.txt" });
     await flush();
-    expect(harness.session.openFile).toHaveBeenCalledWith("/workspace/next.txt", 1, 0);
+    expect(harness.session.openFile).toHaveBeenCalledWith(
+      workspacePath("next.txt"),
+      1,
+      0,
+    );
 
     await expect(provider.openExternalEditor()).resolves.toBe(false);
     expect(launch).not.toHaveBeenCalled();
@@ -1409,8 +1531,8 @@ describe("embedded Neovim BUFFER provider", () => {
     const bSnapshot = { ...snapshotFor("b.txt", 2), lineEndings: "CRLF" as const };
     const readFileSnapshot = vi.fn(async (path: string) => {
       if (path === "a.txt") return aSnapshot;
-      if (path === "/workspace/a.txt") return staleRefresh.promise;
-      if (path === "b.txt" || path === "/workspace/b.txt") return bSnapshot;
+      if (path === workspacePath("a.txt")) return staleRefresh.promise;
+      if (path === "b.txt" || path === workspacePath("b.txt")) return bSnapshot;
       throw new Error(`unexpected read ${path}`);
     });
     const harness = createHarness({ readFileSnapshot });
@@ -1418,7 +1540,7 @@ describe("embedded Neovim BUFFER provider", () => {
 
     const staleOpen = provider.open({ filePath: "a.txt" });
     await flush();
-    expect(readFileSnapshot).toHaveBeenCalledWith("/workspace/a.txt");
+    expect(readFileSnapshot).toHaveBeenCalledWith(workspacePath("a.txt"));
     await provider.open({ filePath: "b.txt" });
     staleRefresh.resolve({ ...aSnapshot, encoding: "utf16le" });
     await staleOpen;
@@ -1434,8 +1556,8 @@ describe("embedded Neovim BUFFER provider", () => {
     const saveReads = readFileSnapshot.mock.calls
       .slice(readsBeforeSave)
       .map(([path]) => path);
-    expect(saveReads).not.toContain("/workspace/a.txt");
-    expect(saveReads).toContain("/workspace/b.txt");
+    expect(saveReads).not.toContain(workspacePath("a.txt"));
+    expect(saveReads).toContain(workspacePath("b.txt"));
   });
 
   it("does not redirect a stale save into the newly active buffer", async () => {
@@ -1445,11 +1567,11 @@ describe("embedded Neovim BUFFER provider", () => {
     let aAbsoluteReads = 0;
     const readFileSnapshot = vi.fn(async (path: string) => {
       if (path === "a.txt") return aSnapshot;
-      if (path === "/workspace/a.txt") {
+      if (path === workspacePath("a.txt")) {
         aAbsoluteReads += 1;
         return aAbsoluteReads === 1 ? aSnapshot : conflictRead.promise;
       }
-      if (path === "b.txt" || path === "/workspace/b.txt") return bSnapshot;
+      if (path === "b.txt" || path === workspacePath("b.txt")) return bSnapshot;
       throw new Error(`unexpected read ${path}`);
     });
     const harness = createHarness({ readFileSnapshot });
@@ -1497,7 +1619,7 @@ describe("embedded Neovim BUFFER provider", () => {
         activeBufferHandle: 9,
         buffers: [{
           handle: 9,
-          name: "/workspace/active.txt",
+          name: workspacePath("active.txt"),
           listed: true,
           loaded: true,
           modified: false,
@@ -1705,15 +1827,15 @@ describe("embedded Neovim BUFFER provider", () => {
   });
 
   it("normalizes Neovim buffer names before using them as disk-baseline keys", () => {
-    const workspaceRoot = process.platform === "win32"
-      ? "C:\\workspace"
-      : "/workspace";
     const neovimName = process.platform === "win32"
       ? "C:/workspace/src/../target.txt"
       : "/workspace/src/../target.txt";
-    const normalized = normalizeNeovimBufferPath(neovimName, workspaceRoot);
+    const normalized = normalizeNeovimBufferPath(
+      neovimName,
+      TEST_WORKSPACE_ROOT,
+    );
 
-    expect(normalized).toBe(join(workspaceRoot, "target.txt"));
+    expect(normalized).toBe(workspacePath("target.txt"));
     expect(neovimFileSnapshotKey(neovimName)).toBe(
       neovimFileSnapshotKey(normalized),
     );
@@ -1728,14 +1850,26 @@ describe("embedded Neovim BUFFER provider", () => {
     await expect(provider.openExternalEditor()).resolves.toBe(false);
     expect(provider.handleInput({ input: "", key: baseKey(), context: { rows: 8, columns: 40 } })).toBe(false);
     expect(provider.click(1, 1)).toBe(false);
-    expect(reloadPathAfterExternalEditor("target.txt", "/workspace/target.txt")).toBe("target.txt");
-    expect(reloadPathAfterExternalEditor(null, "/workspace/target.txt")).toBe("/workspace/target.txt");
-    expect(refreshableFileSnapshotPaths("/workspace/target.txt", "target.txt")).toEqual({
-      absolutePath: "/workspace/target.txt",
+    expect(reloadPathAfterExternalEditor(
+      "target.txt",
+      workspacePath("target.txt"),
+    )).toBe("target.txt");
+    expect(reloadPathAfterExternalEditor(
+      null,
+      workspacePath("target.txt"),
+    )).toBe(workspacePath("target.txt"));
+    expect(refreshableFileSnapshotPaths(
+      workspacePath("target.txt"),
+      "target.txt",
+    )).toEqual({
+      absolutePath: workspacePath("target.txt"),
       filePath: "target.txt",
     });
     expect(refreshableFileSnapshotPaths(null, "target.txt")).toBeNull();
-    expect(refreshableFileSnapshotPaths("/workspace/target.txt", null)).toBeNull();
+    expect(refreshableFileSnapshotPaths(
+      workspacePath("target.txt"),
+      null,
+    )).toBeNull();
 
     await provider.open({ filePath: "target.txt" });
     expect(provider.handleInput({ input: "", key: baseKey(), context: { rows: 8, columns: 40 } })).toBe(false);
@@ -1799,7 +1933,7 @@ function createHarness(overrides: {
   readonly startSession?: (options: StartEmbeddedNeovimOptions) => Promise<EmbeddedNeovimSession>;
   readonly recovery?: EmbeddedNeovimRecoveryInfo | null;
 } = {}) {
-  let currentPath = "/workspace/target.txt";
+  let currentPath = workspacePath("target.txt");
   let nextHandle = 2;
   const buffers = new Map<
     string,
@@ -1980,7 +2114,7 @@ function createHarness(overrides: {
       return ![...buffers.values()].some((buffer) => buffer.dirty);
     }),
     applyRecovery: vi.fn(async () => currentBuffer().handle),
-    finishRecovery: vi.fn(async () => "/workspace/.first.txt.swp"),
+    finishRecovery: vi.fn(async () => workspacePath(".first.txt.swp")),
     isDirty: vi.fn(async () => currentBuffer().dirty),
     hasUnsavedBuffers: vi.fn(async () => [...buffers.values()].some((buffer) => buffer.dirty)),
     quit: vi.fn(async (discard = false) =>
@@ -1994,7 +2128,9 @@ function createHarness(overrides: {
   } as any as EmbeddedNeovimSession;
   const readFileSnapshot = overrides.readFileSnapshot ?? vi.fn(async (filePath: string) => ({
     filePath,
-    absolutePath: `/workspace/${filePath}`,
+    absolutePath: isAbsolute(filePath)
+      ? filePath
+      : workspacePath(filePath),
     content: "alpha\n",
     mtimeMs: 1,
     size: 6,
@@ -2111,7 +2247,7 @@ function createHarness(overrides: {
 function snapshotFor(filePath: string, mtimeMs: number): BufferFileSnapshot {
   return {
     filePath,
-    absolutePath: `/workspace/${filePath}`,
+    absolutePath: workspacePath(filePath),
     content: "alpha\n",
     mtimeMs,
     size: 6,

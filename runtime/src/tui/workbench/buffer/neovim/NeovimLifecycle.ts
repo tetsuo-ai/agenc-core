@@ -39,6 +39,8 @@ export type StartEmbeddedNeovimOptions = {
   readonly startupTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
+  /** Force the deterministic broker boundary in Linux containment tests. */
+  readonly linuxContainment?: "auto" | "subreaper";
   readonly onSnapshot: (snapshot: NeovimRenderSnapshot) => void;
   readonly onDirtyChange?: (dirty: boolean) => void;
   readonly onWorkspaceChange?: () => void;
@@ -312,13 +314,20 @@ const APPLY_RECOVERY = [
   "local original_lines = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)",
   "local original_modified = vim.api.nvim_get_option_value('modified', { buf = buffer })",
   "local original_readonly = vim.api.nvim_get_option_value('readonly', { buf = buffer })",
+  "local original_eol = vim.api.nvim_get_option_value('eol', { buf = buffer })",
+  "local original_fixeol = vim.api.nvim_get_option_value('fixeol', { buf = buffer })",
   "vim.api.nvim_set_option_value('modifiable', true, { buf = buffer })",
   "vim.api.nvim_set_option_value('readonly', false, { buf = buffer })",
   "vim.cmd('silent recover! ' .. vim.fn.fnameescape(swap_file))",
   "local recovered_buffer = vim.api.nvim_get_current_buf()",
+  "if vim.api.nvim_buf_get_name(recovered_buffer) ~= original_path then",
+  "  vim.api.nvim_buf_set_name(recovered_buffer, original_path)",
+  "end",
   "if action == 'save-copy' then",
   "  vim.cmd('silent write! ' .. vim.fn.fnameescape(copy_path))",
   "  vim.api.nvim_buf_set_lines(recovered_buffer, 0, -1, false, original_lines)",
+  "  vim.api.nvim_set_option_value('fixeol', original_fixeol, { buf = recovered_buffer })",
+  "  vim.api.nvim_set_option_value('eol', original_eol, { buf = recovered_buffer })",
   "  vim.api.nvim_set_option_value('modified', original_modified, { buf = recovered_buffer })",
   "  vim.api.nvim_set_option_value('readonly', original_readonly, { buf = recovered_buffer })",
   "elseif action == 'compare' then",
@@ -349,12 +358,13 @@ const APPLY_RECOVERY = [
 
 const FINISH_RECOVERY = [
   "local buffer, keep_recovered = ...",
+  "local reload_from_disk = buffer == 0",
   "if buffer == 0 then buffer = vim.api.nvim_get_current_buf() end",
   "if not vim.api.nvim_buf_is_valid(buffer) then return false end",
   "vim.api.nvim_buf_call(buffer, function()",
   "  vim.api.nvim_set_option_value('modifiable', true, { buf = buffer })",
   "  vim.api.nvim_set_option_value('readonly', false, { buf = buffer })",
-  "  if not keep_recovered then vim.cmd('silent edit!') end",
+  "  if reload_from_disk then vim.cmd('silent edit!') end",
   "  pcall(vim.api.nvim_buf_del_var, buffer, 'agenc_recovery_pending')",
   "  vim.api.nvim_set_option_value('swapfile', true, { buf = buffer })",
   "  if keep_recovered then",
@@ -449,6 +459,18 @@ export class EmbeddedNeovimSession {
 
   get recovery(): EmbeddedNeovimRecoveryInfo | null {
     return this.#recovery;
+  }
+
+  /**
+   * Signal the supervised Neovim boundary.
+   *
+   * On broker-backed platforms `pid` identifies the containment owner rather
+   * than the editor process itself. Callers which need to simulate or force a
+   * process exit must therefore route the signal through the handle so the
+   * broker can reap descendants and publish its cleanup proof.
+   */
+  kill(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): boolean {
+    return this.#handle.kill(signal);
   }
 
   async input(keys: string): Promise<boolean> {
@@ -1154,6 +1176,9 @@ export async function startEmbeddedNeovim(
       executable: options.executable,
       args: options.args,
       cwd: options.cwd ?? options.workspaceRoot ?? getCwd(),
+      ...(options.linuxContainment !== undefined
+        ? { linuxContainment: options.linuxContainment }
+        : {}),
     });
     const rpc = new NeovimRpcTransport(handle.child.stdout, handle.child.stdin);
     const ui = new NeovimUi(rpc, options.size, options.onSnapshot);

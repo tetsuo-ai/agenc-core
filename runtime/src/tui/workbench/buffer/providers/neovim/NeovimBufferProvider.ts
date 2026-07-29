@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import { openFileInBufferExternalEditor, type BufferExternalEditorLauncher } from "../../externalEditor.js";
 import {
@@ -22,6 +22,11 @@ import {
 import type { NeovimDiscoveryResult } from "../../neovim/NeovimDiscovery.js";
 import { translateKeyToNeovimInput } from "../../neovim/NeovimInput.js";
 import { createNeovimRenderSnapshot, type NeovimRenderSnapshot } from "../../neovim/NeovimGrid.js";
+import {
+  canonicalNeovimPath,
+  canonicalNeovimPathIsAtOrWithin,
+  canonicalNeovimPathKey,
+} from "../../neovim/NeovimPath.js";
 import {
   discardRecoverySwapFiles,
   recoveryCopyPath,
@@ -1351,8 +1356,14 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }
       const changes = affected.map((buffer) => ({
         handle: buffer.handle,
-        fromPath: buffer.absolutePath!,
-        toPath: resolve(destination, relative(source, resolve(buffer.absolutePath!))),
+        // The Lua guard compares against Neovim's exact live name. Keep that
+        // spelling for the transactional precondition while using the
+        // canonical absolutePath for host-side identity and subtree math.
+        fromPath: buffer.name,
+        toPath: resolve(
+          destination,
+          relative(source, canonicalNeovimPath(buffer.absolutePath!)),
+        ),
       }));
       const stableSession = session as EmbeddedNeovimSession & {
         rebaseFileBuffers?: EmbeddedNeovimSession["rebaseFileBuffers"];
@@ -1390,7 +1401,7 @@ export class NeovimBufferProvider implements BufferEditorProvider {
         const buffer = this.#buffers.find((candidate) => candidate.handle === change.handle);
         return !buffer?.loaded ||
           buffer.absolutePath === null ||
-          resolve(buffer.absolutePath) !== resolve(change.toPath);
+          !sameNeovimFilePath(buffer.absolutePath, change.toPath);
       });
       if (mismatched) {
         return this.#pathMutationFailure(
@@ -1445,7 +1456,9 @@ export class NeovimBufferProvider implements BufferEditorProvider {
       }
       const deletions = affected.map((buffer) => ({
         handle: buffer.handle,
-        path: buffer.absolutePath!,
+        // As with rename, preserve the exact editor-owned spelling for the Lua
+        // precondition; snapshot cleanup below canonicalizes the key.
+        path: buffer.name,
       }));
       const stableSession = session as EmbeddedNeovimSession & {
         deleteFileBuffers?: EmbeddedNeovimSession["deleteFileBuffers"];
@@ -2168,10 +2181,8 @@ export class NeovimBufferProvider implements BufferEditorProvider {
 
   #workspaceDisplayPath(absolutePath: string): string {
     if (this.#workspaceRoot === undefined) return absolutePath;
-    const workspaceRoot = resolve(this.#workspaceRoot);
-    const resolvedPath = isAbsolute(absolutePath)
-      ? resolve(absolutePath)
-      : resolve(workspaceRoot, absolutePath);
+    const workspaceRoot = canonicalNeovimPath(this.#workspaceRoot);
+    const resolvedPath = canonicalNeovimPath(absolutePath, workspaceRoot);
     const workspaceRelativePath = relative(workspaceRoot, resolvedPath);
     if (
       workspaceRelativePath.length === 0 ||
@@ -2377,15 +2388,16 @@ export function normalizeNeovimBufferPath(
   bufferName: string,
   workspaceRoot?: string,
 ): string {
-  if (isAbsolute(bufferName)) return resolve(bufferName);
-  return workspaceRoot && workspaceRoot.trim().length > 0
-    ? resolve(workspaceRoot, bufferName)
-    : resolve(bufferName);
+  return canonicalNeovimPath(
+    bufferName,
+    workspaceRoot && workspaceRoot.trim().length > 0
+      ? workspaceRoot
+      : undefined,
+  );
 }
 
 export function neovimFileSnapshotKey(absolutePath: string): string {
-  const normalized = resolve(absolutePath);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return canonicalNeovimPathKey(absolutePath);
 }
 
 function sameNeovimFilePath(left: string, right: string): boolean {
@@ -2416,10 +2428,8 @@ export function workspaceMutationAbsolutePath(
   if (candidatePath.trim().length === 0) {
     throw new Error("the project mutation path is empty");
   }
-  const root = resolve(workspaceRoot);
-  const candidate = isAbsolute(candidatePath)
-    ? resolve(candidatePath)
-    : resolve(root, candidatePath);
+  const root = canonicalNeovimPath(workspaceRoot);
+  const candidate = canonicalNeovimPath(candidatePath, root);
   if (!pathIsAtOrWithin(candidate, root)) {
     throw new Error(`the project mutation path is outside the BUFFER workspace: ${candidatePath}`);
   }
@@ -2439,13 +2449,7 @@ function affectedFileBuffers(
 }
 
 function pathIsAtOrWithin(candidatePath: string, parentPath: string): boolean {
-  const pathFromParent = relative(resolve(parentPath), resolve(candidatePath));
-  return pathFromParent.length === 0 ||
-    (
-      pathFromParent !== ".." &&
-      !pathFromParent.startsWith(`..${sep}`) &&
-      !isAbsolute(pathFromParent)
-    );
+  return canonicalNeovimPathIsAtOrWithin(candidatePath, parentPath);
 }
 
 function neovimModeToVimMode(mode: string): BufferProviderSnapshot["vimMode"] {

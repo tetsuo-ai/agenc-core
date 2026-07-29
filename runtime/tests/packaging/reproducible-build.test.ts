@@ -296,6 +296,14 @@ describe("reproducible install and release contract", () => {
     expect(neovimJob).toContain("numTotalTestSuites: 2");
     expect(neovimJob).toContain("numTotalTests: 8");
     expect(neovimJob).toContain("results.testResults.length !== 1");
+    expect(neovimJob).toContain('if test "$RUNNER_OS" = "Windows"; then');
+    expect(neovimJob).toContain(
+      '"$npm_command" rebuild better-sqlite3 esbuild',
+    );
+    expect(neovimJob).toContain(
+      '"$npm_command" rebuild better-sqlite3 esbuild node-pty',
+    );
+    expect(neovimJob).toContain("$_.ProcessId -ne $PID -and");
     expect(neovimJob).toContain("pgrep -f --");
 
     const macosJob = workflow.slice(
