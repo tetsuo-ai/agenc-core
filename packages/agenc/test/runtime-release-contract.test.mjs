@@ -149,6 +149,34 @@ test("installer promotion is exact-SHA, fast-forward-only, and lane-scoped", () 
     workflow,
     /installer-hotfix requires an existing full-release promotion/u,
   );
+  const targetStepStart = workflow.indexOf(
+    "      - name: Verify fast-forward promotion",
+  );
+  const promoteStepStart = workflow.indexOf(
+    "      - name: Promote installer-stable",
+  );
+  const publicBytesStepStart = workflow.indexOf(
+    "      - name: Verify public installer bytes",
+  );
+  assert.ok(targetStepStart >= 0);
+  assert.ok(promoteStepStart > targetStepStart);
+  assert.ok(publicBytesStepStart > promoteStepStart);
+  const targetStep = workflow.slice(targetStepStart, promoteStepStart);
+  const promoteStep = workflow.slice(promoteStepStart, publicBytesStepStart);
+  assert.match(
+    targetStep,
+    /if \[\[ "\$current" = "\$TESTED_SHA" \]\]; then[\s\S]*else[\s\S]*git merge-base --is-ancestor "\$current" "\$TESTED_SHA"[\s\S]*installer-hotfix lane requires changed installer bytes/u,
+  );
+  assert.match(promoteStep, /matched=false/u);
+  assert.match(promoteStep, /for attempt in \$\(seq 1 30\); do/u);
+  assert.match(
+    promoteStep,
+    /if \[\[ "\$observed" = "\$TESTED_SHA" \]\]; then[\s\S]*matched=true[\s\S]*break/u,
+  );
+  assert.match(
+    promoteStep,
+    /installer-stable did not converge to \$TESTED_SHA/u,
+  );
   const toolchain = JSON.parse(readFileSync(
     new URL("../../../release-toolchain.json", import.meta.url),
     "utf8",

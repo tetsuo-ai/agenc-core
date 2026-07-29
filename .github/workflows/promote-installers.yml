@@ -169,18 +169,22 @@ jobs:
           fi
           if [[ -n "$current" ]]; then
             [[ "$current" =~ ^[0-9a-f]{40}$ ]]
-            git merge-base --is-ancestor "$current" "$TESTED_SHA"
-            if [[ "$LANE" = installer-hotfix ]]; then
-              previous_version="$(
-                git show "${current}:package.json" |
-                  node -e 'let input="";process.stdin.on("data",c=>input+=c).on("end",()=>process.stdout.write(JSON.parse(input).version))'
-              )"
-              current_version="$(node -p 'require("./package.json").version')"
-              test "$previous_version" = "$current_version"
-              if git diff --quiet "$current" "$TESTED_SHA" -- \
-                scripts/install/install.sh scripts/install/install.ps1; then
-                echo "installer-hotfix lane requires changed installer bytes" >&2
-                exit 1
+            if [[ "$current" = "$TESTED_SHA" ]]; then
+              echo "installer-stable already points to $TESTED_SHA"
+            else
+              git merge-base --is-ancestor "$current" "$TESTED_SHA"
+              if [[ "$LANE" = installer-hotfix ]]; then
+                previous_version="$(
+                  git show "${current}:package.json" |
+                    node -e 'let input="";process.stdin.on("data",c=>input+=c).on("end",()=>process.stdout.write(JSON.parse(input).version))'
+                )"
+                current_version="$(node -p 'require("./package.json").version')"
+                test "$previous_version" = "$current_version"
+                if git diff --quiet "$current" "$TESTED_SHA" -- \
+                  scripts/install/install.sh scripts/install/install.ps1; then
+                  echo "installer-hotfix lane requires changed installer bytes" >&2
+                  exit 1
+                fi
               fi
             fi
           fi
@@ -206,11 +210,28 @@ jobs:
               --raw-field ref=refs/heads/installer-stable \
               --raw-field sha="$TESTED_SHA" >/dev/null
           fi
-          observed="$(
-            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/installer-stable" \
-              --jq .object.sha
-          )"
-          test "$observed" = "$TESTED_SHA"
+          matched=false
+          observed=""
+          for attempt in $(seq 1 30); do
+            if observed="$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/installer-stable" \
+                --jq .object.sha 2>/dev/null
+            )"; then
+              if [[ "$observed" = "$TESTED_SHA" ]]; then
+                matched=true
+                break
+              fi
+            else
+              observed="<unreadable>"
+            fi
+            if [[ "$attempt" -lt 30 ]]; then
+              sleep 2
+            fi
+          done
+          if [[ "$matched" != true ]]; then
+            echo "installer-stable did not converge to $TESTED_SHA; last observed: $observed" >&2
+            exit 1
+          fi
 
       - name: Verify public installer bytes
         env:
