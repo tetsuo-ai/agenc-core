@@ -549,6 +549,7 @@ describe("real embedded Neovim lifecycle", () => {
       workspaceRoot: dir,
       agencHome,
       beforeOpenFile,
+      startupTimeoutMs: 20_000,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
       onError: (error) => {
@@ -587,6 +588,7 @@ describe("real embedded Neovim lifecycle", () => {
       workspaceRoot: dir,
       agencHome,
       beforeOpenFile,
+      startupTimeoutMs: 20_000,
       size: { rows: 4, columns: 32 },
       onSnapshot: () => {},
       onRecoveryDetected: (event) => recoveryEvents.push(event),
